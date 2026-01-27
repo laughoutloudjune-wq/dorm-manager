@@ -13,64 +13,98 @@ export async function POST(req: NextRequest) {
     const events = body.events;
 
     await Promise.all(events.map(async (event: any) => {
-      // We only care about text messages
+      const userId = event.source.userId;
+
+      // --- SCENARIO 1: TEXT MESSAGE (Registration) ---
       if (event.type === 'message' && event.message.type === 'text') {
         const text = event.message.text.trim();
-        const userId = event.source.userId;
-
-        // CHECK 1: Did they type a Room Number? (e.g., "101", "205")
-        // This regex checks if the text is exactly 3 digits
+        
+        // Check if it's a room number (3 digits)
         if (/^\d{3}$/.test(text)) {
           const roomNumber = text;
-
-          // A. Find the Room in DB
-          const { data: room } = await supabase
-            .from('rooms')
-            .select('id, status')
-            .eq('room_number', roomNumber)
-            .single();
-
+          
+          const { data: room } = await supabase.from('rooms').select('id').eq('room_number', roomNumber).single();
+          
           if (!room) {
-            return client.replyMessage(event.replyToken, {
-              type: 'text', text: `❌ Room ${roomNumber} does not exist in the system.`
-            });
+            return client.replyMessage(event.replyToken, { type: 'text', text: `❌ Room ${roomNumber} not found.` });
           }
 
-          // B. Link the User ID to the Tenant in that room
-          // First, check if there is an active tenant there
-          const { data: existingTenant } = await supabase
-            .from('tenants')
-            .select('id, name')
-            .eq('room_id', room.id)
-            .eq('status', 'active')
-            .single();
+          const { data: existingTenant } = await supabase.from('tenants').select('id, name').eq('room_id', room.id).eq('status', 'active').single();
 
           if (existingTenant) {
-            // Update the existing tenant with this LINE ID
-            await supabase
-              .from('tenants')
-              .update({ line_user_id: userId })
-              .eq('id', existingTenant.id);
-
-            return client.replyMessage(event.replyToken, {
-              type: 'text', text: `✅ Connected! Hello ${existingTenant.name}, you will now receive bills for Room ${roomNumber} here.`
-            });
+             await supabase.from('tenants').update({ line_user_id: userId }).eq('id', existingTenant.id);
+             return client.replyMessage(event.replyToken, { type: 'text', text: `✅ Reconnected to Room ${roomNumber}.` });
           } else {
-            // If room is empty in DB, create a new tenant entry
-            await supabase.from('tenants').insert({
-              room_id: room.id,
-              name: 'New Tenant', // You can edit the name later in your dashboard
-              line_user_id: userId,
-              status: 'active'
-            });
-            
-            // Mark room as occupied
-            await supabase.from('rooms').update({ status: 'occupied' }).eq('id', room.id);
-
-            return client.replyMessage(event.replyToken, {
-              type: 'text', text: `✅ Registered! You are now set as the tenant for Room ${roomNumber}.`
-            });
+             await supabase.from('tenants').insert({ room_id: room.id, name: 'New Tenant', line_user_id: userId, status: 'active' });
+             await supabase.from('rooms').update({ status: 'occupied' }).eq('id', room.id);
+             return client.replyMessage(event.replyToken, { type: 'text', text: `✅ Registered to Room ${roomNumber}.` });
           }
+        }
+      }
+
+      // --- SCENARIO 2: IMAGE MESSAGE (Payment Slip) ---
+      else if (event.type === 'message' && event.message.type === 'image') {
+        const { data: tenant } = await supabase
+          .from('tenants')
+          .select('room_id, rooms(room_number)')
+          .eq('line_user_id', userId)
+          .eq('status', 'active')
+          .single();
+
+        if (!tenant) {
+           return client.replyMessage(event.replyToken, { type: 'text', text: "⚠️ You are not registered. Please type your Room Number first (e.g., 101)." });
+        }
+
+        // --- FIX: Safely extract room number ---
+        // We force TypeScript to treat 'rooms' as 'any' so we can check if it's an array or an object
+        const roomData: any = tenant.rooms;
+        const roomNumber = Array.isArray(roomData) ? roomData[0]?.room_number : roomData?.room_number;
+
+        if (!roomNumber) {
+           return client.replyMessage(event.replyToken, { type: 'text', text: "⚠️ Error finding your room details." });
+        }
+
+        // Get image content
+        const messageId = event.message.id;
+        const stream = await client.getMessageContent(messageId);
+        const chunks: any[] = [];
+        for await (const chunk of stream) { chunks.push(chunk); }
+        const buffer = Buffer.concat(chunks);
+
+        // Use the safe 'roomNumber' variable here
+        const fileName = `${roomNumber}_${Date.now()}.jpg`;
+        
+        const { error: uploadError } = await supabase
+          .storage
+          .from('slips')
+          .upload(fileName, buffer, { contentType: 'image/jpeg' });
+
+        if (uploadError) {
+          console.error("Upload failed:", uploadError);
+          return client.replyMessage(event.replyToken, { type: 'text', text: "❌ System error uploading slip." });
+        }
+
+        const { data: { publicUrl } } = supabase.storage.from('slips').getPublicUrl(fileName);
+
+        // Update Invoice
+        const { data: invoice } = await supabase
+          .from('invoices')
+          .select('id')
+          .eq('room_id', tenant.room_id)
+          .neq('payment_status', 'paid')
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .single();
+
+        if (invoice) {
+          await supabase
+            .from('invoices')
+            .update({ slip_url: publicUrl, payment_status: 'verification_pending' })
+            .eq('id', invoice.id);
+
+          return client.replyMessage(event.replyToken, { type: 'text', text: "✅ Slip received! Admin will verify shortly." });
+        } else {
+           return client.replyMessage(event.replyToken, { type: 'text', text: "❓ No pending invoice found for your room." });
         }
       }
     }));
