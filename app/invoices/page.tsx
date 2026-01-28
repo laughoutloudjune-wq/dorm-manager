@@ -183,16 +183,54 @@ export default function Invoices() {
     doc.save(`Invoice_${inv.rooms?.room_number}.pdf`);
   };
 
+  // --- UPDATED SEND TO LINE FUNCTION ---
   const sendToLine = async (inv: any) => {
-    const { data: tenant } = await supabase.from('tenants').select('line_user_id, name').eq('room_id', inv.room_id).eq('status', 'active').single();
-    if (tenant?.line_user_id && confirm(`Send to ${tenant.name}?`)) {
-      await fetch('/api/send-invoice', {
-        method: 'POST',
-        body: JSON.stringify({ userId: tenant.line_user_id, amount: inv.total_amount.toLocaleString(), month: `${inv.month}/${inv.year}`, pdfUrl: "https://google.com" })
-      });
-      alert('Sent!');
+    // 1. Get Tenant Info
+    const { data: tenant } = await supabase
+      .from('tenants')
+      .select('line_user_id, name')
+      .eq('room_id', inv.room_id)
+      .eq('status', 'active')
+      .single();
+
+    if (!tenant?.line_user_id) {
+      alert("⚠️ This tenant has not registered on LINE yet.");
+      return;
+    }
+
+    if (confirm(`Send digital bill to Room ${inv.rooms?.room_number} (${tenant.name})?`)) {
+      try {
+        // 2. Call our API with ALL the details
+        const response = await fetch('/api/send-invoice', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userId: tenant.line_user_id,
+            roomNumber: inv.rooms?.room_number,
+            month: inv.month,
+            year: inv.year,
+            // Format numbers nicely with commas
+            rent: inv.rent_cost.toLocaleString(),
+            waterUnit: inv.water_units,
+            waterPrice: inv.water_cost.toLocaleString(),
+            elecUnit: inv.electric_units,
+            elecPrice: inv.electric_cost.toLocaleString(),
+            total: inv.total_amount.toLocaleString()
+          })
+        });
+
+        if (response.ok) {
+          alert('✅ Bill sent to LINE successfully!');
+        } else {
+          alert('❌ Failed to send LINE message.');
+        }
+      } catch (err) {
+        console.error(err);
+        alert('Error sending message');
+      }
     }
   };
+  // -------------------------------------
 
   return (
     <div className="p-8 bg-gray-50 min-h-screen">
