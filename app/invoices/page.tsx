@@ -3,23 +3,23 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import EditModal from './EditModal';
-import InvoiceTemplate from './InvoiceTemplate'; // <--- IMPORT THIS
+import InvoiceTemplate from './InvoiceTemplate';
 
 export default function Invoices() {
   const [invoices, setInvoices] = useState<any[]>([]);
-  // ... (keep your existing state: loading, selectedMonth, etc.) ...
   const [loading, setLoading] = useState(true);
+  
+  // Modals State
   const [editingInvoice, setEditingInvoice] = useState<any>(null);
   const [viewingSlip, setViewingSlip] = useState<string | null>(null);
+  const [previewData, setPreviewData] = useState<any>(null); // For Print Preview
+
+  // Filter State
   const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth() + 1);
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
-  
-  // NEW STATE for Preview
-  const [previewData, setPreviewData] = useState<any>(null);
 
   useEffect(() => { fetchInvoices(); }, [selectedMonth, selectedYear]);
 
-  // ... (keep fetchInvoices, generateBills, approvePayment, deleteInvoice, openSlip as they are) ...
   const fetchInvoices = async () => {
     setLoading(true);
     const { data } = await supabase
@@ -37,8 +37,6 @@ export default function Invoices() {
   };
 
   const generateBills = async () => {
-    // ... (Keep existing code) ...
-    // Just to save space in chat, assume this is your existing generateBills code
     const { data: settings } = await supabase.from('settings').select('*').single();
     const elecRate = settings?.elec_rate || 7;
     const waterMinUnits = settings?.water_min_units || 10;
@@ -114,46 +112,59 @@ export default function Invoices() {
     setViewingSlip(url);
   };
 
-  const sendToLine = async (inv: any, e: any) => {
-    e.stopPropagation();
-    const { data: tenant } = await supabase.from('tenants').select('line_user_id, name').eq('room_id', inv.room_id).eq('status', 'active').single();
-    if (!tenant?.line_user_id) return alert("⚠️ No LINE account linked.");
-    if (confirm(`Send digital bill to Room ${inv.rooms?.room_number} (${tenant.name})?`)) {
-         try {
-            await fetch('/api/send-invoice', {
-                method: 'POST',
-                body: JSON.stringify({
-                    userId: tenant.line_user_id,
-                    roomNumber: inv.rooms?.room_number,
-                    month: inv.month, year: inv.year,
-                    rent: inv.rent_cost.toLocaleString(),
-                    waterUnit: inv.water_units, waterPrice: inv.water_cost.toLocaleString(),
-                    elecUnit: inv.electric_units, elecPrice: inv.electric_cost.toLocaleString(),
-                    total: inv.total_amount.toLocaleString()
-                })
-            });
-            alert('✅ Sent!');
-        } catch (err) { alert('Error sending'); }
-    }
-  };
-
-  // --- UPDATED PRINT FUNCTION ---
+  // --- 1. HANDLE PRINT PREVIEW (Replaces old PDF logic) ---
   const handlePreview = async (inv: any, type: 'INVOICE' | 'RECEIPT', e: any) => {
     e.stopPropagation();
     
-    // 1. Fetch settings and tenant details
+    // Fetch Settings & Tenant for the Template
     const { data: settings } = await supabase.from('settings').select('*').single();
     const { data: tenant } = await supabase.from('tenants')
       .select('name, address, payment_methods(bank_name, account_number, account_name)')
       .eq('room_id', inv.room_id).eq('status', 'active').single();
 
-    // 2. Open Preview Modal
     setPreviewData({
         invoice: inv,
         tenant: tenant,
         settings: settings,
         type: type
     });
+  };
+
+  // --- 2. HANDLE SEND TO LINE (Updated with roomId) ---
+  const sendToLine = async (inv: any, e: any) => {
+    e.stopPropagation();
+    
+    const { data: tenant } = await supabase.from('tenants').select('line_user_id, name').eq('room_id', inv.room_id).eq('status', 'active').single();
+    
+    if (!tenant?.line_user_id) {
+        return alert("⚠️ This tenant has not registered on LINE yet.");
+    }
+
+    if (confirm(`Send digital bill to Room ${inv.rooms?.room_number} (${tenant.name})?`)) {
+         try {
+            await fetch('/api/send-invoice', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    roomId: inv.room_id, // <--- CRITICAL: Used to find payment method
+                    userId: tenant.line_user_id,
+                    roomNumber: inv.rooms?.room_number,
+                    month: inv.month, 
+                    year: inv.year,
+                    rent: inv.rent_cost.toLocaleString(),
+                    waterUnit: inv.water_units, 
+                    waterPrice: inv.water_cost.toLocaleString(),
+                    elecUnit: inv.electric_units, 
+                    elecPrice: inv.electric_cost.toLocaleString(),
+                    total: inv.total_amount.toLocaleString()
+                })
+            });
+            alert('✅ Sent successfully!');
+        } catch (err) { 
+            console.error(err);
+            alert('❌ Error sending message'); 
+        }
+    }
   };
 
   return (
@@ -190,6 +201,7 @@ export default function Invoices() {
                 onClick={() => setEditingInvoice(inv)} 
                 className="hover:bg-blue-50 cursor-pointer transition-colors group"
               >
+                {/* STATUS BADGE */}
                 <td className="p-4">
                   <div className={`inline-flex items-center px-2.5 py-1.5 rounded-full text-xs font-bold border
                     ${inv.payment_status==='paid' ? 'bg-green-100 text-green-700 border-green-200' : 
@@ -214,18 +226,19 @@ export default function Invoices() {
 
                 <td className="p-4 text-right">
                    <div className="flex justify-end gap-2">
+                     {/* APPROVE BUTTON */}
                      {inv.payment_status !== 'paid' && (
                        <button onClick={(e)=>approvePayment(inv.id, e)} className="flex items-center gap-1 bg-green-50 hover:bg-green-100 text-green-700 px-3 py-1.5 rounded-lg border border-green-200 transition-all font-bold text-xs">✅ Approve</button>
                      )}
                      
-                     {/* IF PAID: Show RECEIPT */}
+                     {/* RECEIPT BUTTON (Visible only if PAID) */}
                      {inv.payment_status === 'paid' && (
                        <button onClick={(e)=>handlePreview(inv, 'RECEIPT', e)} className="flex items-center gap-1 bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded-lg border border-green-700 transition-all font-bold text-xs shadow-sm">
                          🧾 Receipt
                        </button>
                      )}
 
-                     {/* ALWAYS: Show INVOICE */}
+                     {/* INVOICE BUTTON (Always visible) */}
                      <button onClick={(e)=>handlePreview(inv, 'INVOICE', e)} className="flex items-center gap-1 bg-white hover:bg-gray-50 text-slate-700 px-3 py-1.5 rounded-lg border border-gray-300 transition-all font-bold text-xs">
                        📄 PDF
                      </button>
@@ -248,7 +261,7 @@ export default function Invoices() {
       {/* EDIT MODAL */}
       {editingInvoice && <EditModal invoice={editingInvoice} onClose={()=>setEditingInvoice(null)} onSave={fetchInvoices}/>}
 
-      {/* PREVIEW MODAL (This is where the magic happens) */}
+      {/* PRINT PREVIEW MODAL */}
       <InvoiceTemplate 
         data={previewData} 
         settings={previewData?.settings} 

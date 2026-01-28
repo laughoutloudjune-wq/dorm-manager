@@ -5,7 +5,7 @@ import { supabase } from '../../lib/supabase';
 
 export default function Settings() {
   // 1. Config State (General Settings)
-  const [config, setConfig] = useState<any>({
+  const defaultConfig = {
     dorm_name: '', 
     address: '', 
     phone: '', 
@@ -13,11 +13,12 @@ export default function Settings() {
     water_min_units: 0, 
     water_min_price: 0, 
     water_excess_rate: 0
-  });
+  };
 
+  const [config, setConfig] = useState<any>(defaultConfig);
   const [methods, setMethods] = useState<any[]>([]);
   
-  // 2. New Method State (FIXED: All fields initialized)
+  // 2. New Method State
   const [newMethod, setNewMethod] = useState({
     label: '',
     type: 'text', // 'text' or 'qr'
@@ -34,9 +35,13 @@ export default function Settings() {
   }, []);
 
   const fetchData = async () => {
+    // Fetch Settings
     const { data: settings } = await supabase.from('settings').select('*').single();
-    if (settings) setConfig(settings);
+    if (settings) {
+        setConfig((prev: any) => ({ ...prev, ...settings }));
+    }
 
+    // Fetch Payment Methods
     const { data: payMethods } = await supabase.from('payment_methods').select('*').order('created_at');
     setMethods(payMethods || []);
   };
@@ -44,7 +49,7 @@ export default function Settings() {
   const handleSave = async () => {
     setSaving(true);
     
-    // Safety check: Convert strings to numbers to avoid DB errors
+    // Safety check: Convert to numbers
     const safeConfig = {
         ...config,
         elec_rate: Number(config.elec_rate) || 0,
@@ -53,7 +58,7 @@ export default function Settings() {
         water_excess_rate: Number(config.water_excess_rate) || 0,
     };
 
-    // Upsert logic (Insert if not exists, Update if exists)
+    // Upsert logic
     const { count } = await supabase.from('settings').select('*', { count: 'exact', head: true }).eq('id', 1);
     
     if (count === 0) {
@@ -74,11 +79,14 @@ export default function Settings() {
     // Upload QR if selected
     if (newMethod.type === 'qr' && newMethod.qr_file) {
       const fileName = `qr_${Date.now()}`;
+      // Note: Make sure 'slips' bucket is Public in Supabase
       const { error } = await supabase.storage.from('slips').upload(fileName, newMethod.qr_file);
       
       if (!error) {
         const { data } = supabase.storage.from('slips').getPublicUrl(fileName);
         qrUrl = data.publicUrl;
+      } else {
+        console.error("Upload Error:", error);
       }
     }
 
@@ -93,25 +101,44 @@ export default function Settings() {
     });
 
     if (error) {
-        alert(error.message);
+        alert("Error adding method: " + error.message);
     } else {
-      // Reset form safely
+      // Reset form
       setNewMethod({
-        label: '', 
-        type: 'text', 
-        bank_name: '', 
-        account_number: '', 
-        account_name: '', 
-        qr_file: null
+        label: '', type: 'text', bank_name: '', account_number: '', account_name: '', qr_file: null
       });
       fetchData();
     }
   };
 
-  const deleteMethod = async (id: string) => {
-    if (confirm("Delete this payment method?")) {
-      await supabase.from('payment_methods').delete().eq('id', id);
-      fetchData();
+  // --- UPDATED DELETE FUNCTION (FORCE DELETE) ---
+  const deleteMethod = async (id: string, qrUrl: string | null) => {
+    if (!confirm("Are you sure? This will remove this payment method from ALL tenants.")) return;
+
+    try {
+        // 1. Unlink from ALL tenants (Active & History)
+        // This fixes the "Unable to delete" error by removing the link first
+        await supabase.from('tenants').update({ payment_method_id: null }).eq('payment_method_id', id);
+
+        // 2. Delete from Database
+        const { error } = await supabase.from('payment_methods').delete().eq('id', id);
+
+        if (error) {
+            throw error;
+        }
+
+        // 3. Delete QR Image from Storage (Cleanup)
+        if (qrUrl) {
+            const fileName = qrUrl.split('/').pop(); // Extract filename from URL
+            if (fileName) {
+                await supabase.storage.from('slips').remove([fileName]);
+            }
+        }
+
+        fetchData(); // Refresh list
+
+    } catch (err: any) {
+        alert("❌ Error deleting: " + err.message);
     }
   };
 
@@ -144,24 +171,57 @@ export default function Settings() {
               />
             </div>
 
+            <div>
+               <label className="block text-sm font-bold text-slate-700 mb-2 uppercase">Contact Phone</label>
+               <input 
+                 value={config.phone || ''} 
+                 onChange={e => setConfig({...config, phone: e.target.value})} 
+                 className="w-full border-2 border-slate-300 p-3 rounded-lg font-medium outline-none focus:border-blue-500 text-slate-900"
+               />
+            </div>
+
             <div className="bg-slate-50 p-5 rounded-xl border border-slate-200">
               <h3 className="font-bold text-slate-800 mb-4">Utility Rates</h3>
               <div className="grid grid-cols-2 gap-4">
                 <div>
                     <label className="text-xs font-bold text-yellow-700">Elec (B/Unit)</label>
-                    <input type="number" value={config.elec_rate || 0} onChange={e=>setConfig({...config, elec_rate:e.target.value})} className="w-full border-2 border-slate-300 p-2 rounded text-center font-bold text-slate-900"/>
+                    <input 
+                      type="number" 
+                      value={config.elec_rate === 0 ? '' : config.elec_rate} 
+                      onChange={e=>setConfig({...config, elec_rate: e.target.value})} 
+                      placeholder="0"
+                      className="w-full border-2 border-slate-300 p-2 rounded text-center font-bold text-slate-900"
+                    />
                 </div>
                 <div>
                     <label className="text-xs font-bold text-blue-700">Water Excess (B/Unit)</label>
-                    <input type="number" value={config.water_excess_rate || 0} onChange={e=>setConfig({...config, water_excess_rate:e.target.value})} className="w-full border-2 border-slate-300 p-2 rounded text-center font-bold text-slate-900"/>
+                    <input 
+                      type="number" 
+                      value={config.water_excess_rate === 0 ? '' : config.water_excess_rate} 
+                      onChange={e=>setConfig({...config, water_excess_rate: e.target.value})} 
+                      placeholder="0"
+                      className="w-full border-2 border-slate-300 p-2 rounded text-center font-bold text-slate-900"
+                    />
                 </div>
                 <div>
                     <label className="text-xs font-bold text-blue-700">Water Min Units</label>
-                    <input type="number" value={config.water_min_units || 0} onChange={e=>setConfig({...config, water_min_units:e.target.value})} className="w-full border-2 border-slate-300 p-2 rounded text-center font-bold text-slate-900"/>
+                    <input 
+                      type="number" 
+                      value={config.water_min_units === 0 ? '' : config.water_min_units} 
+                      onChange={e=>setConfig({...config, water_min_units: e.target.value})} 
+                      placeholder="0"
+                      className="w-full border-2 border-slate-300 p-2 rounded text-center font-bold text-slate-900"
+                    />
                 </div>
                 <div>
                     <label className="text-xs font-bold text-blue-700">Water Min Price (฿)</label>
-                    <input type="number" value={config.water_min_price || 0} onChange={e=>setConfig({...config, water_min_price:e.target.value})} className="w-full border-2 border-slate-300 p-2 rounded text-center font-bold text-slate-900"/>
+                    <input 
+                      type="number" 
+                      value={config.water_min_price === 0 ? '' : config.water_min_price} 
+                      onChange={e=>setConfig({...config, water_min_price: e.target.value})} 
+                      placeholder="0"
+                      className="w-full border-2 border-slate-300 p-2 rounded text-center font-bold text-slate-900"
+                    />
                 </div>
               </div>
             </div>
@@ -179,7 +239,7 @@ export default function Settings() {
             {methods.map(m => (
               <div key={m.id} className="flex justify-between items-center border-2 border-slate-200 p-4 rounded-xl">
                 <div className="flex items-center gap-4">
-                  <div className="w-12 h-12 bg-slate-100 rounded-lg flex items-center justify-center border overflow-hidden">
+                  <div className="w-12 h-12 bg-slate-100 rounded-lg flex items-center justify-center border overflow-hidden shrink-0">
                     {m.type === 'qr' && m.qr_url ? (
                         <img src={m.qr_url} className="w-full h-full object-cover" alt="QR" />
                     ) : (
@@ -193,9 +253,17 @@ export default function Settings() {
                     </div>
                   </div>
                 </div>
-                <button onClick={() => deleteMethod(m.id)} className="text-red-500 hover:bg-red-50 p-2 rounded-full">✕</button>
+                {/* Updated Delete Button passing QR URL */}
+                <button 
+                  onClick={() => deleteMethod(m.id, m.qr_url)} 
+                  className="text-red-500 hover:bg-red-50 p-2 rounded-full w-10 h-10 flex items-center justify-center font-bold"
+                  title="Delete"
+                >
+                  ✕
+                </button>
               </div>
             ))}
+            {methods.length === 0 && <div className="text-center text-gray-400 py-4">No payment methods added.</div>}
           </div>
 
           <div className="bg-blue-50 p-6 rounded-xl border-2 border-blue-100">
@@ -249,7 +317,7 @@ export default function Settings() {
                 </div>
               )}
 
-              <button onClick={addPaymentMethod} className="w-full py-3 bg-blue-600 text-white rounded-lg font-bold shadow hover:bg-blue-700">
+              <button onClick={addPaymentMethod} className="w-full py-3 bg-blue-600 text-white rounded-lg font-bold shadow hover:bg-blue-700 transition-colors">
                 Add Method
               </button>
             </div>
