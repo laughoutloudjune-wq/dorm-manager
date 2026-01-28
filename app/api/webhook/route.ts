@@ -1,12 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { Client } from '@line/bot-sdk';
-import { supabase } from '../../../lib/supabase';
+import { createClient } from '@supabase/supabase-js'; // <--- CHANGED THIS
 
-// Setup LINE Client
+// 1. Setup LINE Client
 const client = new Client({
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN || '',
   channelSecret: process.env.LINE_CHANNEL_SECRET,
 });
+
+// 2. Setup Supabase ADMIN Client (This fixes the permission error)
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!; // <--- MAKE SURE THIS IS IN .env
+const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
 export async function POST(req: NextRequest) {
   try {
@@ -18,25 +23,25 @@ export async function POST(req: NextRequest) {
       const replyToken = event.replyToken;
 
       // ============================================================
-      // SCENARIO 1: TEXT MESSAGES (Register OR Repair)
+      // SCENARIO 1: TEXT MESSAGES
       // ============================================================
       if (event.type === 'message' && event.message.type === 'text') {
         const text = event.message.text.trim();
         const parts = text.split(/\s+/);
 
-        // --- 1.A Register (Room + Name) ---
+        // Logic 1.A: Register (Room + Name)
         if (parts.length >= 2 && /^\d{3}\/[12]$/.test(parts[0])) {
           const inputRoom = parts[0];     
           const fullName = parts.slice(1).join(' '); 
 
+          // Check Room
           const { data: room } = await supabase.from('rooms').select('id').eq('room_number', inputRoom).single();
-          
           if (!room) {
             return client.replyMessage(replyToken, { type: 'text', text: `❌ ไม่พบห้อง ${inputRoom}` });
           }
 
+          // Register/Update Tenant
           const { data: existingTenant } = await supabase.from('tenants').select('id').eq('room_id', room.id).single();
-
           if (existingTenant) {
             await supabase.from('tenants').update({ line_user_id: userId, name: fullName, status: 'active' }).eq('id', existingTenant.id);
           } else {
@@ -47,7 +52,7 @@ export async function POST(req: NextRequest) {
           return client.replyMessage(replyToken, { type: 'text', text: `✅ ลงทะเบียนสำเร็จ!\nห้อง: ${inputRoom}\nชื่อ: ${fullName}` });
         }
         
-        // --- 1.B Fallback Helper ---
+        // Logic 1.B: Helper (Forgot Name)
         else if (/^\d{3}\/[12]$/.test(text)) {
            return client.replyMessage(replyToken, { type: 'text', text: `⚠️ กรุณาพิมพ์ชื่อต่อท้ายเลขห้อง\nตัวอย่าง: ${text} สมชาย` });
         }
@@ -78,7 +83,7 @@ export async function POST(req: NextRequest) {
           .select('id, month, year')
           .eq('room_id', tenant.room_id)
           .neq('payment_status', 'paid')
-          .neq('payment_status', 'verification_pending') // Optional: Don't overwrite if already sent?
+          .neq('payment_status', 'verification_pending')
           .order('year', { ascending: false }).order('month', { ascending: false })
           .limit(1)
           .single();
@@ -89,7 +94,9 @@ export async function POST(req: NextRequest) {
 
         // 3. Process Image
         try {
-          // Get image content from LINE
+          // Tell user we are working on it (Prevents "Silent Failure" feeling)
+          // Note: Ideally we don't reply twice, but for uploading it helps to know it started.
+          
           const messageId = event.message.id;
           const stream = await client.getMessageContent(messageId);
           const chunks: any[] = [];
@@ -100,13 +107,14 @@ export async function POST(req: NextRequest) {
           const safeRoomNum = roomNumber.replace('/', '-');
           const fileName = `${safeRoomNum}_${invoice.month}_${invoice.year}_${Date.now()}.jpg`;
           
+          // UPLOAD using the Service Key (The Fix)
           const { error: uploadError } = await supabase.storage
-            .from('slips') // <--- MAKE SURE THIS BUCKET EXISTS
+            .from('slips')
             .upload(fileName, buffer, { contentType: 'image/jpeg', upsert: true });
 
           if (uploadError) {
              console.error("Upload Failed:", uploadError);
-             return client.replyMessage(replyToken, { type: 'text', text: `❌ บันทึกรูปไม่สำเร็จ: ${uploadError.message}` });
+             return client.replyMessage(replyToken, { type: 'text', text: `❌ ระบบบันทึกรูปไม่ได้: ${uploadError.message}` });
           }
 
           // 4. Update Invoice Status
