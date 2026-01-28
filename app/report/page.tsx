@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from 'react';
 import { supabase } from '../../lib/supabase';
-import * as XLSX from 'xlsx'; // Make sure to run: npm install xlsx
 
 export default function Report() {
   const [data, setData] = useState<any[]>([]);
@@ -66,13 +65,6 @@ export default function Report() {
     setTotals(t);
   };
 
-  const exportExcel = () => {
-    const ws = XLSX.utils.json_to_sheet(data);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Monthly Report");
-    XLSX.writeFile(wb, `Report_${month}_${year}.xlsx`);
-  };
-
   return (
     <div className="p-8 bg-gray-50 min-h-screen">
       <div className="flex justify-between items-center mb-6">
@@ -85,9 +77,6 @@ export default function Report() {
              <option value={2026}>2026</option>
              <option value={2027}>2027</option>
           </select>
-          <button onClick={exportExcel} className="bg-green-600 text-white px-4 py-2 rounded font-bold hover:bg-green-700">
-            Export Excel
-          </button>
         </div>
       </div>
 

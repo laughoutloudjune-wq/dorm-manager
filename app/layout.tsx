@@ -1,9 +1,15 @@
 import './globals.css';
-import { Inter } from 'next/font/google';
+import { Sarabun } from 'next/font/google';
 import Link from 'next/link';
 import { ReactNode } from 'react';
 
-const inter = Inter({ subsets: ['latin'] });
+// 1. Configure Sarabun font
+const sarabun = Sarabun({
+  weight: ['400', '500', '700'],
+  subsets: ['thai', 'latin'],
+  variable: '--font-sarabun',
+  display: 'swap',
+});
 
 export const metadata = {
   title: 'Dorm Manager',
@@ -24,10 +30,11 @@ const NavItem = ({ href, icon, label }: { href: string; icon: string; label: str
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
-      <body className={inter.className}>
-        <div className="flex min-h-screen bg-gray-100">
+      {/* 2. Apply the font variable here */}
+      <body className={`${sarabun.variable} antialiased`}>
+        <div className="flex min-h-screen bg-gray-100 font-sans">
           
-          {/* Sidebar */}
+          {/* Sidebar (Restored) */}
           <aside className="w-64 bg-slate-900 text-white flex flex-col shadow-xl">
             <div className="p-6 border-b border-slate-800">
               <h1 className="text-2xl font-extrabold tracking-tight">🏢 DormManager</h1>

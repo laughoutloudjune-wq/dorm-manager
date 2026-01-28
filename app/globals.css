@@ -8,7 +8,10 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
+  
+  /* CHANGE THIS LINE: Map the default font to your new variable */
+  --font-sans: var(--font-sarabun), sans-serif;
+  
   --font-mono: var(--font-geist-mono);
 }
 
