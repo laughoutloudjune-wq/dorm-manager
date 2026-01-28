@@ -1,9 +1,9 @@
 import './globals.css';
-import { Sarabun } from 'next/font/google'; //
+import { Sarabun } from 'next/font/google';
 import Link from 'next/link';
 import { ReactNode } from 'react';
 
-// 1. Configure Sarabun font (Use all common weights)
+// 1. Configure Sarabun font
 const sarabun = Sarabun({
   weight: ['300', '400', '500', '600', '700'],
   subsets: ['thai', 'latin'],
@@ -29,7 +29,7 @@ const NavItem = ({ href, icon, label }: { href: string; icon: string; label: str
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
-      {/* 2. Apply sarabun.className directly to body */}
+      {/* 2. Apply sarabun.className directly to body (Fixes Vercel Font Issue) */}
       <body className={sarabun.className}>
         
         {/* 3. REMOVED "font-sans" from this div so it inherits Sarabun */}

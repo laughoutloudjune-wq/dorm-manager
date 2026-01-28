@@ -33,7 +33,8 @@ export default function InvoiceTemplate({ data, settings, onClose }: any) {
       {/* A4 PAPER SHEET */}
       <div 
         id="invoice-preview" 
-        className="bg-white w-full max-w-[210mm] min-h-[297mm] p-10 md:p-16 shadow-2xl relative text-slate-900 font-sans leading-relaxed origin-top transform scale-90 md:scale-100"
+        // REMOVED "font-sans" here so it uses the Thai font
+        className="bg-white w-full max-w-[210mm] min-h-[297mm] p-10 md:p-16 shadow-2xl relative text-slate-900 leading-relaxed origin-top transform scale-90 md:scale-100"
       >
         
         {/* --- HEADER --- */}
