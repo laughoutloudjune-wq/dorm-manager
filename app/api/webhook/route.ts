@@ -1,91 +1,99 @@
-import { NextResponse } from 'next/server';
-import * as line from '@line/bot-sdk';
-import { createClient } from '@supabase/supabase-js';
+import { NextRequest, NextResponse } from 'next/server';
+import { Client } from '@line/bot-sdk';
+import { supabase } from '../../../lib/supabase';
 
-// 1. Setup LINE Config
-const lineConfig = {
-  channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN!,
-  channelSecret: process.env.LINE_CHANNEL_SECRET!,
-};
-const client = new line.Client(lineConfig);
+const client = new Client({
+  channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN || '',
+  channelSecret: process.env.LINE_CHANNEL_SECRET,
+});
 
-// 2. Setup Supabase Config
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!; // Use Service Role Key for backend writes
-const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const events = body.events;
 
-    // Process all events (usually just one)
-    for (const event of events) {
+    await Promise.all(events.map(async (event: any) => {
+      const userId = event.source.userId;
+
       if (event.type === 'message' && event.message.type === 'text') {
-        await handleTextMessage(event);
+        const text = event.message.text.trim();
+        const parts = text.split(/\s+/); // Split by spaces
+
+        // ============================================================
+        // LOGIC: REGISTER (Format: Room + Name)
+        // Check if 1st part looks like "101/1"
+        // ============================================================
+        if (parts.length >= 2 && /^\d{3}\/[12]$/.test(parts[0])) {
+          const inputRoom = parts[0];     // "101/1"
+          // Join the rest of the words as the name (e.g. "Somchai Jai Dee")
+          const fullName = parts.slice(1).join(' '); 
+
+          // 1. Find the Room ID
+          const { data: room } = await supabase.from('rooms').select('id').eq('room_number', inputRoom).single();
+          
+          if (!room) {
+            return client.replyMessage(event.replyToken, { type: 'text', text: `❌ ไม่พบห้อง ${inputRoom} ในระบบ` });
+          }
+
+          // 2. CHECK if tenant exists (Crucial Step!)
+          const { data: existingTenant } = await supabase
+            .from('tenants')
+            .select('id')
+            .eq('room_id', room.id)
+            .single();
+
+          if (existingTenant) {
+            // CASE A: Tenant exists -> UPDATE info
+            await supabase.from('tenants').update({ 
+              line_user_id: userId, 
+              name: fullName, 
+              status: 'active' 
+            }).eq('id', existingTenant.id);
+          } else {
+            // CASE B: No tenant -> INSERT new row
+            await supabase.from('tenants').insert({ 
+              room_id: room.id, 
+              line_user_id: userId, 
+              name: fullName, 
+              status: 'active' 
+            });
+          }
+
+          // 3. Mark Room as Occupied
+          await supabase.from('rooms').update({ status: 'occupied' }).eq('id', room.id);
+
+          return client.replyMessage(event.replyToken, { 
+            type: 'text', 
+            text: `✅ ลงทะเบียนสำเร็จ!\n\nห้อง: ${inputRoom}\nชื่อ: ${fullName}\n\nเมื่อชำระเงินสามารถส่งสลิปเข้ามาได้เลยครับ` 
+          });
+        }
+        
+        // ============================================================
+        // LOGIC: FALLBACK (If they typed ONLY "101/1" without name)
+        // ============================================================
+        else if (/^\d{3}\/[12]$/.test(text)) {
+           return client.replyMessage(event.replyToken, { 
+              type: 'text', 
+              text: `⚠️ กรุณาพิมพ์ชื่อต่อท้ายเลขห้องด้วยครับ\n\nตัวอย่าง:\n${text} สมชาย ใจดี` 
+            });
+        }
+
+        // ============================================================
+        // LOGIC: MAINTENANCE (Repair/Fix)
+        // ============================================================
+        else if (text.match(/^(repair|fix|ซ่อม|แจ้ง|ปัญหา)/i)) {
+          // ... (Keep your existing repair logic here) ...
+          // I can include it if you need the full file again
+        }
       }
-    }
+      
+      // ... (Keep your existing Image/Payment logic here) ...
 
-    return NextResponse.json({ status: 'ok' });
+    }));
+
+    return NextResponse.json({ status: 'success' });
   } catch (error) {
-    console.error('Error in webhook:', error);
+    console.error("Error:", error);
     return NextResponse.json({ status: 'error' }, { status: 500 });
-  }
-}
-
-// --- MAIN LOGIC ---
-async function handleTextMessage(event: any) {
-  const text = event.message.text.trim();
-  const userId = event.source.userId;
-  const replyToken = event.replyToken;
-
-  // 1. Split the text by spaces (handling multiple spaces if user makes a mistake)
-  // Example Input: "101/1  สมชาย   หนึ่ง" -> ["101/1", "สมชาย", "หนึ่ง"]
-  const parts = text.split(/\s+/);
-
-  // 2. Check if it matches the format: [Room] [First] [Last]
-  // We require at least 3 parts to avoid false positives with normal chat
-  if (parts.length >= 3) {
-    const inputRoom = parts[0];     // "101/1"
-    const firstName = parts[1];     // "สมชาย"
-    const lastName = parts[2];      // "หนึ่ง" (or combine more parts if needed)
-    const fullName = `${firstName} ${lastName}`;
-
-    // 3. Try to Register in Supabase
-    // Logic: Find the room -> Update tenant info -> Return the updated row
-    const { data, error } = await supabase
-      .from('tenants')
-      .update({
-        line_user_id: userId,   // Link their LINE ID
-        name: fullName,         // Update their name
-        // status: 'occupied'   // Optional: Mark room as occupied if needed
-      })
-      .eq('room_number', inputRoom) // MUST match a room in your database
-      .select();
-
-    // 4. If Supabase found the room and updated it:
-    if (data && data.length > 0) {
-      // Success! Reply to the user
-      await client.replyMessage(replyToken, {
-        type: 'text',
-        text: `✅ ลงทะเบียนเรียบร้อยครับ\n\nห้อง: ${inputRoom}\nชื่อ: ${fullName}\n\nเมื่อชำระเงินสามารถส่งสลิปเข้ามาได้เลยครับ`
-      });
-      return; // Stop here so we don't trigger other bot logic
-    }
-    
-    if (error) {
-        console.error("Supabase Error:", error);
-    }
-  }
-
-  // --- (Optional) Handle Other Messages Here ---
-  // If the code reaches here, it means the text was NOT a valid registration
-  // You can add logic here to reply to "Help" or just ignore
-  
-  if (text === 'help' || text === 'ช่วยเหลือ') {
-      await client.replyMessage(replyToken, {
-        type: 'text',
-        text: "พิมพ์เลขห้องและชื่อเพื่อลงทะเบียน\nตัวอย่าง: 101/1 สมชาย ใจดี"
-      });
   }
 }
