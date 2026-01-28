@@ -5,9 +5,8 @@ import { ReactNode } from 'react';
 
 // 1. Configure Sarabun font
 const sarabun = Sarabun({
-  weight: ['400', '500', '700'],
+  weight: ['300', '400', '500', '600', '700'],
   subsets: ['thai', 'latin'],
-  variable: '--font-sarabun',
   display: 'swap',
 });
 
@@ -16,7 +15,7 @@ export const metadata = {
   description: 'Apartment Management System',
 };
 
-// Simple Nav Item Component
+// Nav Item Component
 const NavItem = ({ href, icon, label }: { href: string; icon: string; label: string }) => (
   <Link 
     href={href} 
@@ -30,12 +29,12 @@ const NavItem = ({ href, icon, label }: { href: string; icon: string; label: str
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
-      {/* 2. Apply the font variable here */}
-      <body className={`${sarabun.variable} antialiased`}>
-        <div className="flex min-h-screen bg-gray-100 font-sans">
+      {/* 2. Apply font class directly to body (Fixes Vercel Font Issue) */}
+      <body className={`${sarabun.className} antialiased`}>
+        <div className="flex min-h-screen bg-gray-50 font-sans">
           
-          {/* Sidebar (Restored) */}
-          <aside className="w-64 bg-slate-900 text-white flex flex-col shadow-xl">
+          {/* 3. SIDEBAR (Inline - No Import needed) */}
+          <aside className="w-64 bg-slate-900 text-white flex flex-col shadow-xl no-print shrink-0">
             <div className="p-6 border-b border-slate-800">
               <h1 className="text-2xl font-extrabold tracking-tight">🏢 DormManager</h1>
               <p className="text-xs text-slate-400 mt-1">Admin Dashboard</p>
@@ -57,7 +56,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           </aside>
 
           {/* Main Content */}
-          <main className="flex-1 overflow-auto">
+          <main className="flex-1 overflow-auto h-screen">
             {children}
           </main>
           
