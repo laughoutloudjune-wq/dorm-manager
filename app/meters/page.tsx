@@ -3,40 +3,68 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 
+const MONTHS = [
+  "January", "February", "March", "April", "May", "June", 
+  "July", "August", "September", "October", "November", "December"
+];
+
 export default function Meters() {
   const [rooms, setRooms] = useState<any[]>([]);
   const [readings, setReadings] = useState<Record<string, any>>({});
   const [prevReadings, setPrevReadings] = useState<Record<string, any>>({});
-  const [selectedBuilding, setSelectedBuilding] = useState('1');
+  
+  // 1. Month/Year Selection State
+  const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth() + 1);
+  const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
+  
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => { fetchData(); }, []);
+  // Fetch data whenever Month/Year changes
+  useEffect(() => { fetchData(); }, [selectedMonth, selectedYear]);
 
   const fetchData = async () => {
-    // 1. Get Rooms
+    // A. Get Rooms
     const { data: roomData } = await supabase.from('rooms').select('*').order('room_number');
     
-    // 2. Get LAST Month's readings (Simple logic: just get the latest reading for each room)
-    // Note: In a real app with years of data, you'd filter by month-1. 
-    // Here we just fetch all to find the latest easily.
-    const { data: meterData } = await supabase.from('meter_readings').select('*').order('created_at', { ascending: false });
+    // B. Calculate "Previous" Month
+    let prevM = selectedMonth - 1;
+    let prevY = selectedYear;
+    if (prevM === 0) { prevM = 12; prevY = selectedYear - 1; }
 
-    // Map previous readings
+    // C. Fetch PREVIOUS Readings (The Baseline)
+    const { data: prevData } = await supabase.from('meter_readings')
+        .select('*')
+        .eq('month', prevM)
+        .eq('year', prevY);
+
+    // D. Fetch CURRENT Readings (To populate inputs if editing)
+    const { data: currData } = await supabase.from('meter_readings')
+        .select('*')
+        .eq('month', selectedMonth)
+        .eq('year', selectedYear);
+
+    // Map Previous Data
     const prevMap: Record<string, any> = {};
-    if (meterData) {
-      roomData?.forEach(room => {
-        // Find latest electric
-        const lastElec = meterData.find(m => m.room_id === room.id && m.type === 'electric');
-        // Find latest water
-        const lastWater = meterData.find(m => m.room_id === room.id && m.type === 'water');
-        
-        prevMap[room.id] = {
-          electric: lastElec?.current_value || 0,
-          water: lastWater?.current_value || 0
-        };
-      });
+    if (prevData) {
+        prevData.forEach(m => {
+            if (!prevMap[m.room_id]) prevMap[m.room_id] = { electric: 0, water: 0 };
+            if (m.type === 'electric') prevMap[m.room_id].electric = m.current_value;
+            if (m.type === 'water') prevMap[m.room_id].water = m.current_value;
+        });
     }
+
+    // Map Current Data (So inputs show saved values)
+    const currMap: Record<string, any> = {};
+    if (currData) {
+        currData.forEach(m => {
+            if (!currMap[m.room_id]) currMap[m.room_id] = {};
+            if (m.type === 'electric') currMap[m.room_id].electric = m.current_value;
+            if (m.type === 'water') currMap[m.room_id].water = m.current_value;
+        });
+    }
+
     setPrevReadings(prevMap);
+    setReadings(currMap);
     setRooms(roomData || []);
   };
 
@@ -49,14 +77,31 @@ export default function Meters() {
 
   const saveReadings = async () => {
     setSaving(true);
-    const month = new Date().getMonth() + 1;
-    const year = new Date().getFullYear();
     const inserts = [];
 
     for (const roomId in readings) {
       const r = readings[roomId];
-      if (r.electric) inserts.push({ room_id: roomId, type: 'electric', current_value: Number(r.electric), month, year });
-      if (r.water) inserts.push({ room_id: roomId, type: 'water', current_value: Number(r.water), month, year });
+      
+      // Process Electric
+      if (r.electric !== undefined && r.electric !== "") {
+          // Delete old entry for this month to avoid duplicates (Simple Upsert)
+          await supabase.from('meter_readings').delete().match({ 
+              room_id: roomId, month: selectedMonth, year: selectedYear, type: 'electric' 
+          });
+          inserts.push({ 
+              room_id: roomId, type: 'electric', current_value: Number(r.electric), month: selectedMonth, year: selectedYear 
+          });
+      }
+
+      // Process Water
+      if (r.water !== undefined && r.water !== "") {
+          await supabase.from('meter_readings').delete().match({ 
+              room_id: roomId, month: selectedMonth, year: selectedYear, type: 'water' 
+          });
+          inserts.push({ 
+              room_id: roomId, type: 'water', current_value: Number(r.water), month: selectedMonth, year: selectedYear 
+          });
+      }
     }
 
     if (inserts.length > 0) {
@@ -64,93 +109,110 @@ export default function Meters() {
       if (error) alert('Error: ' + error.message);
       else {
         alert('✅ Saved successfully!');
-        setReadings({}); // Clear inputs
-        fetchData(); // Refresh to update "Previous"
+        fetchData(); 
       }
     }
     setSaving(false);
   };
 
-  // Filter View
-  const filteredRooms = rooms.filter(r => r.room_number.endsWith(`/${selectedBuilding}`));
+  // Split rooms into 2 Buildings
+  const roomsB1 = rooms.filter(r => r.room_number.endsWith('/1'));
+  const roomsB2 = rooms.filter(r => r.room_number.endsWith('/2'));
+
+  const MeterTable = ({ title, roomList }: any) => (
+    <div className="bg-white rounded-xl shadow border border-gray-200 overflow-hidden">
+      <div className="bg-slate-900 text-white p-3 font-bold text-center uppercase tracking-widest">{title}</div>
+      <table className="w-full text-left">
+        <thead className="bg-gray-100 text-xs font-bold text-gray-500 uppercase">
+          <tr>
+            <th className="p-2 text-center">Room</th>
+            <th className="p-2 text-right">Prev</th>
+            <th className="p-2 w-24">Elec</th>
+            <th className="p-2 text-right">Prev</th>
+            <th className="p-2 w-24">Water</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-100 text-sm">
+          {roomList.map((room: any) => {
+             const prev = prevReadings[room.id] || { electric: 0, water: 0 };
+             const curr = readings[room.id] || {};
+             
+             // Visual Usage Calc
+             const elecUsage = (curr.electric && prev.electric) ? curr.electric - prev.electric : 0;
+             const waterUsage = (curr.water && prev.water) ? curr.water - prev.water : 0;
+
+             return (
+              <tr key={room.id} className="hover:bg-gray-50">
+                <td className="p-2 text-center font-black text-slate-800">{room.room_number}</td>
+                
+                {/* ELECTRICITY */}
+                <td className="p-2 text-right text-gray-400 font-mono">{prev.electric || '-'}</td>
+                <td className="p-2 relative">
+                    <input 
+                        type="number" 
+                        value={curr.electric || ''} // <--- Controlled Input Fixed
+                        placeholder="0" 
+                        className="w-full border-2 border-yellow-200 focus:border-yellow-500 rounded p-1 font-bold text-slate-900 text-center outline-none" 
+                        onChange={(e) => handleInput(room.id, 'electric', e.target.value)} 
+                    />
+                    {elecUsage > 0 && <span className="absolute right-1 top-1 text-[10px] text-green-600 font-bold">+{elecUsage}</span>}
+                </td>
+
+                {/* WATER */}
+                <td className="p-2 text-right text-gray-400 font-mono">{prev.water || '-'}</td>
+                <td className="p-2 relative">
+                    <input 
+                        type="number" 
+                        value={curr.water || ''} // <--- Controlled Input Fixed
+                        placeholder="0" 
+                        className="w-full border-2 border-blue-200 focus:border-blue-500 rounded p-1 font-bold text-slate-900 text-center outline-none" 
+                        onChange={(e) => handleInput(room.id, 'water', e.target.value)} 
+                    />
+                    {waterUsage > 0 && <span className="absolute right-1 top-1 text-[10px] text-green-600 font-bold">+{waterUsage}</span>}
+                </td>
+              </tr>
+             );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
 
   return (
-    <div className="p-8 bg-gray-50 min-h-screen">
+    <div className="p-6 bg-gray-50 min-h-screen">
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-3xl font-extrabold text-slate-900">⚡ Meter Readings</h1>
         
         <div className="flex gap-4">
-           {/* Building Toggle */}
-          <div className="bg-white p-1 rounded-lg border flex shadow-sm">
-            <button onClick={() => setSelectedBuilding('1')} className={`px-4 py-2 rounded font-bold ${selectedBuilding === '1' ? 'bg-slate-900 text-white' : 'text-gray-500 hover:bg-gray-50'}`}>Bldg 1</button>
-            <button onClick={() => setSelectedBuilding('2')} className={`px-4 py-2 rounded font-bold ${selectedBuilding === '2' ? 'bg-slate-900 text-white' : 'text-gray-500 hover:bg-gray-50'}`}>Bldg 2</button>
-          </div>
+           {/* MONTH SELECTOR */}
+           <select 
+             value={selectedMonth} 
+             onChange={e => setSelectedMonth(Number(e.target.value))} 
+             className="bg-white border-2 border-slate-200 p-2 rounded-lg font-bold text-slate-700"
+           >
+             {MONTHS.map((m, i) => <option key={i} value={i+1}>{m}</option>)}
+           </select>
 
-          <button onClick={saveReadings} disabled={saving} className="bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded-lg font-bold shadow-md transition-all">
-            {saving ? 'Saving...' : '💾 Save All'}
-          </button>
+           {/* YEAR SELECTOR */}
+           <select 
+             value={selectedYear} 
+             onChange={e => setSelectedYear(Number(e.target.value))} 
+             className="bg-white border-2 border-slate-200 p-2 rounded-lg font-bold text-slate-700"
+           >
+             <option value={2025}>2025</option>
+             <option value={2026}>2026</option>
+             <option value={2027}>2027</option>
+           </select>
+
+           <button onClick={saveReadings} disabled={saving} className="bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded-lg font-bold shadow-lg transition-transform hover:scale-105">
+             {saving ? 'Saving...' : '💾 Save All'}
+           </button>
         </div>
       </div>
 
-      <div className="bg-white rounded-xl shadow border border-gray-200 overflow-hidden">
-        <table className="w-full text-left">
-          <thead className="bg-slate-900 text-white text-sm uppercase font-bold tracking-wider">
-            <tr>
-              <th className="p-4 w-24">Room</th>
-              <th className="p-4 bg-yellow-900/30 text-yellow-100 border-l border-white/10 text-right">Prev Elec</th>
-              <th className="p-4 bg-yellow-900/30 text-yellow-100 w-32">Curr Elec</th>
-              <th className="p-4 bg-blue-900/30 text-blue-100 border-l border-white/10 text-right">Prev Water</th>
-              <th className="p-4 bg-blue-900/30 text-blue-100 w-32">Curr Water</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100">
-            {filteredRooms.map(room => {
-              const prev = prevReadings[room.id] || { electric: 0, water: 0 };
-              const curr = readings[room.id] || {};
-              
-              // Calc Usage for Preview
-              const elecUsage = curr.electric ? (curr.electric - prev.electric) : 0;
-              const waterUsage = curr.water ? (curr.water - prev.water) : 0;
-
-              return (
-                <tr key={room.id} className="hover:bg-gray-50 transition-colors">
-                  <td className="p-4 font-black text-slate-800 text-lg">{room.room_number}</td>
-                  
-                  {/* ELECTRICITY */}
-                  <td className="p-4 text-right text-slate-500 font-mono text-lg border-l">{prev.electric}</td>
-                  <td className="p-4 relative">
-                    <input 
-                      type="number" 
-                      placeholder={prev.electric}
-                      className="w-full border-2 border-gray-300 focus:border-yellow-500 rounded-lg p-2 font-mono text-lg font-bold text-slate-900 outline-none"
-                      onChange={(e) => handleInput(room.id, 'electric', e.target.value)}
-                    />
-                    {elecUsage > 0 && (
-                      <span className="absolute right-6 top-1/2 -translate-y-1/2 text-xs font-bold text-green-600">+{elecUsage}</span>
-                    )}
-                    {elecUsage < 0 && curr.electric && (
-                      <span className="absolute right-6 top-1/2 -translate-y-1/2 text-xs font-bold text-red-500">⚠ Low</span>
-                    )}
-                  </td>
-
-                  {/* WATER */}
-                  <td className="p-4 text-right text-slate-500 font-mono text-lg border-l">{prev.water}</td>
-                  <td className="p-4 relative">
-                    <input 
-                      type="number" 
-                      placeholder={prev.water}
-                      className="w-full border-2 border-gray-300 focus:border-blue-500 rounded-lg p-2 font-mono text-lg font-bold text-slate-900 outline-none"
-                      onChange={(e) => handleInput(room.id, 'water', e.target.value)}
-                    />
-                    {waterUsage > 0 && (
-                      <span className="absolute right-6 top-1/2 -translate-y-1/2 text-xs font-bold text-green-600">+{waterUsage}</span>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+         <MeterTable title="Building 1" roomList={roomsB1} />
+         <MeterTable title="Building 2" roomList={roomsB2} />
       </div>
     </div>
   );
