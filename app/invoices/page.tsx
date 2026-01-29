@@ -13,6 +13,7 @@ export default function Invoices() {
   const [editingInvoice, setEditingInvoice] = useState<any>(null);
   const [viewingSlip, setViewingSlip] = useState<string | null>(null);
   const [previewData, setPreviewData] = useState<any>(null);
+  const [sendingId, setSendingId] = useState<string | null>(null);
   
   // Payment Confirmation Modal
   const [confirmingPayment, setConfirmingPayment] = useState<any>(null);
@@ -137,6 +138,61 @@ export default function Invoices() {
     }
   };
 
+  // --- RESTORED: SEND TO LINE FUNCTION ---
+  const sendToLine = async (inv: any, e: any) => {
+    e.stopPropagation();
+    if (!confirm(`Confirm send invoice for Room ${inv.rooms?.room_number} to LINE?`)) return;
+
+    setSendingId(inv.id);
+
+    try {
+        // 1. Check Tenant LINE ID
+        const { data: tenant } = await supabase
+            .from('tenants')
+            .select('line_user_id, name')
+            .eq('room_id', inv.room_id)
+            .eq('status', 'active')
+            .single();
+        
+        if (!tenant || !tenant.line_user_id) {
+            alert("❌ Tenant has not connected LINE account.");
+            setSendingId(null);
+            return;
+        }
+
+        // 2. Call API
+        const res = await fetch('/api/send-invoice', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                userId: tenant.line_user_id,
+                roomId: inv.room_id,
+                roomNumber: inv.rooms?.room_number,
+                month: inv.month,
+                year: inv.year,
+                rent: inv.rent_cost,
+                waterUnit: inv.water_units,
+                waterPrice: inv.water_cost,
+                elecUnit: inv.electric_units,
+                elecPrice: inv.electric_cost,
+                total: inv.total_amount
+            })
+        });
+
+        const result = await res.json();
+        if (result.success) {
+            alert("✅ Invoice sent successfully!");
+        } else {
+            alert("❌ Failed: " + result.error);
+        }
+
+    } catch (err: any) {
+        alert("❌ Error: " + err.message);
+    } finally {
+        setSendingId(null);
+    }
+  };
+
   const requestApprove = (inv: any, e: any) => {
     e.stopPropagation();
     setConfirmingPayment(inv);
@@ -227,12 +283,22 @@ export default function Invoices() {
                 <td className="p-4 text-slate-600 font-bold">{inv.month}/{inv.year}</td>
                 <td className="p-4 text-right font-mono font-black text-slate-900 text-xl">{inv.total_amount.toLocaleString()} ฿</td>
                 <td className="p-4 text-center">{inv.slip_url ? <button onClick={(e) => openSlip(inv.slip_url, e)} className="text-blue-600 font-bold underline">View</button> : '-'}</td>
+                
+                {/* ACTIONS */}
                 <td className="p-4 text-right">
                    <div className="flex justify-end gap-2">
-                     {inv.payment_status !== 'paid' && <button onClick={(e)=>requestApprove(inv, e)} className="bg-green-50 text-green-700 px-3 py-1.5 rounded border border-green-200 font-bold text-xs">✅ Approve</button>}
-                     {inv.payment_status === 'paid' && <button onClick={(e)=>handlePreview(inv, 'RECEIPT', e)} className="bg-green-600 text-white px-3 py-1.5 rounded border border-green-700 font-bold text-xs">🧾 Receipt</button>}
-                     <button onClick={(e)=>handlePreview(inv, 'INVOICE', e)} className="bg-white text-slate-700 px-3 py-1.5 rounded border border-gray-300 font-bold text-xs">📄 PDF</button>
-                     <button onClick={(e)=>deleteInvoice(inv.id, e)} className="bg-white text-red-600 px-3 py-1.5 rounded border border-red-200 font-bold text-xs">🗑️</button>
+                     {/* RESTORED: SEND LINE BUTTON */}
+                     <button onClick={(e) => sendToLine(inv, e)} disabled={sendingId === inv.id} className="bg-green-50 text-green-700 px-3 py-1.5 rounded border border-green-200 font-bold text-xs hover:bg-green-100 transition-colors">
+                        {sendingId === inv.id ? 'Sending...' : '💬 LINE'}
+                     </button>
+
+                     {inv.payment_status !== 'paid' && <button onClick={(e)=>requestApprove(inv, e)} className="bg-blue-50 text-blue-700 px-3 py-1.5 rounded border border-blue-200 font-bold text-xs hover:bg-blue-100">✅ Approve</button>}
+                     
+                     {inv.payment_status === 'paid' && <button onClick={(e)=>handlePreview(inv, 'RECEIPT', e)} className="bg-green-600 text-white px-3 py-1.5 rounded border border-green-700 font-bold text-xs hover:bg-green-700">🧾 Receipt</button>}
+                     
+                     <button onClick={(e)=>handlePreview(inv, 'INVOICE', e)} className="bg-white text-slate-700 px-3 py-1.5 rounded border border-gray-300 font-bold text-xs hover:bg-gray-50">📄 PDF</button>
+                     
+                     <button onClick={(e)=>deleteInvoice(inv.id, e)} className="bg-white text-red-600 px-3 py-1.5 rounded border border-red-200 font-bold text-xs hover:bg-red-50">🗑️</button>
                    </div>
                 </td>
               </tr>
