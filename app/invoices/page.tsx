@@ -13,13 +13,17 @@ export default function Invoices() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isBulkSending, setIsBulkSending] = useState(false);
 
+  // Generation Progress
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [genProgress, setGenProgress] = useState(0);
+
   // Modals
   const [editingInvoice, setEditingInvoice] = useState<any>(null);
   const [viewingSlip, setViewingSlip] = useState<string | null>(null);
   const [previewData, setPreviewData] = useState<any>(null);
   const [sendingId, setSendingId] = useState<string | null>(null);
   
-  // Payment Confirmation Modal
+  // Payment Confirmation
   const [confirmingPayment, setConfirmingPayment] = useState<any>(null);
   const [paymentDate, setPaymentDate] = useState(new Date().toISOString().split('T')[0]);
 
@@ -31,9 +35,8 @@ export default function Invoices() {
 
   const fetchInvoices = async () => {
     setLoading(true);
-    setSelectedIds(new Set()); // Clear selection on refresh
+    setSelectedIds(new Set()); 
     
-    // FIXED: Removed 'tenants' join to prevent database error
     const { data } = await supabase
       .from('invoices')
       .select('*, rooms(room_number)')
@@ -41,7 +44,6 @@ export default function Invoices() {
       .eq('year', selectedYear)
       .order('created_at', { ascending: false });
 
-    // Sort by Room Number
     const sortedData = (data || []).sort((a: any, b: any) => 
       (a.rooms?.room_number || '').localeCompare(b.rooms?.room_number || '', undefined, { numeric: true })
     );
@@ -49,7 +51,7 @@ export default function Invoices() {
     setLoading(false);
   };
 
-  // --- GROUPING LOGIC ---
+  // --- GROUPING ---
   const getBuilding = (roomNumber: string) => {
       if (!roomNumber) return 'Other';
       if (roomNumber.endsWith('/1')) return 'Building 1';
@@ -64,7 +66,7 @@ export default function Invoices() {
       return groups;
   }, {});
 
-  // --- SELECTION LOGIC ---
+  // --- SELECTION ---
   const toggleSelect = (id: string) => {
       const newSet = new Set(selectedIds);
       if (newSet.has(id)) newSet.delete(id);
@@ -75,52 +77,37 @@ export default function Invoices() {
   const toggleSelectGroup = (groupInvoices: any[]) => {
       const groupIds = groupInvoices.map(i => i.id);
       const allSelected = groupIds.every(id => selectedIds.has(id));
-      
       const newSet = new Set(selectedIds);
-      if (allSelected) {
-          groupIds.forEach(id => newSet.delete(id)); // Deselect all
-      } else {
-          groupIds.forEach(id => newSet.add(id)); // Select all
-      }
+      if (allSelected) groupIds.forEach(id => newSet.delete(id));
+      else groupIds.forEach(id => newSet.add(id));
       setSelectedIds(newSet);
   };
 
   // --- BULK ACTIONS ---
   const bulkDelete = async () => {
       if (!confirm(`⚠️ Delete ${selectedIds.size} selected invoices?`)) return;
-      
-      const { error } = await supabase.from('invoices').delete().in('id', Array.from(selectedIds));
-      if (error) alert("Error deleting: " + error.message);
-      else {
-          fetchInvoices();
-      }
+      await supabase.from('invoices').delete().in('id', Array.from(selectedIds));
+      fetchInvoices();
   };
 
   const bulkSendLine = async () => {
       if (!confirm(`Confirm send ${selectedIds.size} invoices to LINE?`)) return;
       setIsBulkSending(true);
-
       let sentCount = 0;
       let skippedCount = 0;
       let failCount = 0;
-
       const idsToProcess = Array.from(selectedIds);
-
-      // Fetch all active tenants once to optimize performance
       const { data: activeTenants } = await supabase.from('tenants').select('room_id, line_user_id').eq('status', 'active');
 
       for (const id of idsToProcess) {
           const inv = invoices.find(i => i.id === id);
           if (!inv) continue;
-
-          // Find tenant for this invoice's room
           const tenant = activeTenants?.find(t => t.room_id === inv.room_id);
 
           if (!tenant || !tenant.line_user_id) {
               skippedCount++;
               continue;
           }
-
           try {
               const res = await fetch('/api/send-invoice', {
                   method: 'POST',
@@ -136,24 +123,19 @@ export default function Invoices() {
                       waterPrice: inv.water_cost,
                       elecUnit: inv.electric_units,
                       elecPrice: inv.electric_cost,
+                      commonFee: inv.common_fee || 0,
                       total: inv.total_amount
                   })
               });
-              
               const result = await res.json();
-              if (result.success) sentCount++;
-              else failCount++;
-
-          } catch (err) {
-              failCount++;
-          }
+              if (result.success) sentCount++; else failCount++;
+          } catch (err) { failCount++; }
       }
-
       setIsBulkSending(false);
       alert(`✅ Bulk Send Complete!\n\nSent: ${sentCount}\nSkipped (No LINE): ${skippedCount}\nFailed: ${failCount}`);
   };
 
-  // --- GENERATE BILLS ---
+  // --- GENERATE BILLS (OPTIMIZED WITH PROGRESS) ---
   const generateBills = async () => {
     const { data: settings } = await supabase.from('settings').select('*').single();
     if (!settings) return alert("Please configure settings first");
@@ -164,43 +146,54 @@ export default function Invoices() {
     const { count } = await supabase.from('invoices').select('*', { count: 'exact', head: true }).eq('month', selectedMonth).eq('year', selectedYear);
     if (count && count > 0 && !confirm(`Warning: ${count} bills already exist. Generate missing?`)) return;
 
+    // START PROGRESS
+    setIsGenerating(true);
+    setGenProgress(10); // Initializing
+
     // A. Current Readings
     const { data: currentReadings } = await supabase.from('meter_readings').select('*').eq('month', selectedMonth).eq('year', selectedYear);
-    if (!currentReadings?.length) return alert(`No meter readings found for ${selectedMonth}/${selectedYear}`);
+    if (!currentReadings?.length) {
+        setIsGenerating(false);
+        return alert(`No meter readings found for ${selectedMonth}/${selectedYear}`);
+    }
+    setGenProgress(30); // Fetched Current
 
-    // B. Previous Readings (Last Month)
+    // B. Previous Readings
     let prevM = selectedMonth - 1;
     let prevY = selectedYear;
     if (prevM === 0) { prevM = 12; prevY = selectedYear - 1; }
-
     const { data: previousReadings } = await supabase.from('meter_readings').select('*').eq('month', prevM).eq('year', prevY);
-    
-    // C. Tenant Initial Readings
+    setGenProgress(50); // Fetched Previous
+
+    // C. Tenants & Existing Invoices (Optimization: Fetch ALL existing IDs first)
     const { data: tenants } = await supabase.from('tenants').select('*').eq('status', 'active');
+    const { data: existingInvoices } = await supabase.from('invoices').select('room_id').eq('month', selectedMonth).eq('year', selectedYear);
+    const existingRoomIds = new Set(existingInvoices?.map(i => i.room_id));
+    
+    setGenProgress(70); // Fetched Tenants
 
     const newInvoices = [];
     
     for (const room of occupiedRooms) {
-      const roomId = room.id;
-      const { data: existing } = await supabase.from('invoices').select('id').eq('room_id', roomId).eq('month', selectedMonth).eq('year', selectedYear).single();
-      if (existing) continue;
+      if (existingRoomIds.has(room.id)) continue; // Skip existing (Fast check)
 
-      const tenant = tenants?.find(t => t.room_id === roomId);
+      const tenant = tenants?.find(t => t.room_id === room.id);
       
       // Electric
-      const currElec = currentReadings.find(r => r.room_id === roomId && r.type === 'electric')?.current_value;
-      const prevElecMeter = previousReadings?.find(r => r.room_id === roomId && r.type === 'electric')?.current_value;
+      const currElec = currentReadings.find(r => r.room_id === room.id && r.type === 'electric')?.current_value;
+      const prevElecMeter = previousReadings?.find(r => r.room_id === room.id && r.type === 'electric')?.current_value;
       const initialElec = tenant?.initial_elec || 0;
       const startElec = (prevElecMeter !== undefined) ? prevElecMeter : initialElec;
       const elecUnits = (currElec !== undefined) ? Math.max(0, currElec - startElec) : 0;
 
       // Water
-      const currWater = currentReadings.find(r => r.room_id === roomId && r.type === 'water')?.current_value;
-      const prevWaterMeter = previousReadings?.find(r => r.room_id === roomId && r.type === 'water')?.current_value;
+      const currWater = currentReadings.find(r => r.room_id === room.id && r.type === 'water')?.current_value;
+      const prevWaterMeter = previousReadings?.find(r => r.room_id === room.id && r.type === 'water')?.current_value;
       const initialWater = tenant?.initial_water || 0;
       const startWater = (prevWaterMeter !== undefined) ? prevWaterMeter : initialWater;
       const waterUnits = (currWater !== undefined) ? Math.max(0, currWater - startWater) : 0;
 
+      // Costs
       const electricCost = elecUnits * (settings.elec_rate || 7);
       let waterCost = 0;
       if (waterUnits <= settings.water_min_units) {
@@ -210,22 +203,30 @@ export default function Invoices() {
       }
       
       const rent = room.default_rent || 3500;
-      const total = waterCost + electricCost + rent;
+      const commonFee = Number(settings.common_fee || 0);
+      const total = waterCost + electricCost + rent + commonFee;
 
       newInvoices.push({
-        room_id: roomId, month: selectedMonth, year: selectedYear,
+        room_id: room.id, month: selectedMonth, year: selectedYear,
         water_units: waterUnits, electric_units: elecUnits,
         unit_price_water: settings.water_excess_rate, unit_price_elec: settings.elec_rate,
-        water_cost: waterCost, electric_cost: electricCost, rent_cost: rent,
+        water_cost: waterCost, electric_cost: electricCost, rent_cost: rent, common_fee: commonFee,
         total_amount: total, payment_status: 'pending'
       });
     }
 
+    setGenProgress(90); // Calculated
+
     if (newInvoices.length > 0) {
       await supabase.from('invoices').insert(newInvoices);
-      alert(`✅ Generated ${newInvoices.length} bills successfully!`);
-      fetchInvoices();
+      setGenProgress(100);
+      setTimeout(() => {
+          setIsGenerating(false);
+          alert(`✅ Generated ${newInvoices.length} bills successfully!`);
+          fetchInvoices();
+      }, 500);
     } else {
+      setIsGenerating(false);
       alert('All occupied rooms already have bills.');
     }
   };
@@ -235,7 +236,6 @@ export default function Invoices() {
     e.stopPropagation();
     if (!confirm(`Confirm send invoice for Room ${inv.rooms?.room_number} to LINE?`)) return;
     setSendingId(inv.id);
-
     try {
         const { data: tenant } = await supabase.from('tenants').select('line_user_id').eq('room_id', inv.room_id).eq('status', 'active').single();
         if (!tenant || !tenant.line_user_id) {
@@ -243,34 +243,19 @@ export default function Invoices() {
             setSendingId(null);
             return;
         }
-
         const res = await fetch('/api/send-invoice', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                userId: tenant.line_user_id,
-                roomId: inv.room_id,
-                roomNumber: inv.rooms?.room_number,
-                month: inv.month,
-                year: inv.year,
-                rent: inv.rent_cost,
-                waterUnit: inv.water_units,
-                waterPrice: inv.water_cost,
-                elecUnit: inv.electric_units,
-                elecPrice: inv.electric_cost,
-                total: inv.total_amount
+                userId: tenant.line_user_id, roomId: inv.room_id, roomNumber: inv.rooms?.room_number,
+                month: inv.month, year: inv.year, rent: inv.rent_cost, waterUnit: inv.water_units,
+                waterPrice: inv.water_cost, elecUnit: inv.electric_units, elecPrice: inv.electric_cost,
+                commonFee: inv.common_fee || 0, total: inv.total_amount
             })
         });
-
         const result = await res.json();
-        if (result.success) alert("✅ Sent!");
-        else alert("❌ Failed: " + result.error);
-
-    } catch (err: any) {
-        alert("❌ Error: " + err.message);
-    } finally {
-        setSendingId(null);
-    }
+        if (result.success) alert("✅ Sent!"); else alert("❌ Failed: " + result.error);
+    } catch (err: any) { alert("❌ Error: " + err.message); } finally { setSendingId(null); }
   };
 
   const requestApprove = (inv: any, e: any) => {
@@ -282,24 +267,16 @@ export default function Invoices() {
   const confirmApprove = async () => {
     if (!confirmingPayment) return;
     const { data: settings } = await supabase.from('settings').select('*').single();
-    
     const payDateObj = new Date(paymentDate);
     const dueDateObj = new Date(selectedYear, selectedMonth - 1, settings?.due_day || 5);
-    let lateFee = 0;
-    let daysLate = 0;
-
+    let lateFee = 0; let daysLate = 0;
     if (payDateObj > dueDateObj) {
         const diffTime = Math.abs(payDateObj.getTime() - dueDateObj.getTime());
         daysLate = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
         lateFee = daysLate * (settings?.late_fee_amount || 0); 
     }
-
     const newTotal = (confirmingPayment.total_amount || 0) + lateFee;
-    await supabase.from('invoices').update({ 
-        payment_status: 'paid', payment_date: paymentDate,
-        late_fee: lateFee, late_days: daysLate, total_amount: newTotal
-    }).eq('id', confirmingPayment.id);
-
+    await supabase.from('invoices').update({ payment_status: 'paid', payment_date: paymentDate, late_fee: lateFee, late_days: daysLate, total_amount: newTotal }).eq('id', confirmingPayment.id);
     setConfirmingPayment(null);
     fetchInvoices();
   };
@@ -340,22 +317,15 @@ export default function Invoices() {
       {['Building 1', 'Building 2', 'Other'].map(groupName => {
          const groupInvoices = groupedInvoices[groupName] || [];
          if (groupInvoices.length === 0) return null;
-
          const allSelected = groupInvoices.every((inv: any) => selectedIds.has(inv.id));
 
          return (
             <div key={groupName} className="mb-10">
                 <div className="flex items-center gap-3 mb-4 bg-slate-200 p-3 rounded-lg w-fit shadow-sm">
-                    <input 
-                        type="checkbox" 
-                        checked={allSelected} 
-                        onChange={() => toggleSelectGroup(groupInvoices)} 
-                        className="w-5 h-5 accent-slate-900 cursor-pointer"
-                    />
+                    <input type="checkbox" checked={allSelected} onChange={() => toggleSelectGroup(groupInvoices)} className="w-5 h-5 accent-slate-900 cursor-pointer" />
                     <h2 className="text-lg font-black text-slate-800 uppercase tracking-widest">{groupName}</h2>
                     <span className="bg-white px-3 rounded-full text-xs font-bold text-slate-500">{groupInvoices.length} Bills</span>
                 </div>
-
                 <div className="bg-white rounded-xl shadow-md border border-gray-200 overflow-hidden">
                     <table className="w-full text-left">
                     <thead className="bg-slate-50 border-b text-sm uppercase font-extrabold text-slate-500">
@@ -372,14 +342,7 @@ export default function Invoices() {
                     <tbody className="divide-y divide-gray-100">
                         {groupInvoices.map((inv: any) => (
                         <tr key={inv.id} onClick={() => setEditingInvoice(inv)} className={`cursor-pointer transition-colors group ${selectedIds.has(inv.id) ? 'bg-blue-50' : 'hover:bg-gray-50'}`}>
-                            <td className="p-4" onClick={e => e.stopPropagation()}>
-                                <input 
-                                    type="checkbox" 
-                                    checked={selectedIds.has(inv.id)} 
-                                    onChange={() => toggleSelect(inv.id)}
-                                    className="w-5 h-5 accent-blue-600 cursor-pointer" 
-                                />
-                            </td>
+                            <td className="p-4" onClick={e => e.stopPropagation()}><input type="checkbox" checked={selectedIds.has(inv.id)} onChange={() => toggleSelect(inv.id)} className="w-5 h-5 accent-blue-600 cursor-pointer" /></td>
                             <td className="p-4">
                             <div className={`inline-flex items-center px-2.5 py-1.5 rounded-full text-xs font-bold border ${inv.payment_status==='paid'?'bg-green-100 text-green-700 border-green-200':inv.payment_status==='verification_pending'?'bg-orange-100 text-orange-700 border-orange-200':'bg-gray-100 text-gray-600 border-gray-200'}`}>
                                 {inv.payment_status.toUpperCase()}
@@ -391,10 +354,7 @@ export default function Invoices() {
                             <td className="p-4 text-center">{inv.slip_url ? <button onClick={(e) => openSlip(inv.slip_url, e)} className="text-blue-600 font-bold underline">View</button> : '-'}</td>
                             <td className="p-4 text-right">
                             <div className="flex justify-end gap-2">
-                                {/* SINGLE SEND LINE BUTTON */}
-                                <button onClick={(e) => sendToLine(inv, e)} disabled={sendingId === inv.id} className="bg-green-50 text-green-700 px-3 py-1.5 rounded border border-green-200 font-bold text-xs hover:bg-green-100 transition-colors">
-                                    {sendingId === inv.id ? '...' : '💬 LINE'}
-                                </button>
+                                <button onClick={(e) => sendToLine(inv, e)} disabled={sendingId === inv.id} className="bg-green-50 text-green-700 px-3 py-1.5 rounded border border-green-200 font-bold text-xs hover:bg-green-100 transition-colors">{sendingId === inv.id ? '...' : '💬 LINE'}</button>
                                 {inv.payment_status !== 'paid' && <button onClick={(e)=>requestApprove(inv, e)} className="bg-blue-50 text-blue-700 px-3 py-1.5 rounded border border-blue-200 font-bold text-xs hover:bg-blue-100">✅ Approve</button>}
                                 {inv.payment_status === 'paid' && <button onClick={(e)=>handlePreview(inv, 'RECEIPT', e)} className="bg-green-600 text-white px-3 py-1.5 rounded border border-green-700 font-bold text-xs hover:bg-green-700">🧾 Receipt</button>}
                                 <button onClick={(e)=>handlePreview(inv, 'INVOICE', e)} className="bg-white text-slate-700 px-3 py-1.5 rounded border border-gray-300 font-bold text-xs hover:bg-gray-50">📄</button>
@@ -410,27 +370,33 @@ export default function Invoices() {
          );
       })}
 
-      {/* FLOATING BULK ACTION BAR */}
       {selectedIds.size > 0 && (
-          <div className="fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-slate-900 text-white px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-6 z-40 animate-in slide-in-from-bottom-4">
-              <div className="font-bold text-lg flex items-center gap-2">
-                  <span className="bg-blue-500 text-white text-xs px-2 py-1 rounded-full">{selectedIds.size}</span>
-                  Selected
-              </div>
+          <div className="fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-slate-900 text-white px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-6 z-40">
+              <div className="font-bold text-lg flex items-center gap-2"><span className="bg-blue-500 text-white text-xs px-2 py-1 rounded-full">{selectedIds.size}</span>Selected</div>
               <div className="h-8 w-[1px] bg-slate-700"></div>
               <div className="flex gap-3">
-                  <button onClick={bulkSendLine} disabled={isBulkSending} className="bg-green-600 hover:bg-green-500 px-5 py-2 rounded-lg font-bold transition-all flex items-center gap-2">
-                      {isBulkSending ? 'Sending...' : '💬 Send to LINE'}
-                  </button>
-                  <button onClick={bulkDelete} disabled={isBulkSending} className="bg-red-600 hover:bg-red-500 px-5 py-2 rounded-lg font-bold transition-all">
-                      🗑️ Delete
-                  </button>
+                  <button onClick={bulkSendLine} disabled={isBulkSending} className="bg-green-600 hover:bg-green-500 px-5 py-2 rounded-lg font-bold transition-all flex items-center gap-2">{isBulkSending ? 'Sending...' : '💬 Send to LINE'}</button>
+                  <button onClick={bulkDelete} disabled={isBulkSending} className="bg-red-600 hover:bg-red-500 px-5 py-2 rounded-lg font-bold transition-all">🗑️ Delete</button>
               </div>
               <button onClick={() => setSelectedIds(new Set())} className="ml-2 text-slate-400 hover:text-white">✕</button>
           </div>
       )}
 
-      {/* MODALS */}
+      {/* GENERATION LOADING MODAL */}
+      {isGenerating && (
+        <div className="fixed inset-0 bg-black/80 z-[200] flex flex-col items-center justify-center p-4">
+            <div className="bg-white rounded-2xl p-8 w-full max-w-md text-center shadow-2xl animate-in fade-in zoom-in">
+                <div className="w-16 h-16 border-4 border-blue-100 border-t-blue-600 rounded-full animate-spin mx-auto mb-6"></div>
+                <h3 className="text-2xl font-black text-slate-900 mb-2">Generating Invoices</h3>
+                <p className="text-slate-500 mb-6">Please wait while we calculate utilities and create bills...</p>
+                <div className="w-full bg-gray-200 rounded-full h-4 overflow-hidden">
+                    <div className="bg-blue-600 h-full transition-all duration-500 ease-out" style={{ width: `${genProgress}%` }}></div>
+                </div>
+                <div className="text-right text-xs font-bold text-blue-600 mt-2">{genProgress}%</div>
+            </div>
+        </div>
+      )}
+
       {editingInvoice && <EditModal invoice={editingInvoice} onClose={()=>setEditingInvoice(null)} onSave={fetchInvoices}/>}
       <InvoiceTemplate data={previewData} settings={previewData?.settings} onClose={() => setPreviewData(null)} />
       
