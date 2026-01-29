@@ -12,7 +12,7 @@ export default function Tenants() {
   const [paymentMethods, setPaymentMethods] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   
-  // Move Out
+  // Move Out State
   const [moveOutData, setMoveOutData] = useState<any>({ elec_end: '', water_end: '', final_deduction: 0 });
   const [refundCalc, setRefundCalc] = useState<any>(null);
 
@@ -70,112 +70,148 @@ export default function Tenants() {
     if (!error) {
        const { data } = supabase.storage.from('slips').getPublicUrl(fileName);
        return data.publicUrl;
+    } else {
+       console.error("Upload Error:", error);
+       return null;
     }
-    return null;
   };
 
   const saveTenant = async () => {
     if (!editingRoom) return;
     setLoading(true);
-    
-    // 1. Files
-    let contractUrl = formData.contract_url;
-    let slipUrl = formData.move_in_slip_url;
-    if (formData.contract_file) contractUrl = await handleFileUpload(formData.contract_file, 'contract');
-    if (formData.slip_file) slipUrl = await handleFileUpload(formData.slip_file, 'slip');
 
-    // 2. Room Updates (Status & Line Permission)
-    await supabase.from('rooms')
-        .update({ 
-            default_rent: Number(formData.default_rent),
-            allow_line_register: formData.allow_line_register,
-            status: formData.room_status // Manual Status Update
-        })
-        .eq('id', editingRoom.id);
+    try {
+        // 1. Files
+        let contractUrl = formData.contract_url;
+        let slipUrl = formData.move_in_slip_url;
+        if (formData.contract_file) contractUrl = await handleFileUpload(formData.contract_file, 'contract');
+        if (formData.slip_file) slipUrl = await handleFileUpload(formData.slip_file, 'slip');
 
-    // 3. Tenant Data
-    // NOTE: line_user_id can be empty (manual entry), so we convert '' to null
-    const tenantData = {
-        name: formData.name, 
-        phone: formData.phone, 
-        line_user_id: formData.line_user_id ? formData.line_user_id : null, 
-        address: formData.address, 
-        payment_method_id: formData.payment_method_id || null,
-        deposit_amount: Number(formData.deposit_amount), 
-        advance_rent_amount: Number(formData.advance_rent_amount),
-        initial_elec: Number(formData.initial_elec), 
-        initial_water: Number(formData.initial_water),
-        move_in_date: formData.move_in_date, 
-        lease_months: Number(formData.lease_months),
-        contract_url: contractUrl, 
-        move_in_slip_url: slipUrl
-    };
+        // 2. Room Updates (Manual Status & Line Permission)
+        const { error: roomError } = await supabase.from('rooms')
+            .update({ 
+                default_rent: Number(formData.default_rent || 0),
+                allow_line_register: formData.allow_line_register,
+                status: formData.room_status 
+            })
+            .eq('id', editingRoom.id);
+        
+        if (roomError) throw new Error("Room Update Failed: " + roomError.message);
 
-    if (editingRoom.tenant) {
-      // UPDATE Existing
-      await supabase.from('tenants').update(tenantData).eq('id', editingRoom.tenant.id);
-    } else {
-      // CREATE New (Only if name is provided)
-      if (formData.name) {
-        // Initial Invoice (Deposit)
-        const totalPaid = Number(formData.deposit_amount) + Number(formData.advance_rent_amount);
-        if (totalPaid > 0) {
-            await supabase.from('invoices').insert({
-                room_id: editingRoom.id, month: new Date().getMonth() + 1, year: new Date().getFullYear(),
-                total_amount: totalPaid, type: 'deposit', payment_status: 'paid', payment_date: new Date()
-            });
+        // 3. Tenant Data Preparation
+        const tenantData = {
+            name: formData.name, 
+            phone: formData.phone, 
+            line_user_id: formData.line_user_id ? formData.line_user_id : null, 
+            address: formData.address, 
+            payment_method_id: formData.payment_method_id || null,
+            
+            // Critical: Ensure these are Numbers (defaults to 0 if empty)
+            deposit_amount: Number(formData.deposit_amount || 0), 
+            advance_rent_amount: Number(formData.advance_rent_amount || 0),
+            initial_elec: Number(formData.initial_elec || 0), 
+            initial_water: Number(formData.initial_water || 0),
+            
+            move_in_date: formData.move_in_date, 
+            lease_months: Number(formData.lease_months || 12),
+            contract_url: contractUrl, 
+            move_in_slip_url: slipUrl
+        };
+
+        if (editingRoom.tenant) {
+            // UPDATE EXISTING TENANT
+            const { error: updateError } = await supabase.from('tenants').update(tenantData).eq('id', editingRoom.tenant.id);
+            if (updateError) throw new Error("Tenant Update Failed: " + updateError.message);
+        } else {
+            // CREATE NEW TENANT
+            if (formData.name) {
+                // A. Create Deposit Invoice
+                const totalPaid = tenantData.deposit_amount + tenantData.advance_rent_amount;
+                if (totalPaid > 0) {
+                    await supabase.from('invoices').insert({
+                        room_id: editingRoom.id, 
+                        month: new Date().getMonth() + 1, 
+                        year: new Date().getFullYear(),
+                        total_amount: totalPaid, 
+                        type: 'deposit', 
+                        payment_status: 'paid', 
+                        payment_date: new Date()
+                    });
+                }
+
+                // B. Insert Initial Meter Reading (CRITICAL for first bill)
+                if (tenantData.initial_elec > 0 || tenantData.initial_water > 0) {
+                    const m = new Date().getMonth() + 1; 
+                    const y = new Date().getFullYear();
+                    // Delete any existing initial reading for this month to avoid duplicates
+                    await supabase.from('meter_readings').delete().match({ room_id: editingRoom.id, month: m, year: y });
+                    
+                    await supabase.from('meter_readings').insert([
+                        { room_id: editingRoom.id, type: 'electric', current_value: tenantData.initial_elec, month: m, year: y },
+                        { room_id: editingRoom.id, type: 'water', current_value: tenantData.initial_water, month: m, year: y }
+                    ]);
+                }
+                
+                // C. Insert Tenant Record
+                const { error: insertError } = await supabase.from('tenants').insert({ room_id: editingRoom.id, status: 'active', ...tenantData });
+                if (insertError) throw new Error("Tenant Insert Failed: " + insertError.message);
+                
+                // D. Force Status to Occupied
+                await supabase.from('rooms').update({ status: 'occupied' }).eq('id', editingRoom.id);
+            }
         }
-        // Initial Meter
-        if (formData.initial_elec && formData.initial_water) {
-             const m = new Date().getMonth() + 1; const y = new Date().getFullYear();
-             await supabase.from('meter_readings').insert([
-                 { room_id: editingRoom.id, type: 'electric', current_value: Number(formData.initial_elec), month: m, year: y },
-                 { room_id: editingRoom.id, type: 'water', current_value: Number(formData.initial_water), month: m, year: y }
-             ]);
-        }
-        // Insert Tenant
-        await supabase.from('tenants').insert({ room_id: editingRoom.id, status: 'active', ...tenantData });
-        // Force room to occupied if we just added a tenant
-        await supabase.from('rooms').update({ status: 'occupied' }).eq('id', editingRoom.id);
-      }
+        
+        alert("✅ Saved Successfully!");
+        setEditingRoom(null);
+        fetchRooms();
+
+    } catch (err: any) {
+        console.error("Save Error:", err);
+        alert("❌ Error Saving: " + err.message);
+    } finally {
+        setLoading(false);
     }
-    
-    setLoading(false);
-    setEditingRoom(null);
-    fetchRooms();
   };
 
   const deleteTenant = async () => {
       if (!confirm("⚠️ Are you sure you want to PERMANENTLY DELETE this tenant?\n\nThis is for fixing mistakes only. Use 'Move Out' for normal cases.")) return;
       await supabase.from('tenants').delete().eq('id', editingRoom.tenant.id);
-      // Reset room status to vacant
       await supabase.from('rooms').update({ status: 'vacant' }).eq('id', editingRoom.id);
       setEditingRoom(null);
       fetchRooms();
   };
 
-  // ... (calculateRefund and confirmMoveOut functions remain the same as before)
   const calculateRefund = async () => {
     if (!moveOutData.elec_end || !moveOutData.water_end) return alert("Please enter meter readings");
     const { data: settings } = await supabase.from('settings').select('*').single();
+    
     const elecCost = Number(moveOutData.elec_end) * (settings?.elec_rate || 7);
     const waterCost = Number(moveOutData.water_end) * (settings?.water_excess_rate || 17);
     const rent = Number(formData.default_rent);
+    
     const totalCharges = rent + elecCost + waterCost + Number(moveOutData.final_deduction);
     const totalCredits = Number(formData.deposit_amount) + Number(formData.advance_rent_amount);
+    
     setRefundCalc({ charges: totalCharges, credits: totalCredits, refund: totalCredits - totalCharges });
   };
+
   const confirmMoveOut = async () => {
     if (!refundCalc || !confirm("Confirm move out?")) return;
+    
+    // Create Refund Invoice record
     await supabase.from('invoices').insert({
         room_id: editingRoom.id, month: new Date().getMonth() + 1, year: new Date().getFullYear(),
         total_amount: refundCalc.refund * -1, type: 'refund', other_fees_description: 'Final Settlement', payment_status: 'paid', payment_date: new Date()
     });
+    
+    // Archive Tenant
     await supabase.from('tenants').update({ status: 'history' }).eq('id', editingRoom.tenant.id);
     await supabase.from('rooms').update({ status: 'vacant' }).eq('id', editingRoom.id);
+    
     setEditingRoom(null);
     fetchRooms();
   };
+
   const getLeaseEnd = () => {
       if(!formData.move_in_date) return '';
       const d = new Date(formData.move_in_date);
