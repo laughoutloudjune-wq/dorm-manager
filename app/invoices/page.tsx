@@ -9,6 +9,10 @@ export default function Invoices() {
   const [invoices, setInvoices] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   
+  // Selection & Bulk Actions
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [isBulkSending, setIsBulkSending] = useState(false);
+
   // Modals
   const [editingInvoice, setEditingInvoice] = useState<any>(null);
   const [viewingSlip, setViewingSlip] = useState<string | null>(null);
@@ -27,6 +31,9 @@ export default function Invoices() {
 
   const fetchInvoices = async () => {
     setLoading(true);
+    setSelectedIds(new Set()); // Clear selection on refresh
+    
+    // FIXED: Removed 'tenants' join to prevent database error
     const { data } = await supabase
       .from('invoices')
       .select('*, rooms(room_number)')
@@ -34,6 +41,7 @@ export default function Invoices() {
       .eq('year', selectedYear)
       .order('created_at', { ascending: false });
 
+    // Sort by Room Number
     const sortedData = (data || []).sort((a: any, b: any) => 
       (a.rooms?.room_number || '').localeCompare(b.rooms?.room_number || '', undefined, { numeric: true })
     );
@@ -41,71 +49,158 @@ export default function Invoices() {
     setLoading(false);
   };
 
+  // --- GROUPING LOGIC ---
+  const getBuilding = (roomNumber: string) => {
+      if (!roomNumber) return 'Other';
+      if (roomNumber.endsWith('/1')) return 'Building 1';
+      if (roomNumber.endsWith('/2')) return 'Building 2';
+      return 'Other';
+  };
+
+  const groupedInvoices = invoices.reduce((groups: any, inv: any) => {
+      const b = getBuilding(inv.rooms?.room_number || '');
+      if (!groups[b]) groups[b] = [];
+      groups[b].push(inv);
+      return groups;
+  }, {});
+
+  // --- SELECTION LOGIC ---
+  const toggleSelect = (id: string) => {
+      const newSet = new Set(selectedIds);
+      if (newSet.has(id)) newSet.delete(id);
+      else newSet.add(id);
+      setSelectedIds(newSet);
+  };
+
+  const toggleSelectGroup = (groupInvoices: any[]) => {
+      const groupIds = groupInvoices.map(i => i.id);
+      const allSelected = groupIds.every(id => selectedIds.has(id));
+      
+      const newSet = new Set(selectedIds);
+      if (allSelected) {
+          groupIds.forEach(id => newSet.delete(id)); // Deselect all
+      } else {
+          groupIds.forEach(id => newSet.add(id)); // Select all
+      }
+      setSelectedIds(newSet);
+  };
+
+  // --- BULK ACTIONS ---
+  const bulkDelete = async () => {
+      if (!confirm(`⚠️ Delete ${selectedIds.size} selected invoices?`)) return;
+      
+      const { error } = await supabase.from('invoices').delete().in('id', Array.from(selectedIds));
+      if (error) alert("Error deleting: " + error.message);
+      else {
+          fetchInvoices();
+      }
+  };
+
+  const bulkSendLine = async () => {
+      if (!confirm(`Confirm send ${selectedIds.size} invoices to LINE?`)) return;
+      setIsBulkSending(true);
+
+      let sentCount = 0;
+      let skippedCount = 0;
+      let failCount = 0;
+
+      const idsToProcess = Array.from(selectedIds);
+
+      // Fetch all active tenants once to optimize performance
+      const { data: activeTenants } = await supabase.from('tenants').select('room_id, line_user_id').eq('status', 'active');
+
+      for (const id of idsToProcess) {
+          const inv = invoices.find(i => i.id === id);
+          if (!inv) continue;
+
+          // Find tenant for this invoice's room
+          const tenant = activeTenants?.find(t => t.room_id === inv.room_id);
+
+          if (!tenant || !tenant.line_user_id) {
+              skippedCount++;
+              continue;
+          }
+
+          try {
+              const res = await fetch('/api/send-invoice', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                      userId: tenant.line_user_id,
+                      roomId: inv.room_id,
+                      roomNumber: inv.rooms?.room_number,
+                      month: inv.month,
+                      year: inv.year,
+                      rent: inv.rent_cost,
+                      waterUnit: inv.water_units,
+                      waterPrice: inv.water_cost,
+                      elecUnit: inv.electric_units,
+                      elecPrice: inv.electric_cost,
+                      total: inv.total_amount
+                  })
+              });
+              
+              const result = await res.json();
+              if (result.success) sentCount++;
+              else failCount++;
+
+          } catch (err) {
+              failCount++;
+          }
+      }
+
+      setIsBulkSending(false);
+      alert(`✅ Bulk Send Complete!\n\nSent: ${sentCount}\nSkipped (No LINE): ${skippedCount}\nFailed: ${failCount}`);
+  };
+
+  // --- GENERATE BILLS ---
   const generateBills = async () => {
     const { data: settings } = await supabase.from('settings').select('*').single();
     if (!settings) return alert("Please configure settings first");
 
-    // 1. Get Occupied Rooms ONLY
     const { data: occupiedRooms } = await supabase.from('rooms').select('*').eq('status', 'occupied');
     if (!occupiedRooms || occupiedRooms.length === 0) return alert("No occupied rooms to bill.");
 
-    // Check for existing bills
     const { count } = await supabase.from('invoices').select('*', { count: 'exact', head: true }).eq('month', selectedMonth).eq('year', selectedYear);
     if (count && count > 0 && !confirm(`Warning: ${count} bills already exist. Generate missing?`)) return;
 
-    // 2. Fetch Data needed for calculation
-    // A. Current Month Readings
-    const { data: currentReadings } = await supabase.from('meter_readings')
-        .select('*')
-        .eq('month', selectedMonth)
-        .eq('year', selectedYear);
-    
+    // A. Current Readings
+    const { data: currentReadings } = await supabase.from('meter_readings').select('*').eq('month', selectedMonth).eq('year', selectedYear);
     if (!currentReadings?.length) return alert(`No meter readings found for ${selectedMonth}/${selectedYear}`);
 
-    // B. Previous Month Readings (Logic: Curr - 1)
+    // B. Previous Readings (Last Month)
     let prevM = selectedMonth - 1;
     let prevY = selectedYear;
     if (prevM === 0) { prevM = 12; prevY = selectedYear - 1; }
 
-    const { data: previousReadings } = await supabase.from('meter_readings')
-        .select('*')
-        .eq('month', prevM)
-        .eq('year', prevY);
-
-    // C. Tenant Initial Readings (For new tenants who have no prev month reading)
+    const { data: previousReadings } = await supabase.from('meter_readings').select('*').eq('month', prevM).eq('year', prevY);
+    
+    // C. Tenant Initial Readings
     const { data: tenants } = await supabase.from('tenants').select('*').eq('status', 'active');
 
     const newInvoices = [];
     
     for (const room of occupiedRooms) {
       const roomId = room.id;
-
-      // Skip if invoice exists
       const { data: existing } = await supabase.from('invoices').select('id').eq('room_id', roomId).eq('month', selectedMonth).eq('year', selectedYear).single();
       if (existing) continue;
 
-      // --- UTILITY CALCULATION LOGIC ---
       const tenant = tenants?.find(t => t.room_id === roomId);
       
       // Electric
       const currElec = currentReadings.find(r => r.room_id === roomId && r.type === 'electric')?.current_value;
       const prevElecMeter = previousReadings?.find(r => r.room_id === roomId && r.type === 'electric')?.current_value;
       const initialElec = tenant?.initial_elec || 0;
-      
-      // If we have a previous month reading, use it. If not, use the Tenant's Initial Reading.
-      const startElec = (prevElecMeter !== undefined && prevElecMeter !== null) ? prevElecMeter : initialElec;
+      const startElec = (prevElecMeter !== undefined) ? prevElecMeter : initialElec;
       const elecUnits = (currElec !== undefined) ? Math.max(0, currElec - startElec) : 0;
 
       // Water
       const currWater = currentReadings.find(r => r.room_id === roomId && r.type === 'water')?.current_value;
       const prevWaterMeter = previousReadings?.find(r => r.room_id === roomId && r.type === 'water')?.current_value;
       const initialWater = tenant?.initial_water || 0;
-
-      const startWater = (prevWaterMeter !== undefined && prevWaterMeter !== null) ? prevWaterMeter : initialWater;
+      const startWater = (prevWaterMeter !== undefined) ? prevWaterMeter : initialWater;
       const waterUnits = (currWater !== undefined) ? Math.max(0, currWater - startWater) : 0;
-      // ---------------------------------
 
-      // Price Calc
       const electricCost = elecUnits * (settings.elec_rate || 7);
       let waterCost = 0;
       if (waterUnits <= settings.water_min_units) {
@@ -127,40 +222,28 @@ export default function Invoices() {
     }
 
     if (newInvoices.length > 0) {
-      const { error } = await supabase.from('invoices').insert(newInvoices);
-      if (error) alert("Error creating bills: " + error.message);
-      else {
-        alert(`✅ Generated ${newInvoices.length} bills successfully!`);
-        fetchInvoices();
-      }
+      await supabase.from('invoices').insert(newInvoices);
+      alert(`✅ Generated ${newInvoices.length} bills successfully!`);
+      fetchInvoices();
     } else {
-      alert('All occupied rooms already have bills or missing readings.');
+      alert('All occupied rooms already have bills.');
     }
   };
 
-  // --- RESTORED: SEND TO LINE FUNCTION ---
+  // --- SINGLE ACTIONS ---
   const sendToLine = async (inv: any, e: any) => {
     e.stopPropagation();
     if (!confirm(`Confirm send invoice for Room ${inv.rooms?.room_number} to LINE?`)) return;
-
     setSendingId(inv.id);
 
     try {
-        // 1. Check Tenant LINE ID
-        const { data: tenant } = await supabase
-            .from('tenants')
-            .select('line_user_id, name')
-            .eq('room_id', inv.room_id)
-            .eq('status', 'active')
-            .single();
-        
+        const { data: tenant } = await supabase.from('tenants').select('line_user_id').eq('room_id', inv.room_id).eq('status', 'active').single();
         if (!tenant || !tenant.line_user_id) {
             alert("❌ Tenant has not connected LINE account.");
             setSendingId(null);
             return;
         }
 
-        // 2. Call API
         const res = await fetch('/api/send-invoice', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -180,11 +263,8 @@ export default function Invoices() {
         });
 
         const result = await res.json();
-        if (result.success) {
-            alert("✅ Invoice sent successfully!");
-        } else {
-            alert("❌ Failed: " + result.error);
-        }
+        if (result.success) alert("✅ Sent!");
+        else alert("❌ Failed: " + result.error);
 
     } catch (err: any) {
         alert("❌ Error: " + err.message);
@@ -203,10 +283,8 @@ export default function Invoices() {
     if (!confirmingPayment) return;
     const { data: settings } = await supabase.from('settings').select('*').single();
     
-    // Late Fee Logic (Per Day)
     const payDateObj = new Date(paymentDate);
     const dueDateObj = new Date(selectedYear, selectedMonth - 1, settings?.due_day || 5);
-    
     let lateFee = 0;
     let daysLate = 0;
 
@@ -217,7 +295,6 @@ export default function Invoices() {
     }
 
     const newTotal = (confirmingPayment.total_amount || 0) + lateFee;
-
     await supabase.from('invoices').update({ 
         payment_status: 'paid', payment_date: paymentDate,
         late_fee: lateFee, late_days: daysLate, total_amount: newTotal
@@ -245,7 +322,7 @@ export default function Invoices() {
   };
 
   return (
-    <div className="p-8 bg-gray-50 min-h-screen">
+    <div className="p-8 bg-gray-50 min-h-screen relative pb-24">
       <div className="flex justify-between items-center mb-8">
         <h1 className="text-3xl font-extrabold text-slate-900">🧾 Invoices</h1>
         <div className="flex gap-4">
@@ -259,54 +336,101 @@ export default function Invoices() {
         </div>
       </div>
 
-      <div className="bg-white rounded-xl shadow-md border border-gray-200 overflow-hidden">
-        <table className="w-full text-left">
-          <thead className="bg-slate-100 border-b text-sm uppercase font-extrabold text-slate-700">
-            <tr>
-              <th className="p-4 w-32">Status</th>
-              <th className="p-4 w-24">Room</th>
-              <th className="p-4 w-32">Period</th>
-              <th className="p-4 text-right w-32">Amount</th>
-              <th className="p-4 text-center w-24">Slip</th>
-              <th className="p-4 text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100">
-            {invoices.map((inv) => (
-              <tr key={inv.id} onClick={() => setEditingInvoice(inv)} className="hover:bg-blue-50 cursor-pointer transition-colors group">
-                <td className="p-4">
-                  <div className={`inline-flex items-center px-2.5 py-1.5 rounded-full text-xs font-bold border ${inv.payment_status==='paid'?'bg-green-100 text-green-700 border-green-200':inv.payment_status==='verification_pending'?'bg-orange-100 text-orange-700 border-orange-200':'bg-gray-100 text-gray-600 border-gray-200'}`}>
-                    {inv.payment_status.toUpperCase()}
-                  </div>
-                </td>
-                <td className="p-4 font-black text-slate-800 text-xl">{inv.rooms?.room_number}</td>
-                <td className="p-4 text-slate-600 font-bold">{inv.month}/{inv.year}</td>
-                <td className="p-4 text-right font-mono font-black text-slate-900 text-xl">{inv.total_amount.toLocaleString()} ฿</td>
-                <td className="p-4 text-center">{inv.slip_url ? <button onClick={(e) => openSlip(inv.slip_url, e)} className="text-blue-600 font-bold underline">View</button> : '-'}</td>
-                
-                {/* ACTIONS */}
-                <td className="p-4 text-right">
-                   <div className="flex justify-end gap-2">
-                     {/* RESTORED: SEND LINE BUTTON */}
-                     <button onClick={(e) => sendToLine(inv, e)} disabled={sendingId === inv.id} className="bg-green-50 text-green-700 px-3 py-1.5 rounded border border-green-200 font-bold text-xs hover:bg-green-100 transition-colors">
-                        {sendingId === inv.id ? 'Sending...' : '💬 LINE'}
-                     </button>
+      {/* RENDER GROUPS */}
+      {['Building 1', 'Building 2', 'Other'].map(groupName => {
+         const groupInvoices = groupedInvoices[groupName] || [];
+         if (groupInvoices.length === 0) return null;
 
-                     {inv.payment_status !== 'paid' && <button onClick={(e)=>requestApprove(inv, e)} className="bg-blue-50 text-blue-700 px-3 py-1.5 rounded border border-blue-200 font-bold text-xs hover:bg-blue-100">✅ Approve</button>}
-                     
-                     {inv.payment_status === 'paid' && <button onClick={(e)=>handlePreview(inv, 'RECEIPT', e)} className="bg-green-600 text-white px-3 py-1.5 rounded border border-green-700 font-bold text-xs hover:bg-green-700">🧾 Receipt</button>}
-                     
-                     <button onClick={(e)=>handlePreview(inv, 'INVOICE', e)} className="bg-white text-slate-700 px-3 py-1.5 rounded border border-gray-300 font-bold text-xs hover:bg-gray-50">📄 PDF</button>
-                     
-                     <button onClick={(e)=>deleteInvoice(inv.id, e)} className="bg-white text-red-600 px-3 py-1.5 rounded border border-red-200 font-bold text-xs hover:bg-red-50">🗑️</button>
-                   </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+         const allSelected = groupInvoices.every((inv: any) => selectedIds.has(inv.id));
 
+         return (
+            <div key={groupName} className="mb-10">
+                <div className="flex items-center gap-3 mb-4 bg-slate-200 p-3 rounded-lg w-fit shadow-sm">
+                    <input 
+                        type="checkbox" 
+                        checked={allSelected} 
+                        onChange={() => toggleSelectGroup(groupInvoices)} 
+                        className="w-5 h-5 accent-slate-900 cursor-pointer"
+                    />
+                    <h2 className="text-lg font-black text-slate-800 uppercase tracking-widest">{groupName}</h2>
+                    <span className="bg-white px-3 rounded-full text-xs font-bold text-slate-500">{groupInvoices.length} Bills</span>
+                </div>
+
+                <div className="bg-white rounded-xl shadow-md border border-gray-200 overflow-hidden">
+                    <table className="w-full text-left">
+                    <thead className="bg-slate-50 border-b text-sm uppercase font-extrabold text-slate-500">
+                        <tr>
+                        <th className="p-4 w-10"></th>
+                        <th className="p-4 w-32">Status</th>
+                        <th className="p-4 w-24">Room</th>
+                        <th className="p-4 w-32">Period</th>
+                        <th className="p-4 text-right w-32">Amount</th>
+                        <th className="p-4 text-center w-24">Slip</th>
+                        <th className="p-4 text-right">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                        {groupInvoices.map((inv: any) => (
+                        <tr key={inv.id} onClick={() => setEditingInvoice(inv)} className={`cursor-pointer transition-colors group ${selectedIds.has(inv.id) ? 'bg-blue-50' : 'hover:bg-gray-50'}`}>
+                            <td className="p-4" onClick={e => e.stopPropagation()}>
+                                <input 
+                                    type="checkbox" 
+                                    checked={selectedIds.has(inv.id)} 
+                                    onChange={() => toggleSelect(inv.id)}
+                                    className="w-5 h-5 accent-blue-600 cursor-pointer" 
+                                />
+                            </td>
+                            <td className="p-4">
+                            <div className={`inline-flex items-center px-2.5 py-1.5 rounded-full text-xs font-bold border ${inv.payment_status==='paid'?'bg-green-100 text-green-700 border-green-200':inv.payment_status==='verification_pending'?'bg-orange-100 text-orange-700 border-orange-200':'bg-gray-100 text-gray-600 border-gray-200'}`}>
+                                {inv.payment_status.toUpperCase()}
+                            </div>
+                            </td>
+                            <td className="p-4 font-black text-slate-800 text-xl">{inv.rooms?.room_number}</td>
+                            <td className="p-4 text-slate-600 font-bold">{inv.month}/{inv.year}</td>
+                            <td className="p-4 text-right font-mono font-black text-slate-900 text-xl">{inv.total_amount.toLocaleString()} ฿</td>
+                            <td className="p-4 text-center">{inv.slip_url ? <button onClick={(e) => openSlip(inv.slip_url, e)} className="text-blue-600 font-bold underline">View</button> : '-'}</td>
+                            <td className="p-4 text-right">
+                            <div className="flex justify-end gap-2">
+                                {/* SINGLE SEND LINE BUTTON */}
+                                <button onClick={(e) => sendToLine(inv, e)} disabled={sendingId === inv.id} className="bg-green-50 text-green-700 px-3 py-1.5 rounded border border-green-200 font-bold text-xs hover:bg-green-100 transition-colors">
+                                    {sendingId === inv.id ? '...' : '💬 LINE'}
+                                </button>
+                                {inv.payment_status !== 'paid' && <button onClick={(e)=>requestApprove(inv, e)} className="bg-blue-50 text-blue-700 px-3 py-1.5 rounded border border-blue-200 font-bold text-xs hover:bg-blue-100">✅ Approve</button>}
+                                {inv.payment_status === 'paid' && <button onClick={(e)=>handlePreview(inv, 'RECEIPT', e)} className="bg-green-600 text-white px-3 py-1.5 rounded border border-green-700 font-bold text-xs hover:bg-green-700">🧾 Receipt</button>}
+                                <button onClick={(e)=>handlePreview(inv, 'INVOICE', e)} className="bg-white text-slate-700 px-3 py-1.5 rounded border border-gray-300 font-bold text-xs hover:bg-gray-50">📄</button>
+                                <button onClick={(e)=>deleteInvoice(inv.id, e)} className="bg-white text-red-600 px-3 py-1.5 rounded border border-red-200 font-bold text-xs hover:bg-red-50">🗑️</button>
+                            </div>
+                            </td>
+                        </tr>
+                        ))}
+                    </tbody>
+                    </table>
+                </div>
+            </div>
+         );
+      })}
+
+      {/* FLOATING BULK ACTION BAR */}
+      {selectedIds.size > 0 && (
+          <div className="fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-slate-900 text-white px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-6 z-40 animate-in slide-in-from-bottom-4">
+              <div className="font-bold text-lg flex items-center gap-2">
+                  <span className="bg-blue-500 text-white text-xs px-2 py-1 rounded-full">{selectedIds.size}</span>
+                  Selected
+              </div>
+              <div className="h-8 w-[1px] bg-slate-700"></div>
+              <div className="flex gap-3">
+                  <button onClick={bulkSendLine} disabled={isBulkSending} className="bg-green-600 hover:bg-green-500 px-5 py-2 rounded-lg font-bold transition-all flex items-center gap-2">
+                      {isBulkSending ? 'Sending...' : '💬 Send to LINE'}
+                  </button>
+                  <button onClick={bulkDelete} disabled={isBulkSending} className="bg-red-600 hover:bg-red-500 px-5 py-2 rounded-lg font-bold transition-all">
+                      🗑️ Delete
+                  </button>
+              </div>
+              <button onClick={() => setSelectedIds(new Set())} className="ml-2 text-slate-400 hover:text-white">✕</button>
+          </div>
+      )}
+
+      {/* MODALS */}
       {editingInvoice && <EditModal invoice={editingInvoice} onClose={()=>setEditingInvoice(null)} onSave={fetchInvoices}/>}
       <InvoiceTemplate data={previewData} settings={previewData?.settings} onClose={() => setPreviewData(null)} />
       
@@ -315,10 +439,8 @@ export default function Invoices() {
             <div className="bg-white rounded-xl p-6 w-full max-w-sm shadow-2xl">
                 <h3 className="text-xl font-bold mb-4">Confirm Payment</h3>
                 <p className="text-sm text-gray-600 mb-2">Room: {confirmingPayment.rooms?.room_number}</p>
-                
                 <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Payment Date</label>
                 <input type="date" value={paymentDate} onChange={(e)=>setPaymentDate(e.target.value)} className="w-full border-2 border-slate-300 p-2 rounded-lg font-bold text-lg mb-4" />
-
                 <div className="flex gap-2">
                     <button onClick={()=>setConfirmingPayment(null)} className="flex-1 py-3 bg-gray-100 font-bold rounded-lg">Cancel</button>
                     <button onClick={confirmApprove} className="flex-1 py-3 bg-green-600 text-white font-bold rounded-lg shadow-lg">Confirm & Calculate</button>
