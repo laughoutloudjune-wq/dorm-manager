@@ -8,42 +8,97 @@ const MONTHS = [
   "July", "August", "September", "October", "November", "December"
 ];
 
+// 1. MOVE COMPONENT OUTSIDE (Fixes Focus Issue)
+// We must pass all the data it needs as "props" since it can't see the variables inside Meters anymore.
+const MeterTable = ({ title, roomList, readings, prevReadings, onInput }: any) => (
+  <div className="bg-white rounded-xl shadow border border-gray-200 overflow-hidden">
+    <div className="bg-slate-900 text-white p-3 font-bold text-center uppercase tracking-widest">{title}</div>
+    <table className="w-full text-left">
+      <thead className="bg-gray-100 text-xs font-bold text-gray-500 uppercase">
+        <tr>
+          <th className="p-2 text-center">Room</th>
+          <th className="p-2 text-right">Prev</th>
+          <th className="p-2 w-24">Elec</th>
+          <th className="p-2 text-right">Prev</th>
+          <th className="p-2 w-24">Water</th>
+        </tr>
+      </thead>
+      <tbody className="divide-y divide-gray-100 text-sm">
+        {roomList.map((room: any) => {
+           const prev = prevReadings[room.id] || { electric: 0, water: 0 };
+           const curr = readings[room.id] || {};
+           
+           // Visual Usage Calc
+           const elecUsage = (curr.electric && prev.electric) ? curr.electric - prev.electric : 0;
+           const waterUsage = (curr.water && prev.water) ? curr.water - prev.water : 0;
+
+           return (
+            <tr key={room.id} className="hover:bg-gray-50">
+              <td className="p-2 text-center font-black text-slate-800">{room.room_number}</td>
+              
+              {/* ELECTRICITY */}
+              <td className="p-2 text-right text-gray-400 font-mono">{prev.electric || '-'}</td>
+              <td className="p-2 relative">
+                  <input 
+                      type="number" 
+                      value={curr.electric || ''} 
+                      placeholder="0" 
+                      className="w-full border-2 border-yellow-200 focus:border-yellow-500 rounded p-1 font-bold text-slate-900 text-center outline-none" 
+                      // Use the passed function "onInput"
+                      onChange={(e) => onInput(room.id, 'electric', e.target.value)} 
+                  />
+                  {elecUsage > 0 && <span className="absolute right-1 top-1 text-[10px] text-green-600 font-bold">+{elecUsage}</span>}
+              </td>
+
+              {/* WATER */}
+              <td className="p-2 text-right text-gray-400 font-mono">{prev.water || '-'}</td>
+              <td className="p-2 relative">
+                  <input 
+                      type="number" 
+                      value={curr.water || ''} 
+                      placeholder="0" 
+                      className="w-full border-2 border-blue-200 focus:border-blue-500 rounded p-1 font-bold text-slate-900 text-center outline-none" 
+                      onChange={(e) => onInput(room.id, 'water', e.target.value)} 
+                  />
+                  {waterUsage > 0 && <span className="absolute right-1 top-1 text-[10px] text-green-600 font-bold">+{waterUsage}</span>}
+              </td>
+            </tr>
+           );
+        })}
+      </tbody>
+    </table>
+  </div>
+);
+
 export default function Meters() {
   const [rooms, setRooms] = useState<any[]>([]);
   const [readings, setReadings] = useState<Record<string, any>>({});
   const [prevReadings, setPrevReadings] = useState<Record<string, any>>({});
   
-  // 1. Month/Year Selection State
   const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth() + 1);
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   
   const [saving, setSaving] = useState(false);
 
-  // Fetch data whenever Month/Year changes
   useEffect(() => { fetchData(); }, [selectedMonth, selectedYear]);
 
   const fetchData = async () => {
-    // A. Get Rooms
     const { data: roomData } = await supabase.from('rooms').select('*').order('room_number');
     
-    // B. Calculate "Previous" Month
     let prevM = selectedMonth - 1;
     let prevY = selectedYear;
     if (prevM === 0) { prevM = 12; prevY = selectedYear - 1; }
 
-    // C. Fetch PREVIOUS Readings (The Baseline)
     const { data: prevData } = await supabase.from('meter_readings')
         .select('*')
         .eq('month', prevM)
         .eq('year', prevY);
 
-    // D. Fetch CURRENT Readings (To populate inputs if editing)
     const { data: currData } = await supabase.from('meter_readings')
         .select('*')
         .eq('month', selectedMonth)
         .eq('year', selectedYear);
 
-    // Map Previous Data
     const prevMap: Record<string, any> = {};
     if (prevData) {
         prevData.forEach(m => {
@@ -53,7 +108,6 @@ export default function Meters() {
         });
     }
 
-    // Map Current Data (So inputs show saved values)
     const currMap: Record<string, any> = {};
     if (currData) {
         currData.forEach(m => {
@@ -82,9 +136,7 @@ export default function Meters() {
     for (const roomId in readings) {
       const r = readings[roomId];
       
-      // Process Electric
       if (r.electric !== undefined && r.electric !== "") {
-          // Delete old entry for this month to avoid duplicates (Simple Upsert)
           await supabase.from('meter_readings').delete().match({ 
               room_id: roomId, month: selectedMonth, year: selectedYear, type: 'electric' 
           });
@@ -93,7 +145,6 @@ export default function Meters() {
           });
       }
 
-      // Process Water
       if (r.water !== undefined && r.water !== "") {
           await supabase.from('meter_readings').delete().match({ 
               room_id: roomId, month: selectedMonth, year: selectedYear, type: 'water' 
@@ -115,68 +166,8 @@ export default function Meters() {
     setSaving(false);
   };
 
-  // Split rooms into 2 Buildings
   const roomsB1 = rooms.filter(r => r.room_number.endsWith('/1'));
   const roomsB2 = rooms.filter(r => r.room_number.endsWith('/2'));
-
-  const MeterTable = ({ title, roomList }: any) => (
-    <div className="bg-white rounded-xl shadow border border-gray-200 overflow-hidden">
-      <div className="bg-slate-900 text-white p-3 font-bold text-center uppercase tracking-widest">{title}</div>
-      <table className="w-full text-left">
-        <thead className="bg-gray-100 text-xs font-bold text-gray-500 uppercase">
-          <tr>
-            <th className="p-2 text-center">Room</th>
-            <th className="p-2 text-right">Prev</th>
-            <th className="p-2 w-24">Elec</th>
-            <th className="p-2 text-right">Prev</th>
-            <th className="p-2 w-24">Water</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-gray-100 text-sm">
-          {roomList.map((room: any) => {
-             const prev = prevReadings[room.id] || { electric: 0, water: 0 };
-             const curr = readings[room.id] || {};
-             
-             // Visual Usage Calc
-             const elecUsage = (curr.electric && prev.electric) ? curr.electric - prev.electric : 0;
-             const waterUsage = (curr.water && prev.water) ? curr.water - prev.water : 0;
-
-             return (
-              <tr key={room.id} className="hover:bg-gray-50">
-                <td className="p-2 text-center font-black text-slate-800">{room.room_number}</td>
-                
-                {/* ELECTRICITY */}
-                <td className="p-2 text-right text-gray-400 font-mono">{prev.electric || '-'}</td>
-                <td className="p-2 relative">
-                    <input 
-                        type="number" 
-                        value={curr.electric || ''} // <--- Controlled Input Fixed
-                        placeholder="0" 
-                        className="w-full border-2 border-yellow-200 focus:border-yellow-500 rounded p-1 font-bold text-slate-900 text-center outline-none" 
-                        onChange={(e) => handleInput(room.id, 'electric', e.target.value)} 
-                    />
-                    {elecUsage > 0 && <span className="absolute right-1 top-1 text-[10px] text-green-600 font-bold">+{elecUsage}</span>}
-                </td>
-
-                {/* WATER */}
-                <td className="p-2 text-right text-gray-400 font-mono">{prev.water || '-'}</td>
-                <td className="p-2 relative">
-                    <input 
-                        type="number" 
-                        value={curr.water || ''} // <--- Controlled Input Fixed
-                        placeholder="0" 
-                        className="w-full border-2 border-blue-200 focus:border-blue-500 rounded p-1 font-bold text-slate-900 text-center outline-none" 
-                        onChange={(e) => handleInput(room.id, 'water', e.target.value)} 
-                    />
-                    {waterUsage > 0 && <span className="absolute right-1 top-1 text-[10px] text-green-600 font-bold">+{waterUsage}</span>}
-                </td>
-              </tr>
-             );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
 
   return (
     <div className="p-6 bg-gray-50 min-h-screen">
@@ -184,7 +175,6 @@ export default function Meters() {
         <h1 className="text-3xl font-extrabold text-slate-900">⚡ Meter Readings</h1>
         
         <div className="flex gap-4">
-           {/* MONTH SELECTOR */}
            <select 
              value={selectedMonth} 
              onChange={e => setSelectedMonth(Number(e.target.value))} 
@@ -193,7 +183,6 @@ export default function Meters() {
              {MONTHS.map((m, i) => <option key={i} value={i+1}>{m}</option>)}
            </select>
 
-           {/* YEAR SELECTOR */}
            <select 
              value={selectedYear} 
              onChange={e => setSelectedYear(Number(e.target.value))} 
@@ -211,8 +200,21 @@ export default function Meters() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
-         <MeterTable title="Building 1" roomList={roomsB1} />
-         <MeterTable title="Building 2" roomList={roomsB2} />
+         {/* 2. Pass the function and data as PROPS */}
+         <MeterTable 
+            title="Building 1" 
+            roomList={roomsB1} 
+            readings={readings} 
+            prevReadings={prevReadings} 
+            onInput={handleInput} 
+         />
+         <MeterTable 
+            title="Building 2" 
+            roomList={roomsB2} 
+            readings={readings} 
+            prevReadings={prevReadings} 
+            onInput={handleInput} 
+         />
       </div>
     </div>
   );

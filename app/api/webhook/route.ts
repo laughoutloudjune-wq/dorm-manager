@@ -1,16 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { Client } from '@line/bot-sdk';
-import { createClient } from '@supabase/supabase-js'; // <--- CHANGED THIS
+import { createClient } from '@supabase/supabase-js';
 
-// 1. Setup LINE Client
 const client = new Client({
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN || '',
   channelSecret: process.env.LINE_CHANNEL_SECRET,
 });
 
-// 2. Setup Supabase ADMIN Client (This fixes the permission error)
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!; // <--- MAKE SURE THIS IS IN .env
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
 export async function POST(req: NextRequest) {
@@ -23,122 +21,103 @@ export async function POST(req: NextRequest) {
       const replyToken = event.replyToken;
 
       // ============================================================
-      // SCENARIO 1: TEXT MESSAGES
+      // 1. TEXT MESSAGE: Register / Connect
       // ============================================================
       if (event.type === 'message' && event.message.type === 'text') {
         const text = event.message.text.trim();
         const parts = text.split(/\s+/);
 
-        // Logic 1.A: Register (Room + Name)
         if (parts.length >= 2 && /^\d{3}\/[12]$/.test(parts[0])) {
           const inputRoom = parts[0];     
           const fullName = parts.slice(1).join(' '); 
 
-          // Check Room
-          const { data: room } = await supabase.from('rooms').select('id').eq('room_number', inputRoom).single();
+          // A. Find Room
+          const { data: room } = await supabase.from('rooms').select('id, allow_line_register, status').eq('room_number', inputRoom).single();
+          
           if (!room) {
             return client.replyMessage(replyToken, { type: 'text', text: `❌ ไม่พบห้อง ${inputRoom}` });
           }
 
-          // Register/Update Tenant
-          const { data: existingTenant } = await supabase.from('tenants').select('id').eq('room_id', room.id).single();
-          if (existingTenant) {
-            await supabase.from('tenants').update({ line_user_id: userId, name: fullName, status: 'active' }).eq('id', existingTenant.id);
-          } else {
-            await supabase.from('tenants').insert({ room_id: room.id, line_user_id: userId, name: fullName, status: 'active' });
-          }
-          await supabase.from('rooms').update({ status: 'occupied' }).eq('id', room.id);
+          // B. Check for Existing Tenant in this Room
+          const { data: existingTenant } = await supabase.from('tenants')
+             .select('id, line_user_id')
+             .eq('room_id', room.id)
+             .eq('status', 'active')
+             .single();
 
-          return client.replyMessage(replyToken, { type: 'text', text: `✅ ลงทะเบียนสำเร็จ!\nห้อง: ${inputRoom}\nชื่อ: ${fullName}` });
-        }
-        
-        // Logic 1.B: Helper (Forgot Name)
-        else if (/^\d{3}\/[12]$/.test(text)) {
-           return client.replyMessage(replyToken, { type: 'text', text: `⚠️ กรุณาพิมพ์ชื่อต่อท้ายเลขห้อง\nตัวอย่าง: ${text} สมชาย` });
+          // SCENARIO 1: Tenant exists, but NO LINE ID (Manual Move-in) -> CONNECT THEM
+          if (existingTenant && !existingTenant.line_user_id) {
+             await supabase.from('tenants').update({ line_user_id: userId, name: fullName }).eq('id', existingTenant.id);
+             return client.replyMessage(replyToken, { type: 'text', text: `✅ เชื่อมต่อข้อมูลสำเร็จ!\nห้อง: ${inputRoom}\nชื่อ: ${fullName}` });
+          }
+
+          // SCENARIO 2: Room is Vacant -> REGISTER NEW
+          // (Only allowed if 'Allow LINE Register' checkbox is ON)
+          if (!existingTenant) {
+              if (room.allow_line_register) {
+                  await supabase.from('tenants').insert({ room_id: room.id, line_user_id: userId, name: fullName, status: 'active' });
+                  await supabase.from('rooms').update({ status: 'occupied', allow_line_register: false }).eq('id', room.id);
+                  return client.replyMessage(replyToken, { type: 'text', text: `✅ ลงทะเบียนสำเร็จ!\nห้อง: ${inputRoom}\nชื่อ: ${fullName}` });
+              } else {
+                  return client.replyMessage(replyToken, { type: 'text', text: `🔒 ห้อง ${inputRoom} ไม่เปิดให้ลงทะเบียนผ่านไลน์ กรุณาติดต่อแอดมิน` });
+              }
+          }
+
+          // SCENARIO 3: Tenant exists AND has LINE ID -> ERROR
+          if (existingTenant && existingTenant.line_user_id) {
+             return client.replyMessage(replyToken, { type: 'text', text: `⚠️ ห้องนี้มีผู้ใช้งานลงทะเบียนแล้ว` });
+          }
         }
       }
 
       // ============================================================
-      // SCENARIO 2: IMAGES (Payment Slips)
+      // 2. IMAGE MESSAGE: Payment Slip
       // ============================================================
       else if (event.type === 'message' && event.message.type === 'image') {
-        
-        // 1. Identify Tenant
-        const { data: tenant } = await supabase
-          .from('tenants')
-          .select('room_id, rooms(room_number)')
-          .eq('line_user_id', userId)
-          .eq('status', 'active')
-          .single();
+        // Find tenant by LINE ID
+        const { data: tenant } = await supabase.from('tenants').select('room_id, rooms(room_number)').eq('line_user_id', userId).eq('status', 'active').single();
 
         if (!tenant) {
-           return client.replyMessage(replyToken, { type: 'text', text: "⚠️ คุณยังไม่ได้ลงทะเบียน กรุณาพิมพ์เลขห้องและชื่อก่อน" });
+           return client.replyMessage(replyToken, { type: 'text', text: "⚠️ คุณยังไม่ได้เชื่อมต่อข้อมูลห้องพัก\n\nกรุณาพิมพ์ 'เลขห้อง ชื่อสกุล' เพื่อเชื่อมต่อระบบก่อนครับ\nตัวอย่าง: 101/1 สมชาย" });
         }
 
         const roomData: any = tenant.rooms;
         const roomNumber = Array.isArray(roomData) ? roomData[0]?.room_number : roomData?.room_number;
 
-        // 2. Find Unpaid Invoice
+        // Find Unpaid Invoice
         const { data: invoice } = await supabase.from('invoices')
           .select('id, month, year')
           .eq('room_id', tenant.room_id)
           .neq('payment_status', 'paid')
-          .neq('payment_status', 'verification_pending')
           .order('year', { ascending: false }).order('month', { ascending: false })
           .limit(1)
           .single();
 
         if (!invoice) {
-           return client.replyMessage(replyToken, { type: 'text', text: `✅ ไม่มียอดค้างชำระสำหรับห้อง ${roomNumber} ครับ` });
+           return client.replyMessage(replyToken, { type: 'text', text: `✅ ไม่มียอดค้างชำระครับ` });
         }
 
-        // 3. Process Image
-        try {
-          // Tell user we are working on it (Prevents "Silent Failure" feeling)
-          // Note: Ideally we don't reply twice, but for uploading it helps to know it started.
+        // Upload
+        const messageId = event.message.id;
+        const stream = await client.getMessageContent(messageId);
+        const chunks: any[] = [];
+        for await (const chunk of stream) { chunks.push(chunk); }
+        const buffer = Buffer.concat(chunks);
+        const fileName = `${roomNumber.replace('/', '-')}_${invoice.month}_${invoice.year}_${Date.now()}.jpg`;
           
-          const messageId = event.message.id;
-          const stream = await client.getMessageContent(messageId);
-          const chunks: any[] = [];
-          for await (const chunk of stream) { chunks.push(chunk); }
-          const buffer = Buffer.concat(chunks);
+        const { error: uploadError } = await supabase.storage.from('slips').upload(fileName, buffer, { contentType: 'image/jpeg', upsert: true });
 
-          // Upload to Supabase
-          const safeRoomNum = roomNumber.replace('/', '-');
-          const fileName = `${safeRoomNum}_${invoice.month}_${invoice.year}_${Date.now()}.jpg`;
-          
-          // UPLOAD using the Service Key (The Fix)
-          const { error: uploadError } = await supabase.storage
-            .from('slips')
-            .upload(fileName, buffer, { contentType: 'image/jpeg', upsert: true });
-
-          if (uploadError) {
-             console.error("Upload Failed:", uploadError);
-             return client.replyMessage(replyToken, { type: 'text', text: `❌ ระบบบันทึกรูปไม่ได้: ${uploadError.message}` });
-          }
-
-          // 4. Update Invoice Status
+        if (!uploadError) {
           const { data: { publicUrl } } = supabase.storage.from('slips').getPublicUrl(fileName);
-          
-          await supabase.from('invoices')
-            .update({ slip_url: publicUrl, payment_status: 'verification_pending' })
-            .eq('id', invoice.id);
-
-          return client.replyMessage(replyToken, { 
-            type: 'text', 
-            text: `✅ ได้รับสลิปแล้วครับ\nห้อง: ${roomNumber}\nยอดเดือน: ${invoice.month}/${invoice.year}\n\nเจ้าหน้าที่จะตรวจสอบความถูกต้องครับ` 
-          });
-
-        } catch (err: any) {
-          console.error("Processing Error:", err);
-          return client.replyMessage(replyToken, { type: 'text', text: `❌ เกิดข้อผิดพลาด: ${err.message}` });
+          await supabase.from('invoices').update({ slip_url: publicUrl, payment_status: 'verification_pending' }).eq('id', invoice.id);
+          return client.replyMessage(replyToken, { type: 'text', text: `✅ ได้รับสลิปแล้ว (ห้อง ${roomNumber})` });
         }
       }
     }));
 
     return NextResponse.json({ status: 'success' });
   } catch (error) {
-    console.error("Critical Webhook Error:", error);
+    console.error(error);
     return NextResponse.json({ status: 'error' }, { status: 500 });
   }
 }
