@@ -64,6 +64,7 @@ type PrintSettings = {
   dorm_address: string | null;
   water_rate: number | null;
   electricity_rate: number | null;
+  billing_day: number | null;
   due_day: number | null;
   late_fee_start_day: number | null;
 };
@@ -98,7 +99,7 @@ const formatDateThai = (dateString: string) =>
 
 const monthStartFromDate = (dateString: string) => {
   const date = new Date(dateString);
-  return new Date(date.getFullYear(), date.getMonth(), 1).toISOString().slice(0, 10);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-01`;
 };
 
 const parsePaymentMethodText = (method: any): string => {
@@ -144,16 +145,15 @@ const clampDay = (value: number | null | undefined, min = 1, max = 28) => {
   return Math.floor(day);
 };
 
-const computeDueDateByDay = (issueDate: string, dueDay: number | null | undefined) => {
-  const date = new Date(issueDate);
-  const day = clampDay(dueDay ?? 5);
-  return new Date(date.getFullYear(), date.getMonth(), day).toISOString().slice(0, 10);
-};
+const toLocalDateString = (date: Date) =>
+  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
+    date.getDate()
+  ).padStart(2, "0")}`;
 
-const computeLateStartByDay = (issueDate: string, lateDay: number | null | undefined) => {
-  const date = new Date(issueDate);
-  const day = clampDay(lateDay ?? 6);
-  return new Date(date.getFullYear(), date.getMonth(), day).toISOString().slice(0, 10);
+const computeDateByDayInMonth = (baseDate: string, day: number | null | undefined) => {
+  const date = new Date(baseDate);
+  const normalized = clampDay(day ?? 1);
+  return toLocalDateString(new Date(date.getFullYear(), date.getMonth(), normalized));
 };
 
 function normalizeInvoice(row: any): InvoiceRecord {
@@ -302,7 +302,7 @@ export default function InvoicesPage() {
   const loadPrintConfig = async () => {
     const { data: settingData } = await supabase
       .from("settings")
-      .select("dorm_name,dorm_address,water_rate,electricity_rate,due_day,late_fee_start_day")
+      .select("dorm_name,dorm_address,water_rate,electricity_rate,billing_day,due_day,late_fee_start_day")
       .eq("id", 1)
       .maybeSingle();
     setPrintSettings((settingData as PrintSettings) ?? null);
@@ -338,13 +338,16 @@ export default function InvoicesPage() {
 
   const openInvoice = (invoice: InvoiceRecord) => {
     const feeItems = toFeeItems(invoice.additional_fees_breakdown ?? []);
-    const today = new Date().toISOString().slice(0, 10);
-    const dueDateFromSetting = computeDueDateByDay(today, printSettings?.due_day);
-    const lateStartFromSetting = computeLateStartByDay(today, printSettings?.late_fee_start_day);
+    const todayLocal = toLocalDateString(new Date());
+    const dueDateFromSetting = computeDateByDayInMonth(todayLocal, printSettings?.due_day);
+    const lateStartFromSetting = computeDateByDayInMonth(
+      todayLocal,
+      printSettings?.late_fee_start_day
+    );
     setActiveInvoice(invoice);
     setEditableFeeItems(feeItems.length > 0 ? feeItems : []);
     setForm({
-      issue_date: today,
+      issue_date: todayLocal,
       due_date: dueDateFromSetting,
       start_date: invoice.start_date,
       end_date: invoice.end_date,
@@ -701,11 +704,9 @@ export default function InvoicesPage() {
     setError(null);
 
     const [year, month] = selectedMonth.split("-").map(Number);
-    const monthStart = new Date(year, month - 1, 1);
-    const issueDate = new Date(monthStart);
     const startDate = new Date(year, month - 1, 1);
     const endDate = new Date(year, month, 0);
-    const monthKey = new Date(year, month - 1, 1).toISOString().slice(0, 10);
+    const monthKey = toLocalDateString(new Date(year, month - 1, 1));
 
     const { data: settings, error: settingsError } = await supabase
       .from("settings")
@@ -722,13 +723,17 @@ export default function InvoicesPage() {
       return;
     }
 
-    const billingDay = clampDay((settings as any).billing_day ?? 1);
     const dueDay = clampDay((settings as any).due_day ?? 5);
     const lateFeeStartDay = clampDay((settings as any).late_fee_start_day ?? 6);
     const lateFeePerDay = toNumber((settings as any).late_fee_per_day ?? 0);
-    const issueDateBySetting = new Date(year, month - 1, billingDay);
-    const generatedDueDate = new Date(year, month - 1, dueDay);
-    const generatedLateFeeStartDate = new Date(year, month - 1, lateFeeStartDay);
+    const issueDateToday = new Date();
+    const issueDateText = toLocalDateString(issueDateToday);
+    const generatedDueDateText = toLocalDateString(
+      new Date(issueDateToday.getFullYear(), issueDateToday.getMonth(), dueDay)
+    );
+    const generatedLateFeeStartDateText = toLocalDateString(
+      new Date(issueDateToday.getFullYear(), issueDateToday.getMonth(), lateFeeStartDay)
+    );
 
     const { data: occupiedRooms, error: roomError } = await supabase
       .from("rooms")
@@ -774,7 +779,7 @@ export default function InvoicesPage() {
       const placeholderTenants = missingTenantRooms.map((room: any) => ({
         room_id: room.id,
         full_name: `ผู้เช่าห้อง ${room.room_number}`,
-        move_in_date: issueDate.toISOString().slice(0, 10),
+        move_in_date: issueDateText,
         status: "active",
       }));
 
@@ -813,8 +818,8 @@ export default function InvoicesPage() {
     const { data: existingInvoices, error: existingError } = await supabase
       .from("invoices")
       .select("room_id")
-      .eq("start_date", startDate.toISOString().slice(0, 10))
-      .eq("end_date", endDate.toISOString().slice(0, 10))
+      .eq("start_date", toLocalDateString(startDate))
+      .eq("end_date", toLocalDateString(endDate))
       .in("room_id", roomIds);
 
     if (existingError) {
@@ -893,17 +898,17 @@ export default function InvoicesPage() {
       return {
         tenant_id: tenant.id,
         room_id: tenant.room_id,
-        issue_date: issueDateBySetting.toISOString().slice(0, 10),
-        due_date: generatedDueDate.toISOString().slice(0, 10),
-        start_date: startDate.toISOString().slice(0, 10),
-        end_date: endDate.toISOString().slice(0, 10),
+        issue_date: issueDateText,
+        due_date: generatedDueDateText,
+        start_date: toLocalDateString(startDate),
+        end_date: toLocalDateString(endDate),
         rent_amount: rentAmount,
         water_bill: waterBill,
         electricity_bill: elecBill,
         common_fee: commonFee,
         late_fee_amount: lateFeeAmount,
         late_fee_per_day: lateFeePerDay,
-        late_fee_start_date: generatedLateFeeStartDate.toISOString().slice(0, 10),
+        late_fee_start_date: generatedLateFeeStartDateText,
         additional_fees_total: additionalTotal,
         additional_fees_breakdown: additionalBreakdown,
         total_amount: totalAmount,

@@ -10,7 +10,7 @@ import { Save } from "lucide-react";
 type RoomRow = {
   id: string;
   room_number: string;
-  buildings: { name: string }[] | null;
+  buildings: { name: string }[] | { name: string } | null;
 };
 
 type MeterRow = {
@@ -119,7 +119,9 @@ export default function MetersPage() {
         water_usage: toNumber(currentWater) - toNumber(previousWater),
       };
 
-      const buildingName = room.buildings?.[0]?.name ?? "Unassigned";
+      const buildingName = Array.isArray(room.buildings)
+        ? room.buildings[0]?.name ?? "Unassigned"
+        : room.buildings?.name ?? "Unassigned";
       if (!grouped[buildingName]) grouped[buildingName] = [];
       grouped[buildingName].push(row);
     });
@@ -247,7 +249,7 @@ export default function MetersPage() {
           Loading readings...
         </div>
       ) : (
-        <div className="grid gap-6 xl:grid-cols-2">
+        <div className="grid gap-6 lg:grid-cols-2">
           {sortedBuildings.map(([building, buildingRows]) => (
           <div key={building} className="space-y-3">
             <div className="flex items-center justify-between">
