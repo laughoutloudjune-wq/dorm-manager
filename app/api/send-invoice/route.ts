@@ -104,8 +104,7 @@ export async function POST(req: Request) {
           type: "box",
           layout: "vertical",
           contents: [
-            { type: "text", text: "ใบแจ้งหนี้ค่าเช่า", weight: "bold", color: "#1DB446", size: "sm" },
-            { type: "text", text: "DormManager", weight: "bold", size: "xxl", margin: "md", color: "#FFFFFF" },
+            { type: "text", text: "ใบแจ้งหนี้", weight: "bold", size: "xxl", color: "#FFFFFF" },
             { type: "text", text: `รอบบิล: ${periodText}`, size: "xs", color: "#cccccc", margin: "md" },
           ],
           paddingAll: "20px",
@@ -120,7 +119,13 @@ export async function POST(req: Request) {
               layout: "horizontal",
               contents: [
                 { type: "text", text: "ห้อง", size: "sm", color: "#555555", flex: 0 },
-                { type: "text", text: String(resolved.roomNumber), size: "sm", color: "#111111", align: "end" },
+                {
+                  type: "text",
+                  text: String(resolved.roomNumber),
+                  size: "sm",
+                  color: "#111111",
+                  align: "end",
+                },
               ],
             },
             { type: "separator", margin: "lg" },
@@ -142,7 +147,13 @@ export async function POST(req: Request) {
               ],
             },
             { type: "separator", margin: "lg" },
-            { type: "text", text: `ครบกำหนดชำระ: ${dueDateText}`, size: "xs", color: "#666666", margin: "md" },
+            {
+              type: "text",
+              text: `ครบกำหนดชำระ: ${dueDateText}`,
+              size: "xs",
+              color: "#666666",
+              margin: "md",
+            },
             {
               type: "text",
               text: `ค่าเช่า ${formatMoney(Number(resolved.rentAmount))} | ค่าน้ำ ${formatMoney(

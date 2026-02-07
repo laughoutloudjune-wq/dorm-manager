@@ -1,7 +1,6 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { createClient } from "@/lib/supabase-client";
 
 type LiffProfile = {
   userId: string;
@@ -12,13 +11,15 @@ type LiffProfile = {
 type RoomSuggestion = {
   id: string;
   room_number: string;
-  building_name?: string;
+  building_name?: string | null;
 };
 
 const NGROK_SKIP_QUERY = "ngrok-skip-browser-warning=true";
 
+const roomNumberCompare = (a: string, b: string) =>
+  a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+
 export default function RegisterPage() {
-  const supabase = useMemo(() => createClient(), []);
   const [profile, setProfile] = useState<LiffProfile | null>(null);
   const [roomNumber, setRoomNumber] = useState("");
   const [fullName, setFullName] = useState("");
@@ -26,6 +27,7 @@ export default function RegisterPage() {
   const [status, setStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [suggestLoading, setSuggestLoading] = useState(false);
 
   useEffect(() => {
     const init = async () => {
@@ -47,6 +49,7 @@ export default function RegisterPage() {
           setLoading(false);
           return;
         }
+
         await liff.init({ liffId });
         if (!liff.isLoggedIn()) {
           liff.login({
@@ -54,6 +57,7 @@ export default function RegisterPage() {
           });
           return;
         }
+
         const nextProfile = await liff.getProfile();
         setProfile({
           userId: nextProfile.userId,
@@ -71,37 +75,56 @@ export default function RegisterPage() {
   }, []);
 
   useEffect(() => {
+    const keyword = roomNumber.trim();
+    const controller = new AbortController();
+
     const loadSuggestions = async () => {
-      const keyword = roomNumber.trim();
-      if (keyword.length < 1) {
+      if (!keyword) {
         setSuggestions([]);
         return;
       }
 
-      const { data, error } = await supabase
-        .from("rooms")
-        .select("id,room_number,buildings(name)")
-        .eq("status", "available")
-        .ilike("room_number", `${keyword}%`)
-        .order("room_number", { ascending: true })
-        .limit(8);
+      setSuggestLoading(true);
+      try {
+        const response = await fetch(
+          `/api/register/available-rooms?query=${encodeURIComponent(keyword)}`,
+          {
+            headers: { "ngrok-skip-browser-warning": "true" },
+            signal: controller.signal,
+          }
+        );
+        const data = await response.json();
+        if (!response.ok) {
+          setSuggestions([]);
+          return;
+        }
 
-      if (error) return;
+        const next = ((data.rooms ?? []) as RoomSuggestion[]).sort((a, b) => {
+          const byBuilding = (a.building_name ?? "").localeCompare(b.building_name ?? "", undefined, {
+            numeric: true,
+            sensitivity: "base",
+          });
+          if (byBuilding !== 0) return byBuilding;
+          return roomNumberCompare(a.room_number, b.room_number);
+        });
 
-      const rows = (data ?? []).map((row: any) => {
-        const building = Array.isArray(row.buildings) ? row.buildings[0] : row.buildings;
-        return {
-          id: row.id,
-          room_number: row.room_number,
-          building_name: building?.name,
-        };
-      });
-
-      setSuggestions(rows);
+        setSuggestions(next);
+      } catch {
+        setSuggestions([]);
+      } finally {
+        setSuggestLoading(false);
+      }
     };
 
-    void loadSuggestions();
-  }, [roomNumber, supabase]);
+    const timer = setTimeout(() => {
+      void loadSuggestions();
+    }, 200);
+
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [roomNumber]);
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -134,6 +157,8 @@ export default function RegisterPage() {
     }
     setSubmitting(false);
   };
+
+  const showSuggestions = useMemo(() => roomNumber.trim().length > 0, [roomNumber]);
 
   return (
     <div className="min-h-screen bg-slate-50 px-4 py-12">
@@ -169,23 +194,34 @@ export default function RegisterPage() {
                   onChange={(event) => setRoomNumber(event.target.value)}
                   className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm"
                   required
-                  list="room-number-suggestion"
                   placeholder="เช่น 101"
                 />
-                <datalist id="room-number-suggestion">
-                  {suggestions.map((room) => (
-                    <option key={room.id} value={room.room_number}>
-                      {room.building_name
-                        ? `${room.room_number} (${room.building_name})`
-                        : room.room_number}
-                    </option>
-                  ))}
-                </datalist>
               </label>
 
-              {suggestions.length > 0 && (
-                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
-                  พบเลขห้องในระบบ: {suggestions.map((item) => item.room_number).join(", ")}
+              {showSuggestions && (
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-2">
+                  <p className="px-2 py-1 text-xs text-slate-500">
+                    {suggestLoading ? "กำลังค้นหาห้องว่าง..." : "ห้องว่างที่ตรงกับข้อมูล"}
+                  </p>
+                  <div className="max-h-44 space-y-1 overflow-auto">
+                    {suggestions.map((room) => (
+                      <button
+                        key={room.id}
+                        type="button"
+                        onClick={() => {
+                          setRoomNumber(room.room_number);
+                          setSuggestions([]);
+                        }}
+                        className="w-full rounded-lg px-3 py-2 text-left text-sm text-slate-700 hover:bg-white"
+                      >
+                        {room.room_number}
+                        {room.building_name ? ` (${room.building_name})` : ""}
+                      </button>
+                    ))}
+                    {!suggestLoading && suggestions.length === 0 && (
+                      <p className="px-3 py-2 text-xs text-slate-500">ไม่พบห้องว่างที่ตรงกับเลขห้องที่พิมพ์</p>
+                    )}
+                  </div>
                 </div>
               )}
 

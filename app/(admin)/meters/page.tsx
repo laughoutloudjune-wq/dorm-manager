@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/Badge";
 import { Input } from "@/components/ui/Input";
 import { createClient } from "@/lib/supabase-client";
@@ -45,6 +45,7 @@ const toNumber = (value: string | number) => {
 
 export default function MetersPage() {
   const supabase = useMemo(() => createClient(), []);
+  const inputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const [selectedMonth, setSelectedMonth] = useState(() => new Date().toISOString().slice(0, 7));
   const [rows, setRows] = useState<Record<string, MeterRow[]>>({});
   const [loading, setLoading] = useState(true);
@@ -122,6 +123,11 @@ export default function MetersPage() {
       if (!grouped[buildingName]) grouped[buildingName] = [];
       grouped[buildingName].push(row);
     });
+    for (const building of Object.keys(grouped)) {
+      grouped[building].sort((a, b) =>
+        a.room_number.localeCompare(b.room_number, undefined, { numeric: true, sensitivity: "base" })
+      );
+    }
 
     setRows(grouped);
     setLoading(false);
@@ -180,6 +186,40 @@ export default function MetersPage() {
     }
   };
 
+  const sortedBuildings = useMemo(
+    () =>
+      Object.entries(rows).sort(([a], [b]) =>
+        a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" })
+      ),
+    [rows]
+  );
+
+  const focusNextRowInput = (
+    currentBuilding: string,
+    roomId: string,
+    field: "current_electricity" | "current_water"
+  ) => {
+    const buildingIndex = sortedBuildings.findIndex(([building]) => building === currentBuilding);
+    if (buildingIndex < 0) return;
+    const currentRows = sortedBuildings[buildingIndex][1];
+    const rowIndex = currentRows.findIndex((row) => row.room_id === roomId);
+    if (rowIndex < 0) return;
+
+    let nextBuildingIndex = buildingIndex;
+    let nextRowIndex = rowIndex + 1;
+    if (nextRowIndex >= currentRows.length) {
+      nextBuildingIndex = buildingIndex + 1;
+      nextRowIndex = 0;
+    }
+    const nextBuildingRows = sortedBuildings[nextBuildingIndex]?.[1];
+    const nextBuildingName = sortedBuildings[nextBuildingIndex]?.[0];
+    const nextRoom = nextBuildingRows?.[nextRowIndex];
+    if (!nextBuildingName || !nextRoom) return;
+
+    const key = `${nextBuildingName}:${nextRoom.room_id}:${field}`;
+    inputRefs.current[key]?.focus();
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -207,7 +247,8 @@ export default function MetersPage() {
           Loading readings...
         </div>
       ) : (
-        Object.entries(rows).map(([building, buildingRows]) => (
+        <div className="grid gap-6 xl:grid-cols-2">
+          {sortedBuildings.map(([building, buildingRows]) => (
           <div key={building} className="space-y-3">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold text-slate-900">{building}</h2>
@@ -235,6 +276,15 @@ export default function MetersPage() {
                         <input
                           type="number"
                           value={row.current_electricity}
+                          ref={(element) => {
+                            inputRefs.current[`${building}:${row.room_id}:current_electricity`] = element;
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              focusNextRowInput(building, row.room_id, "current_electricity");
+                            }
+                          }}
                           onChange={(event) =>
                             updateMeter(
                               building,
@@ -256,6 +306,15 @@ export default function MetersPage() {
                         <input
                           type="number"
                           value={row.current_water}
+                          ref={(element) => {
+                            inputRefs.current[`${building}:${row.room_id}:current_water`] = element;
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              focusNextRowInput(building, row.room_id, "current_water");
+                            }
+                          }}
                           onChange={(event) =>
                             updateMeter(
                               building,
@@ -278,7 +337,8 @@ export default function MetersPage() {
               </table>
             </div>
           </div>
-        ))
+        ))}
+        </div>
       )}
 
       <ConfirmActionModal

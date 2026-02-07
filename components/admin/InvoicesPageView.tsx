@@ -64,6 +64,8 @@ type PrintSettings = {
   dorm_address: string | null;
   water_rate: number | null;
   electricity_rate: number | null;
+  due_day: number | null;
+  late_fee_start_day: number | null;
 };
 
 type PaymentMethodRow = {
@@ -140,6 +142,18 @@ const clampDay = (value: number | null | undefined, min = 1, max = 28) => {
   if (day < min) return min;
   if (day > max) return max;
   return Math.floor(day);
+};
+
+const computeDueDateByDay = (issueDate: string, dueDay: number | null | undefined) => {
+  const date = new Date(issueDate);
+  const day = clampDay(dueDay ?? 5);
+  return new Date(date.getFullYear(), date.getMonth(), day).toISOString().slice(0, 10);
+};
+
+const computeLateStartByDay = (issueDate: string, lateDay: number | null | undefined) => {
+  const date = new Date(issueDate);
+  const day = clampDay(lateDay ?? 6);
+  return new Date(date.getFullYear(), date.getMonth(), day).toISOString().slice(0, 10);
 };
 
 function normalizeInvoice(row: any): InvoiceRecord {
@@ -264,7 +278,17 @@ export default function InvoicesPage() {
         })
       );
 
-      setInvoices(hydrated);
+      const sortedHydrated = [...hydrated].sort((a, b) => {
+        const byBuilding = a.building_name.localeCompare(b.building_name, undefined, {
+          numeric: true,
+          sensitivity: "base",
+        });
+        if (byBuilding !== 0) return byBuilding;
+        const byRoom = roomNumberCompare(a.room_number, b.room_number);
+        if (byRoom !== 0) return byRoom;
+        return new Date(b.issue_date).getTime() - new Date(a.issue_date).getTime();
+      });
+      setInvoices(sortedHydrated);
     }
 
     setLoading(false);
@@ -278,7 +302,7 @@ export default function InvoicesPage() {
   const loadPrintConfig = async () => {
     const { data: settingData } = await supabase
       .from("settings")
-      .select("dorm_name,dorm_address,water_rate,electricity_rate")
+      .select("dorm_name,dorm_address,water_rate,electricity_rate,due_day,late_fee_start_day")
       .eq("id", 1)
       .maybeSingle();
     setPrintSettings((settingData as PrintSettings) ?? null);
@@ -314,11 +338,14 @@ export default function InvoicesPage() {
 
   const openInvoice = (invoice: InvoiceRecord) => {
     const feeItems = toFeeItems(invoice.additional_fees_breakdown ?? []);
+    const today = new Date().toISOString().slice(0, 10);
+    const dueDateFromSetting = computeDueDateByDay(today, printSettings?.due_day);
+    const lateStartFromSetting = computeLateStartByDay(today, printSettings?.late_fee_start_day);
     setActiveInvoice(invoice);
     setEditableFeeItems(feeItems.length > 0 ? feeItems : []);
     setForm({
-      issue_date: invoice.issue_date,
-      due_date: invoice.due_date,
+      issue_date: today,
+      due_date: dueDateFromSetting,
       start_date: invoice.start_date,
       end_date: invoice.end_date,
       rent_amount: invoice.rent_amount,
@@ -327,7 +354,7 @@ export default function InvoicesPage() {
       common_fee: invoice.common_fee,
       late_fee_amount: invoice.late_fee_amount,
       late_fee_per_day: invoice.late_fee_per_day,
-      late_fee_start_date: invoice.late_fee_start_date ?? "",
+      late_fee_start_date: lateStartFromSetting,
       additional_fees_total:
         feeItems.length > 0 ? feeItemsTotal(feeItems) : invoice.additional_fees_total,
       total_amount: invoice.total_amount,
@@ -1068,6 +1095,19 @@ export default function InvoicesPage() {
       >
         {activeInvoice && (
           <div className="space-y-6">
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Invoice</p>
+                  <p className="text-lg font-semibold text-slate-900">Room {activeInvoice.room_number}</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-xs text-slate-400">Total</p>
+                  <p className="text-xl font-semibold text-blue-700">{formatMoney(form.total_amount)}</p>
+                </div>
+              </div>
+            </div>
+
             <div className="grid gap-4 md:grid-cols-2">
               <Input
                 label="Issue Date"
@@ -1080,18 +1120,6 @@ export default function InvoicesPage() {
                 type="date"
                 value={form.due_date}
                 onChange={(event) => updateForm("due_date", event.target.value)}
-              />
-              <Input
-                label="Period Start"
-                type="date"
-                value={form.start_date}
-                onChange={(event) => updateForm("start_date", event.target.value)}
-              />
-              <Input
-                label="Period End"
-                type="date"
-                value={form.end_date}
-                onChange={(event) => updateForm("end_date", event.target.value)}
               />
               <Input
                 label="Rent Amount"
@@ -1122,18 +1150,6 @@ export default function InvoicesPage() {
                 type="number"
                 value={form.late_fee_amount}
                 onChange={(event) => updateForm("late_fee_amount", event.target.value)}
-              />
-              <Input
-                label="Late Fee Per Day"
-                type="number"
-                value={form.late_fee_per_day}
-                onChange={(event) => updateForm("late_fee_per_day", event.target.value)}
-              />
-              <Input
-                label="Late Fee Start Date"
-                type="date"
-                value={form.late_fee_start_date}
-                onChange={(event) => updateForm("late_fee_start_date", event.target.value)}
               />
               <Input
                 label="Additional Fees Total"
@@ -1186,7 +1202,7 @@ export default function InvoicesPage() {
                     </thead>
                     <tbody>
                       {editableFeeItems.map((item, index) => (
-                        <tr key={`${item.detail}-${index}`} className="border-t border-slate-100">
+                        <tr key={index} className="border-t border-slate-100">
                           <td className="px-2 py-2">
                             <input
                               type="text"

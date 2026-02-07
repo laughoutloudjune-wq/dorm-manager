@@ -33,7 +33,16 @@ ADD COLUMN IF NOT EXISTS price_month NUMERIC(10, 2);
 -- This preserves all existing data.
 ALTER TABLE public.tenants
 ADD COLUMN IF NOT EXISTS custom_payment_method JSONB,
-ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active';
+ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active',
+ADD COLUMN IF NOT EXISTS address TEXT,
+ADD COLUMN IF NOT EXISTS lease_months INT,
+ADD COLUMN IF NOT EXISTS initial_electricity_reading NUMERIC(10, 2) DEFAULT 0,
+ADD COLUMN IF NOT EXISTS initial_water_reading NUMERIC(10, 2) DEFAULT 0,
+ADD COLUMN IF NOT EXISTS advance_rent_amount NUMERIC(10, 2) DEFAULT 0,
+ADD COLUMN IF NOT EXISTS security_deposit_amount NUMERIC(10, 2) DEFAULT 0,
+ADD COLUMN IF NOT EXISTS deposit_slip_url TEXT,
+ADD COLUMN IF NOT EXISTS final_electricity_reading NUMERIC(10, 2),
+ADD COLUMN IF NOT EXISTS final_water_reading NUMERIC(10, 2);
 
 COMMENT ON COLUMN public.tenants.custom_payment_method IS 'Overrides default payment method. {"type": "bank", "details": {...}} or {"type": "qr", "url": "..."}';
 
@@ -178,6 +187,80 @@ BEGIN
         ON storage.objects FOR SELECT
         TO public
         USING (bucket_id = 'payment_slips');
+    END IF;
+END
+$$;
+
+-- 11. Storage bucket for payment method QR uploads
+INSERT INTO storage.buckets (id, name, public)
+VALUES ('payment-methods', 'payment-methods', true)
+ON CONFLICT (id) DO NOTHING;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies
+        WHERE schemaname = 'storage'
+          AND tablename = 'objects'
+          AND policyname = 'payment_methods_public_insert'
+    ) THEN
+        CREATE POLICY payment_methods_public_insert
+        ON storage.objects FOR INSERT
+        TO public
+        WITH CHECK (bucket_id = 'payment-methods');
+    END IF;
+END
+$$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies
+        WHERE schemaname = 'storage'
+          AND tablename = 'objects'
+          AND policyname = 'payment_methods_public_select'
+    ) THEN
+        CREATE POLICY payment_methods_public_select
+        ON storage.objects FOR SELECT
+        TO public
+        USING (bucket_id = 'payment-methods');
+    END IF;
+END
+$$;
+
+-- 12. Storage bucket for tenant deposit/contract documents
+INSERT INTO storage.buckets (id, name, public)
+VALUES ('tenant-docs', 'tenant-docs', true)
+ON CONFLICT (id) DO NOTHING;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies
+        WHERE schemaname = 'storage'
+          AND tablename = 'objects'
+          AND policyname = 'tenant_docs_public_insert'
+    ) THEN
+        CREATE POLICY tenant_docs_public_insert
+        ON storage.objects FOR INSERT
+        TO public
+        WITH CHECK (bucket_id = 'tenant-docs');
+    END IF;
+END
+$$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies
+        WHERE schemaname = 'storage'
+          AND tablename = 'objects'
+          AND policyname = 'tenant_docs_public_select'
+    ) THEN
+        CREATE POLICY tenant_docs_public_select
+        ON storage.objects FOR SELECT
+        TO public
+        USING (bucket_id = 'tenant-docs');
     END IF;
 END
 $$;

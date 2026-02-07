@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useState } from "react";
 
@@ -21,6 +21,7 @@ const NGROK_SKIP_QUERY = "ngrok-skip-browser-warning=true";
 export default function PaymentLiffPage() {
   const [profile, setProfile] = useState<LiffProfile | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [showRegisterButton, setShowRegisterButton] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -76,9 +77,16 @@ export default function PaymentLiffPage() {
           return;
         }
 
+        if (!data?.tenant) {
+          setMessage(data?.message ?? "ยังไม่ได้ลงทะเบียนผู้เช่า");
+          setShowRegisterButton(true);
+          setLoading(false);
+          return;
+        }
+
         const invoices = (data.invoices ?? []) as InvoiceRow[];
         if (invoices.length === 0) {
-          setMessage(data.message ?? "ไม่พบบิลค้างชำระ");
+          setMessage("ไม่พบบิลค้างชำระ");
           setLoading(false);
           return;
         }
@@ -105,7 +113,6 @@ export default function PaymentLiffPage() {
         {profile && (
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <p className="text-sm font-semibold text-slate-900">{profile.displayName}</p>
-            <p className="text-xs text-slate-500">LINE ID: {profile.userId}</p>
           </div>
         )}
 
@@ -114,7 +121,19 @@ export default function PaymentLiffPage() {
             กำลังโหลดข้อมูล...
           </div>
         ) : (
-          message && <div className="rounded-xl bg-slate-100 p-3 text-sm text-slate-600">{message}</div>
+          <div className="space-y-3">
+            {message && (
+              <div className="rounded-xl bg-slate-100 p-3 text-sm text-slate-700">{message}</div>
+            )}
+            {showRegisterButton && (
+              <a
+                href="/register"
+                className="block rounded-xl bg-blue-600 px-4 py-2.5 text-center text-sm font-semibold text-white"
+              >
+                ไปหน้าลงทะเบียนผู้เช่า
+              </a>
+            )}
+          </div>
         )}
       </div>
     </div>

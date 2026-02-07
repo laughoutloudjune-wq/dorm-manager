@@ -278,9 +278,10 @@ export default function SettingsPage() {
       qr_url: method.qr_url,
     }));
 
-    const existingRows = cleaned.filter((row) => row.id);
+    const existingIdSet = new Set(initialMethodIds);
+    const existingRows = cleaned.filter((row) => row.id && existingIdSet.has(row.id));
     const newRows = cleaned
-      .filter((row) => !row.id)
+      .filter((row) => !row.id || (row.id && !existingIdSet.has(row.id)))
       .map(({ id, ...rest }) => rest);
 
     for (const row of existingRows) {

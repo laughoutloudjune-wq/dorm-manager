@@ -55,12 +55,21 @@ CREATE TABLE public.tenants (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   room_id UUID REFERENCES public.rooms(id) ON DELETE RESTRICT,
   full_name TEXT NOT NULL,
+  address TEXT,
   phone_number TEXT,
   email TEXT,
   line_user_id TEXT UNIQUE,
   move_in_date DATE NOT NULL,
   move_out_date DATE,
   status TEXT NOT NULL DEFAULT 'active',
+  lease_months INT,
+  initial_electricity_reading NUMERIC(10,2) DEFAULT 0,
+  initial_water_reading NUMERIC(10,2) DEFAULT 0,
+  advance_rent_amount NUMERIC(10,2) DEFAULT 0,
+  security_deposit_amount NUMERIC(10,2) DEFAULT 0,
+  deposit_slip_url TEXT,
+  final_electricity_reading NUMERIC(10,2),
+  final_water_reading NUMERIC(10,2),
   custom_payment_method JSONB,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -188,6 +197,80 @@ BEGIN
     ON storage.objects FOR INSERT
     TO public
     WITH CHECK (bucket_id = 'payment_slips');
+  END IF;
+END
+$$;
+
+-- Storage bucket for tenant deposit/contract documents
+INSERT INTO storage.buckets (id, name, public)
+VALUES ('tenant-docs', 'tenant-docs', true)
+ON CONFLICT (id) DO NOTHING;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'storage'
+      AND tablename = 'objects'
+      AND policyname = 'tenant_docs_public_insert'
+  ) THEN
+    CREATE POLICY tenant_docs_public_insert
+    ON storage.objects FOR INSERT
+    TO public
+    WITH CHECK (bucket_id = 'tenant-docs');
+  END IF;
+END
+$$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'storage'
+      AND tablename = 'objects'
+      AND policyname = 'tenant_docs_public_select'
+  ) THEN
+    CREATE POLICY tenant_docs_public_select
+    ON storage.objects FOR SELECT
+    TO public
+    USING (bucket_id = 'tenant-docs');
+  END IF;
+END
+$$;
+
+-- Storage bucket for payment method QR uploads
+INSERT INTO storage.buckets (id, name, public)
+VALUES ('payment-methods', 'payment-methods', true)
+ON CONFLICT (id) DO NOTHING;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'storage'
+      AND tablename = 'objects'
+      AND policyname = 'payment_methods_public_insert'
+  ) THEN
+    CREATE POLICY payment_methods_public_insert
+    ON storage.objects FOR INSERT
+    TO public
+    WITH CHECK (bucket_id = 'payment-methods');
+  END IF;
+END
+$$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'storage'
+      AND tablename = 'objects'
+      AND policyname = 'payment_methods_public_select'
+  ) THEN
+    CREATE POLICY payment_methods_public_select
+    ON storage.objects FOR SELECT
+    TO public
+    USING (bucket_id = 'payment-methods');
   END IF;
 END
 $$;
