@@ -1,45 +1,19 @@
-@import "tailwindcss";
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+@layer base {
+  html {
+    font-family: var(--font-sarabun), system-ui, sans-serif;
+  }
+
+  body {
+    @apply bg-slate-50 text-slate-900 antialiased;
+  }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-}
-
-/* --- STRICT PRINT STYLES --- */
-@media print {
-  /* 1. Hide the entire body */
-  body > * {
-    display: none !important;
-  }
-
-  /* 2. Un-hide ONLY the invoice preview container */
-  body:has(#invoice-preview) #invoice-preview-container {
-    display: block !important;
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    background: white;
-    z-index: 9999;
-  }
-
-  /* 3. Ensure the invoice content itself is visible */
-  #invoice-preview {
-    display: block !important;
-    width: 100% !important;
-    box-shadow: none !important;
-    margin: 0 !important;
-    padding: 0 !important;
-  }
-
-  /* 4. Strictly hide buttons */
-  .no-print {
-    display: none !important;
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
   }
 }

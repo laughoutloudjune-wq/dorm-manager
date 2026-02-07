@@ -1,151 +1,205 @@
-import { NextResponse } from 'next/server';
-import { Client } from '@line/bot-sdk';
-import { createClient } from '@supabase/supabase-js';
+import { NextResponse } from "next/server";
+import { Client, FlexMessage } from "@line/bot-sdk";
+import { createAdminClient } from "@/lib/supabase-admin";
+
+const channelAccessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN || "";
 
 const client = new Client({
-  channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN || '',
-  channelSecret: process.env.LINE_CHANNEL_SECRET,
+  channelAccessToken,
 });
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!; 
-const supabase = createClient(supabaseUrl, supabaseServiceKey);
+const formatMoney = (value: number) =>
+  Number(value || 0).toLocaleString("th-TH", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
 
 export async function POST(req: Request) {
   try {
+    if (!channelAccessToken) {
+      return NextResponse.json(
+        { error: "LINE channel access token is missing in environment." },
+        { status: 500 }
+      );
+    }
+
     const body = await req.json();
-    
-    // 1. รับค่าทั้งหมดที่จำเป็น (รวมถึงรายการใหม่ๆ)
-    const { 
-      userId, roomNumber, month, year, roomId,
-      rent = 0, 
-      waterUnit = 0, waterPrice = 0, 
-      elecUnit = 0, elecPrice = 0, 
-      commonFee = 0,    // ค่าส่วนกลาง
-      lateFee = 0,      // ค่าปรับ
-      otherFees = 0,    // ค่าอื่นๆ
-      discount = 0,     // ส่วนลด
-      total = 0
-    } = body;
+    const { userId, roomNumber, month, year, total, publicToken, invoiceId } = body ?? {};
 
-    if (!userId) return NextResponse.json({ error: 'User ID missing' }, { status: 400 });
-
-    // 2. ดึงข้อมูลการชำระเงินของผู้เช่า
-    const { data: tenant } = await supabase
-      .from('tenants')
-      .select('payment_methods(bank_name, account_number, account_name, qr_url, type)')
-      .eq('room_id', roomId)
-      .eq('status', 'active')
-      .single();
-
-    const payMethod: any = Array.isArray(tenant?.payment_methods) 
-      ? tenant.payment_methods[0] 
-      : tenant?.payment_methods;
-
-    // 3. สร้างรายการบิล (Invoice Rows) แบบ Dynamic
-    // ฟังก์ชันช่วยสร้างแถวรายการ เพื่อลดความซ้ำซ้อน
-    const createRow = (label: string, value: number, color: string = "#555555", prefix: string = "") => ({
-      type: "box", 
-      layout: "horizontal", 
-      contents: [
-        { type: "text", text: label, size: "sm", color: "#555555", flex: 3 }, 
-        { type: "text", text: `${prefix}${Number(value).toLocaleString()}`, size: "sm", align: "end", flex: 2, color: color }
-      ]
-    });
-
-    // เริ่มต้นใส่รายการพื้นฐาน
-    const invoiceDetails: any[] = [
-      createRow("ค่าเช่าห้อง", rent),
-      createRow(`ค่าไฟ (${elecUnit} หน่วย)`, elecPrice),
-      createRow(`ค่าน้ำ (${waterUnit} หน่วย)`, waterPrice),
-    ];
-
-    // ตรวจสอบรายการเสริม ถ้ามีให้เพิ่มเข้าไป
-    if (commonFee > 0) {
-      invoiceDetails.push(createRow("ค่าส่วนกลาง", commonFee));
-    }
-    if (otherFees > 0) {
-      invoiceDetails.push(createRow("ค่าอื่นๆ", otherFees));
-    }
-    if (lateFee > 0) {
-      invoiceDetails.push(createRow("ค่าปรับล่าช้า", lateFee, "#ef4444")); // สีแดง
-    }
-    if (discount > 0) {
-      invoiceDetails.push(createRow("ส่วนลด", discount, "#22c55e", "-")); // สีเขียว และใส่เครื่องหมายลบ
+    if (!userId) {
+      return NextResponse.json({ error: "Missing LINE user ID." }, { status: 400 });
     }
 
-    // เพิ่มเส้นกั้นและยอดรวม
-    invoiceDetails.push({ type: "separator", margin: "lg" });
-    invoiceDetails.push({ 
-      type: "box", 
-      layout: "horizontal", 
-      margin: "lg", 
-      contents: [
-        { type: "text", text: "ยอดรวมสุทธิ", size: "md", weight: "bold" }, 
-        { type: "text", text: `${Number(total).toLocaleString()} บาท`, size: "xl", weight: "bold", color: "#1DB446", align: "end" }
-      ] 
-    });
+    let resolved = {
+      roomNumber: roomNumber ?? "",
+      month: month ?? "",
+      year: year ?? "",
+      total: total ?? 0,
+      publicToken: publicToken ?? "",
+      dueDate: "",
+      rentAmount: 0,
+      waterBill: 0,
+      electricityBill: 0,
+      commonFee: 0,
+      additionalFeesTotal: 0,
+    };
 
-    // 4. สร้างส่วนการชำระเงิน (Payment Section)
-    let paymentSection: any[] = [
-       { type: "separator", margin: "lg" },
-       { type: "text", text: "ช่องทางการชำระเงิน", weight: "bold", size: "sm", margin: "md", color: "#111111" }
-    ];
+    if (invoiceId) {
+      const supabase = createAdminClient();
+      const { data, error } = await supabase
+        .from("invoices")
+        .select(
+          "public_token,total_amount,issue_date,due_date,rent_amount,water_bill,electricity_bill,common_fee,additional_fees_total,rooms(room_number)"
+        )
+        .eq("id", invoiceId)
+        .single();
 
-    if (payMethod) {
-      if (payMethod.type === 'qr' && payMethod.qr_url) {
-        paymentSection.push({
-          type: "image",
-          url: payMethod.qr_url,
-          size: "lg",
-          aspectMode: "cover",
-          margin: "md"
-        });
-        paymentSection.push({
-          type: "text", text: "สแกนเพื่อจ่าย (Scan to Pay)", size: "xs", color: "#aaaaaa", align: "center", margin: "xs"
-        });
-      } else {
-        paymentSection.push({
-          type: "box", layout: "vertical", margin: "md", spacing: "sm",
-          contents: [
-            { type: "text", text: payMethod.bank_name || 'Bank', size: "sm", weight: "bold" },
-            { type: "text", text: payMethod.account_number || '-', size: "xl", weight: "bold", color: "#1DB446" },
-            { type: "text", text: payMethod.account_name || '-', size: "xs", color: "#555555" }
-          ]
-        });
+      if (error || !data) {
+        return NextResponse.json({ error: "Invoice not found." }, { status: 404 });
       }
-    } else {
-       paymentSection.push({ type: "text", text: "กรุณาติดต่อเจ้าหน้าที่", size: "sm", color: "#ff5555" });
+
+      const room = Array.isArray(data.rooms) ? data.rooms[0] : data.rooms;
+      const issueDate = new Date(data.issue_date);
+      resolved = {
+        roomNumber: room?.room_number ?? "",
+        month: issueDate.getMonth() + 1,
+        year: issueDate.getFullYear(),
+        total: data.total_amount ?? 0,
+        publicToken: data.public_token ?? "",
+        dueDate: data.due_date ?? "",
+        rentAmount: data.rent_amount ?? 0,
+        waterBill: data.water_bill ?? 0,
+        electricityBill: data.electricity_bill ?? 0,
+        commonFee: data.common_fee ?? 0,
+        additionalFeesTotal: data.additional_fees_total ?? 0,
+      };
     }
 
-    // --- FINAL FLEX MESSAGE ---
-    const flexMessage: any = {
+    if (!resolved.publicToken) {
+      return NextResponse.json({ error: "Missing payment token." }, { status: 400 });
+    }
+
+    if (!process.env.NEXT_PUBLIC_BASE_URL) {
+      return NextResponse.json(
+        { error: "NEXT_PUBLIC_BASE_URL is missing in environment." },
+        { status: 500 }
+      );
+    }
+
+    const baseUrlRaw = process.env.NEXT_PUBLIC_BASE_URL.trim();
+    const baseUrl = /^https?:\/\//i.test(baseUrlRaw) ? baseUrlRaw : `https://${baseUrlRaw}`;
+    const payUrl = `${baseUrl.replace(/\/$/, "")}/payment/${resolved.publicToken}`;
+    const dueDateText = resolved.dueDate
+      ? new Date(resolved.dueDate).toLocaleDateString("th-TH")
+      : "-";
+    const periodText =
+      resolved.month && resolved.year ? `${resolved.month}/${resolved.year}` : "รอบปัจจุบัน";
+
+    const flexMessage: FlexMessage = {
       type: "flex",
-      altText: `บิลค่าเช่าห้อง ${roomNumber}`,
+      altText: `ใบแจ้งหนี้ห้อง ${resolved.roomNumber}`,
       contents: {
         type: "bubble",
-        size: "giga",
         header: {
-          type: "box", layout: "vertical", backgroundColor: "#0F172A", paddingAll: "lg",
+          type: "box",
+          layout: "vertical",
           contents: [
-            { type: "text", text: "ใบแจ้งหนี้ (Invoice)", color: "#ffffff", weight: "bold", size: "lg" },
-            { type: "text", text: `ห้อง ${roomNumber} | รอบ ${month}/${year}`, color: "#cbd5e1", size: "xs", margin: "sm" }
-          ]
+            { type: "text", text: "ใบแจ้งหนี้ค่าเช่า", weight: "bold", color: "#1DB446", size: "sm" },
+            { type: "text", text: "DormManager", weight: "bold", size: "xxl", margin: "md", color: "#FFFFFF" },
+            { type: "text", text: `รอบบิล: ${periodText}`, size: "xs", color: "#cccccc", margin: "md" },
+          ],
+          paddingAll: "20px",
+          backgroundColor: "#0F172A",
         },
         body: {
-          type: "box", layout: "vertical", spacing: "md",
+          type: "box",
+          layout: "vertical",
           contents: [
-            ...invoiceDetails, // ใส่รายการที่สร้างไว้ข้างบน
-            ...paymentSection  // ใส่ส่วนการจ่ายเงิน
-          ]
-        }
-      }
+            {
+              type: "box",
+              layout: "horizontal",
+              contents: [
+                { type: "text", text: "ห้อง", size: "sm", color: "#555555", flex: 0 },
+                { type: "text", text: String(resolved.roomNumber), size: "sm", color: "#111111", align: "end" },
+              ],
+            },
+            { type: "separator", margin: "lg" },
+            {
+              type: "box",
+              layout: "baseline",
+              margin: "lg",
+              contents: [
+                { type: "text", text: "ยอดที่ต้องชำระ", color: "#aaaaaa", size: "sm", flex: 2 },
+                {
+                  type: "text",
+                  text: `${formatMoney(Number(resolved.total))} บาท`,
+                  weight: "bold",
+                  color: "#1DB446",
+                  size: "xl",
+                  flex: 4,
+                  align: "end",
+                },
+              ],
+            },
+            { type: "separator", margin: "lg" },
+            { type: "text", text: `ครบกำหนดชำระ: ${dueDateText}`, size: "xs", color: "#666666", margin: "md" },
+            {
+              type: "text",
+              text: `ค่าเช่า ${formatMoney(Number(resolved.rentAmount))} | ค่าน้ำ ${formatMoney(
+                Number(resolved.waterBill)
+              )} | ค่าไฟ ${formatMoney(Number(resolved.electricityBill))}`,
+              size: "xs",
+              color: "#666666",
+              wrap: true,
+              margin: "sm",
+            },
+            {
+              type: "text",
+              text: `ค่าส่วนกลาง ${formatMoney(Number(resolved.commonFee))} | ค่าธรรมเนียมเพิ่ม ${formatMoney(
+                Number(resolved.additionalFeesTotal)
+              )}`,
+              size: "xs",
+              color: "#666666",
+              wrap: true,
+              margin: "sm",
+            },
+          ],
+        },
+        footer: {
+          type: "box",
+          layout: "vertical",
+          spacing: "sm",
+          contents: [
+            {
+              type: "button",
+              style: "primary",
+              height: "md",
+              action: { type: "uri", label: "ดูรายละเอียดและชำระเงิน", uri: payUrl },
+              color: "#1E40AF",
+            },
+          ],
+          flex: 0,
+        },
+      },
     };
 
     await client.pushMessage(userId, flexMessage);
-    return NextResponse.json({ success: true });
+    return NextResponse.json({ success: true, message: "Invoice sent to LINE." });
   } catch (error: any) {
-    console.error('LINE Error:', error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    const statusCode = error?.statusCode || error?.originalError?.response?.status || 500;
+    const lineMessage =
+      error?.originalError?.response?.data?.message ||
+      error?.originalError?.response?.data?.details?.[0]?.message ||
+      error?.message ||
+      "Unknown LINE API error";
+
+    return NextResponse.json(
+      {
+        error: "Failed to send invoice via LINE.",
+        lineStatus: statusCode,
+        lineMessage,
+      },
+      { status: 500 }
+    );
   }
 }

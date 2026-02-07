@@ -1,0 +1,1542 @@
+﻿"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import { Badge } from "@/components/ui/Badge";
+import { Modal } from "@/components/ui/Modal";
+import { Input } from "@/components/ui/Input";
+import { ConfirmActionModal } from "@/components/ui/ConfirmActionModal";
+import { createClient } from "@/lib/supabase-client";
+import { FileText, Pencil, Printer, Send, Trash2, UploadCloud } from "lucide-react";
+
+const statusVariant = {
+  draft: "default",
+  pending: "warning",
+  verifying: "info",
+  paid: "success",
+  overdue: "danger",
+  cancelled: "default",
+} as const;
+
+type InvoiceRecord = {
+  id: string;
+  room_id: string;
+  status: keyof typeof statusVariant;
+  total_amount: number;
+  issue_date: string;
+  due_date: string;
+  start_date: string;
+  end_date: string;
+  rent_amount: number;
+  water_bill: number;
+  electricity_bill: number;
+  common_fee: number;
+  late_fee_amount: number;
+  late_fee_per_day: number;
+  late_fee_start_date: string | null;
+  additional_fees_total: number;
+  additional_fees_breakdown: any[];
+  notes: string | null;
+  public_token: string;
+  slip_url: string | null;
+  tenant_name: string;
+  tenant_phone: string | null;
+  tenant_line_user_id: string | null;
+  tenant_custom_payment_method: any;
+  room_number: string;
+  building_name: string;
+};
+
+type AdditionalFee = {
+  label: string;
+  calc_type: "fixed" | "electricity_units" | "water_units";
+  value: number;
+};
+
+type FeeLineItem = {
+  detail: string;
+  unit: number;
+  price_per_unit: number;
+  total_amount: number;
+};
+
+type PrintSettings = {
+  dorm_name: string | null;
+  dorm_address: string | null;
+  water_rate: number | null;
+  electricity_rate: number | null;
+};
+
+type PaymentMethodRow = {
+  label: string;
+  bank_name: string;
+  account_name: string;
+  account_number: string;
+  qr_url: string | null;
+};
+
+type MeterReadingRow = {
+  electricity_usage: number | null;
+  water_usage: number | null;
+};
+
+const toNumber = (value: string | number | null | undefined) => {
+  const parsed = typeof value === "number" ? value : Number(value ?? 0);
+  return Number.isNaN(parsed) ? 0 : parsed;
+};
+
+const formatMoney = (value: number) =>
+  `฿${value.toLocaleString("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+const formatDateThai = (dateString: string) =>
+  new Date(dateString).toLocaleDateString("th-TH", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
+
+const monthStartFromDate = (dateString: string) => {
+  const date = new Date(dateString);
+  return new Date(date.getFullYear(), date.getMonth(), 1).toISOString().slice(0, 10);
+};
+
+const parsePaymentMethodText = (method: any): string => {
+  if (!method) return "-";
+  if (typeof method === "string") return method;
+  const label = method.label ?? method.type ?? "ช่องทางชำระเงิน";
+  const bank = method.bank_name ?? method.bank ?? "";
+  const accountName = method.account_name ?? method.name ?? "";
+  const accountNumber = method.account_number ?? method.account ?? "";
+  const parts = [label, bank, accountName, accountNumber].filter(Boolean);
+  return parts.length > 0 ? parts.join(" | ") : "-";
+};
+
+const toFeeItems = (rows: any[]): FeeLineItem[] => {
+  if (!Array.isArray(rows) || rows.length === 0) return [];
+  return rows.map((row) => {
+    const detail = String(row.detail ?? row.label ?? "");
+    const unit = toNumber(row.unit ?? 1);
+    const price_per_unit = toNumber(row.price_per_unit ?? row.rate ?? row.value ?? row.amount ?? 0);
+    const total_amount =
+      row.total_amount != null ? toNumber(row.total_amount) : unit * price_per_unit;
+    return { detail, unit, price_per_unit, total_amount };
+  });
+};
+
+const emptyFeeItem = (): FeeLineItem => ({
+  detail: "",
+  unit: 1,
+  price_per_unit: 0,
+  total_amount: 0,
+});
+
+const feeItemsTotal = (items: FeeLineItem[]) =>
+  items.reduce((sum, item) => sum + toNumber(item.total_amount), 0);
+
+function normalizeInvoice(row: any): InvoiceRecord {
+  const tenant = Array.isArray(row.tenants) ? row.tenants[0] : row.tenants;
+  const room = Array.isArray(row.rooms) ? row.rooms[0] : row.rooms;
+  const building = room?.buildings;
+  const buildingItem = Array.isArray(building) ? building[0] : building;
+
+  return {
+    id: row.id,
+    room_id: row.room_id,
+    status: row.status,
+    total_amount: toNumber(row.total_amount),
+    issue_date: row.issue_date,
+    due_date: row.due_date,
+    start_date: row.start_date,
+    end_date: row.end_date,
+    rent_amount: toNumber(row.rent_amount),
+    water_bill: toNumber(row.water_bill),
+    electricity_bill: toNumber(row.electricity_bill),
+    common_fee: toNumber(row.common_fee),
+    late_fee_amount: toNumber(row.late_fee_amount),
+    late_fee_per_day: toNumber(row.late_fee_per_day),
+    late_fee_start_date: row.late_fee_start_date ?? null,
+    additional_fees_total: toNumber(row.additional_fees_total),
+    additional_fees_breakdown: Array.isArray(row.additional_fees_breakdown)
+      ? row.additional_fees_breakdown
+      : [],
+    notes: row.notes ?? null,
+    public_token: row.public_token,
+    slip_url: row.slip_url ?? null,
+    tenant_name: tenant?.full_name ?? "Unknown",
+    tenant_phone: tenant?.phone_number ?? null,
+    tenant_line_user_id: tenant?.line_user_id ?? null,
+    tenant_custom_payment_method: tenant?.custom_payment_method ?? null,
+    room_number: room?.room_number ?? "-",
+    building_name: buildingItem?.name ?? "Unassigned",
+  };
+}
+
+export default function InvoicesPage() {
+  const supabase = useMemo(() => createClient(), []);
+  const [invoices, setInvoices] = useState<InvoiceRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [activeInvoice, setActiveInvoice] = useState<InvoiceRecord | null>(null);
+  const [slipPreview, setSlipPreview] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [selectedMonth, setSelectedMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [billingDate, setBillingDate] = useState(() => {
+    const date = new Date();
+    return new Date(date.getFullYear(), date.getMonth(), 1).toISOString().slice(0, 10);
+  });
+  const [dueDate, setDueDate] = useState(() => {
+    const date = new Date();
+    return new Date(date.getFullYear(), date.getMonth(), 5).toISOString().slice(0, 10);
+  });
+  const [lateFeeStartDate, setLateFeeStartDate] = useState(() => {
+    const date = new Date();
+    return new Date(date.getFullYear(), date.getMonth(), 6).toISOString().slice(0, 10);
+  });
+  const [lateFeePerDay, setLateFeePerDay] = useState(0);
+
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [deleteTargetIds, setDeleteTargetIds] = useState<string[]>([]);
+  const [confirmGenerateOpen, setConfirmGenerateOpen] = useState(false);
+  const [confirmSaveOpen, setConfirmSaveOpen] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewInvoice, setPreviewInvoice] = useState<InvoiceRecord | null>(null);
+  const [previewReading, setPreviewReading] = useState<MeterReadingRow | null>(null);
+  const [printSettings, setPrintSettings] = useState<PrintSettings | null>(null);
+  const [defaultPaymentMethod, setDefaultPaymentMethod] = useState<PaymentMethodRow | null>(null);
+  const [editableFeeItems, setEditableFeeItems] = useState<FeeLineItem[]>([]);
+
+  const [form, setForm] = useState({
+    issue_date: "",
+    due_date: "",
+    start_date: "",
+    end_date: "",
+    rent_amount: 0,
+    water_bill: 0,
+    electricity_bill: 0,
+    common_fee: 0,
+    late_fee_amount: 0,
+    late_fee_per_day: 0,
+    late_fee_start_date: "",
+    additional_fees_total: 0,
+    total_amount: 0,
+    status: "pending",
+    notes: "",
+  });
+
+  const loadInvoices = async () => {
+    setLoading(true);
+    setError(null);
+
+    const { data, error: fetchError } = await supabase
+      .from("invoices")
+      .select(
+        "id,room_id,status,total_amount,issue_date,due_date,start_date,end_date,rent_amount,water_bill,electricity_bill,common_fee,late_fee_amount,late_fee_per_day,late_fee_start_date,additional_fees_total,additional_fees_breakdown,notes,public_token,slip_url,tenants(full_name,phone_number,line_user_id,custom_payment_method),rooms(room_number,buildings(name))"
+      )
+      .order("issue_date", { ascending: false });
+
+    if (fetchError) {
+      setError(fetchError.message);
+      setInvoices([]);
+    } else {
+      const normalized = (data ?? []).map(normalizeInvoice);
+
+      const hydrated = await Promise.all(
+        normalized.map(async (invoice) => {
+          if (invoice.slip_url) return invoice;
+
+          const { data: files, error: fileError } = await supabase.storage
+            .from("payment_slips")
+            .list(invoice.id, {
+              limit: 1,
+              sortBy: { column: "name", order: "desc" },
+            });
+
+          if (fileError || !files || files.length === 0) return invoice;
+
+          const latest = files[0];
+          const { data: publicData } = supabase.storage
+            .from("payment_slips")
+            .getPublicUrl(`${invoice.id}/${latest.name}`);
+
+          return {
+            ...invoice,
+            slip_url: publicData.publicUrl,
+          };
+        })
+      );
+
+      setInvoices(hydrated);
+    }
+
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    loadInvoices();
+    void loadPrintConfig();
+  }, []);
+
+  useEffect(() => {
+    const [year, month] = selectedMonth.split("-").map(Number);
+    const bill = new Date(year, month - 1, 1);
+    const due = new Date(year, month - 1, 5);
+    const lateStart = new Date(year, month - 1, 6);
+    setBillingDate(bill.toISOString().slice(0, 10));
+    setDueDate(due.toISOString().slice(0, 10));
+    setLateFeeStartDate(lateStart.toISOString().slice(0, 10));
+  }, [selectedMonth]);
+
+  const loadPrintConfig = async () => {
+    const { data: settingData } = await supabase
+      .from("settings")
+      .select("dorm_name,dorm_address,water_rate,electricity_rate")
+      .eq("id", 1)
+      .maybeSingle();
+    setPrintSettings((settingData as PrintSettings) ?? null);
+
+    const { data: paymentData } = await supabase
+      .from("payment_methods")
+      .select("label,bank_name,account_name,account_number,qr_url")
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    setDefaultPaymentMethod((paymentData as PaymentMethodRow) ?? null);
+  };
+
+  const grouped = useMemo(() => {
+    return invoices.reduce<Record<string, InvoiceRecord[]>>((acc, invoice) => {
+      if (!acc[invoice.building_name]) acc[invoice.building_name] = [];
+      acc[invoice.building_name].push(invoice);
+      return acc;
+    }, {});
+  }, [invoices]);
+
+  const toggleSelect = (id: string) => {
+    setSelected((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  };
+
+  const openInvoice = (invoice: InvoiceRecord) => {
+    const feeItems = toFeeItems(invoice.additional_fees_breakdown ?? []);
+    setActiveInvoice(invoice);
+    setEditableFeeItems(feeItems.length > 0 ? feeItems : []);
+    setForm({
+      issue_date: invoice.issue_date,
+      due_date: invoice.due_date,
+      start_date: invoice.start_date,
+      end_date: invoice.end_date,
+      rent_amount: invoice.rent_amount,
+      water_bill: invoice.water_bill,
+      electricity_bill: invoice.electricity_bill,
+      common_fee: invoice.common_fee,
+      late_fee_amount: invoice.late_fee_amount,
+      late_fee_per_day: invoice.late_fee_per_day,
+      late_fee_start_date: invoice.late_fee_start_date ?? "",
+      additional_fees_total:
+        feeItems.length > 0 ? feeItemsTotal(feeItems) : invoice.additional_fees_total,
+      total_amount: invoice.total_amount,
+      status: invoice.status,
+      notes: invoice.notes || "",
+    });
+    setSlipPreview(invoice.slip_url);
+    setDetailOpen(true);
+  };
+
+  const updateForm = (field: string, value: string | number) => {
+    setForm((prev) => {
+      const next = { ...prev, [field]: value } as typeof prev;
+      const nextAdditional = feeItemsTotal(editableFeeItems);
+      const total =
+        toNumber(next.rent_amount) +
+        toNumber(next.water_bill) +
+        toNumber(next.electricity_bill) +
+        toNumber(next.common_fee) +
+        toNumber(next.late_fee_amount) +
+        nextAdditional;
+      return { ...next, additional_fees_total: nextAdditional, total_amount: total };
+    });
+  };
+
+  const updateFeeItem = (
+    index: number,
+    field: keyof FeeLineItem,
+    value: string | number
+  ) => {
+    setEditableFeeItems((prev) => {
+      const next = prev.map((item, idx) =>
+        idx === index ? { ...item, [field]: value } : item
+      );
+      const normalized = next.map((item) => {
+        const unit = toNumber(item.unit);
+        const price_per_unit = toNumber(item.price_per_unit);
+        return {
+          ...item,
+          unit,
+          price_per_unit,
+          total_amount: unit * price_per_unit,
+        };
+      });
+      const nextAdditional = feeItemsTotal(normalized);
+      setForm((formPrev) => {
+        const total =
+          toNumber(formPrev.rent_amount) +
+          toNumber(formPrev.water_bill) +
+          toNumber(formPrev.electricity_bill) +
+          toNumber(formPrev.common_fee) +
+          toNumber(formPrev.late_fee_amount) +
+          nextAdditional;
+        return {
+          ...formPrev,
+          additional_fees_total: nextAdditional,
+          total_amount: total,
+        };
+      });
+      return normalized;
+    });
+  };
+
+  const saveInvoice = async () => {
+    if (!activeInvoice) return;
+    setSaving(true);
+
+    const { error: updateError } = await supabase
+      .from("invoices")
+      .update({
+        issue_date: form.issue_date,
+        due_date: form.due_date,
+        start_date: form.start_date,
+        end_date: form.end_date,
+        rent_amount: toNumber(form.rent_amount),
+        water_bill: toNumber(form.water_bill),
+        electricity_bill: toNumber(form.electricity_bill),
+        common_fee: toNumber(form.common_fee),
+        late_fee_amount: toNumber(form.late_fee_amount),
+        late_fee_per_day: toNumber(form.late_fee_per_day),
+        late_fee_start_date: form.late_fee_start_date || null,
+        additional_fees_total: feeItemsTotal(editableFeeItems),
+        additional_fees_breakdown: editableFeeItems.map((item) => ({
+          detail: item.detail,
+          unit: toNumber(item.unit),
+          price_per_unit: toNumber(item.price_per_unit),
+          total_amount: toNumber(item.total_amount),
+          amount: toNumber(item.total_amount),
+          label: item.detail,
+        })),
+        total_amount: toNumber(form.total_amount),
+        status: form.status,
+        notes: form.notes,
+      })
+      .eq("id", activeInvoice.id);
+
+    setSaving(false);
+    setConfirmSaveOpen(false);
+
+    if (updateError) {
+      setError(updateError.message);
+    } else {
+      await loadInvoices();
+      setDetailOpen(false);
+    }
+  };
+
+  const deleteInvoices = async (invoiceIds: string[]) => {
+    if (invoiceIds.length === 0) return;
+    const { error: deleteError } = await supabase.from("invoices").delete().in("id", invoiceIds);
+    if (deleteError) {
+      setError(deleteError.message);
+    } else {
+      const idSet = new Set(invoiceIds);
+      setInvoices((prev) => prev.filter((invoice) => !idSet.has(invoice.id)));
+      setSelected((prev) => prev.filter((id) => !idSet.has(id)));
+      if (activeInvoice && idSet.has(activeInvoice.id)) setDetailOpen(false);
+    }
+  };
+
+  const handleUploadSlip = async (file?: File | null) => {
+    if (!activeInvoice || !file) return;
+
+    const bucket = "payment_slips";
+    const filePath = `${activeInvoice.id}/${Date.now()}-${file.name}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from(bucket)
+      .upload(filePath, file, { upsert: true });
+
+    if (uploadError) {
+      setError(uploadError.message);
+      return;
+    }
+
+    const { data } = supabase.storage.from(bucket).getPublicUrl(filePath);
+    const publicUrl = data.publicUrl;
+
+    const { error: updateError } = await supabase
+      .from("invoices")
+      .update({
+        slip_url: publicUrl,
+        slip_uploaded_at: new Date().toISOString(),
+        status: "verifying",
+      })
+      .eq("id", activeInvoice.id);
+
+    if (updateError) {
+      setError(updateError.message);
+      return;
+    }
+
+    setSlipPreview(publicUrl);
+    await loadInvoices();
+  };
+
+  const sendToLine = async (invoice: InvoiceRecord) => {
+    if (!invoice.tenant_line_user_id) {
+      setError(`Missing LINE user id for ${invoice.tenant_name}`);
+      return;
+    }
+
+    const response = await fetch("/api/send-invoice", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        userId: invoice.tenant_line_user_id,
+        invoiceId: invoice.id,
+      }),
+    });
+
+    if (!response.ok) {
+      const data = await response.json();
+      const detail = [data?.error, data?.lineStatus && `LINE ${data.lineStatus}`, data?.lineMessage]
+        .filter(Boolean)
+        .join(" | ");
+      setError(detail || "Failed to send LINE message");
+    }
+  };
+
+  const sendSelectedToLine = async () => {
+    for (const id of selected) {
+      const invoice = invoices.find((item) => item.id === id);
+      if (invoice) await sendToLine(invoice);
+    }
+  };
+
+  const getInvoicePrintDetail = async (invoice: InvoiceRecord) => {
+    setPreviewLoading(true);
+    setPreviewInvoice(invoice);
+    const readingMonth = monthStartFromDate(invoice.issue_date);
+    const { data } = await supabase
+      .from("meter_readings")
+      .select("electricity_usage,water_usage")
+      .eq("room_id", invoice.room_id)
+      .eq("reading_month", readingMonth)
+      .maybeSingle();
+    setPreviewReading((data as MeterReadingRow) ?? null);
+    setPreviewLoading(false);
+    setPreviewOpen(true);
+  };
+
+  const getPaymentMethodLabel = (invoice: InvoiceRecord) => {
+    const custom = parsePaymentMethodText(invoice.tenant_custom_payment_method);
+    if (custom !== "-") return custom;
+    if (!defaultPaymentMethod) return "-";
+    return [
+      defaultPaymentMethod.label,
+      defaultPaymentMethod.bank_name,
+      defaultPaymentMethod.account_name,
+      defaultPaymentMethod.account_number,
+    ]
+      .filter(Boolean)
+      .join(" | ");
+  };
+
+  const buildPrintHtml = (invoice: InvoiceRecord, reading: MeterReadingRow | null) => {
+    const dormName = printSettings?.dorm_name || "หอพัก";
+    const dormAddress = printSettings?.dorm_address || "-";
+    const elecRate = toNumber(printSettings?.electricity_rate);
+    const waterRate = toNumber(printSettings?.water_rate);
+    const elecUnits = toNumber(reading?.electricity_usage);
+    const waterUnits = toNumber(reading?.water_usage);
+    const paymentText = getPaymentMethodLabel(invoice);
+    const additionalRows = (invoice.additional_fees_breakdown ?? [])
+      .map(
+        (fee: any) => `
+          <tr>
+            <td>ค่าธรรมเนียมเพิ่มเติม - ${fee.detail ?? fee.label ?? "-"}</td>
+            <td class="text-right">${toNumber(fee.unit).toLocaleString("th-TH") || "-"}</td>
+            <td class="text-right">${formatMoney(
+              toNumber(fee.price_per_unit ?? fee.rate ?? fee.value ?? fee.amount)
+            )}</td>
+            <td class="text-right">${formatMoney(toNumber(fee.total_amount ?? fee.amount))}</td>
+          </tr>`
+      )
+      .join("");
+
+    return `
+      <html>
+      <head>
+        <title>ใบแจ้งหนี้ ${invoice.id}</title>
+        <style>
+          body { font-family: Sarabun, Tahoma, sans-serif; padding: 28px; color: #0f172a; }
+          .row { display: flex; justify-content: space-between; gap: 24px; }
+          .box { flex: 1; }
+          .title { font-size: 24px; font-weight: 700; margin: 0 0 4px 0; }
+          .sub { margin: 2px 0; font-size: 14px; }
+          table { width: 100%; border-collapse: collapse; margin-top: 14px; }
+          th, td { border: 1px solid #cbd5e1; padding: 8px; font-size: 14px; }
+          th { background: #f8fafc; }
+          .text-right { text-align: right; }
+          .section { margin-top: 18px; }
+          .total { font-weight: 700; }
+        </style>
+      </head>
+      <body>
+        <div class="row">
+          <div class="box">
+            <p class="title">${dormName}</p>
+            <p class="sub">${dormAddress}</p>
+            <p class="sub">ผู้เช่า: ${invoice.tenant_name}</p>
+            <p class="sub">ห้อง: ${invoice.room_number}</p>
+            <p class="sub">โทร: ${invoice.tenant_phone || "-"}</p>
+          </div>
+          <div class="box" style="text-align:right">
+            <p class="sub"><b>เลขที่ใบแจ้งหนี้:</b> ${invoice.id.slice(0, 8).toUpperCase()}</p>
+            <p class="sub"><b>เลขห้อง:</b> ${invoice.room_number}</p>
+            <p class="sub"><b>วันที่:</b> ${formatDateThai(invoice.issue_date)}</p>
+          </div>
+        </div>
+
+        <div class="section">
+          <table>
+            <thead>
+              <tr>
+                <th>รายละเอียด</th>
+                <th class="text-right">หน่วย</th>
+                <th class="text-right">ราคา/หน่วย</th>
+                <th class="text-right">จำนวนเงิน</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>ค่าเช่าห้องพัก</td>
+                <td class="text-right">1 เดือน</td>
+                <td class="text-right">${formatMoney(invoice.rent_amount)}</td>
+                <td class="text-right">${formatMoney(invoice.rent_amount)}</td>
+              </tr>
+              <tr>
+                <td>ค่าน้ำ</td>
+                <td class="text-right">${waterUnits.toLocaleString("th-TH")} หน่วย</td>
+                <td class="text-right">${formatMoney(waterRate)}</td>
+                <td class="text-right">${formatMoney(invoice.water_bill)}</td>
+              </tr>
+              <tr>
+                <td>ค่าไฟ</td>
+                <td class="text-right">${elecUnits.toLocaleString("th-TH")} หน่วย</td>
+                <td class="text-right">${formatMoney(elecRate)}</td>
+                <td class="text-right">${formatMoney(invoice.electricity_bill)}</td>
+              </tr>
+              <tr>
+                <td>ค่าส่วนกลาง</td>
+                <td class="text-right">-</td>
+                <td class="text-right">-</td>
+                <td class="text-right">${formatMoney(invoice.common_fee)}</td>
+              </tr>
+              <tr>
+                <td>ค่าปรับล่าช้า</td>
+                <td class="text-right">-</td>
+                <td class="text-right">-</td>
+                <td class="text-right">${formatMoney(invoice.late_fee_amount)}</td>
+              </tr>
+              ${additionalRows}
+              <tr class="total">
+                <td colspan="3" class="text-right">ยอดรวมสุทธิ</td>
+                <td class="text-right">${formatMoney(invoice.total_amount)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="section">
+          <p class="sub"><b>ช่องทางชำระเงิน:</b> ${paymentText}</p>
+          <p class="sub"><b>หมายเหตุ:</b> ${invoice.notes || "-"}</p>
+        </div>
+      </body>
+      </html>
+    `;
+  };
+
+  const printInvoice = (invoice: InvoiceRecord, reading: MeterReadingRow | null) => {
+    const win = window.open("", "_blank");
+    if (!win) return;
+    win.document.write(buildPrintHtml(invoice, reading));
+
+    win.document.close();
+    win.focus();
+    win.print();
+  };
+
+  const generateInvoices = async () => {
+    setSaving(true);
+    setError(null);
+
+    const [year, month] = selectedMonth.split("-").map(Number);
+    const issueDate = new Date(billingDate);
+    const startDate = new Date(year, month - 1, 1);
+    const endDate = new Date(year, month, 0);
+    const generatedDueDate = new Date(dueDate);
+    const generatedLateFeeStartDate = new Date(lateFeeStartDate);
+    const monthKey = new Date(year, month - 1, 1).toISOString().slice(0, 10);
+
+    const { data: settings, error: settingsError } = await supabase
+      .from("settings")
+      .select("water_rate,electricity_rate,common_fee,water_min_units,water_min_price,additional_fees")
+      .eq("id", 1)
+      .single();
+
+    if (settingsError || !settings) {
+      setSaving(false);
+      setConfirmGenerateOpen(false);
+      setError(settingsError?.message ?? "Settings not found");
+      return;
+    }
+
+    const { data: occupiedRooms, error: roomError } = await supabase
+      .from("rooms")
+      .select("id,room_number,price_month")
+      .eq("status", "occupied");
+
+    if (roomError) {
+      setSaving(false);
+      setConfirmGenerateOpen(false);
+      setError(roomError.message);
+      return;
+    }
+
+    if (!occupiedRooms || occupiedRooms.length === 0) {
+      setSaving(false);
+      setConfirmGenerateOpen(false);
+      setError("No occupied rooms found.");
+      return;
+    }
+
+    const roomIds = occupiedRooms.map((room: any) => room.id);
+
+    const { data: activeTenants, error: tenantError } = await supabase
+      .from("tenants")
+      .select("id,room_id,full_name")
+      .eq("status", "active")
+      .in("room_id", roomIds);
+
+    if (tenantError) {
+      setSaving(false);
+      setConfirmGenerateOpen(false);
+      setError(tenantError.message);
+      return;
+    }
+
+    const tenantByRoom = new Map<string, any>();
+    for (const tenant of activeTenants ?? []) {
+      if (!tenantByRoom.has(tenant.room_id)) tenantByRoom.set(tenant.room_id, tenant);
+    }
+
+    const missingTenantRooms = occupiedRooms.filter((room: any) => !tenantByRoom.has(room.id));
+    if (missingTenantRooms.length > 0) {
+      const placeholderTenants = missingTenantRooms.map((room: any) => ({
+        room_id: room.id,
+        full_name: `ผู้เช่าห้อง ${room.room_number}`,
+        move_in_date: issueDate.toISOString().slice(0, 10),
+        status: "active",
+      }));
+
+      const { data: insertedTenants, error: insertTenantError } = await supabase
+        .from("tenants")
+        .insert(placeholderTenants)
+        .select("id,room_id,full_name");
+
+      if (insertTenantError) {
+        setSaving(false);
+        setConfirmGenerateOpen(false);
+        setError(insertTenantError.message);
+        return;
+      }
+
+      for (const tenant of insertedTenants ?? []) {
+        tenantByRoom.set(tenant.room_id, tenant);
+      }
+    }
+
+    const billingTenants = occupiedRooms
+      .map((room: any) => {
+        const tenant = tenantByRoom.get(room.id);
+        if (!tenant) return null;
+        return {
+          id: tenant.id,
+          room_id: room.id,
+          rooms: {
+            room_number: room.room_number,
+            price_month: room.price_month,
+          },
+        };
+      })
+      .filter(Boolean) as any[];
+
+    const { data: existingInvoices, error: existingError } = await supabase
+      .from("invoices")
+      .select("room_id")
+      .eq("start_date", startDate.toISOString().slice(0, 10))
+      .eq("end_date", endDate.toISOString().slice(0, 10))
+      .in("room_id", roomIds);
+
+    if (existingError) {
+      setSaving(false);
+      setConfirmGenerateOpen(false);
+      setError(existingError.message);
+      return;
+    }
+
+    const existingRoomIds = new Set((existingInvoices ?? []).map((row: any) => row.room_id));
+    const tenantsToGenerate = billingTenants.filter(
+      (tenant: any) => !existingRoomIds.has(tenant.room_id)
+    );
+
+    const { data: readings } = await supabase
+      .from("meter_readings")
+      .select("room_id,electricity_usage,water_usage,usage")
+      .eq("reading_month", monthKey)
+      .in("room_id", roomIds.length ? roomIds : ["00000000-0000-0000-0000-000000000000"]);
+
+    const readingMap = new Map((readings ?? []).map((row: any) => [row.room_id, row]));
+
+    const additionalFees = Array.isArray(settings.additional_fees)
+      ? (settings.additional_fees as AdditionalFee[])
+      : [];
+
+    const insertPayload = tenantsToGenerate.map((tenant: any) => {
+      const roomRel = Array.isArray(tenant.rooms) ? tenant.rooms[0] : tenant.rooms;
+      const reading = readingMap.get(tenant.room_id) ?? {};
+
+      const elecUnits = toNumber(reading.electricity_usage);
+      const waterUnits = toNumber(reading.water_usage || reading.usage);
+
+      const rentAmount = toNumber(roomRel?.price_month);
+      const elecBill = elecUnits * toNumber(settings.electricity_rate);
+      let waterBill = waterUnits * toNumber(settings.water_rate);
+
+      if (waterUnits < toNumber(settings.water_min_units)) {
+        waterBill = Math.max(waterBill, toNumber(settings.water_min_price));
+      }
+
+      const additionalBreakdown = additionalFees.map((fee) => {
+        const rate = toNumber(fee.value);
+        let amount = 0;
+        if (fee.calc_type === "fixed") amount = rate;
+        if (fee.calc_type === "electricity_units") amount = elecUnits * rate;
+        if (fee.calc_type === "water_units") amount = waterUnits * rate;
+        const unit =
+          fee.calc_type === "electricity_units"
+            ? elecUnits
+            : fee.calc_type === "water_units"
+              ? waterUnits
+              : 1;
+        return {
+          label: fee.label,
+          detail: fee.label,
+          calc_type: fee.calc_type,
+          rate,
+          unit,
+          price_per_unit: rate,
+          total_amount: amount,
+          amount,
+        };
+      });
+
+      const additionalTotal = additionalBreakdown.reduce(
+        (sum, fee) => sum + toNumber(fee.amount),
+        0
+      );
+
+      const commonFee = toNumber(settings.common_fee);
+      const lateFeeAmount = 0;
+      const totalAmount =
+        rentAmount + waterBill + elecBill + commonFee + additionalTotal + lateFeeAmount;
+
+      return {
+        tenant_id: tenant.id,
+        room_id: tenant.room_id,
+        issue_date: issueDate.toISOString().slice(0, 10),
+        due_date: generatedDueDate.toISOString().slice(0, 10),
+        start_date: startDate.toISOString().slice(0, 10),
+        end_date: endDate.toISOString().slice(0, 10),
+        rent_amount: rentAmount,
+        water_bill: waterBill,
+        electricity_bill: elecBill,
+        common_fee: commonFee,
+        late_fee_amount: lateFeeAmount,
+        late_fee_per_day: toNumber(lateFeePerDay),
+        late_fee_start_date: generatedLateFeeStartDate.toISOString().slice(0, 10),
+        additional_fees_total: additionalTotal,
+        additional_fees_breakdown: additionalBreakdown,
+        total_amount: totalAmount,
+        status: "pending",
+      };
+    });
+
+    if (insertPayload.length > 0) {
+      const { error: insertError } = await supabase.from("invoices").insert(insertPayload);
+      if (insertError) {
+        setError(insertError.message);
+      }
+    } else {
+      setError("No new invoices generated. All rooms already have invoices for this period.");
+    }
+
+    if (existingRoomIds.size > 0 && insertPayload.length > 0) {
+      setError(
+        `Generated ${insertPayload.length} invoice(s). Skipped ${existingRoomIds.size} room(s) that already have invoices for this period.`
+      );
+    }
+
+    setSaving(false);
+    setConfirmGenerateOpen(false);
+    await loadInvoices();
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="grid gap-3 md:grid-cols-5">
+          <Input
+            label="Invoice Month"
+            type="month"
+            value={selectedMonth}
+            onChange={(event) => setSelectedMonth(event.target.value)}
+          />
+          <Input
+            label="Billing Date"
+            type="date"
+            value={billingDate}
+            onChange={(event) => setBillingDate(event.target.value)}
+          />
+          <Input
+            label="Due Date"
+            type="date"
+            value={dueDate}
+            onChange={(event) => setDueDate(event.target.value)}
+          />
+          <Input
+            label="Late Fee Start"
+            type="date"
+            value={lateFeeStartDate}
+            onChange={(event) => setLateFeeStartDate(event.target.value)}
+          />
+          <Input
+            label="Fine / Day"
+            type="number"
+            value={lateFeePerDay}
+            onChange={(event) => setLateFeePerDay(toNumber(event.target.value))}
+          />
+        </div>
+        <div className="mt-3 flex justify-end">
+          <button
+            onClick={() => setConfirmGenerateOpen(true)}
+            className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-blue-600/20"
+          >
+            <FileText size={16} />
+            Generate Monthly Invoices
+          </button>
+        </div>
+      </div>
+
+      {error && <span className="text-sm text-red-600">{error}</span>}
+
+      {loading ? (
+        <div className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-500">
+          Loading invoices...
+        </div>
+      ) : (
+        Object.entries(grouped).map(([building, buildingInvoices]) => (
+          <div key={building} className="space-y-3">
+            <h2 className="text-lg font-semibold text-slate-900">{building}</h2>
+            <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-slate-100 text-xs uppercase tracking-wider text-slate-500">
+                  <tr>
+                    <th className="px-4 py-3" />
+                    <th className="px-4 py-3">Status</th>
+                    <th className="px-4 py-3">Room</th>
+                    <th className="px-4 py-3">Tenant</th>
+                    <th className="px-4 py-3">Period</th>
+                    <th className="px-4 py-3">Total</th>
+                    <th className="px-4 py-3">Slip</th>
+                    <th className="px-4 py-3">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {buildingInvoices.map((invoice) => (
+                    <tr key={invoice.id} className="border-t border-slate-100">
+                      <td className="px-4 py-3">
+                        <input
+                          type="checkbox"
+                          checked={selected.includes(invoice.id)}
+                          onChange={() => toggleSelect(invoice.id)}
+                        />
+                      </td>
+                      <td className="px-4 py-3">
+                        <Badge variant={statusVariant[invoice.status]}>{invoice.status}</Badge>
+                      </td>
+                      <td className="px-4 py-3 font-medium text-slate-900">{invoice.room_number}</td>
+                      <td className="px-4 py-3">{invoice.tenant_name}</td>
+                      <td className="px-4 py-3">
+                        {invoice.start_date} - {invoice.end_date}
+                      </td>
+                      <td className="px-4 py-3 font-semibold text-slate-900">
+                        {formatMoney(invoice.total_amount)}
+                      </td>
+                      <td className="px-4 py-3">
+                        <button
+                          onClick={() => openInvoice(invoice)}
+                          className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                            invoice.slip_url
+                              ? "bg-green-100 text-green-700"
+                              : "bg-slate-100 text-slate-500"
+                          }`}
+                        >
+                          {invoice.slip_url ? "View Slip" : "Upload Slip"}
+                        </button>
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => openInvoice(invoice)}
+                            className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2 py-1 text-xs text-slate-600"
+                          >
+                            <Pencil size={12} />
+                            Edit
+                          </button>
+                          <button
+                            onClick={() => void getInvoicePrintDetail(invoice)}
+                            className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2 py-1 text-xs text-slate-600"
+                          >
+                            <Printer size={12} />
+                            Preview
+                          </button>
+                          <button
+                            onClick={() => {
+                              setDeleteTargetIds([invoice.id]);
+                              setConfirmDeleteOpen(true);
+                            }}
+                            className="inline-flex items-center gap-1 rounded-lg border border-red-200 px-2 py-1 text-xs text-red-600"
+                          >
+                            <Trash2 size={12} />
+                            Delete
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ))
+      )}
+
+      {selected.length > 0 && (
+        <div className="fixed bottom-4 left-1/2 z-40 w-[min(90vw,720px)] -translate-x-1/2 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-2xl">
+          <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
+            <span className="font-semibold text-slate-700">{selected.length} invoices selected</span>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={sendSelectedToLine}
+                className="inline-flex items-center gap-2 rounded-xl bg-green-600 px-3 py-2 text-white"
+              >
+                <Send size={14} />
+                Send to LINE
+              </button>
+              <button
+                onClick={() => {
+                  const first = invoices.find((invoice) => selected.includes(invoice.id));
+                  if (first) void getInvoicePrintDetail(first);
+                }}
+                className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-slate-600"
+              >
+                <Printer size={14} />
+                Print
+              </button>
+              <button
+                onClick={() => {
+                  if (selected.length === 0) return;
+                  setDeleteTargetIds(selected);
+                  setConfirmDeleteOpen(true);
+                }}
+                className="inline-flex items-center gap-2 rounded-xl border border-red-200 px-3 py-2 text-red-600"
+              >
+                <Trash2 size={14} />
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <Modal
+        isOpen={detailOpen}
+        onClose={() => setDetailOpen(false)}
+        title={activeInvoice ? `Invoice ${activeInvoice.id}` : "Invoice Detail"}
+        size="xl"
+      >
+        {activeInvoice && (
+          <div className="space-y-6">
+            <div className="grid gap-4 md:grid-cols-2">
+              <Input
+                label="Issue Date"
+                type="date"
+                value={form.issue_date}
+                onChange={(event) => updateForm("issue_date", event.target.value)}
+              />
+              <Input
+                label="Due Date"
+                type="date"
+                value={form.due_date}
+                onChange={(event) => updateForm("due_date", event.target.value)}
+              />
+              <Input
+                label="Period Start"
+                type="date"
+                value={form.start_date}
+                onChange={(event) => updateForm("start_date", event.target.value)}
+              />
+              <Input
+                label="Period End"
+                type="date"
+                value={form.end_date}
+                onChange={(event) => updateForm("end_date", event.target.value)}
+              />
+              <Input
+                label="Rent Amount"
+                type="number"
+                value={form.rent_amount}
+                onChange={(event) => updateForm("rent_amount", event.target.value)}
+              />
+              <Input
+                label="Water Bill"
+                type="number"
+                value={form.water_bill}
+                onChange={(event) => updateForm("water_bill", event.target.value)}
+              />
+              <Input
+                label="Electricity Bill"
+                type="number"
+                value={form.electricity_bill}
+                onChange={(event) => updateForm("electricity_bill", event.target.value)}
+              />
+              <Input
+                label="Common Fee"
+                type="number"
+                value={form.common_fee}
+                onChange={(event) => updateForm("common_fee", event.target.value)}
+              />
+              <Input
+                label="Late Fee Amount"
+                type="number"
+                value={form.late_fee_amount}
+                onChange={(event) => updateForm("late_fee_amount", event.target.value)}
+              />
+              <Input
+                label="Late Fee Per Day"
+                type="number"
+                value={form.late_fee_per_day}
+                onChange={(event) => updateForm("late_fee_per_day", event.target.value)}
+              />
+              <Input
+                label="Late Fee Start Date"
+                type="date"
+                value={form.late_fee_start_date}
+                onChange={(event) => updateForm("late_fee_start_date", event.target.value)}
+              />
+              <Input
+                label="Additional Fees Total"
+                type="number"
+                value={form.additional_fees_total}
+                readOnly
+              />
+              <Input label="Total Amount" type="number" value={form.total_amount} readOnly />
+              <label className="text-sm text-slate-600">
+                Status
+                <select
+                  value={form.status}
+                  onChange={(event) => updateForm("status", event.target.value)}
+                  className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm shadow-sm"
+                >
+                  {Object.keys(statusVariant).map((status) => (
+                    <option key={status} value={status}>
+                      {status}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            <div className="space-y-3 rounded-xl border border-slate-200 p-4">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-semibold text-slate-700">Additional Fee Details</p>
+                <button
+                  type="button"
+                  onClick={() => setEditableFeeItems((prev) => [...prev, emptyFeeItem()])}
+                  className="rounded-lg border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-700"
+                >
+                  Add Fee Row
+                </button>
+              </div>
+
+              {editableFeeItems.length === 0 ? (
+                <p className="text-xs text-slate-500">No additional fee rows.</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[640px] text-sm">
+                    <thead className="bg-slate-100 text-slate-600">
+                      <tr>
+                        <th className="px-2 py-2 text-left">Detail</th>
+                        <th className="px-2 py-2 text-right">Unit</th>
+                        <th className="px-2 py-2 text-right">Price / Unit</th>
+                        <th className="px-2 py-2 text-right">Total</th>
+                        <th className="px-2 py-2 text-right">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {editableFeeItems.map((item, index) => (
+                        <tr key={`${item.detail}-${index}`} className="border-t border-slate-100">
+                          <td className="px-2 py-2">
+                            <input
+                              type="text"
+                              value={item.detail}
+                              onChange={(event) => updateFeeItem(index, "detail", event.target.value)}
+                              className="w-full rounded-lg border border-slate-200 px-2 py-1"
+                              placeholder="e.g. Parking"
+                            />
+                          </td>
+                          <td className="px-2 py-2">
+                            <input
+                              type="number"
+                              value={item.unit}
+                              onChange={(event) => updateFeeItem(index, "unit", event.target.value)}
+                              className="w-full rounded-lg border border-slate-200 px-2 py-1 text-right"
+                            />
+                          </td>
+                          <td className="px-2 py-2">
+                            <input
+                              type="number"
+                              value={item.price_per_unit}
+                              onChange={(event) =>
+                                updateFeeItem(index, "price_per_unit", event.target.value)
+                              }
+                              className="w-full rounded-lg border border-slate-200 px-2 py-1 text-right"
+                            />
+                          </td>
+                          <td className="px-2 py-2 text-right font-semibold text-slate-900">
+                            {formatMoney(toNumber(item.total_amount))}
+                          </td>
+                          <td className="px-2 py-2 text-right">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setEditableFeeItems((prev) => {
+                                  const next = prev.filter((_, idx) => idx !== index);
+                                  const nextAdditional = feeItemsTotal(next);
+                                  setForm((formPrev) => {
+                                    const total =
+                                      toNumber(formPrev.rent_amount) +
+                                      toNumber(formPrev.water_bill) +
+                                      toNumber(formPrev.electricity_bill) +
+                                      toNumber(formPrev.common_fee) +
+                                      toNumber(formPrev.late_fee_amount) +
+                                      nextAdditional;
+                                    return {
+                                      ...formPrev,
+                                      additional_fees_total: nextAdditional,
+                                      total_amount: total,
+                                    };
+                                  });
+                                  return next;
+                                })
+                              }
+                              className="rounded-lg border border-red-200 px-2 py-1 text-xs text-red-600"
+                            >
+                              Remove
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            <label className="text-sm text-slate-600">
+              Notes
+              <textarea
+                value={form.notes}
+                onChange={(event) => updateForm("notes", event.target.value)}
+                className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm shadow-sm"
+                rows={3}
+              />
+            </label>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-3">
+                <p className="text-sm font-semibold text-slate-700">Payment Slip</p>
+                {slipPreview ? (
+                  <img src={slipPreview} alt="Slip" className="rounded-xl border" />
+                ) : (
+                  <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">
+                    No slip uploaded yet.
+                  </div>
+                )}
+                <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-600">
+                  <UploadCloud size={16} />
+                  Upload Slip
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={(event) => handleUploadSlip(event.target.files?.[0])}
+                  />
+                </label>
+              </div>
+              <div className="space-y-3">
+                <p className="text-sm font-semibold text-slate-700">Quick Actions</p>
+                <button
+                  onClick={() => void getInvoicePrintDetail(activeInvoice)}
+                  className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-4 py-2 text-sm text-slate-600"
+                >
+                  <Printer size={16} />
+                  Print Preview
+                </button>
+                <button
+                  onClick={() => sendToLine(activeInvoice)}
+                  className="inline-flex items-center gap-2 rounded-xl bg-green-600 px-4 py-2 text-sm text-white"
+                >
+                  <Send size={16} />
+                  Send to LINE
+                </button>
+                <button
+                  onClick={() => {
+                    setDeleteTargetIds([activeInvoice.id]);
+                    setConfirmDeleteOpen(true);
+                  }}
+                  className="inline-flex items-center gap-2 rounded-xl border border-red-200 px-4 py-2 text-sm text-red-600"
+                >
+                  <Trash2 size={16} />
+                  Delete Invoice
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-3">
+              <button
+                onClick={() => setDetailOpen(false)}
+                className="rounded-xl border border-slate-200 px-4 py-2 text-sm text-slate-600"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => setConfirmSaveOpen(true)}
+                className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
+              >
+                Save Changes
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      <ConfirmActionModal
+        isOpen={confirmGenerateOpen}
+        title="Generate Invoices"
+        message={`Generate invoices for ${selectedMonth}?`}
+        confirmLabel="Generate"
+        loading={saving}
+        onCancel={() => setConfirmGenerateOpen(false)}
+        onConfirm={generateInvoices}
+      />
+
+      <ConfirmActionModal
+        isOpen={confirmSaveOpen}
+        title="Save Invoice"
+        message="Apply changes to this invoice?"
+        confirmLabel="Save"
+        loading={saving}
+        onCancel={() => setConfirmSaveOpen(false)}
+        onConfirm={saveInvoice}
+      />
+
+      <ConfirmActionModal
+        isOpen={confirmDeleteOpen}
+        title="Delete Invoice"
+        message={
+          deleteTargetIds.length > 1
+            ? `This action cannot be undone. Delete ${deleteTargetIds.length} invoices?`
+            : "This action cannot be undone. Delete this invoice?"
+        }
+        confirmLabel="Delete"
+        loading={saving}
+        onCancel={() => setConfirmDeleteOpen(false)}
+        onConfirm={async () => {
+          if (deleteTargetIds.length === 0) return;
+          setSaving(true);
+          await deleteInvoices(deleteTargetIds);
+          setSaving(false);
+          setConfirmDeleteOpen(false);
+          setDeleteTargetIds([]);
+        }}
+      />
+
+      <Modal
+        isOpen={previewOpen}
+        onClose={() => setPreviewOpen(false)}
+        title="พรีวิวใบแจ้งหนี้"
+        size="xl"
+      >
+        {previewInvoice && (
+          <div className="space-y-5 text-sm text-slate-700">
+            {previewLoading ? (
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">Loading preview...</div>
+            ) : (
+              <>
+                <div className="flex flex-wrap justify-between gap-4 rounded-xl border border-slate-200 bg-white p-4">
+                  <div className="space-y-1">
+                    <p className="text-lg font-bold text-slate-900">
+                      {printSettings?.dorm_name || "หอพัก"}
+                    </p>
+                    <p>{printSettings?.dorm_address || "-"}</p>
+                    <p>ผู้เช่า: {previewInvoice.tenant_name}</p>
+                    <p>ห้อง: {previewInvoice.room_number}</p>
+                    <p>โทร: {previewInvoice.tenant_phone || "-"}</p>
+                  </div>
+                  <div className="space-y-1 text-right">
+                    <p>
+                      <span className="font-semibold">เลขที่ใบแจ้งหนี้:</span>{" "}
+                      {previewInvoice.id.slice(0, 8).toUpperCase()}
+                    </p>
+                    <p>
+                      <span className="font-semibold">เลขห้อง:</span> {previewInvoice.room_number}
+                    </p>
+                    <p>
+                      <span className="font-semibold">วันที่:</span>{" "}
+                      {formatDateThai(previewInvoice.issue_date)}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="overflow-hidden rounded-xl border border-slate-200">
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-100 text-slate-600">
+                      <tr>
+                        <th className="px-3 py-2 text-left">รายละเอียด</th>
+                        <th className="px-3 py-2 text-right">หน่วย</th>
+                        <th className="px-3 py-2 text-right">ราคา/หน่วย</th>
+                        <th className="px-3 py-2 text-right">จำนวนเงิน</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr className="border-t border-slate-100">
+                        <td className="px-3 py-2">ค่าเช่าห้องพัก</td>
+                        <td className="px-3 py-2 text-right">1 เดือน</td>
+                        <td className="px-3 py-2 text-right">{formatMoney(previewInvoice.rent_amount)}</td>
+                        <td className="px-3 py-2 text-right">{formatMoney(previewInvoice.rent_amount)}</td>
+                      </tr>
+                      <tr className="border-t border-slate-100">
+                        <td className="px-3 py-2">ค่าน้ำ</td>
+                        <td className="px-3 py-2 text-right">
+                          {toNumber(previewReading?.water_usage).toLocaleString("th-TH")} หน่วย
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          {formatMoney(toNumber(printSettings?.water_rate))}
+                        </td>
+                        <td className="px-3 py-2 text-right">{formatMoney(previewInvoice.water_bill)}</td>
+                      </tr>
+                      <tr className="border-t border-slate-100">
+                        <td className="px-3 py-2">ค่าไฟ</td>
+                        <td className="px-3 py-2 text-right">
+                          {toNumber(previewReading?.electricity_usage).toLocaleString("th-TH")} หน่วย
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          {formatMoney(toNumber(printSettings?.electricity_rate))}
+                        </td>
+                        <td className="px-3 py-2 text-right">{formatMoney(previewInvoice.electricity_bill)}</td>
+                      </tr>
+                      <tr className="border-t border-slate-100">
+                        <td className="px-3 py-2">ค่าส่วนกลาง</td>
+                        <td className="px-3 py-2 text-right">-</td>
+                        <td className="px-3 py-2 text-right">-</td>
+                        <td className="px-3 py-2 text-right">{formatMoney(previewInvoice.common_fee)}</td>
+                      </tr>
+                      <tr className="border-t border-slate-100">
+                        <td className="px-3 py-2">ค่าปรับล่าช้า</td>
+                        <td className="px-3 py-2 text-right">-</td>
+                        <td className="px-3 py-2 text-right">-</td>
+                        <td className="px-3 py-2 text-right">{formatMoney(previewInvoice.late_fee_amount)}</td>
+                      </tr>
+                      {(previewInvoice.additional_fees_breakdown ?? []).map((fee: any, idx: number) => (
+                        <tr key={`${fee.label}-${idx}`} className="border-t border-slate-100">
+                          <td className="px-3 py-2">
+                            ค่าธรรมเนียมเพิ่มเติม - {fee.detail ?? fee.label ?? "-"}
+                          </td>
+                          <td className="px-3 py-2 text-right">
+                            {toNumber(fee.unit).toLocaleString("th-TH") || "-"}
+                          </td>
+                          <td className="px-3 py-2 text-right">
+                            {formatMoney(
+                              toNumber(fee.price_per_unit ?? fee.rate ?? fee.value ?? fee.amount)
+                            )}
+                          </td>
+                          <td className="px-3 py-2 text-right">
+                            {formatMoney(toNumber(fee.total_amount ?? fee.amount))}
+                          </td>
+                        </tr>
+                      ))}
+                      <tr className="border-t border-slate-200 bg-slate-50 font-semibold text-slate-900">
+                        <td className="px-3 py-2 text-right" colSpan={3}>
+                          ยอดรวมสุทธิ
+                        </td>
+                        <td className="px-3 py-2 text-right">{formatMoney(previewInvoice.total_amount)}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="space-y-1 rounded-xl border border-slate-200 bg-white p-4">
+                  <p>
+                    <span className="font-semibold">ช่องทางชำระเงิน:</span>{" "}
+                    {getPaymentMethodLabel(previewInvoice)}
+                  </p>
+                  <p>
+                    <span className="font-semibold">หมายเหตุ:</span> {previewInvoice.notes || "-"}
+                  </p>
+                </div>
+              </>
+            )}
+
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setPreviewOpen(false)}
+                className="rounded-xl border border-slate-200 px-4 py-2 text-sm text-slate-600"
+              >
+                ปิด
+              </button>
+              <button
+                onClick={() => previewInvoice && printInvoice(previewInvoice, previewReading)}
+                className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
+              >
+                <Printer size={16} />
+                พิมพ์ใบแจ้งหนี้
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+    </div>
+  );
+}
