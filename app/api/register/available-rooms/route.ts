@@ -11,19 +11,37 @@ export async function GET(req: Request) {
     }
 
     const supabase = createAdminClient();
-    const { data, error } = await supabase
+    const { data: rooms, error } = await supabase
       .from("rooms")
-      .select("id,room_number,status,buildings(name)")
-      .or("status.eq.available,status.eq.vacant")
+      .select("id,room_number,buildings(name)")
       .ilike("room_number", `%${query}%`)
       .order("room_number", { ascending: true })
-      .limit(12);
+      .limit(50);
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    const rooms = (data ?? []).map((row: any) => {
+    const roomIds = (rooms ?? []).map((row: any) => row.id);
+    if (roomIds.length === 0) {
+      return NextResponse.json({ rooms: [] });
+    }
+
+    const { data: linkedTenants, error: tenantError } = await supabase
+      .from("tenants")
+      .select("room_id")
+      .in("room_id", roomIds)
+      .not("line_user_id", "is", null);
+
+    if (tenantError) {
+      return NextResponse.json({ error: tenantError.message }, { status: 500 });
+    }
+
+    const linkedRoomIds = new Set((linkedTenants ?? []).map((row: any) => row.room_id));
+
+    const availableForRegister = (rooms ?? []).filter((row: any) => !linkedRoomIds.has(row.id));
+
+    const mapped = availableForRegister.map((row: any) => {
       const building = Array.isArray(row.buildings) ? row.buildings[0] : row.buildings;
       return {
         id: row.id,
@@ -32,7 +50,7 @@ export async function GET(req: Request) {
       };
     });
 
-    return NextResponse.json({ rooms });
+    return NextResponse.json({ rooms: mapped.slice(0, 12) });
   } catch (error: any) {
     return NextResponse.json({ error: error?.message ?? "Server error" }, { status: 500 });
   }
