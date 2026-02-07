@@ -89,6 +89,10 @@ CREATE TABLE public.settings (
   common_fee NUMERIC(10,2),
   water_min_units NUMERIC DEFAULT 0,
   water_min_price NUMERIC DEFAULT 0,
+  billing_day INT DEFAULT 1,
+  due_day INT DEFAULT 5,
+  late_fee_start_day INT DEFAULT 6,
+  late_fee_per_day NUMERIC DEFAULT 0,
   additional_fees JSONB DEFAULT '[]'::jsonb,
   updated_at TIMESTAMPTZ,
   CONSTRAINT single_row_check CHECK (id = 1)
@@ -148,9 +152,13 @@ INSERT INTO public.settings (
   common_fee,
   water_min_units,
   water_min_price,
+  billing_day,
+  due_day,
+  late_fee_start_day,
+  late_fee_per_day,
   additional_fees
 )
-VALUES (1, 18.00, 8.00, 100.00, 0, 0, '[]'::jsonb)
+VALUES (1, 18.00, 8.00, 100.00, 0, 0, 1, 5, 6, 0, '[]'::jsonb)
 ON CONFLICT (id) DO NOTHING;
 
 -- Indexes

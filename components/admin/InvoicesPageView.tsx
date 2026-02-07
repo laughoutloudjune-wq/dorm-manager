@@ -132,6 +132,16 @@ const emptyFeeItem = (): FeeLineItem => ({
 const feeItemsTotal = (items: FeeLineItem[]) =>
   items.reduce((sum, item) => sum + toNumber(item.total_amount), 0);
 
+const roomNumberCompare = (a: string, b: string) =>
+  a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+
+const clampDay = (value: number | null | undefined, min = 1, max = 28) => {
+  const day = toNumber(value ?? min);
+  if (day < min) return min;
+  if (day > max) return max;
+  return Math.floor(day);
+};
+
 function normalizeInvoice(row: any): InvoiceRecord {
   const tenant = Array.isArray(row.tenants) ? row.tenants[0] : row.tenants;
   const room = Array.isArray(row.rooms) ? row.rooms[0] : row.rooms;
@@ -181,19 +191,6 @@ export default function InvoicesPage() {
   const [slipPreview, setSlipPreview] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [selectedMonth, setSelectedMonth] = useState(() => new Date().toISOString().slice(0, 7));
-  const [billingDate, setBillingDate] = useState(() => {
-    const date = new Date();
-    return new Date(date.getFullYear(), date.getMonth(), 1).toISOString().slice(0, 10);
-  });
-  const [dueDate, setDueDate] = useState(() => {
-    const date = new Date();
-    return new Date(date.getFullYear(), date.getMonth(), 5).toISOString().slice(0, 10);
-  });
-  const [lateFeeStartDate, setLateFeeStartDate] = useState(() => {
-    const date = new Date();
-    return new Date(date.getFullYear(), date.getMonth(), 6).toISOString().slice(0, 10);
-  });
-  const [lateFeePerDay, setLateFeePerDay] = useState(0);
 
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [deleteTargetIds, setDeleteTargetIds] = useState<string[]>([]);
@@ -278,16 +275,6 @@ export default function InvoicesPage() {
     void loadPrintConfig();
   }, []);
 
-  useEffect(() => {
-    const [year, month] = selectedMonth.split("-").map(Number);
-    const bill = new Date(year, month - 1, 1);
-    const due = new Date(year, month - 1, 5);
-    const lateStart = new Date(year, month - 1, 6);
-    setBillingDate(bill.toISOString().slice(0, 10));
-    setDueDate(due.toISOString().slice(0, 10));
-    setLateFeeStartDate(lateStart.toISOString().slice(0, 10));
-  }, [selectedMonth]);
-
   const loadPrintConfig = async () => {
     const { data: settingData } = await supabase
       .from("settings")
@@ -306,11 +293,17 @@ export default function InvoicesPage() {
   };
 
   const grouped = useMemo(() => {
-    return invoices.reduce<Record<string, InvoiceRecord[]>>((acc, invoice) => {
+    const groupedMap = invoices.reduce<Record<string, InvoiceRecord[]>>((acc, invoice) => {
       if (!acc[invoice.building_name]) acc[invoice.building_name] = [];
       acc[invoice.building_name].push(invoice);
       return acc;
     }, {});
+    for (const building of Object.keys(groupedMap)) {
+      groupedMap[building] = groupedMap[building].sort((a, b) =>
+        roomNumberCompare(a.room_number, b.room_number)
+      );
+    }
+    return groupedMap;
   }, [invoices]);
 
   const toggleSelect = (id: string) => {
@@ -681,16 +674,17 @@ export default function InvoicesPage() {
     setError(null);
 
     const [year, month] = selectedMonth.split("-").map(Number);
-    const issueDate = new Date(billingDate);
+    const monthStart = new Date(year, month - 1, 1);
+    const issueDate = new Date(monthStart);
     const startDate = new Date(year, month - 1, 1);
     const endDate = new Date(year, month, 0);
-    const generatedDueDate = new Date(dueDate);
-    const generatedLateFeeStartDate = new Date(lateFeeStartDate);
     const monthKey = new Date(year, month - 1, 1).toISOString().slice(0, 10);
 
     const { data: settings, error: settingsError } = await supabase
       .from("settings")
-      .select("water_rate,electricity_rate,common_fee,water_min_units,water_min_price,additional_fees")
+      .select(
+        "water_rate,electricity_rate,common_fee,water_min_units,water_min_price,additional_fees,billing_day,due_day,late_fee_start_day,late_fee_per_day"
+      )
       .eq("id", 1)
       .single();
 
@@ -700,6 +694,14 @@ export default function InvoicesPage() {
       setError(settingsError?.message ?? "Settings not found");
       return;
     }
+
+    const billingDay = clampDay((settings as any).billing_day ?? 1);
+    const dueDay = clampDay((settings as any).due_day ?? 5);
+    const lateFeeStartDay = clampDay((settings as any).late_fee_start_day ?? 6);
+    const lateFeePerDay = toNumber((settings as any).late_fee_per_day ?? 0);
+    const issueDateBySetting = new Date(year, month - 1, billingDay);
+    const generatedDueDate = new Date(year, month - 1, dueDay);
+    const generatedLateFeeStartDate = new Date(year, month - 1, lateFeeStartDay);
 
     const { data: occupiedRooms, error: roomError } = await supabase
       .from("rooms")
@@ -864,7 +866,7 @@ export default function InvoicesPage() {
       return {
         tenant_id: tenant.id,
         room_id: tenant.room_id,
-        issue_date: issueDate.toISOString().slice(0, 10),
+        issue_date: issueDateBySetting.toISOString().slice(0, 10),
         due_date: generatedDueDate.toISOString().slice(0, 10),
         start_date: startDate.toISOString().slice(0, 10),
         end_date: endDate.toISOString().slice(0, 10),
@@ -873,7 +875,7 @@ export default function InvoicesPage() {
         electricity_bill: elecBill,
         common_fee: commonFee,
         late_fee_amount: lateFeeAmount,
-        late_fee_per_day: toNumber(lateFeePerDay),
+        late_fee_per_day: lateFeePerDay,
         late_fee_start_date: generatedLateFeeStartDate.toISOString().slice(0, 10),
         additional_fees_total: additionalTotal,
         additional_fees_breakdown: additionalBreakdown,
@@ -905,36 +907,12 @@ export default function InvoicesPage() {
   return (
     <div className="space-y-6">
       <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-        <div className="grid gap-3 md:grid-cols-5">
+        <div className="grid gap-3 md:grid-cols-1">
           <Input
             label="Invoice Month"
             type="month"
             value={selectedMonth}
             onChange={(event) => setSelectedMonth(event.target.value)}
-          />
-          <Input
-            label="Billing Date"
-            type="date"
-            value={billingDate}
-            onChange={(event) => setBillingDate(event.target.value)}
-          />
-          <Input
-            label="Due Date"
-            type="date"
-            value={dueDate}
-            onChange={(event) => setDueDate(event.target.value)}
-          />
-          <Input
-            label="Late Fee Start"
-            type="date"
-            value={lateFeeStartDate}
-            onChange={(event) => setLateFeeStartDate(event.target.value)}
-          />
-          <Input
-            label="Fine / Day"
-            type="number"
-            value={lateFeePerDay}
-            onChange={(event) => setLateFeePerDay(toNumber(event.target.value))}
           />
         </div>
         <div className="mt-3 flex justify-end">
@@ -955,7 +933,9 @@ export default function InvoicesPage() {
           Loading invoices...
         </div>
       ) : (
-        Object.entries(grouped).map(([building, buildingInvoices]) => (
+        Object.entries(grouped)
+          .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }))
+          .map(([building, buildingInvoices]) => (
           <div key={building} className="space-y-3">
             <h2 className="text-lg font-semibold text-slate-900">{building}</h2>
             <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">

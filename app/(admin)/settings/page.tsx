@@ -17,6 +17,10 @@ type SettingsRow = {
   common_fee: number | null;
   water_min_units: number | null;
   water_min_price: number | null;
+  billing_day: number | null;
+  due_day: number | null;
+  late_fee_start_day: number | null;
+  late_fee_per_day: number | null;
   additional_fees: AdditionalFee[] | null;
 };
 
@@ -58,6 +62,9 @@ const toNumber = (value: string | number) => {
   return Number.isNaN(parsed) ? 0 : parsed;
 };
 
+const roomNumberCompare = (a: string, b: string) =>
+  a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+
 const newFee = (): AdditionalFee => ({
   id: crypto.randomUUID(),
   label: "",
@@ -88,6 +95,10 @@ export default function SettingsPage() {
     common_fee: 0,
     water_min_units: 0,
     water_min_price: 0,
+    billing_day: 1,
+    due_day: 5,
+    late_fee_start_day: 6,
+    late_fee_per_day: 0,
     additional_fees: [],
   });
 
@@ -196,7 +207,10 @@ export default function SettingsPage() {
       setStatusMessage(error.message);
       return;
     }
-    setRooms((data ?? []) as Room[]);
+    const sorted = ((data ?? []) as Room[]).sort((a, b) =>
+      roomNumberCompare(a.room_number, b.room_number)
+    );
+    setRooms(sorted);
   };
 
   useEffect(() => {
@@ -242,6 +256,10 @@ export default function SettingsPage() {
 
     const payload = {
       common_fee: settings.common_fee,
+      billing_day: toNumber(settings.billing_day ?? 1),
+      due_day: toNumber(settings.due_day ?? 5),
+      late_fee_start_day: toNumber(settings.late_fee_start_day ?? 6),
+      late_fee_per_day: toNumber(settings.late_fee_per_day ?? 0),
       additional_fees: cleaned,
       updated_at: new Date().toISOString(),
     };
@@ -534,14 +552,54 @@ export default function SettingsPage() {
 
       {activeTab === "Invoice Config" && (
         <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <Input
-            label="Common Fee"
-            type="number"
-            value={settings.common_fee ?? 0}
-            onChange={(event) =>
-              setSettings((prev) => ({ ...prev, common_fee: toNumber(event.target.value) }))
-            }
-          />
+          <div className="grid gap-4 md:grid-cols-3">
+            <Input
+              label="Common Fee"
+              type="number"
+              value={settings.common_fee ?? 0}
+              onChange={(event) =>
+                setSettings((prev) => ({ ...prev, common_fee: toNumber(event.target.value) }))
+              }
+            />
+            <Input
+              label="Billing Day (1-28)"
+              type="number"
+              value={settings.billing_day ?? 1}
+              onChange={(event) =>
+                setSettings((prev) => ({ ...prev, billing_day: toNumber(event.target.value) }))
+              }
+            />
+            <Input
+              label="Due Day (1-28)"
+              type="number"
+              value={settings.due_day ?? 5}
+              onChange={(event) =>
+                setSettings((prev) => ({ ...prev, due_day: toNumber(event.target.value) }))
+              }
+            />
+            <Input
+              label="Late Fee Start Day (1-28)"
+              type="number"
+              value={settings.late_fee_start_day ?? 6}
+              onChange={(event) =>
+                setSettings((prev) => ({
+                  ...prev,
+                  late_fee_start_day: toNumber(event.target.value),
+                }))
+              }
+            />
+            <Input
+              label="Late Fee / Day"
+              type="number"
+              value={settings.late_fee_per_day ?? 0}
+              onChange={(event) =>
+                setSettings((prev) => ({
+                  ...prev,
+                  late_fee_per_day: toNumber(event.target.value),
+                }))
+              }
+            />
+          </div>
 
           <div className="space-y-3">
             <div className="flex items-center justify-between">
@@ -853,7 +911,9 @@ export default function SettingsPage() {
                 </tr>
               </thead>
               <tbody>
-                {rooms.map((room) => (
+                {[...rooms]
+                  .sort((a, b) => roomNumberCompare(a.room_number, b.room_number))
+                  .map((room) => (
                   <tr key={room.id} className="border-t border-slate-100">
                     <td className="px-4 py-3">
                       <input
