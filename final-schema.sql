@@ -68,6 +68,7 @@ CREATE TABLE public.tenants (
   advance_rent_amount NUMERIC(10,2) DEFAULT 0,
   security_deposit_amount NUMERIC(10,2) DEFAULT 0,
   deposit_slip_url TEXT,
+  advance_rent_slip_url TEXT,
   final_electricity_reading NUMERIC(10,2),
   final_water_reading NUMERIC(10,2),
   custom_payment_method JSONB,

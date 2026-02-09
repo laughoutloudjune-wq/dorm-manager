@@ -4,7 +4,16 @@ import { createAdminClient } from "@/lib/supabase-admin";
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const { roomNumber, fullName, userId, accessToken } = body ?? {};
+    const {
+      roomNumber,
+      fullName,
+      userId,
+      accessToken,
+      securityDepositAmount,
+      advanceRentAmount,
+      depositSlipUrl,
+      advanceRentSlipUrl,
+    } = body ?? {};
 
     if (!roomNumber || !fullName || !userId) {
       return NextResponse.json({ error: "Missing required fields." }, { status: 400 });
@@ -42,6 +51,12 @@ export async function POST(req: Request) {
       .maybeSingle();
 
     const moveInDate = new Date().toISOString().slice(0, 10);
+    const depositAmount = Number.isFinite(Number(securityDepositAmount))
+      ? Number(securityDepositAmount)
+      : 0;
+    const advanceAmount = Number.isFinite(Number(advanceRentAmount))
+      ? Number(advanceRentAmount)
+      : 0;
 
     if (tenant) {
       if (tenant.line_user_id && tenant.line_user_id !== userId) {
@@ -49,7 +64,14 @@ export async function POST(req: Request) {
       }
       const { error: updateError } = await supabase
         .from("tenants")
-        .update({ line_user_id: tenant.line_user_id ?? userId, full_name: fullName })
+        .update({
+          line_user_id: tenant.line_user_id ?? userId,
+          full_name: fullName,
+          security_deposit_amount: depositAmount,
+          advance_rent_amount: advanceAmount,
+          deposit_slip_url: depositSlipUrl ?? null,
+          advance_rent_slip_url: advanceRentSlipUrl ?? null,
+        })
         .eq("id", tenant.id);
 
       if (updateError) {
@@ -62,6 +84,10 @@ export async function POST(req: Request) {
         line_user_id: userId,
         move_in_date: moveInDate,
         status: "active",
+        security_deposit_amount: depositAmount,
+        advance_rent_amount: advanceAmount,
+        deposit_slip_url: depositSlipUrl ?? null,
+        advance_rent_slip_url: advanceRentSlipUrl ?? null,
       });
 
       if (insertError) {

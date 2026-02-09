@@ -1,6 +1,7 @@
 ﻿"use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { createClient } from "@/lib/supabase-client";
 
 type LiffProfile = {
   userId: string;
@@ -20,14 +21,21 @@ const roomNumberCompare = (a: string, b: string) =>
   a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
 
 export default function RegisterPage() {
+  const supabase = useMemo(() => createClient(), []);
   const [profile, setProfile] = useState<LiffProfile | null>(null);
   const [roomNumber, setRoomNumber] = useState("");
   const [fullName, setFullName] = useState("");
+  const [securityDepositAmount, setSecurityDepositAmount] = useState("");
+  const [advanceRentAmount, setAdvanceRentAmount] = useState("");
+  const [depositSlipUrl, setDepositSlipUrl] = useState("");
+  const [advanceRentSlipUrl, setAdvanceRentSlipUrl] = useState("");
   const [suggestions, setSuggestions] = useState<RoomSuggestion[]>([]);
   const [status, setStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [suggestLoading, setSuggestLoading] = useState(false);
+  const [uploadingDeposit, setUploadingDeposit] = useState(false);
+  const [uploadingAdvance, setUploadingAdvance] = useState(false);
 
   useEffect(() => {
     const init = async () => {
@@ -126,6 +134,38 @@ export default function RegisterPage() {
     };
   }, [roomNumber]);
 
+  const uploadSlip = async (
+    file: File | null | undefined,
+    type: "deposit" | "advance"
+  ) => {
+    if (!file) return;
+    const safeRoom = roomNumber.trim() || "unknown-room";
+    const filename = `${Date.now()}-${file.name}`;
+    const path = `tenant-docs/register/${safeRoom}/${type}-${filename}`;
+
+    if (type === "deposit") setUploadingDeposit(true);
+    if (type === "advance") setUploadingAdvance(true);
+
+    try {
+      const { error: uploadError } = await supabase.storage
+        .from("tenant-docs")
+        .upload(path, file, { upsert: true });
+
+      if (uploadError) {
+        setStatus(uploadError.message);
+        return;
+      }
+
+      const { data } = supabase.storage.from("tenant-docs").getPublicUrl(path);
+      if (type === "deposit") setDepositSlipUrl(data.publicUrl);
+      if (type === "advance") setAdvanceRentSlipUrl(data.publicUrl);
+      setStatus("อัปโหลดสลิปสำเร็จ");
+    } finally {
+      if (type === "deposit") setUploadingDeposit(false);
+      if (type === "advance") setUploadingAdvance(false);
+    }
+  };
+
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!profile) return;
@@ -146,6 +186,10 @@ export default function RegisterPage() {
         fullName: fullName.trim(),
         userId: profile.userId,
         accessToken,
+        securityDepositAmount: securityDepositAmount ? Number(securityDepositAmount) : 0,
+        advanceRentAmount: advanceRentAmount ? Number(advanceRentAmount) : 0,
+        depositSlipUrl: depositSlipUrl || null,
+        advanceRentSlipUrl: advanceRentSlipUrl || null,
       }),
     });
 
@@ -235,6 +279,69 @@ export default function RegisterPage() {
                   placeholder="กรอกชื่อ-นามสกุลเต็ม"
                 />
               </label>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <label className="block text-sm text-slate-600">
+                  เงินประกัน (บาท)
+                  <input
+                    type="number"
+                    min={0}
+                    value={securityDepositAmount}
+                    onChange={(event) => setSecurityDepositAmount(event.target.value)}
+                    className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm"
+                    placeholder="เช่น 5000"
+                  />
+                </label>
+                <label className="block text-sm text-slate-600">
+                  ค่าเช่าล่วงหน้า (บาท)
+                  <input
+                    type="number"
+                    min={0}
+                    value={advanceRentAmount}
+                    onChange={(event) => setAdvanceRentAmount(event.target.value)}
+                    className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm"
+                    placeholder="เช่น 3000"
+                  />
+                </label>
+              </div>
+
+              <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <p className="text-sm font-semibold text-slate-700">อัปโหลดสลิปชำระเงิน</p>
+                <div className="flex flex-wrap items-center gap-3">
+                  <label className="inline-flex cursor-pointer items-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700">
+                    {uploadingDeposit ? "กำลังอัปโหลด..." : "อัปโหลดสลิปเงินประกัน"}
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(event) => void uploadSlip(event.target.files?.[0], "deposit")}
+                      disabled={uploadingDeposit}
+                    />
+                  </label>
+                  {depositSlipUrl && (
+                    <a className="text-xs text-blue-600 underline" href={depositSlipUrl} target="_blank" rel="noreferrer">
+                      ดูสลิปเงินประกัน
+                    </a>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-3">
+                  <label className="inline-flex cursor-pointer items-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700">
+                    {uploadingAdvance ? "กำลังอัปโหลด..." : "อัปโหลดสลิปค่าเช่าล่วงหน้า"}
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(event) => void uploadSlip(event.target.files?.[0], "advance")}
+                      disabled={uploadingAdvance}
+                    />
+                  </label>
+                  {advanceRentSlipUrl && (
+                    <a className="text-xs text-blue-600 underline" href={advanceRentSlipUrl} target="_blank" rel="noreferrer">
+                      ดูสลิปค่าเช่าล่วงหน้า
+                    </a>
+                  )}
+                </div>
+              </div>
 
               <button
                 type="submit"

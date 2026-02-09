@@ -41,6 +41,7 @@ ADD COLUMN IF NOT EXISTS initial_water_reading NUMERIC(10, 2) DEFAULT 0,
 ADD COLUMN IF NOT EXISTS advance_rent_amount NUMERIC(10, 2) DEFAULT 0,
 ADD COLUMN IF NOT EXISTS security_deposit_amount NUMERIC(10, 2) DEFAULT 0,
 ADD COLUMN IF NOT EXISTS deposit_slip_url TEXT,
+ADD COLUMN IF NOT EXISTS advance_rent_slip_url TEXT,
 ADD COLUMN IF NOT EXISTS final_electricity_reading NUMERIC(10, 2),
 ADD COLUMN IF NOT EXISTS final_water_reading NUMERIC(10, 2);
 
