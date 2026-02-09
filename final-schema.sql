@@ -102,7 +102,9 @@ CREATE TABLE public.settings (
   due_day INT DEFAULT 5,
   late_fee_start_day INT DEFAULT 6,
   late_fee_per_day NUMERIC DEFAULT 0,
+  global_discount NUMERIC(10,2) DEFAULT 0,
   additional_fees JSONB DEFAULT '[]'::jsonb,
+  additional_discounts JSONB DEFAULT '[]'::jsonb,
   updated_at TIMESTAMPTZ,
   CONSTRAINT single_row_check CHECK (id = 1)
 );
@@ -120,6 +122,8 @@ CREATE TABLE public.invoices (
   water_bill NUMERIC(10,2) DEFAULT 0.00,
   electricity_bill NUMERIC(10,2) DEFAULT 0.00,
   common_fee NUMERIC(10,2) DEFAULT 0.00,
+  discount_amount NUMERIC(10,2) DEFAULT 0.00,
+  discount_breakdown JSONB DEFAULT '[]'::jsonb,
   late_fee_amount NUMERIC(10,2) DEFAULT 0.00,
   late_fee_per_day NUMERIC(10,2) DEFAULT 0.00,
   late_fee_start_date DATE,
@@ -165,9 +169,11 @@ INSERT INTO public.settings (
   due_day,
   late_fee_start_day,
   late_fee_per_day,
-  additional_fees
+  global_discount,
+  additional_fees,
+  additional_discounts
 )
-VALUES (1, 18.00, 8.00, 100.00, 0, 0, 1, 5, 6, 0, '[]'::jsonb)
+VALUES (1, 18.00, 8.00, 100.00, 0, 0, 1, 5, 6, 0, 0, '[]'::jsonb, '[]'::jsonb)
 ON CONFLICT (id) DO NOTHING;
 
 -- Indexes

@@ -120,11 +120,14 @@ ADD COLUMN IF NOT EXISTS billing_day INT DEFAULT 1,
 ADD COLUMN IF NOT EXISTS due_day INT DEFAULT 5,
 ADD COLUMN IF NOT EXISTS late_fee_start_day INT DEFAULT 6,
 ADD COLUMN IF NOT EXISTS late_fee_per_day NUMERIC DEFAULT 0,
-ADD COLUMN IF NOT EXISTS additional_fees JSONB DEFAULT '[]'::jsonb;
+ADD COLUMN IF NOT EXISTS additional_fees JSONB DEFAULT '[]'::jsonb,
+ADD COLUMN IF NOT EXISTS additional_discounts JSONB DEFAULT '[]'::jsonb;
 
 ALTER TABLE public.invoices
 ADD COLUMN IF NOT EXISTS additional_fees_total NUMERIC DEFAULT 0,
 ADD COLUMN IF NOT EXISTS additional_fees_breakdown JSONB DEFAULT '[]'::jsonb,
+ADD COLUMN IF NOT EXISTS discount_amount NUMERIC(10, 2) DEFAULT 0,
+ADD COLUMN IF NOT EXISTS discount_breakdown JSONB DEFAULT '[]'::jsonb,
 ADD COLUMN IF NOT EXISTS late_fee_amount NUMERIC(10, 2) DEFAULT 0,
 ADD COLUMN IF NOT EXISTS late_fee_per_day NUMERIC(10, 2) DEFAULT 0,
 ADD COLUMN IF NOT EXISTS late_fee_start_date DATE;
@@ -153,6 +156,9 @@ ALTER TABLE public.settings
 ADD COLUMN IF NOT EXISTS dorm_name TEXT,
 ADD COLUMN IF NOT EXISTS dorm_address TEXT,
 ADD COLUMN IF NOT EXISTS dorm_phone TEXT;
+
+ALTER TABLE public.settings
+ADD COLUMN IF NOT EXISTS global_discount NUMERIC(10, 2) DEFAULT 0;
 
 -- 10. Storage bucket for payment slip uploads
 INSERT INTO storage.buckets (id, name, public)

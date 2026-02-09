@@ -17,6 +17,7 @@ type MeterRow = {
   room_id: string;
   room_number: string;
   reading_month: string;
+  rollover: boolean;
   previous_electricity: number;
   current_electricity: number;
   electricity_usage: number;
@@ -26,7 +27,10 @@ type MeterRow = {
 };
 
 type MeterReadingDb = {
+  id?: string;
   room_id: string;
+  reading_month?: string;
+  created_at?: string;
   previous_electricity: number | null;
   current_electricity: number | null;
   electricity_usage: number | null;
@@ -43,6 +47,11 @@ const toNumber = (value: string | number) => {
   return Number.isNaN(parsed) ? 0 : parsed;
 };
 
+const toLocalDateString = (date: Date) =>
+  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
+    date.getDate()
+  ).padStart(2, "0")}`;
+
 export default function MetersPage() {
   const supabase = useMemo(() => createClient(), []);
   const inputRefs = useRef<Record<string, HTMLInputElement | null>>({});
@@ -52,6 +61,15 @@ export default function MetersPage() {
   const [status, setStatus] = useState<string | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [electricityMax, setElectricityMax] = useState(9999);
+  const [waterMax, setWaterMax] = useState(9999);
+
+  const calcUsage = (previous: number, current: number, maxValue: number, rollover: boolean) => {
+    if (!rollover) return current - previous;
+    if (current >= previous) return current - previous;
+    const safeMax = Math.max(maxValue, previous, current);
+    return safeMax - previous + current;
+  };
 
   const fetchData = async () => {
     setLoading(true);
@@ -60,8 +78,8 @@ export default function MetersPage() {
     const [year, month] = selectedMonth.split("-").map(Number);
     const monthDate = new Date(year, month - 1, 1);
     const prevMonthDate = new Date(year, month - 2, 1);
-    const currentMonthKey = monthDate.toISOString().slice(0, 10);
-    const prevMonthKey = prevMonthDate.toISOString().slice(0, 10);
+    const currentMonthKey = toLocalDateString(monthDate);
+    const prevMonthKey = toLocalDateString(prevMonthDate);
 
     const { data: roomData, error: roomError } = await supabase
       .from("rooms")
@@ -74,24 +92,35 @@ export default function MetersPage() {
       return;
     }
 
+    const nextMonthDate = new Date(year, month, 1);
+    const nextMonthKey = toLocalDateString(nextMonthDate);
+
     const { data: currentReadings } = await supabase
       .from("meter_readings")
       .select(
-        "room_id,previous_electricity,current_electricity,electricity_usage,previous_water,current_water,water_usage,previous_reading,current_reading,usage"
+        "id,room_id,reading_month,created_at,previous_electricity,current_electricity,electricity_usage,previous_water,current_water,water_usage,previous_reading,current_reading,usage"
       )
-      .eq("reading_month", currentMonthKey);
+      .gte("reading_month", currentMonthKey)
+      .lt("reading_month", nextMonthKey)
+      .order("reading_month", { ascending: false })
+      .order("created_at", { ascending: false });
 
     const { data: previousReadings } = await supabase
       .from("meter_readings")
-      .select("room_id,current_electricity,current_water,current_reading")
-      .eq("reading_month", prevMonthKey);
+      .select("id,room_id,reading_month,created_at,current_electricity,current_water,current_reading")
+      .gte("reading_month", prevMonthKey)
+      .lt("reading_month", currentMonthKey)
+      .order("reading_month", { ascending: false })
+      .order("created_at", { ascending: false });
 
-    const previousMap = new Map(
-      (previousReadings ?? []).map((item: any) => [item.room_id, item])
-    );
-    const currentMap = new Map(
-      (currentReadings ?? []).map((item: MeterReadingDb) => [item.room_id, item])
-    );
+    const previousMap = new Map<string, any>();
+    for (const item of previousReadings ?? []) {
+      if (!previousMap.has(item.room_id)) previousMap.set(item.room_id, item);
+    }
+    const currentMap = new Map<string, MeterReadingDb>();
+    for (const item of (currentReadings ?? []) as MeterReadingDb[]) {
+      if (!currentMap.has(item.room_id)) currentMap.set(item.room_id, item);
+    }
 
     const grouped: Record<string, MeterRow[]> = {};
 
@@ -104,19 +133,40 @@ export default function MetersPage() {
       const previousWater =
         current?.previous_water ?? previous.current_water ?? previous.current_reading ?? 0;
 
-      const currentElec = current?.current_electricity ?? previousElec;
-      const currentWater = current?.current_water ?? current?.current_reading ?? previousWater;
+      const currentElec = current?.current_electricity ?? 0;
+      const currentWater = current?.current_water ?? current?.current_reading ?? 0;
+
+      const inferredRollover =
+        current != null &&
+        (toNumber(currentElec) < toNumber(previousElec) ||
+          toNumber(currentWater) < toNumber(previousWater)) &&
+        toNumber(current?.electricity_usage ?? 0) >= 0 &&
+        toNumber(current?.water_usage ?? 0) >= 0;
+
+      const electricityUsage = calcUsage(
+        toNumber(previousElec),
+        toNumber(currentElec),
+        Math.max(0, toNumber(electricityMax)),
+        inferredRollover
+      );
+      const waterUsage = calcUsage(
+        toNumber(previousWater),
+        toNumber(currentWater),
+        Math.max(0, toNumber(waterMax)),
+        inferredRollover
+      );
 
       const row: MeterRow = {
         room_id: room.id,
         room_number: room.room_number,
         reading_month: currentMonthKey,
+        rollover: inferredRollover,
         previous_electricity: toNumber(previousElec),
         current_electricity: toNumber(currentElec),
-        electricity_usage: toNumber(currentElec) - toNumber(previousElec),
+        electricity_usage: electricityUsage,
         previous_water: toNumber(previousWater),
         current_water: toNumber(currentWater),
-        water_usage: toNumber(currentWater) - toNumber(previousWater),
+        water_usage: waterUsage,
       };
 
       const buildingName = Array.isArray(room.buildings)
@@ -150,12 +200,69 @@ export default function MetersPage() {
       [building]: prev[building].map((row) => {
         if (row.room_id !== roomId) return row;
         const next = { ...row, [field]: value } as MeterRow;
-        next.electricity_usage = next.current_electricity - next.previous_electricity;
-        next.water_usage = next.current_water - next.previous_water;
+        next.electricity_usage = calcUsage(
+          next.previous_electricity,
+          next.current_electricity,
+          Math.max(0, toNumber(electricityMax)),
+          next.rollover
+        );
+        next.water_usage = calcUsage(
+          next.previous_water,
+          next.current_water,
+          Math.max(0, toNumber(waterMax)),
+          next.rollover
+        );
         return next;
       }),
     }));
   };
+
+  const updateRollover = (building: string, roomId: string, enabled: boolean) => {
+    setRows((prev) => ({
+      ...prev,
+      [building]: prev[building].map((row) => {
+        if (row.room_id !== roomId) return row;
+        const next = { ...row, rollover: enabled };
+        next.electricity_usage = calcUsage(
+          next.previous_electricity,
+          next.current_electricity,
+          Math.max(0, toNumber(electricityMax)),
+          enabled
+        );
+        next.water_usage = calcUsage(
+          next.previous_water,
+          next.current_water,
+          Math.max(0, toNumber(waterMax)),
+          enabled
+        );
+        return next;
+      }),
+    }));
+  };
+
+  useEffect(() => {
+    setRows((prev) => {
+      const next: Record<string, MeterRow[]> = {};
+      for (const [building, buildingRows] of Object.entries(prev)) {
+        next[building] = buildingRows.map((row) => ({
+          ...row,
+          electricity_usage: calcUsage(
+            row.previous_electricity,
+            row.current_electricity,
+            Math.max(0, toNumber(electricityMax)),
+            row.rollover
+          ),
+          water_usage: calcUsage(
+            row.previous_water,
+            row.current_water,
+            Math.max(0, toNumber(waterMax)),
+            row.rollover
+          ),
+        }));
+      }
+      return next;
+    });
+  }, [electricityMax, waterMax]);
 
   const saveAll = async () => {
     setSaving(true);
@@ -185,6 +292,7 @@ export default function MetersPage() {
       setStatus(error.message);
     } else {
       setStatus("Meter readings saved.");
+      await fetchData();
     }
   };
 
@@ -219,7 +327,10 @@ export default function MetersPage() {
     if (!nextBuildingName || !nextRoom) return;
 
     const key = `${nextBuildingName}:${nextRoom.room_id}:${field}`;
-    inputRefs.current[key]?.focus();
+    const nextInput = inputRefs.current[key];
+    if (!nextInput) return;
+    nextInput.focus();
+    nextInput.select();
   };
 
   return (
@@ -231,6 +342,23 @@ export default function MetersPage() {
             type="month"
             value={selectedMonth}
             onChange={(event) => setSelectedMonth(event.target.value)}
+          />
+        </div>
+        <div className="flex flex-wrap items-end gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2">
+          <label className="text-sm text-slate-700">Meter max value</label>
+          <input
+            type="number"
+            value={electricityMax}
+            onChange={(event) => setElectricityMax(toNumber(event.target.value))}
+            className="w-28 rounded-lg border border-slate-200 px-3 py-1.5 text-sm"
+            placeholder="Elec max"
+          />
+          <input
+            type="number"
+            value={waterMax}
+            onChange={(event) => setWaterMax(toNumber(event.target.value))}
+            className="w-28 rounded-lg border border-slate-200 px-3 py-1.5 text-sm"
+            placeholder="Water max"
           />
         </div>
         <button
@@ -261,26 +389,40 @@ export default function MetersPage() {
                 <thead className="bg-slate-100 text-xs uppercase tracking-wider text-slate-500">
                   <tr>
                     <th className="px-4 py-3">Room</th>
-                    <th className="px-4 py-3">Elec Prev</th>
-                    <th className="px-4 py-3">Elec Current</th>
-                    <th className="px-4 py-3">Elec Usage</th>
-                    <th className="px-4 py-3">Water Prev</th>
-                    <th className="px-4 py-3">Water Current</th>
-                    <th className="px-4 py-3">Water Usage</th>
+                    <th className="px-4 py-3">Rollover</th>
+                    <th className="bg-amber-50 px-4 py-3 text-amber-800">Elec Prev</th>
+                    <th className="bg-amber-50 px-4 py-3 text-amber-800">Elec Current</th>
+                    <th className="bg-amber-50 px-4 py-3 text-amber-800">Elec Usage</th>
+                    <th className="bg-cyan-50 px-4 py-3 text-cyan-800">Water Prev</th>
+                    <th className="bg-cyan-50 px-4 py-3 text-cyan-800">Water Current</th>
+                    <th className="bg-cyan-50 px-4 py-3 text-cyan-800">Water Usage</th>
                   </tr>
                 </thead>
                 <tbody>
                   {buildingRows.map((row) => (
                     <tr key={row.room_id} className="border-t border-slate-100">
                       <td className="px-4 py-3 font-medium text-slate-900">{row.room_number}</td>
-                      <td className="px-4 py-3">{row.previous_electricity}</td>
                       <td className="px-4 py-3">
+                        <label className="inline-flex items-center gap-2 text-xs text-slate-600">
+                          <input
+                            type="checkbox"
+                            checked={row.rollover}
+                            onChange={(event) =>
+                              updateRollover(building, row.room_id, event.target.checked)
+                            }
+                          />
+                          Enabled
+                        </label>
+                      </td>
+                      <td className="bg-amber-50/60 px-4 py-3">{row.previous_electricity}</td>
+                      <td className="bg-amber-50/60 px-4 py-3">
                         <input
                           type="number"
                           value={row.current_electricity}
                           ref={(element) => {
                             inputRefs.current[`${building}:${row.room_id}:current_electricity`] = element;
                           }}
+                          onFocus={(event) => event.currentTarget.select()}
                           onKeyDown={(event) => {
                             if (event.key === "Enter") {
                               event.preventDefault();
@@ -298,19 +440,20 @@ export default function MetersPage() {
                           className="w-24 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm"
                         />
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="bg-amber-50/60 px-4 py-3">
                         <span className={row.electricity_usage < 0 ? "text-red-600" : "text-slate-700"}>
                           {row.electricity_usage}
                         </span>
                       </td>
-                      <td className="px-4 py-3">{row.previous_water}</td>
-                      <td className="px-4 py-3">
+                      <td className="bg-cyan-50/60 px-4 py-3">{row.previous_water}</td>
+                      <td className="bg-cyan-50/60 px-4 py-3">
                         <input
                           type="number"
                           value={row.current_water}
                           ref={(element) => {
                             inputRefs.current[`${building}:${row.room_id}:current_water`] = element;
                           }}
+                          onFocus={(event) => event.currentTarget.select()}
                           onKeyDown={(event) => {
                             if (event.key === "Enter") {
                               event.preventDefault();
@@ -328,7 +471,7 @@ export default function MetersPage() {
                           className="w-24 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm"
                         />
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="bg-cyan-50/60 px-4 py-3">
                         <span className={row.water_usage < 0 ? "text-red-600" : "text-slate-700"}>
                           {row.water_usage}
                         </span>

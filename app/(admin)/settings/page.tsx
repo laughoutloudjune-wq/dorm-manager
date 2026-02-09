@@ -22,6 +22,7 @@ type SettingsRow = {
   late_fee_start_day: number | null;
   late_fee_per_day: number | null;
   additional_fees: AdditionalFee[] | null;
+  additional_discounts: AdditionalFee[] | null;
 };
 
 type AdditionalFee = {
@@ -100,9 +101,11 @@ export default function SettingsPage() {
     late_fee_start_day: 6,
     late_fee_per_day: 0,
     additional_fees: [],
+    additional_discounts: [],
   });
 
   const [fees, setFees] = useState<AdditionalFee[]>([]);
+  const [discounts, setDiscounts] = useState<AdditionalFee[]>([]);
   const [methods, setMethods] = useState<PaymentMethod[]>([]);
   const [initialMethodIds, setInitialMethodIds] = useState<string[]>([]);
   const [buildings, setBuildings] = useState<Building[]>([]);
@@ -152,12 +155,16 @@ export default function SettingsPage() {
       if (inserted) {
         setSettings(inserted as SettingsRow);
         setFees(Array.isArray(inserted.additional_fees) ? inserted.additional_fees : []);
+        setDiscounts(
+          Array.isArray((inserted as any).additional_discounts) ? (inserted as any).additional_discounts : []
+        );
       }
       return;
     }
 
     setSettings(data as SettingsRow);
     setFees(Array.isArray(data.additional_fees) ? data.additional_fees : []);
+    setDiscounts(Array.isArray((data as any).additional_discounts) ? (data as any).additional_discounts : []);
   };
 
   const loadPaymentMethods = async () => {
@@ -253,6 +260,9 @@ export default function SettingsPage() {
     const cleaned = fees
       .filter((fee) => fee.label.trim().length > 0)
       .map((fee) => ({ ...fee, value: toNumber(fee.value) }));
+    const cleanedDiscounts = discounts
+      .filter((fee) => fee.label.trim().length > 0)
+      .map((fee) => ({ ...fee, value: toNumber(fee.value) }));
 
     const payload = {
       common_fee: settings.common_fee,
@@ -261,6 +271,7 @@ export default function SettingsPage() {
       late_fee_start_day: toNumber(settings.late_fee_start_day ?? 6),
       late_fee_per_day: toNumber(settings.late_fee_per_day ?? 0),
       additional_fees: cleaned,
+      additional_discounts: cleanedDiscounts,
       updated_at: new Date().toISOString(),
     };
 
@@ -669,6 +680,86 @@ export default function SettingsPage() {
                         action: async () => {
                           setFees((prev) => prev.filter((_, idx) => idx !== index));
                           setStatusMessage("Fee removed from list. Save Invoice Config to persist.");
+                        },
+                      })
+                    }
+                    className="inline-flex items-center gap-2 rounded-xl border border-red-200 px-3 py-2 text-sm text-red-600"
+                  >
+                    <Trash2 size={14} />
+                    Delete
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-semibold text-slate-800">Discount Rules</p>
+              <button
+                onClick={() => setDiscounts((prev) => [...prev, newFee()])}
+                className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700"
+              >
+                <Plus size={14} />
+                Add Discount
+              </button>
+            </div>
+
+            {discounts.map((fee, index) => (
+              <div key={`discount-${fee.id}`} className="grid gap-3 rounded-xl border border-slate-200 p-3 md:grid-cols-4">
+                <Input
+                  label="Discount Name"
+                  value={fee.label}
+                  onChange={(event) =>
+                    setDiscounts((prev) =>
+                      prev.map((item, idx) => (idx === index ? { ...item, label: event.target.value } : item))
+                    )
+                  }
+                />
+                <label className="text-sm text-slate-600">
+                  Calculation Type
+                  <select
+                    value={fee.calc_type}
+                    onChange={(event) =>
+                      setDiscounts((prev) =>
+                        prev.map((item, idx) =>
+                          idx === index
+                            ? {
+                                ...item,
+                                calc_type: event.target.value as AdditionalFee["calc_type"],
+                              }
+                            : item
+                        )
+                      )
+                    }
+                    className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm"
+                  >
+                    <option value="fixed">Fixed Amount</option>
+                    <option value="electricity_units">Based on Electricity Units</option>
+                    <option value="water_units">Based on Water Units</option>
+                  </select>
+                </label>
+                <Input
+                  label={fee.calc_type === "fixed" ? "Amount" : "Rate / Unit"}
+                  type="number"
+                  value={fee.value}
+                  onChange={(event) =>
+                    setDiscounts((prev) =>
+                      prev.map((item, idx) =>
+                        idx === index ? { ...item, value: toNumber(event.target.value) } : item
+                      )
+                    )
+                  }
+                />
+                <div className="flex items-end">
+                  <button
+                    onClick={() =>
+                      openConfirm({
+                        title: "Delete Discount",
+                        message: "Are you sure you want to delete this discount?",
+                        action: async () => {
+                          setDiscounts((prev) => prev.filter((_, idx) => idx !== index));
+                          setStatusMessage("Discount removed from list. Save Invoice Config to persist.");
                         },
                       })
                     }

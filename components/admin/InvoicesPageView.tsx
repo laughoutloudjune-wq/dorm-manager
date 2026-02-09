@@ -30,6 +30,8 @@ type InvoiceRecord = {
   water_bill: number;
   electricity_bill: number;
   common_fee: number;
+  discount_amount: number;
+  discount_breakdown: any[];
   late_fee_amount: number;
   late_fee_per_day: number;
   late_fee_start_date: string | null;
@@ -67,6 +69,7 @@ type PrintSettings = {
   billing_day: number | null;
   due_day: number | null;
   late_fee_start_day: number | null;
+  additional_discounts: AdditionalFee[] | null;
 };
 
 type PaymentMethodRow = {
@@ -175,6 +178,8 @@ function normalizeInvoice(row: any): InvoiceRecord {
     water_bill: toNumber(row.water_bill),
     electricity_bill: toNumber(row.electricity_bill),
     common_fee: toNumber(row.common_fee),
+    discount_amount: toNumber(row.discount_amount),
+    discount_breakdown: Array.isArray(row.discount_breakdown) ? row.discount_breakdown : [],
     late_fee_amount: toNumber(row.late_fee_amount),
     late_fee_per_day: toNumber(row.late_fee_per_day),
     late_fee_start_date: row.late_fee_start_date ?? null,
@@ -217,6 +222,7 @@ export default function InvoicesPage() {
   const [printSettings, setPrintSettings] = useState<PrintSettings | null>(null);
   const [defaultPaymentMethod, setDefaultPaymentMethod] = useState<PaymentMethodRow | null>(null);
   const [editableFeeItems, setEditableFeeItems] = useState<FeeLineItem[]>([]);
+  const [editableDiscountItems, setEditableDiscountItems] = useState<FeeLineItem[]>([]);
 
   const [form, setForm] = useState({
     issue_date: "",
@@ -227,6 +233,7 @@ export default function InvoicesPage() {
     water_bill: 0,
     electricity_bill: 0,
     common_fee: 0,
+    discount_amount: 0,
     late_fee_amount: 0,
     late_fee_per_day: 0,
     late_fee_start_date: "",
@@ -240,11 +247,17 @@ export default function InvoicesPage() {
     setLoading(true);
     setError(null);
 
+    const [year, month] = selectedMonth.split("-").map(Number);
+    const periodStart = toLocalDateString(new Date(year, month - 1, 1));
+    const periodEnd = toLocalDateString(new Date(year, month, 0));
+
     const { data, error: fetchError } = await supabase
       .from("invoices")
       .select(
-        "id,room_id,status,total_amount,issue_date,due_date,start_date,end_date,rent_amount,water_bill,electricity_bill,common_fee,late_fee_amount,late_fee_per_day,late_fee_start_date,additional_fees_total,additional_fees_breakdown,notes,public_token,slip_url,tenants(full_name,phone_number,line_user_id,custom_payment_method),rooms(room_number,buildings(name))"
+        "id,room_id,status,total_amount,issue_date,due_date,start_date,end_date,rent_amount,water_bill,electricity_bill,common_fee,discount_amount,discount_breakdown,late_fee_amount,late_fee_per_day,late_fee_start_date,additional_fees_total,additional_fees_breakdown,notes,public_token,slip_url,tenants(full_name,phone_number,line_user_id,custom_payment_method),rooms(room_number,buildings(name))"
       )
+      .eq("start_date", periodStart)
+      .eq("end_date", periodEnd)
       .order("issue_date", { ascending: false });
 
     if (fetchError) {
@@ -296,13 +309,16 @@ export default function InvoicesPage() {
 
   useEffect(() => {
     loadInvoices();
+  }, [selectedMonth]);
+
+  useEffect(() => {
     void loadPrintConfig();
   }, []);
 
   const loadPrintConfig = async () => {
     const { data: settingData } = await supabase
       .from("settings")
-      .select("dorm_name,dorm_address,water_rate,electricity_rate,billing_day,due_day,late_fee_start_day")
+      .select("dorm_name,dorm_address,water_rate,electricity_rate,billing_day,due_day,late_fee_start_day,additional_discounts")
       .eq("id", 1)
       .maybeSingle();
     setPrintSettings((settingData as PrintSettings) ?? null);
@@ -338,6 +354,7 @@ export default function InvoicesPage() {
 
   const openInvoice = (invoice: InvoiceRecord) => {
     const feeItems = toFeeItems(invoice.additional_fees_breakdown ?? []);
+    const discountItems = toFeeItems(invoice.discount_breakdown ?? []);
     const todayLocal = toLocalDateString(new Date());
     const dueDateFromSetting = computeDateByDayInMonth(todayLocal, printSettings?.due_day);
     const lateStartFromSetting = computeDateByDayInMonth(
@@ -346,6 +363,13 @@ export default function InvoicesPage() {
     );
     setActiveInvoice(invoice);
     setEditableFeeItems(feeItems.length > 0 ? feeItems : []);
+    setEditableDiscountItems(
+      discountItems.length > 0
+        ? discountItems
+        : invoice.discount_amount > 0
+          ? [{ detail: "ส่วนลด", unit: 1, price_per_unit: invoice.discount_amount, total_amount: invoice.discount_amount }]
+          : []
+    );
     setForm({
       issue_date: todayLocal,
       due_date: dueDateFromSetting,
@@ -355,6 +379,7 @@ export default function InvoicesPage() {
       water_bill: invoice.water_bill,
       electricity_bill: invoice.electricity_bill,
       common_fee: invoice.common_fee,
+      discount_amount: discountItems.length > 0 ? feeItemsTotal(discountItems) : invoice.discount_amount,
       late_fee_amount: invoice.late_fee_amount,
       late_fee_per_day: invoice.late_fee_per_day,
       late_fee_start_date: lateStartFromSetting,
@@ -372,14 +397,16 @@ export default function InvoicesPage() {
     setForm((prev) => {
       const next = { ...prev, [field]: value } as typeof prev;
       const nextAdditional = feeItemsTotal(editableFeeItems);
+      const nextDiscount = feeItemsTotal(editableDiscountItems);
       const total =
         toNumber(next.rent_amount) +
         toNumber(next.water_bill) +
         toNumber(next.electricity_bill) +
         toNumber(next.common_fee) +
+        nextDiscount * -1 +
         toNumber(next.late_fee_amount) +
         nextAdditional;
-      return { ...next, additional_fees_total: nextAdditional, total_amount: total };
+      return { ...next, additional_fees_total: nextAdditional, discount_amount: nextDiscount, total_amount: total };
     });
   };
 
@@ -403,17 +430,60 @@ export default function InvoicesPage() {
         };
       });
       const nextAdditional = feeItemsTotal(normalized);
+      const nextDiscount = feeItemsTotal(editableDiscountItems);
       setForm((formPrev) => {
         const total =
           toNumber(formPrev.rent_amount) +
           toNumber(formPrev.water_bill) +
           toNumber(formPrev.electricity_bill) +
           toNumber(formPrev.common_fee) +
+          nextDiscount * -1 +
           toNumber(formPrev.late_fee_amount) +
           nextAdditional;
         return {
           ...formPrev,
           additional_fees_total: nextAdditional,
+          discount_amount: nextDiscount,
+          total_amount: total,
+        };
+      });
+      return normalized;
+    });
+  };
+
+  const updateDiscountItem = (
+    index: number,
+    field: keyof FeeLineItem,
+    value: string | number
+  ) => {
+    setEditableDiscountItems((prev) => {
+      const next = prev.map((item, idx) =>
+        idx === index ? { ...item, [field]: value } : item
+      );
+      const normalized = next.map((item) => {
+        const unit = toNumber(item.unit);
+        const price_per_unit = toNumber(item.price_per_unit);
+        return {
+          ...item,
+          unit,
+          price_per_unit,
+          total_amount: unit * price_per_unit,
+        };
+      });
+      const nextAdditional = feeItemsTotal(editableFeeItems);
+      const nextDiscount = feeItemsTotal(normalized);
+      setForm((formPrev) => {
+        const total =
+          toNumber(formPrev.rent_amount) +
+          toNumber(formPrev.water_bill) +
+          toNumber(formPrev.electricity_bill) +
+          toNumber(formPrev.common_fee) +
+          nextDiscount * -1 +
+          toNumber(formPrev.late_fee_amount) +
+          nextAdditional;
+        return {
+          ...formPrev,
+          discount_amount: nextDiscount,
           total_amount: total,
         };
       });
@@ -436,6 +506,15 @@ export default function InvoicesPage() {
         water_bill: toNumber(form.water_bill),
         electricity_bill: toNumber(form.electricity_bill),
         common_fee: toNumber(form.common_fee),
+        discount_amount: feeItemsTotal(editableDiscountItems),
+        discount_breakdown: editableDiscountItems.map((item) => ({
+          detail: item.detail,
+          unit: toNumber(item.unit),
+          price_per_unit: toNumber(item.price_per_unit),
+          total_amount: toNumber(item.total_amount),
+          amount: toNumber(item.total_amount),
+          label: item.detail,
+        })),
         late_fee_amount: toNumber(form.late_fee_amount),
         late_fee_per_day: toNumber(form.late_fee_per_day),
         late_fee_start_date: form.late_fee_start_date || null,
@@ -595,6 +674,25 @@ export default function InvoicesPage() {
           </tr>`
       )
       .join("");
+    const normalizedDiscountRows =
+      Array.isArray(invoice.discount_breakdown) && invoice.discount_breakdown.length > 0
+        ? invoice.discount_breakdown
+        : invoice.discount_amount > 0
+          ? [{ detail: "ส่วนลด", unit: 1, total_amount: invoice.discount_amount, price_per_unit: invoice.discount_amount }]
+          : [];
+    const discountRows = normalizedDiscountRows
+      .map(
+        (fee: any) => `
+          <tr>
+            <td>ส่วนลด - ${fee.detail ?? fee.label ?? "-"}</td>
+            <td class="text-right">${toNumber(fee.unit).toLocaleString("th-TH") || "-"}</td>
+            <td class="text-right">${formatMoney(
+              toNumber(fee.price_per_unit ?? fee.rate ?? fee.value ?? fee.amount)
+            )}</td>
+            <td class="text-right">-${formatMoney(toNumber(fee.total_amount ?? fee.amount))}</td>
+          </tr>`
+      )
+      .join("");
 
     return `
       <html>
@@ -666,12 +764,19 @@ export default function InvoicesPage() {
                 <td class="text-right">${formatMoney(invoice.common_fee)}</td>
               </tr>
               <tr>
+                <td>ส่วนลด</td>
+                <td class="text-right">-</td>
+                <td class="text-right">-</td>
+                <td class="text-right">-${formatMoney(invoice.discount_amount)}</td>
+              </tr>
+              <tr>
                 <td>ค่าปรับล่าช้า</td>
                 <td class="text-right">-</td>
                 <td class="text-right">-</td>
                 <td class="text-right">${formatMoney(invoice.late_fee_amount)}</td>
               </tr>
               ${additionalRows}
+              ${discountRows}
               <tr class="total">
                 <td colspan="3" class="text-right">ยอดรวมสุทธิ</td>
                 <td class="text-right">${formatMoney(invoice.total_amount)}</td>
@@ -711,7 +816,7 @@ export default function InvoicesPage() {
     const { data: settings, error: settingsError } = await supabase
       .from("settings")
       .select(
-        "water_rate,electricity_rate,common_fee,water_min_units,water_min_price,additional_fees,billing_day,due_day,late_fee_start_day,late_fee_per_day"
+        "water_rate,electricity_rate,common_fee,water_min_units,water_min_price,additional_fees,additional_discounts,billing_day,due_day,late_fee_start_day,late_fee_per_day"
       )
       .eq("id", 1)
       .single();
@@ -845,6 +950,9 @@ export default function InvoicesPage() {
     const additionalFees = Array.isArray(settings.additional_fees)
       ? (settings.additional_fees as AdditionalFee[])
       : [];
+    const discountRules = Array.isArray((settings as any).additional_discounts)
+      ? ((settings as any).additional_discounts as AdditionalFee[])
+      : [];
 
     const insertPayload = tenantsToGenerate.map((tenant: any) => {
       const roomRel = Array.isArray(tenant.rooms) ? tenant.rooms[0] : tenant.rooms;
@@ -889,11 +997,38 @@ export default function InvoicesPage() {
         (sum, fee) => sum + toNumber(fee.amount),
         0
       );
+      const discountBreakdown = discountRules.map((fee) => {
+        const rate = toNumber(fee.value);
+        let amount = 0;
+        if (fee.calc_type === "fixed") amount = rate;
+        if (fee.calc_type === "electricity_units") amount = elecUnits * rate;
+        if (fee.calc_type === "water_units") amount = waterUnits * rate;
+        const unit =
+          fee.calc_type === "electricity_units"
+            ? elecUnits
+            : fee.calc_type === "water_units"
+              ? waterUnits
+              : 1;
+        return {
+          label: fee.label,
+          detail: fee.label,
+          calc_type: fee.calc_type,
+          rate,
+          unit,
+          price_per_unit: rate,
+          total_amount: amount,
+          amount,
+        };
+      });
+      const discountAmount = discountBreakdown.reduce(
+        (sum, fee) => sum + toNumber(fee.amount),
+        0
+      );
 
       const commonFee = toNumber(settings.common_fee);
       const lateFeeAmount = 0;
       const totalAmount =
-        rentAmount + waterBill + elecBill + commonFee + additionalTotal + lateFeeAmount;
+        rentAmount + waterBill + elecBill + commonFee + additionalTotal + lateFeeAmount - discountAmount;
 
       return {
         tenant_id: tenant.id,
@@ -906,6 +1041,8 @@ export default function InvoicesPage() {
         water_bill: waterBill,
         electricity_bill: elecBill,
         common_fee: commonFee,
+        discount_amount: discountAmount,
+        discount_breakdown: discountBreakdown,
         late_fee_amount: lateFeeAmount,
         late_fee_per_day: lateFeePerDay,
         late_fee_start_date: generatedLateFeeStartDateText,
@@ -1151,6 +1288,12 @@ export default function InvoicesPage() {
                 onChange={(event) => updateForm("common_fee", event.target.value)}
               />
               <Input
+                label="Discount Total"
+                type="number"
+                value={form.discount_amount}
+                readOnly
+              />
+              <Input
                 label="Late Fee Amount"
                 type="number"
                 value={form.late_fee_amount}
@@ -1251,11 +1394,110 @@ export default function InvoicesPage() {
                                       toNumber(formPrev.water_bill) +
                                       toNumber(formPrev.electricity_bill) +
                                       toNumber(formPrev.common_fee) +
+                                      toNumber(formPrev.discount_amount) * -1 +
                                       toNumber(formPrev.late_fee_amount) +
                                       nextAdditional;
                                     return {
                                       ...formPrev,
                                       additional_fees_total: nextAdditional,
+                                      total_amount: total,
+                                    };
+                                  });
+                                  return next;
+                                })
+                              }
+                              className="rounded-lg border border-red-200 px-2 py-1 text-xs text-red-600"
+                            >
+                              Remove
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-3 rounded-xl border border-slate-200 p-4">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-semibold text-slate-700">Discount Details</p>
+                <button
+                  type="button"
+                  onClick={() => setEditableDiscountItems((prev) => [...prev, emptyFeeItem()])}
+                  className="rounded-lg border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-700"
+                >
+                  Add Discount Row
+                </button>
+              </div>
+
+              {editableDiscountItems.length === 0 ? (
+                <p className="text-xs text-slate-500">No discount rows.</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[640px] text-sm">
+                    <thead className="bg-slate-100 text-slate-600">
+                      <tr>
+                        <th className="px-2 py-2 text-left">Detail</th>
+                        <th className="px-2 py-2 text-right">Unit</th>
+                        <th className="px-2 py-2 text-right">Price / Unit</th>
+                        <th className="px-2 py-2 text-right">Total</th>
+                        <th className="px-2 py-2 text-right">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {editableDiscountItems.map((item, index) => (
+                        <tr key={index} className="border-t border-slate-100">
+                          <td className="px-2 py-2">
+                            <input
+                              type="text"
+                              value={item.detail}
+                              onChange={(event) => updateDiscountItem(index, "detail", event.target.value)}
+                              className="w-full rounded-lg border border-slate-200 px-2 py-1"
+                              placeholder="e.g. Early payment"
+                            />
+                          </td>
+                          <td className="px-2 py-2">
+                            <input
+                              type="number"
+                              value={item.unit}
+                              onChange={(event) => updateDiscountItem(index, "unit", event.target.value)}
+                              className="w-full rounded-lg border border-slate-200 px-2 py-1 text-right"
+                            />
+                          </td>
+                          <td className="px-2 py-2">
+                            <input
+                              type="number"
+                              value={item.price_per_unit}
+                              onChange={(event) =>
+                                updateDiscountItem(index, "price_per_unit", event.target.value)
+                              }
+                              className="w-full rounded-lg border border-slate-200 px-2 py-1 text-right"
+                            />
+                          </td>
+                          <td className="px-2 py-2 text-right font-semibold text-slate-900">
+                            {formatMoney(toNumber(item.total_amount))}
+                          </td>
+                          <td className="px-2 py-2 text-right">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setEditableDiscountItems((prev) => {
+                                  const next = prev.filter((_, idx) => idx !== index);
+                                  const nextAdditional = feeItemsTotal(editableFeeItems);
+                                  const nextDiscount = feeItemsTotal(next);
+                                  setForm((formPrev) => {
+                                    const total =
+                                      toNumber(formPrev.rent_amount) +
+                                      toNumber(formPrev.water_bill) +
+                                      toNumber(formPrev.electricity_bill) +
+                                      toNumber(formPrev.common_fee) +
+                                      nextDiscount * -1 +
+                                      toNumber(formPrev.late_fee_amount) +
+                                      nextAdditional;
+                                    return {
+                                      ...formPrev,
+                                      discount_amount: nextDiscount,
                                       total_amount: total,
                                     };
                                   });
@@ -1474,6 +1716,28 @@ export default function InvoicesPage() {
                         <td className="px-3 py-2 text-right">-</td>
                         <td className="px-3 py-2 text-right">{formatMoney(previewInvoice.common_fee)}</td>
                       </tr>
+                      {(
+                        Array.isArray(previewInvoice.discount_breakdown) && previewInvoice.discount_breakdown.length > 0
+                          ? previewInvoice.discount_breakdown
+                          : previewInvoice.discount_amount > 0
+                            ? [{ detail: "ส่วนลด", unit: 1, total_amount: previewInvoice.discount_amount, price_per_unit: previewInvoice.discount_amount }]
+                            : []
+                      ).map((fee: any, idx: number) => (
+                        <tr key={`discount-${fee.label ?? fee.detail ?? ""}-${idx}`} className="border-t border-slate-100">
+                          <td className="px-3 py-2">ส่วนลด - {fee.detail ?? fee.label ?? "-"}</td>
+                          <td className="px-3 py-2 text-right">
+                            {toNumber(fee.unit).toLocaleString("th-TH") || "-"}
+                          </td>
+                          <td className="px-3 py-2 text-right">
+                            {formatMoney(
+                              toNumber(fee.price_per_unit ?? fee.rate ?? fee.value ?? fee.amount)
+                            )}
+                          </td>
+                          <td className="px-3 py-2 text-right">
+                            -{formatMoney(toNumber(fee.total_amount ?? fee.amount))}
+                          </td>
+                        </tr>
+                      ))}
                       <tr className="border-t border-slate-100">
                         <td className="px-3 py-2">ค่าปรับล่าช้า</td>
                         <td className="px-3 py-2 text-right">-</td>
