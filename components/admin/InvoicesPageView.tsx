@@ -85,6 +85,13 @@ type PaymentMethodRow = {
 type MeterReadingRow = {
   electricity_usage: number | null;
   water_usage: number | null;
+  usage?: number | null;
+  previous_electricity?: number | null;
+  current_electricity?: number | null;
+  previous_water?: number | null;
+  current_water?: number | null;
+  previous_reading?: number | null;
+  current_reading?: number | null;
 };
 
 const toNumber = (value: string | number | null | undefined) => {
@@ -142,6 +149,26 @@ const feeItemsTotal = (items: FeeLineItem[]) =>
 
 const roomNumberCompare = (a: string, b: string) =>
   a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+
+const isInvoiceDetailEditable = (status: string) => status === "draft";
+
+const statusPillClass = (status: string) => {
+  if (status === "draft") return "bg-slate-100 text-slate-700 border-slate-300";
+  if (status === "pending") return "bg-amber-100 text-amber-800 border-amber-300";
+  if (status === "verifying") return "bg-sky-100 text-sky-800 border-sky-300";
+  if (status === "paid") return "bg-green-100 text-green-800 border-green-300";
+  if (status === "overdue") return "bg-red-100 text-red-800 border-red-300";
+  return "bg-slate-100 text-slate-700 border-slate-300";
+};
+
+const statusRowClass = (status: string) => {
+  if (status === "draft") return "bg-slate-50";
+  if (status === "pending") return "bg-amber-50/50";
+  if (status === "verifying") return "bg-sky-50/50";
+  if (status === "paid") return "bg-green-50/50";
+  if (status === "overdue") return "bg-red-50/50";
+  return "";
+};
 
 const clampDay = (value: number | null | undefined, min = 1, max = 28) => {
   const day = toNumber(value ?? min);
@@ -243,6 +270,28 @@ const calculateWaterBillWithMinimum = (
   return usageBill;
 };
 
+const resolveElectricityUsage = (reading: MeterReadingRow | null | undefined) => {
+  if (!reading) return 0;
+  if (reading.electricity_usage != null) return toNumber(reading.electricity_usage);
+  if (reading.current_electricity != null && reading.previous_electricity != null) {
+    return toNumber(reading.current_electricity) - toNumber(reading.previous_electricity);
+  }
+  return 0;
+};
+
+const resolveWaterUsage = (reading: MeterReadingRow | null | undefined) => {
+  if (!reading) return 0;
+  if (reading.water_usage != null) return toNumber(reading.water_usage);
+  if (reading.usage != null) return toNumber(reading.usage);
+  if (reading.current_water != null && reading.previous_water != null) {
+    return toNumber(reading.current_water) - toNumber(reading.previous_water);
+  }
+  if (reading.current_reading != null && reading.previous_reading != null) {
+    return toNumber(reading.current_reading) - toNumber(reading.previous_reading);
+  }
+  return 0;
+};
+
 function normalizeInvoice(row: any): InvoiceRecord {
   const tenant = Array.isArray(row.tenants) ? row.tenants[0] : row.tenants;
   const room = Array.isArray(row.rooms) ? row.rooms[0] : row.rooms;
@@ -309,6 +358,7 @@ export default function InvoicesPage() {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewInvoice, setPreviewInvoice] = useState<InvoiceRecord | null>(null);
   const [previewReading, setPreviewReading] = useState<MeterReadingRow | null>(null);
+  const [previewDocType, setPreviewDocType] = useState<"invoice" | "receipt">("invoice");
   const [printSettings, setPrintSettings] = useState<PrintSettings | null>(null);
   const [defaultPaymentMethod, setDefaultPaymentMethod] = useState<PaymentMethodRow | null>(null);
   const [editableFeeItems, setEditableFeeItems] = useState<FeeLineItem[]>([]);
@@ -319,6 +369,8 @@ export default function InvoicesPage() {
     due_date: "",
     start_date: "",
     end_date: "",
+    water_units: 0,
+    electricity_units: 0,
     rent_amount: 0,
     water_bill: 0,
     electricity_bill: 0,
@@ -332,6 +384,29 @@ export default function InvoicesPage() {
     status: "pending",
     notes: "",
   });
+
+  useEffect(() => {
+    let mounted = true;
+    const initLatestInvoiceMonth = async () => {
+      const { data } = await supabase
+        .from("invoices")
+        .select("start_date")
+        .order("start_date", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (!mounted) return;
+      const latestMonth = (data as any)?.start_date
+        ? String((data as any).start_date).slice(0, 7)
+        : null;
+      if (latestMonth) {
+        setSelectedMonth(latestMonth);
+      }
+    };
+    void initLatestInvoiceMonth();
+    return () => {
+      mounted = false;
+    };
+  }, [supabase]);
 
   const applyPendingToOverdue = async () => {
     const today = toLocalDateString(new Date());
@@ -374,7 +449,7 @@ export default function InvoicesPage() {
     const { data: invoicesInMonth, error: invoiceError } = await supabase
       .from("invoices")
       .select(
-        "id,room_id,rent_amount,water_bill,electricity_bill,common_fee,late_fee_amount,additional_fees_total,discount_amount,discount_breakdown,total_amount"
+        "id,room_id,status,rent_amount,water_bill,electricity_bill,common_fee,late_fee_amount,additional_fees_total,discount_amount,discount_breakdown,total_amount"
       )
       .eq("start_date", periodStart)
       .eq("end_date", periodEnd);
@@ -391,6 +466,9 @@ export default function InvoicesPage() {
 
     const updates = (invoicesInMonth as any[])
       .map((invoice) => {
+        if (!isInvoiceDetailEditable(String(invoice.status ?? ""))) {
+          return null;
+        }
         const reading = readingMap.get(invoice.room_id) ?? {};
         const elecUnits = toNumber(reading.electricity_usage);
         const waterUnits = toNumber(reading.water_usage ?? reading.usage);
@@ -605,7 +683,7 @@ export default function InvoicesPage() {
 
   const updateInvoiceStatus = async (
     invoiceId: string,
-    status: "pending" | "paid" | "overdue"
+    status: keyof typeof statusVariant
   ) => {
     const { error: statusError } = await supabase.from("invoices").update({ status }).eq("id", invoiceId);
     if (statusError) {
@@ -642,11 +720,22 @@ export default function InvoicesPage() {
           ? [{ detail: "ส่วนลด", unit: 1, price_per_unit: invoice.discount_amount, total_amount: invoice.discount_amount }]
           : []
     );
+    const waterRate = toNumber(printSettings?.water_rate);
+    const electricityRate = toNumber(printSettings?.electricity_rate);
+    const inferredWaterUnits =
+      waterRate > 0 ? toNumber(invoice.water_bill) / waterRate : toNumber(invoice.water_bill);
+    const inferredElectricityUnits =
+      electricityRate > 0
+        ? toNumber(invoice.electricity_bill) / electricityRate
+        : toNumber(invoice.electricity_bill);
+
     setForm({
       issue_date: todayLocal,
       due_date: dueDateFromSetting,
       start_date: invoice.start_date,
       end_date: invoice.end_date,
+      water_units: inferredWaterUnits,
+      electricity_units: inferredElectricityUnits,
       rent_amount: invoice.rent_amount,
       water_bill: invoice.water_bill,
       electricity_bill: invoice.electricity_bill,
@@ -665,7 +754,41 @@ export default function InvoicesPage() {
     setDetailOpen(true);
   };
 
+  const updateUtilityUnits = (field: "water_units" | "electricity_units", value: string | number) => {
+    if (activeInvoice && !isInvoiceDetailEditable(activeInvoice.status)) return;
+    const units = toNumber(value);
+    const waterRate = toNumber(printSettings?.water_rate);
+    const electricityRate = toNumber(printSettings?.electricity_rate);
+
+    setForm((prev) => {
+      const next = { ...prev, [field]: units } as typeof prev;
+      const nextWaterBill =
+        field === "water_units" ? units * waterRate : toNumber(next.water_units) * waterRate;
+      const nextElectricityBill =
+        field === "electricity_units"
+          ? units * electricityRate
+          : toNumber(next.electricity_units) * electricityRate;
+
+      const total =
+        toNumber(next.rent_amount) +
+        nextWaterBill +
+        nextElectricityBill +
+        toNumber(next.common_fee) +
+        toNumber(next.discount_amount) * -1 +
+        toNumber(next.late_fee_amount) +
+        toNumber(next.additional_fees_total);
+
+      return {
+        ...next,
+        water_bill: nextWaterBill,
+        electricity_bill: nextElectricityBill,
+        total_amount: total,
+      };
+    });
+  };
+
   const updateForm = (field: string, value: string | number) => {
+    if (activeInvoice && !isInvoiceDetailEditable(activeInvoice.status)) return;
     setForm((prev) => {
       const next = { ...prev, [field]: value } as typeof prev;
       const monthlyRent = toNumber(activeInvoice?.room_price_month ?? next.rent_amount);
@@ -699,6 +822,7 @@ export default function InvoicesPage() {
   };
 
   const toggleProrateInModal = (enabled: boolean) => {
+    if (activeInvoice && !isInvoiceDetailEditable(activeInvoice.status)) return;
     setUseProrateInModal(enabled);
     setForm((prev) => {
       if (!activeInvoice) return prev;
@@ -728,6 +852,7 @@ export default function InvoicesPage() {
     field: keyof FeeLineItem,
     value: string | number
   ) => {
+    if (activeInvoice && !isInvoiceDetailEditable(activeInvoice.status)) return;
     setEditableFeeItems((prev) => {
       const next = prev.map((item, idx) =>
         idx === index ? { ...item, [field]: value } : item
@@ -769,6 +894,7 @@ export default function InvoicesPage() {
     field: keyof FeeLineItem,
     value: string | number
   ) => {
+    if (activeInvoice && !isInvoiceDetailEditable(activeInvoice.status)) return;
     setEditableDiscountItems((prev) => {
       const next = prev.map((item, idx) =>
         idx === index ? { ...item, [field]: value } : item
@@ -806,6 +932,10 @@ export default function InvoicesPage() {
 
   const saveInvoice = async () => {
     if (!activeInvoice) return;
+    if (!isInvoiceDetailEditable(activeInvoice.status)) {
+      setError("Only draft invoices can be edited.");
+      return;
+    }
     setSaving(true);
 
     const { error: updateError } = await supabase
@@ -859,6 +989,29 @@ export default function InvoicesPage() {
 
   const deleteInvoices = async (invoiceIds: string[]) => {
     if (invoiceIds.length === 0) return;
+
+    const targetInvoices = invoices.filter((invoice) => invoiceIds.includes(invoice.id));
+    const blocked = targetInvoices.filter(
+      (invoice) => !!invoice.slip_url || invoice.status === "verifying" || invoice.status === "paid"
+    );
+
+    if (blocked.length > 0) {
+      const details = blocked
+        .map((invoice) => {
+          const reasons = [];
+          if (invoice.slip_url) reasons.push("has payment slip");
+          if (invoice.status === "verifying" || invoice.status === "paid") {
+            reasons.push(`status is ${invoice.status}`);
+          }
+          return `Room ${invoice.room_number} (${reasons.join(", ")})`;
+        })
+        .join(" | ");
+      setError(
+        `Cannot delete invoice(s). Remove payment slip and/or change status first. ${details}`
+      );
+      return;
+    }
+
     const { error: deleteError } = await supabase.from("invoices").delete().in("id", invoiceIds);
     if (deleteError) {
       setError(deleteError.message);
@@ -927,7 +1080,11 @@ export default function InvoicesPage() {
         .filter(Boolean)
         .join(" | ");
       setError(detail || "Failed to send LINE message");
+      return;
     }
+
+    await supabase.from("invoices").update({ status: "pending" }).eq("id", invoice.id);
+    await loadInvoices();
   };
 
   const sendSelectedToLine = async () => {
@@ -937,13 +1094,19 @@ export default function InvoicesPage() {
     }
   };
 
-  const getInvoicePrintDetail = async (invoice: InvoiceRecord) => {
+  const getInvoicePrintDetail = async (
+    invoice: InvoiceRecord,
+    docType: "invoice" | "receipt" = "invoice"
+  ) => {
     setPreviewLoading(true);
+    setPreviewDocType(docType);
     setPreviewInvoice(invoice);
-    const readingMonth = monthStartFromDate(invoice.issue_date);
+    const readingMonth = monthStartFromDate(invoice.start_date || invoice.issue_date);
     const { data } = await supabase
       .from("meter_readings")
-      .select("electricity_usage,water_usage")
+      .select(
+        "electricity_usage,water_usage,usage,previous_electricity,current_electricity,previous_water,current_water,previous_reading,current_reading"
+      )
       .eq("room_id", invoice.room_id)
       .eq("reading_month", readingMonth)
       .maybeSingle();
@@ -966,13 +1129,17 @@ export default function InvoicesPage() {
       .join(" | ");
   };
 
-  const buildPrintHtml = (invoice: InvoiceRecord, reading: MeterReadingRow | null) => {
+  const buildPrintHtml = (
+    invoice: InvoiceRecord,
+    reading: MeterReadingRow | null,
+    docType: "invoice" | "receipt" = "invoice"
+  ) => {
     const dormName = printSettings?.dorm_name || "หอพัก";
     const dormAddress = printSettings?.dorm_address || "-";
     const elecRate = toNumber(printSettings?.electricity_rate);
     const waterRate = toNumber(printSettings?.water_rate);
-    const elecUnits = toNumber(reading?.electricity_usage);
-    const waterUnits = toNumber(reading?.water_usage);
+    const elecUnits = resolveElectricityUsage(reading);
+    const waterUnits = resolveWaterUsage(reading);
     const paymentText = getPaymentMethodLabel(invoice);
     const prorateSummary = calculateProratedRentByBillingDay(
       toNumber(invoice.room_price_month || invoice.rent_amount),
@@ -1014,12 +1181,20 @@ export default function InvoicesPage() {
       )
       .join("");
 
+    const documentTitle = docType === "receipt" ? "ใบเสร็จรับเงิน" : "ใบแจ้งหนี้";
+
     return `
       <html>
       <head>
-        <title>ใบแจ้งหนี้ ${invoice.id}</title>
+        <title>${documentTitle} ${invoice.id}</title>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link
+          href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700&display=swap"
+          rel="stylesheet"
+        />
         <style>
-          body { font-family: Sarabun, Tahoma, sans-serif; padding: 28px; color: #0f172a; }
+          body { font-family: 'Sarabun', Tahoma, sans-serif; padding: 28px; color: #0f172a; }
           .row { display: flex; justify-content: space-between; gap: 24px; }
           .box { flex: 1; }
           .title { font-size: 24px; font-weight: 700; margin: 0 0 4px 0; }
@@ -1042,7 +1217,7 @@ export default function InvoicesPage() {
             <p class="sub">โทร: ${invoice.tenant_phone || "-"}</p>
           </div>
           <div class="box" style="text-align:right">
-            <p class="sub"><b>เลขที่ใบแจ้งหนี้:</b> ${invoice.id.slice(0, 8).toUpperCase()}</p>
+            <p class="sub"><b>เลขที่${documentTitle}:</b> ${invoice.id.slice(0, 8).toUpperCase()}</p>
             <p class="sub"><b>เลขห้อง:</b> ${invoice.room_number}</p>
             <p class="sub"><b>วันที่:</b> ${formatDateThai(invoice.issue_date)}</p>
           </div>
@@ -1123,10 +1298,14 @@ export default function InvoicesPage() {
     `;
   };
 
-  const printInvoice = (invoice: InvoiceRecord, reading: MeterReadingRow | null) => {
+  const printInvoice = (
+    invoice: InvoiceRecord,
+    reading: MeterReadingRow | null,
+    docType: "invoice" | "receipt" = "invoice"
+  ) => {
     const win = window.open("", "_blank");
     if (!win) return;
-    win.document.write(buildPrintHtml(invoice, reading));
+    win.document.write(buildPrintHtml(invoice, reading, docType));
 
     win.document.close();
     win.focus();
@@ -1358,9 +1537,9 @@ export default function InvoicesPage() {
         additional_fees_total: additionalTotal,
         additional_fees_breakdown: additionalBreakdown,
         total_amount: totalAmount,
-        status: "pending",
+        status: "draft",
       };
-      }) as any[];
+    }) as any[];
 
     const generatedRoomIds = new Set(insertPayload.map((row: any) => row.room_id));
     if (insertPayload.length > 0) {
@@ -1412,6 +1591,7 @@ export default function InvoicesPage() {
           printSettings?.billing_day
         )
       : null;
+  const canEditDetails = activeInvoice ? isInvoiceDetailEditable(activeInvoice.status) : false;
 
   return (
     <div className="space-y-6">
@@ -1470,7 +1650,10 @@ export default function InvoicesPage() {
                 </thead>
                 <tbody>
                   {buildingInvoices.map((invoice) => (
-                    <tr key={invoice.id} className="border-t border-slate-100">
+                    <tr
+                      key={invoice.id}
+                      className={`border-t border-slate-100 ${statusRowClass(invoice.status)}`}
+                    >
                       <td className="px-4 py-3">
                         <input
                           type="checkbox"
@@ -1479,34 +1662,21 @@ export default function InvoicesPage() {
                         />
                       </td>
                       <td className="px-4 py-3">
-                        <div className="flex items-center gap-2">
-                          <Badge variant={statusVariant[invoice.status]}>{invoice.status}</Badge>
-                          <details className="relative">
-                            <summary className="cursor-pointer rounded-lg bg-slate-100 px-2 py-1 text-[11px] font-semibold text-slate-700">
-                              Change
-                            </summary>
-                            <div className="absolute right-0 z-20 mt-1 w-32 rounded-lg border border-slate-200 bg-white p-1 shadow-lg">
-                              <button
-                                onClick={() => void updateInvoiceStatus(invoice.id, "pending")}
-                                className="block w-full rounded-md px-2 py-1 text-left text-xs font-medium text-amber-700 hover:bg-amber-50"
-                              >
-                                Pending
-                              </button>
-                              <button
-                                onClick={() => void updateInvoiceStatus(invoice.id, "paid")}
-                                className="block w-full rounded-md px-2 py-1 text-left text-xs font-medium text-green-700 hover:bg-green-50"
-                              >
-                                Paid
-                              </button>
-                              <button
-                                onClick={() => void updateInvoiceStatus(invoice.id, "overdue")}
-                                className="block w-full rounded-md px-2 py-1 text-left text-xs font-medium text-red-700 hover:bg-red-50"
-                              >
-                                Overdue
-                              </button>
-                            </div>
-                          </details>
-                        </div>
+                        <select
+                          value={invoice.status}
+                          onChange={(event) =>
+                            void updateInvoiceStatus(invoice.id, event.target.value as keyof typeof statusVariant)
+                          }
+                          className={`w-36 rounded-lg border px-2 py-1 text-xs font-semibold capitalize ${statusPillClass(
+                            invoice.status
+                          )}`}
+                        >
+                          {Object.keys(statusVariant).map((status) => (
+                            <option key={status} value={status}>
+                              {status}
+                            </option>
+                          ))}
+                        </select>
                       </td>
                       <td className="px-4 py-3 font-medium text-slate-900">{invoice.room_number}</td>
                       <td className="px-4 py-3">{invoice.tenant_name}</td>
@@ -1548,6 +1718,14 @@ export default function InvoicesPage() {
                             >
                               <Printer size={12} />
                               Preview
+                            </button>
+                            <button
+                              onClick={() => void getInvoicePrintDetail(invoice, "receipt")}
+                              disabled={!(invoice.status === "verifying" || invoice.status === "paid")}
+                              className="flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-xs font-medium text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:text-slate-400 disabled:hover:bg-transparent"
+                            >
+                              <FileText size={12} />
+                              Receipt
                             </button>
                             <button
                               onClick={() => {
@@ -1617,6 +1795,12 @@ export default function InvoicesPage() {
       >
         {activeInvoice && (
           <div className="space-y-6">
+            {!isInvoiceDetailEditable(activeInvoice.status) && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                Invoice detail editing is disabled for <b>{activeInvoice.status}</b>. Switch status to
+                <b> draft</b> if you need to edit details.
+              </div>
+            )}
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
               <div className="flex items-center justify-between">
                 <div>
@@ -1628,83 +1812,18 @@ export default function InvoicesPage() {
                   <p className="text-xl font-semibold text-blue-700">{formatMoney(form.total_amount)}</p>
                 </div>
               </div>
-            </div>
-
-            <div className="grid gap-4 md:grid-cols-2">
-              <Input
-                label="Issue Date"
-                type="date"
-                value={form.issue_date}
-                onChange={(event) => updateForm("issue_date", event.target.value)}
-              />
-              <Input
-                label="Due Date"
-                type="date"
-                value={form.due_date}
-                onChange={(event) => updateForm("due_date", event.target.value)}
-              />
-              <Input
-                label="Rent Amount"
-                type="number"
-                value={form.rent_amount}
-                onChange={(event) => updateForm("rent_amount", event.target.value)}
-              />
-              <label className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                <input
-                  type="checkbox"
-                  checked={useProrateInModal}
-                  onChange={(event) => toggleProrateInModal(event.target.checked)}
-                />
-                Use pro-rate for this room invoice
-              </label>
-              {modalProrateSummary && (
-                <div className="md:col-span-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                  Pro-rate formula: {modalProrateSummary.formulaText} (Move-in day {modalProrateSummary.moveInDay}, Billing day {modalProrateSummary.billingDay})
-                </div>
-              )}
-              <Input
-                label="Water Bill"
-                type="number"
-                value={form.water_bill}
-                onChange={(event) => updateForm("water_bill", event.target.value)}
-              />
-              <Input
-                label="Electricity Bill"
-                type="number"
-                value={form.electricity_bill}
-                onChange={(event) => updateForm("electricity_bill", event.target.value)}
-              />
-              <Input
-                label="Common Fee"
-                type="number"
-                value={form.common_fee}
-                onChange={(event) => updateForm("common_fee", event.target.value)}
-              />
-              <Input
-                label="Discount Total"
-                type="number"
-                value={form.discount_amount}
-                readOnly
-              />
-              <Input
-                label="Late Fee Amount"
-                type="number"
-                value={form.late_fee_amount}
-                onChange={(event) => updateForm("late_fee_amount", event.target.value)}
-              />
-              <Input
-                label="Additional Fees Total"
-                type="number"
-                value={form.additional_fees_total}
-                readOnly
-              />
-              <Input label="Total Amount" type="number" value={form.total_amount} readOnly />
-              <label className="text-sm text-slate-600">
-                Status
+              <div className="mt-4 space-y-2">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Status</p>
                 <select
                   value={form.status}
-                  onChange={(event) => updateForm("status", event.target.value)}
-                  className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm shadow-sm"
+                  onChange={(event) => {
+                    const nextStatus = event.target.value as keyof typeof statusVariant;
+                    setForm((prev) => ({ ...prev, status: nextStatus }));
+                    void updateInvoiceStatus(activeInvoice.id, nextStatus);
+                  }}
+                  className={`w-full rounded-xl border px-4 py-3 text-base font-semibold capitalize ${statusPillClass(
+                    form.status
+                  )}`}
                 >
                   {Object.keys(statusVariant).map((status) => (
                     <option key={status} value={status}>
@@ -1712,7 +1831,191 @@ export default function InvoicesPage() {
                     </option>
                   ))}
                 </select>
-              </label>
+              </div>
+            </div>
+
+            <fieldset disabled={!canEditDetails} className={!canEditDetails ? "opacity-70" : ""}>
+            <div className="space-y-3 rounded-xl border border-slate-200 p-4">
+              <p className="text-sm font-semibold text-slate-700">Invoice Core Details</p>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[680px] text-sm">
+                  <thead className="bg-slate-100 text-slate-600">
+                    <tr>
+                      <th className="px-3 py-2 text-left">Field</th>
+                      <th className="px-3 py-2 text-left">Value</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr className="border-t border-slate-100">
+                      <td className="px-3 py-2 font-medium">Issue Date</td>
+                      <td className="px-3 py-2">
+                        <input
+                          type="date"
+                          value={form.issue_date}
+                          onChange={(event) => updateForm("issue_date", event.target.value)}
+                          className="w-full rounded-lg border border-slate-200 px-3 py-1.5"
+                        />
+                      </td>
+                    </tr>
+                    <tr className="border-t border-slate-100">
+                      <td className="px-3 py-2 font-medium">Due Date</td>
+                      <td className="px-3 py-2">
+                        <input
+                          type="date"
+                          value={form.due_date}
+                          onChange={(event) => updateForm("due_date", event.target.value)}
+                          className="w-full rounded-lg border border-slate-200 px-3 py-1.5"
+                        />
+                      </td>
+                    </tr>
+                    <tr className="border-t border-slate-100">
+                      <td className="px-3 py-2 font-medium">Rent Amount</td>
+                      <td className="px-3 py-2">
+                        <input
+                          type="number"
+                          value={form.rent_amount}
+                          onChange={(event) => updateForm("rent_amount", event.target.value)}
+                          className="w-full rounded-lg border border-slate-200 px-3 py-1.5 text-right"
+                        />
+                      </td>
+                    </tr>
+                    <tr className="border-t border-slate-100 bg-amber-50">
+                      <td className="px-3 py-2 font-medium text-amber-900">Pro-rate</td>
+                      <td className="px-3 py-2">
+                        <label className="inline-flex items-center gap-2 text-amber-900">
+                          <input
+                            type="checkbox"
+                            checked={useProrateInModal}
+                            onChange={(event) => toggleProrateInModal(event.target.checked)}
+                          />
+                          Use pro-rate for this room invoice
+                        </label>
+                        {modalProrateSummary && (
+                          <p className="mt-2 text-xs text-amber-800">
+                            Formula: {modalProrateSummary.formulaText} (Move-in day{" "}
+                            {modalProrateSummary.moveInDay}, Billing day {modalProrateSummary.billingDay})
+                          </p>
+                        )}
+                      </td>
+                    </tr>
+                    <tr className="border-t border-slate-100">
+                      <td className="px-3 py-2 font-medium">
+                        Water
+                        <p className="text-xs font-normal text-slate-500">
+                          Rate: {formatMoney(toNumber(printSettings?.water_rate))}/unit
+                        </p>
+                      </td>
+                      <td className="px-3 py-2">
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <p className="mb-1 text-xs text-slate-500">Unit</p>
+                            <input
+                              type="number"
+                              value={form.water_units}
+                              onChange={(event) => updateUtilityUnits("water_units", event.target.value)}
+                              className="w-full rounded-lg border border-slate-200 px-3 py-1.5 text-right"
+                            />
+                          </div>
+                          <div>
+                            <p className="mb-1 text-xs text-slate-500">Total</p>
+                            <input
+                              type="number"
+                              value={form.water_bill}
+                              onChange={(event) => updateForm("water_bill", event.target.value)}
+                              className="w-full rounded-lg border border-slate-200 px-3 py-1.5 text-right"
+                            />
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                    <tr className="border-t border-slate-100">
+                      <td className="px-3 py-2 font-medium">
+                        Electricity
+                        <p className="text-xs font-normal text-slate-500">
+                          Rate: {formatMoney(toNumber(printSettings?.electricity_rate))}/unit
+                        </p>
+                      </td>
+                      <td className="px-3 py-2">
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <p className="mb-1 text-xs text-slate-500">Unit</p>
+                            <input
+                              type="number"
+                              value={form.electricity_units}
+                              onChange={(event) => updateUtilityUnits("electricity_units", event.target.value)}
+                              className="w-full rounded-lg border border-slate-200 px-3 py-1.5 text-right"
+                            />
+                          </div>
+                          <div>
+                            <p className="mb-1 text-xs text-slate-500">Total</p>
+                            <input
+                              type="number"
+                              value={form.electricity_bill}
+                              onChange={(event) => updateForm("electricity_bill", event.target.value)}
+                              className="w-full rounded-lg border border-slate-200 px-3 py-1.5 text-right"
+                            />
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                    <tr className="border-t border-slate-100">
+                      <td className="px-3 py-2 font-medium">Common Fee</td>
+                      <td className="px-3 py-2">
+                        <input
+                          type="number"
+                          value={form.common_fee}
+                          onChange={(event) => updateForm("common_fee", event.target.value)}
+                          className="w-full rounded-lg border border-slate-200 px-3 py-1.5 text-right"
+                        />
+                      </td>
+                    </tr>
+                    <tr className="border-t border-slate-100">
+                      <td className="px-3 py-2 font-medium">Discount Total</td>
+                      <td className="px-3 py-2">
+                        <input
+                          type="number"
+                          value={form.discount_amount}
+                          readOnly
+                          className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-right"
+                        />
+                      </td>
+                    </tr>
+                    <tr className="border-t border-slate-100">
+                      <td className="px-3 py-2 font-medium">Late Fee Amount</td>
+                      <td className="px-3 py-2">
+                        <input
+                          type="number"
+                          value={form.late_fee_amount}
+                          onChange={(event) => updateForm("late_fee_amount", event.target.value)}
+                          className="w-full rounded-lg border border-slate-200 px-3 py-1.5 text-right"
+                        />
+                      </td>
+                    </tr>
+                    <tr className="border-t border-slate-100">
+                      <td className="px-3 py-2 font-medium">Additional Fees Total</td>
+                      <td className="px-3 py-2">
+                        <input
+                          type="number"
+                          value={form.additional_fees_total}
+                          readOnly
+                          className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-right"
+                        />
+                      </td>
+                    </tr>
+                    <tr className="border-t border-slate-100 bg-slate-50">
+                      <td className="px-3 py-2 font-semibold">Total Amount</td>
+                      <td className="px-3 py-2">
+                        <input
+                          type="number"
+                          value={form.total_amount}
+                          readOnly
+                          className="w-full rounded-lg border border-slate-200 bg-slate-100 px-3 py-1.5 text-right font-semibold"
+                        />
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
 
             <div className="space-y-3 rounded-xl border border-slate-200 p-4">
@@ -1919,6 +2222,7 @@ export default function InvoicesPage() {
                 rows={3}
               />
             </label>
+            </fieldset>
 
             <div className="grid gap-4 md:grid-cols-2">
               <div className="space-y-3">
@@ -1951,6 +2255,14 @@ export default function InvoicesPage() {
                   Print Preview
                 </button>
                 <button
+                  onClick={() => void getInvoicePrintDetail(activeInvoice, "receipt")}
+                  disabled={!(activeInvoice.status === "verifying" || activeInvoice.status === "paid")}
+                  className="inline-flex items-center gap-2 rounded-xl border border-emerald-200 px-4 py-2 text-sm text-emerald-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                >
+                  <FileText size={16} />
+                  Print Receipt
+                </button>
+                <button
                   onClick={() => sendToLine(activeInvoice)}
                   className="inline-flex items-center gap-2 rounded-xl bg-green-600 px-4 py-2 text-sm text-white"
                 >
@@ -1979,6 +2291,7 @@ export default function InvoicesPage() {
               </button>
               <button
                 onClick={() => setConfirmSaveOpen(true)}
+                disabled={!canEditDetails}
                 className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
               >
                 Save Changes
@@ -2055,7 +2368,7 @@ export default function InvoicesPage() {
       <Modal
         isOpen={previewOpen}
         onClose={() => setPreviewOpen(false)}
-        title="พรีวิวใบแจ้งหนี้"
+        title={previewDocType === "receipt" ? "พรีวิวใบเสร็จรับเงิน" : "พรีวิวใบแจ้งหนี้"}
         size="xl"
       >
         {previewInvoice && (
@@ -2076,7 +2389,9 @@ export default function InvoicesPage() {
                   </div>
                   <div className="space-y-1 text-right">
                     <p>
-                      <span className="font-semibold">เลขที่ใบแจ้งหนี้:</span>{" "}
+                      <span className="font-semibold">
+                        {previewDocType === "receipt" ? "เลขที่ใบเสร็จรับเงิน:" : "เลขที่ใบแจ้งหนี้:"}
+                      </span>{" "}
                       {previewInvoice.id.slice(0, 8).toUpperCase()}
                     </p>
                     <p>
@@ -2133,7 +2448,7 @@ export default function InvoicesPage() {
                       <tr className="border-t border-slate-100">
                         <td className="px-3 py-2">ค่าน้ำ</td>
                         <td className="px-3 py-2 text-right">
-                          {toNumber(previewReading?.water_usage).toLocaleString("th-TH")} หน่วย
+                          {resolveWaterUsage(previewReading).toLocaleString("th-TH")} หน่วย
                         </td>
                         <td className="px-3 py-2 text-right">
                           {formatMoney(toNumber(printSettings?.water_rate))}
@@ -2143,7 +2458,7 @@ export default function InvoicesPage() {
                       <tr className="border-t border-slate-100">
                         <td className="px-3 py-2">ค่าไฟ</td>
                         <td className="px-3 py-2 text-right">
-                          {toNumber(previewReading?.electricity_usage).toLocaleString("th-TH")} หน่วย
+                          {resolveElectricityUsage(previewReading).toLocaleString("th-TH")} หน่วย
                         </td>
                         <td className="px-3 py-2 text-right">
                           {formatMoney(toNumber(printSettings?.electricity_rate))}
@@ -2232,11 +2547,13 @@ export default function InvoicesPage() {
                 ปิด
               </button>
               <button
-                onClick={() => previewInvoice && printInvoice(previewInvoice, previewReading)}
+                onClick={() =>
+                  previewInvoice && printInvoice(previewInvoice, previewReading, previewDocType)
+                }
                 className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
               >
                 <Printer size={16} />
-                พิมพ์ใบแจ้งหนี้
+                {previewDocType === "receipt" ? "พิมพ์ใบเสร็จรับเงิน" : "พิมพ์ใบแจ้งหนี้"}
               </button>
             </div>
           </div>

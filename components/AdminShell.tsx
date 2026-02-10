@@ -1,9 +1,10 @@
 "use client";
 
-import { ReactNode, useMemo } from "react";
-import { usePathname } from "next/navigation";
+import { ReactNode, useEffect, useMemo, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import Sidebar from "./Sidebar";
 import { adminNav } from "./admin-nav";
+import { createClient } from "@/lib/supabase-client";
 
 const toTitle = (pathname: string) => {
   const match = adminNav.find((item) =>
@@ -13,12 +14,60 @@ const toTitle = (pathname: string) => {
 };
 
 export default function AdminShell({ children }: { children: ReactNode }) {
+  const supabase = useMemo(() => createClient(), []);
   const pathname = usePathname();
+  const router = useRouter();
+  const [checkingSession, setCheckingSession] = useState(true);
+  const [loggingOut, setLoggingOut] = useState(false);
   const pageTitle = useMemo(() => toTitle(pathname), [pathname]);
   const crumbs = [
     { label: "DormManager", href: "/" },
     { label: pageTitle, href: pathname },
   ];
+
+  useEffect(() => {
+    let mounted = true;
+
+    const check = async () => {
+      const { data } = await supabase.auth.getSession();
+      if (!mounted) return;
+      if (!data.session) {
+        router.replace("/login");
+        return;
+      }
+      setCheckingSession(false);
+    };
+
+    void check();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!session) {
+        router.replace("/login");
+      }
+    });
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, [router, supabase]);
+
+  const handleLogout = async () => {
+    setLoggingOut(true);
+    await supabase.auth.signOut();
+    setLoggingOut(false);
+    router.replace("/login");
+  };
+
+  if (checkingSession) {
+    return (
+      <div className="min-h-screen bg-slate-50 px-6 py-10 text-sm text-slate-500">
+        Checking session...
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
@@ -44,6 +93,13 @@ export default function AdminShell({ children }: { children: ReactNode }) {
             <div className="flex items-center gap-2 text-sm text-slate-500">
               <span className="inline-flex h-2.5 w-2.5 rounded-full bg-green-500" />
               Supabase connected
+              <button
+                onClick={() => void handleLogout()}
+                disabled={loggingOut}
+                className="ml-3 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+              >
+                {loggingOut ? "Signing out..." : "Logout"}
+              </button>
             </div>
           </div>
         </header>
