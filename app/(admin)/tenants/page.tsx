@@ -287,6 +287,17 @@ export default function TenantsPage() {
     setStatus("Deposit slip uploaded.");
   };
 
+  const logRoomEvent = async (roomId: string, eventType: "move_in" | "move_out") => {
+    const { error } = await supabase.from("room_logs").insert({
+      room_id: roomId,
+      event_type: eventType,
+      created_at: new Date().toISOString(),
+    });
+    if (error) {
+      setStatus(`Tenant saved, but failed to write room log: ${error.message}`);
+    }
+  };
+
   const saveTenant = async () => {
     const selectedMethod = methods.find((method) => method.id === selectedMethodId);
     const customPayment =
@@ -330,6 +341,7 @@ export default function TenantsPage() {
 
     if (form.room_id) {
       await supabase.from("rooms").update({ status: "occupied" }).eq("id", form.room_id);
+      await logRoomEvent(form.room_id, "move_in");
     }
 
     await loadTenants();
@@ -391,6 +403,7 @@ export default function TenantsPage() {
     }
 
     await supabase.from("rooms").update({ status: "available" }).eq("id", activeTenant.room_id);
+    await logRoomEvent(activeTenant.room_id, "move_out");
     setStatus("Move out confirmed.");
     setIsModalOpen(false);
     await loadTenants();

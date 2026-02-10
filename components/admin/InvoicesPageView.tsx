@@ -44,7 +44,9 @@ type InvoiceRecord = {
   tenant_phone: string | null;
   tenant_line_user_id: string | null;
   tenant_custom_payment_method: any;
+  tenant_move_in_date: string | null;
   room_number: string;
+  room_price_month: number;
   building_name: string;
 };
 
@@ -159,6 +161,88 @@ const computeDateByDayInMonth = (baseDate: string, day: number | null | undefine
   return toLocalDateString(new Date(date.getFullYear(), date.getMonth(), normalized));
 };
 
+const isSameMonthAndYear = (left: Date, right: Date) =>
+  left.getFullYear() === right.getFullYear() && left.getMonth() === right.getMonth();
+
+const buildRuleBreakdown = (
+  rules: AdditionalFee[],
+  elecUnits: number,
+  waterUnits: number
+) =>
+  rules.map((fee) => {
+    const rate = toNumber(fee.value);
+    let amount = 0;
+    if (fee.calc_type === "fixed") amount = rate;
+    if (fee.calc_type === "electricity_units") amount = elecUnits * rate;
+    if (fee.calc_type === "water_units") amount = waterUnits * rate;
+    const unit =
+      fee.calc_type === "electricity_units"
+        ? elecUnits
+        : fee.calc_type === "water_units"
+          ? waterUnits
+          : 1;
+    return {
+      label: fee.label,
+      detail: fee.label,
+      calc_type: fee.calc_type,
+      rate,
+      unit,
+      price_per_unit: rate,
+      total_amount: amount,
+      amount,
+    };
+  });
+
+const fromDateText = (value: string) => {
+  const [year, month, day] = value.split("-").map(Number);
+  return new Date(year, (month || 1) - 1, day || 1);
+};
+
+const calculateProratedRentByBillingDay = (
+  monthlyRent: number,
+  moveInDateText: string | null | undefined,
+  billingDayInput: number | null | undefined
+) => {
+  if (!moveInDateText) return null;
+  const moveInDate = fromDateText(moveInDateText);
+  const moveInDay = Math.min(Math.max(moveInDate.getDate(), 1), 30);
+  const billingDay = Math.min(Math.max(toNumber(billingDayInput ?? 1), 1), 30);
+  const dailyRaw = monthlyRent / 30;
+  const dailyRounded = Math.floor(dailyRaw);
+  const occupiedDays =
+    moveInDay <= billingDay
+      ? billingDay - moveInDay + 1
+      : (30 - moveInDay + 1) + billingDay;
+  const rentAmount = dailyRounded * occupiedDays;
+
+  return {
+    moveInDay,
+    billingDay,
+    dailyRaw,
+    dailyRounded,
+    occupiedDays,
+    rentAmount,
+    formulaText: `${monthlyRent.toLocaleString("th-TH")} / 30 = ${dailyRaw.toFixed(2)} -> ${dailyRounded.toLocaleString(
+      "th-TH"
+    )} x ${occupiedDays.toLocaleString("th-TH")} = ${rentAmount.toLocaleString("th-TH")} บาท`,
+  };
+};
+
+const calculateWaterBillWithMinimum = (
+  waterUnits: number,
+  waterRate: number,
+  waterMinUnits: number,
+  waterMinPrice: number
+) => {
+  const usageBill = waterUnits * waterRate;
+  if (waterUnits <= waterMinUnits) {
+    const minimumByUnits = waterMinUnits * waterRate;
+    const minimumFloor = Math.max(waterMinPrice, minimumByUnits);
+    return Math.max(usageBill, minimumFloor);
+  }
+  return usageBill;
+};
+
 function normalizeInvoice(row: any): InvoiceRecord {
   const tenant = Array.isArray(row.tenants) ? row.tenants[0] : row.tenants;
   const room = Array.isArray(row.rooms) ? row.rooms[0] : row.rooms;
@@ -194,7 +278,9 @@ function normalizeInvoice(row: any): InvoiceRecord {
     tenant_phone: tenant?.phone_number ?? null,
     tenant_line_user_id: tenant?.line_user_id ?? null,
     tenant_custom_payment_method: tenant?.custom_payment_method ?? null,
+    tenant_move_in_date: tenant?.move_in_date ?? null,
     room_number: room?.room_number ?? "-",
+    room_price_month: toNumber(room?.price_month),
     building_name: buildingItem?.name ?? "Unassigned",
   };
 }
@@ -210,6 +296,10 @@ export default function InvoicesPage() {
   const [slipPreview, setSlipPreview] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [selectedMonth, setSelectedMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [useProrateInModal, setUseProrateInModal] = useState(false);
+  const [slipModalOpen, setSlipModalOpen] = useState(false);
+  const [slipModalUrl, setSlipModalUrl] = useState<string | null>(null);
+  const [slipModalTitle, setSlipModalTitle] = useState<string>("");
 
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [deleteTargetIds, setDeleteTargetIds] = useState<string[]>([]);
@@ -243,6 +333,109 @@ export default function InvoicesPage() {
     notes: "",
   });
 
+  const applyPendingToOverdue = async () => {
+    const today = toLocalDateString(new Date());
+    const { error: overdueError } = await supabase
+      .from("invoices")
+      .update({ status: "overdue" })
+      .eq("status", "pending")
+      .lt("due_date", today);
+    if (overdueError) {
+      setError(overdueError.message);
+    }
+  };
+
+  const applySlipToVerifying = async () => {
+    const { error: verifyingError } = await supabase
+      .from("invoices")
+      .update({ status: "verifying" })
+      .in("status", ["pending", "overdue"])
+      .not("slip_url", "is", null);
+    if (verifyingError) {
+      setError(verifyingError.message);
+    }
+  };
+
+  const syncMonthInvoicesWithSettings = async (year: number, month: number) => {
+    const periodStart = toLocalDateString(new Date(year, month - 1, 1));
+    const periodEnd = toLocalDateString(new Date(year, month, 0));
+    const monthKey = toLocalDateString(new Date(year, month - 1, 1));
+
+    const { data: settings } = await supabase
+      .from("settings")
+      .select("additional_discounts")
+      .eq("id", 1)
+      .maybeSingle();
+
+    const discountRules = Array.isArray((settings as any)?.additional_discounts)
+      ? (((settings as any).additional_discounts ?? []) as AdditionalFee[])
+      : [];
+
+    const { data: invoicesInMonth, error: invoiceError } = await supabase
+      .from("invoices")
+      .select(
+        "id,room_id,rent_amount,water_bill,electricity_bill,common_fee,late_fee_amount,additional_fees_total,discount_amount,discount_breakdown,total_amount"
+      )
+      .eq("start_date", periodStart)
+      .eq("end_date", periodEnd);
+
+    if (invoiceError || !invoicesInMonth || invoicesInMonth.length === 0) return;
+
+    const roomIds = [...new Set(invoicesInMonth.map((row: any) => row.room_id).filter(Boolean))];
+    const { data: readings } = await supabase
+      .from("meter_readings")
+      .select("room_id,electricity_usage,water_usage,usage")
+      .eq("reading_month", monthKey)
+      .in("room_id", roomIds.length > 0 ? roomIds : ["00000000-0000-0000-0000-000000000000"]);
+    const readingMap = new Map((readings ?? []).map((row: any) => [row.room_id, row]));
+
+    const updates = (invoicesInMonth as any[])
+      .map((invoice) => {
+        const reading = readingMap.get(invoice.room_id) ?? {};
+        const elecUnits = toNumber(reading.electricity_usage);
+        const waterUnits = toNumber(reading.water_usage ?? reading.usage);
+        const discountBreakdown = buildRuleBreakdown(discountRules, elecUnits, waterUnits);
+        const discountAmount = discountBreakdown.reduce((sum, fee) => sum + toNumber(fee.amount), 0);
+        const totalAmount =
+          toNumber(invoice.rent_amount) +
+          toNumber(invoice.water_bill) +
+          toNumber(invoice.electricity_bill) +
+          toNumber(invoice.common_fee) +
+          toNumber(invoice.additional_fees_total) +
+          toNumber(invoice.late_fee_amount) -
+          discountAmount;
+
+        const currentDiscount = toNumber(invoice.discount_amount);
+        const currentTotal = toNumber(invoice.total_amount);
+        if (
+          Math.abs(currentDiscount - discountAmount) < 0.0001 &&
+          Math.abs(currentTotal - totalAmount) < 0.0001
+        ) {
+          return null;
+        }
+
+        return {
+          id: invoice.id as string,
+          discount_amount: discountAmount,
+          discount_breakdown: discountBreakdown,
+          total_amount: totalAmount,
+        };
+      })
+      .filter(Boolean) as { id: string; discount_amount: number; discount_breakdown: any[]; total_amount: number }[];
+
+    if (updates.length === 0) return;
+    for (const update of updates) {
+      await supabase
+        .from("invoices")
+        .update({
+          discount_amount: update.discount_amount,
+          discount_breakdown: update.discount_breakdown,
+          total_amount: update.total_amount,
+        })
+        .eq("id", update.id);
+    }
+  };
+
   const loadInvoices = async () => {
     setLoading(true);
     setError(null);
@@ -251,10 +444,14 @@ export default function InvoicesPage() {
     const periodStart = toLocalDateString(new Date(year, month - 1, 1));
     const periodEnd = toLocalDateString(new Date(year, month, 0));
 
+    await applySlipToVerifying();
+    await applyPendingToOverdue();
+    await syncMonthInvoicesWithSettings(year, month);
+
     const { data, error: fetchError } = await supabase
       .from("invoices")
       .select(
-        "id,room_id,status,total_amount,issue_date,due_date,start_date,end_date,rent_amount,water_bill,electricity_bill,common_fee,discount_amount,discount_breakdown,late_fee_amount,late_fee_per_day,late_fee_start_date,additional_fees_total,additional_fees_breakdown,notes,public_token,slip_url,tenants(full_name,phone_number,line_user_id,custom_payment_method),rooms(room_number,buildings(name))"
+        "id,room_id,status,total_amount,issue_date,due_date,start_date,end_date,rent_amount,water_bill,electricity_bill,common_fee,discount_amount,discount_breakdown,late_fee_amount,late_fee_per_day,late_fee_start_date,additional_fees_total,additional_fees_breakdown,notes,public_token,slip_url,tenants(full_name,phone_number,line_user_id,custom_payment_method,move_in_date),rooms(room_number,price_month,buildings(name))"
       )
       .eq("start_date", periodStart)
       .eq("end_date", periodEnd)
@@ -308,8 +505,32 @@ export default function InvoicesPage() {
   };
 
   useEffect(() => {
-    loadInvoices();
+    void loadInvoices();
   }, [selectedMonth]);
+
+  useEffect(() => {
+    const channel = supabase
+      .channel("invoice-settings-realtime")
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "settings", filter: "id=eq.1" },
+        () => {
+          void loadInvoices();
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "invoices" },
+        () => {
+          void loadInvoices();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [supabase, selectedMonth]);
 
   useEffect(() => {
     void loadPrintConfig();
@@ -346,10 +567,52 @@ export default function InvoicesPage() {
     return groupedMap;
   }, [invoices]);
 
+  const visibleInvoiceIds = useMemo(() => invoices.map((invoice) => invoice.id), [invoices]);
+  const selectedVisibleCount = useMemo(
+    () => selected.filter((id) => visibleInvoiceIds.includes(id)).length,
+    [selected, visibleInvoiceIds]
+  );
+  const allVisibleSelected =
+    visibleInvoiceIds.length > 0 && selectedVisibleCount === visibleInvoiceIds.length;
+
+  useEffect(() => {
+    setSelected((prev) => prev.filter((id) => visibleInvoiceIds.includes(id)));
+  }, [visibleInvoiceIds]);
+
   const toggleSelect = (id: string) => {
     setSelected((prev) =>
       prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
     );
+  };
+
+  const toggleSelectAllVisible = () => {
+    setSelected((prev) => {
+      if (allVisibleSelected) {
+        return prev.filter((id) => !visibleInvoiceIds.includes(id));
+      }
+      const next = new Set(prev);
+      for (const id of visibleInvoiceIds) next.add(id);
+      return [...next];
+    });
+  };
+
+  const openSlipViewer = (invoice: InvoiceRecord) => {
+    if (!invoice.slip_url) return;
+    setSlipModalTitle(`Payment Slip - Room ${invoice.room_number}`);
+    setSlipModalUrl(invoice.slip_url);
+    setSlipModalOpen(true);
+  };
+
+  const updateInvoiceStatus = async (
+    invoiceId: string,
+    status: "pending" | "paid" | "overdue"
+  ) => {
+    const { error: statusError } = await supabase.from("invoices").update({ status }).eq("id", invoiceId);
+    if (statusError) {
+      setError(statusError.message);
+      return;
+    }
+    await loadInvoices();
   };
 
   const openInvoice = (invoice: InvoiceRecord) => {
@@ -361,7 +624,16 @@ export default function InvoicesPage() {
       todayLocal,
       printSettings?.late_fee_start_day
     );
+    const monthlyRent = toNumber(invoice.room_price_month || invoice.rent_amount);
+    const prorateSummary = calculateProratedRentByBillingDay(
+      monthlyRent,
+      invoice.tenant_move_in_date,
+      printSettings?.billing_day
+    );
+    const useProrateDefault =
+      !!prorateSummary && Math.abs(toNumber(invoice.rent_amount) - prorateSummary.rentAmount) < 0.01;
     setActiveInvoice(invoice);
+    setUseProrateInModal(useProrateDefault);
     setEditableFeeItems(feeItems.length > 0 ? feeItems : []);
     setEditableDiscountItems(
       discountItems.length > 0
@@ -396,17 +668,58 @@ export default function InvoicesPage() {
   const updateForm = (field: string, value: string | number) => {
     setForm((prev) => {
       const next = { ...prev, [field]: value } as typeof prev;
+      const monthlyRent = toNumber(activeInvoice?.room_price_month ?? next.rent_amount);
+      const prorateSummary =
+        useProrateInModal && activeInvoice
+          ? calculateProratedRentByBillingDay(
+              monthlyRent,
+              activeInvoice.tenant_move_in_date,
+              printSettings?.billing_day
+            )
+          : null;
+      const computedRent = prorateSummary ? prorateSummary.rentAmount : toNumber(next.rent_amount);
       const nextAdditional = feeItemsTotal(editableFeeItems);
       const nextDiscount = feeItemsTotal(editableDiscountItems);
       const total =
-        toNumber(next.rent_amount) +
+        computedRent +
         toNumber(next.water_bill) +
         toNumber(next.electricity_bill) +
         toNumber(next.common_fee) +
         nextDiscount * -1 +
         toNumber(next.late_fee_amount) +
         nextAdditional;
-      return { ...next, additional_fees_total: nextAdditional, discount_amount: nextDiscount, total_amount: total };
+      return {
+        ...next,
+        rent_amount: computedRent,
+        additional_fees_total: nextAdditional,
+        discount_amount: nextDiscount,
+        total_amount: total,
+      };
+    });
+  };
+
+  const toggleProrateInModal = (enabled: boolean) => {
+    setUseProrateInModal(enabled);
+    setForm((prev) => {
+      if (!activeInvoice) return prev;
+      const monthlyRent = toNumber(activeInvoice.room_price_month || prev.rent_amount);
+      const prorateSummary = calculateProratedRentByBillingDay(
+        monthlyRent,
+        activeInvoice.tenant_move_in_date,
+        printSettings?.billing_day
+      );
+      const nextRent = enabled && prorateSummary ? prorateSummary.rentAmount : monthlyRent;
+      const nextAdditional = feeItemsTotal(editableFeeItems);
+      const nextDiscount = feeItemsTotal(editableDiscountItems);
+      const total =
+        nextRent +
+        toNumber(prev.water_bill) +
+        toNumber(prev.electricity_bill) +
+        toNumber(prev.common_fee) +
+        nextDiscount * -1 +
+        toNumber(prev.late_fee_amount) +
+        nextAdditional;
+      return { ...prev, rent_amount: nextRent, total_amount: total };
     });
   };
 
@@ -661,6 +974,13 @@ export default function InvoicesPage() {
     const elecUnits = toNumber(reading?.electricity_usage);
     const waterUnits = toNumber(reading?.water_usage);
     const paymentText = getPaymentMethodLabel(invoice);
+    const prorateSummary = calculateProratedRentByBillingDay(
+      toNumber(invoice.room_price_month || invoice.rent_amount),
+      invoice.tenant_move_in_date,
+      printSettings?.billing_day
+    );
+    const showProrateFormula =
+      !!prorateSummary && Math.abs(toNumber(invoice.rent_amount) - prorateSummary.rentAmount) < 0.01;
     const additionalRows = (invoice.additional_fees_breakdown ?? [])
       .map(
         (fee: any) => `
@@ -745,6 +1065,15 @@ export default function InvoicesPage() {
                 <td class="text-right">${formatMoney(invoice.rent_amount)}</td>
                 <td class="text-right">${formatMoney(invoice.rent_amount)}</td>
               </tr>
+              ${
+                showProrateFormula
+                  ? `<tr>
+                <td colspan="4" style="font-size:12px;background:#fffbeb;color:#92400e">
+                  สูตรคำนวณ: ${prorateSummary?.formulaText}
+                </td>
+              </tr>`
+                  : ""
+              }
               <tr>
                 <td>ค่าน้ำ</td>
                 <td class="text-right">${waterUnits.toLocaleString("th-TH")} หน่วย</td>
@@ -863,7 +1192,7 @@ export default function InvoicesPage() {
 
     const { data: activeTenants, error: tenantError } = await supabase
       .from("tenants")
-      .select("id,room_id,full_name")
+      .select("id,room_id,full_name,move_in_date")
       .eq("status", "active")
       .in("room_id", roomIds);
 
@@ -880,30 +1209,6 @@ export default function InvoicesPage() {
     }
 
     const missingTenantRooms = occupiedRooms.filter((room: any) => !tenantByRoom.has(room.id));
-    if (missingTenantRooms.length > 0) {
-      const placeholderTenants = missingTenantRooms.map((room: any) => ({
-        room_id: room.id,
-        full_name: `ผู้เช่าห้อง ${room.room_number}`,
-        move_in_date: issueDateText,
-        status: "active",
-      }));
-
-      const { data: insertedTenants, error: insertTenantError } = await supabase
-        .from("tenants")
-        .insert(placeholderTenants)
-        .select("id,room_id,full_name");
-
-      if (insertTenantError) {
-        setSaving(false);
-        setConfirmGenerateOpen(false);
-        setError(insertTenantError.message);
-        return;
-      }
-
-      for (const tenant of insertedTenants ?? []) {
-        tenantByRoom.set(tenant.room_id, tenant);
-      }
-    }
 
     const billingTenants = occupiedRooms
       .map((room: any) => {
@@ -912,6 +1217,7 @@ export default function InvoicesPage() {
         return {
           id: tenant.id,
           room_id: room.id,
+          move_in_date: tenant.move_in_date,
           rooms: {
             room_number: room.room_number,
             price_month: room.price_month,
@@ -954,20 +1260,23 @@ export default function InvoicesPage() {
       ? ((settings as any).additional_discounts as AdditionalFee[])
       : [];
 
-    const insertPayload = tenantsToGenerate.map((tenant: any) => {
+    const insertPayload = tenantsToGenerate
+      .map((tenant: any) => {
       const roomRel = Array.isArray(tenant.rooms) ? tenant.rooms[0] : tenant.rooms;
       const reading = readingMap.get(tenant.room_id) ?? {};
 
       const elecUnits = toNumber(reading.electricity_usage);
-      const waterUnits = toNumber(reading.water_usage || reading.usage);
+      const waterUnits = toNumber(reading.water_usage ?? reading.usage);
 
       const rentAmount = toNumber(roomRel?.price_month);
-      const elecBill = elecUnits * toNumber(settings.electricity_rate);
-      let waterBill = waterUnits * toNumber(settings.water_rate);
 
-      if (waterUnits < toNumber(settings.water_min_units)) {
-        waterBill = Math.max(waterBill, toNumber(settings.water_min_price));
-      }
+      const elecBill = elecUnits * toNumber(settings.electricity_rate);
+      const waterBill = calculateWaterBillWithMinimum(
+        waterUnits,
+        toNumber(settings.water_rate),
+        toNumber(settings.water_min_units),
+        toNumber(settings.water_min_price)
+      );
 
       const additionalBreakdown = additionalFees.map((fee) => {
         const rate = toNumber(fee.value);
@@ -1051,8 +1360,9 @@ export default function InvoicesPage() {
         total_amount: totalAmount,
         status: "pending",
       };
-    });
+      }) as any[];
 
+    const generatedRoomIds = new Set(insertPayload.map((row: any) => row.room_id));
     if (insertPayload.length > 0) {
       const { error: insertError } = await supabase.from("invoices").insert(insertPayload);
       if (insertError) {
@@ -1062,16 +1372,46 @@ export default function InvoicesPage() {
       setError("No new invoices generated. All rooms already have invoices for this period.");
     }
 
+    const occupiedRoomIds = new Set(occupiedRooms.map((room: any) => room.id));
+    const billedRoomIds = new Set<string>([...existingRoomIds, ...generatedRoomIds]);
+    const roomNumberById = new Map<string, string>(
+      occupiedRooms.map((room: any) => [room.id, room.room_number])
+    );
+    const notBilledRoomIds = [...occupiedRoomIds].filter((roomId) => !billedRoomIds.has(roomId));
+
+    const alerts: string[] = [];
     if (existingRoomIds.size > 0 && insertPayload.length > 0) {
-      setError(
-        `Generated ${insertPayload.length} invoice(s). Skipped ${existingRoomIds.size} room(s) that already have invoices for this period.`
+      alerts.push(
+        `Generated ${insertPayload.length} invoice(s). Skipped ${existingRoomIds.size} room(s) that already had invoices for this period.`
       );
+    }
+    if (missingTenantRooms.length > 0) {
+      const rooms = missingTenantRooms.map((room: any) => room.room_number).join(", ");
+      alerts.push(`Occupied room(s) missing active tenant: ${rooms}`);
+    }
+    if (notBilledRoomIds.length > 0) {
+      const rooms = notBilledRoomIds
+        .map((roomId) => roomNumberById.get(roomId) ?? roomId)
+        .join(", ");
+      alerts.push(`Billing audit failed. Occupied room(s) without invoice: ${rooms}`);
+    }
+    if (alerts.length > 0) {
+      setError(alerts.join(" | "));
     }
 
     setSaving(false);
     setConfirmGenerateOpen(false);
     await loadInvoices();
   };
+
+  const modalProrateSummary =
+    activeInvoice && useProrateInModal
+      ? calculateProratedRentByBillingDay(
+          toNumber(activeInvoice.room_price_month || form.rent_amount),
+          activeInvoice.tenant_move_in_date,
+          printSettings?.billing_day
+        )
+      : null;
 
   return (
     <div className="space-y-6">
@@ -1111,7 +1451,14 @@ export default function InvoicesPage() {
               <table className="w-full text-left text-sm">
                 <thead className="bg-slate-100 text-xs uppercase tracking-wider text-slate-500">
                   <tr>
-                    <th className="px-4 py-3" />
+                    <th className="px-4 py-3">
+                      <input
+                        type="checkbox"
+                        checked={allVisibleSelected}
+                        onChange={toggleSelectAllVisible}
+                        disabled={visibleInvoiceIds.length === 0}
+                      />
+                    </th>
                     <th className="px-4 py-3">Status</th>
                     <th className="px-4 py-3">Room</th>
                     <th className="px-4 py-3">Tenant</th>
@@ -1132,7 +1479,34 @@ export default function InvoicesPage() {
                         />
                       </td>
                       <td className="px-4 py-3">
-                        <Badge variant={statusVariant[invoice.status]}>{invoice.status}</Badge>
+                        <div className="flex items-center gap-2">
+                          <Badge variant={statusVariant[invoice.status]}>{invoice.status}</Badge>
+                          <details className="relative">
+                            <summary className="cursor-pointer rounded-lg bg-slate-100 px-2 py-1 text-[11px] font-semibold text-slate-700">
+                              Change
+                            </summary>
+                            <div className="absolute right-0 z-20 mt-1 w-32 rounded-lg border border-slate-200 bg-white p-1 shadow-lg">
+                              <button
+                                onClick={() => void updateInvoiceStatus(invoice.id, "pending")}
+                                className="block w-full rounded-md px-2 py-1 text-left text-xs font-medium text-amber-700 hover:bg-amber-50"
+                              >
+                                Pending
+                              </button>
+                              <button
+                                onClick={() => void updateInvoiceStatus(invoice.id, "paid")}
+                                className="block w-full rounded-md px-2 py-1 text-left text-xs font-medium text-green-700 hover:bg-green-50"
+                              >
+                                Paid
+                              </button>
+                              <button
+                                onClick={() => void updateInvoiceStatus(invoice.id, "overdue")}
+                                className="block w-full rounded-md px-2 py-1 text-left text-xs font-medium text-red-700 hover:bg-red-50"
+                              >
+                                Overdue
+                              </button>
+                            </div>
+                          </details>
+                        </div>
                       </td>
                       <td className="px-4 py-3 font-medium text-slate-900">{invoice.room_number}</td>
                       <td className="px-4 py-3">{invoice.tenant_name}</td>
@@ -1144,43 +1518,49 @@ export default function InvoicesPage() {
                       </td>
                       <td className="px-4 py-3">
                         <button
-                          onClick={() => openInvoice(invoice)}
+                          onClick={() => openSlipViewer(invoice)}
+                          disabled={!invoice.slip_url}
                           className={`rounded-full px-3 py-1 text-xs font-semibold ${
                             invoice.slip_url
-                              ? "bg-green-100 text-green-700"
-                              : "bg-slate-100 text-slate-500"
+                              ? "bg-emerald-100 text-emerald-700 hover:bg-emerald-200"
+                              : "bg-slate-100 text-slate-400"
                           }`}
                         >
-                          {invoice.slip_url ? "View Slip" : "Upload Slip"}
+                          {invoice.slip_url ? "View Slip" : "No Slip"}
                         </button>
                       </td>
                       <td className="px-4 py-3">
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={() => openInvoice(invoice)}
-                            className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2 py-1 text-xs text-slate-600"
-                          >
-                            <Pencil size={12} />
-                            Edit
-                          </button>
-                          <button
-                            onClick={() => void getInvoicePrintDetail(invoice)}
-                            className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2 py-1 text-xs text-slate-600"
-                          >
-                            <Printer size={12} />
-                            Preview
-                          </button>
-                          <button
-                            onClick={() => {
-                              setDeleteTargetIds([invoice.id]);
-                              setConfirmDeleteOpen(true);
-                            }}
-                            className="inline-flex items-center gap-1 rounded-lg border border-red-200 px-2 py-1 text-xs text-red-600"
-                          >
-                            <Trash2 size={12} />
-                            Delete
-                          </button>
-                        </div>
+                        <details className="relative">
+                          <summary className="cursor-pointer rounded-lg bg-blue-100 px-3 py-1 text-xs font-semibold text-blue-700 hover:bg-blue-200">
+                            Actions
+                          </summary>
+                          <div className="absolute right-0 z-20 mt-1 w-36 rounded-lg border border-slate-200 bg-white p-1 shadow-lg">
+                            <button
+                              onClick={() => openInvoice(invoice)}
+                              className="flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-xs font-medium text-sky-700 hover:bg-sky-50"
+                            >
+                              <Pencil size={12} />
+                              Edit
+                            </button>
+                            <button
+                              onClick={() => void getInvoicePrintDetail(invoice)}
+                              className="flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-xs font-medium text-indigo-700 hover:bg-indigo-50"
+                            >
+                              <Printer size={12} />
+                              Preview
+                            </button>
+                            <button
+                              onClick={() => {
+                                setDeleteTargetIds([invoice.id]);
+                                setConfirmDeleteOpen(true);
+                              }}
+                              className="flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-xs font-medium text-red-700 hover:bg-red-50"
+                            >
+                              <Trash2 size={12} />
+                              Delete
+                            </button>
+                          </div>
+                        </details>
                       </td>
                     </tr>
                   ))}
@@ -1269,6 +1649,19 @@ export default function InvoicesPage() {
                 value={form.rent_amount}
                 onChange={(event) => updateForm("rent_amount", event.target.value)}
               />
+              <label className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                <input
+                  type="checkbox"
+                  checked={useProrateInModal}
+                  onChange={(event) => toggleProrateInModal(event.target.checked)}
+                />
+                Use pro-rate for this room invoice
+              </label>
+              {modalProrateSummary && (
+                <div className="md:col-span-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                  Pro-rate formula: {modalProrateSummary.formulaText} (Move-in day {modalProrateSummary.moveInDay}, Billing day {modalProrateSummary.billingDay})
+                </div>
+              )}
               <Input
                 label="Water Bill"
                 type="number"
@@ -1595,6 +1988,29 @@ export default function InvoicesPage() {
         )}
       </Modal>
 
+      <Modal
+        isOpen={slipModalOpen}
+        onClose={() => setSlipModalOpen(false)}
+        title={slipModalTitle || "Payment Slip"}
+        size="lg"
+      >
+        {slipModalUrl ? (
+          <div className="space-y-3">
+            <img src={slipModalUrl} alt="Payment slip" className="w-full rounded-xl border border-slate-200" />
+            <div className="flex justify-end">
+              <button
+                onClick={() => setSlipModalOpen(false)}
+                className="rounded-xl border border-slate-200 px-4 py-2 text-sm text-slate-600"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        ) : (
+          <p className="text-sm text-slate-500">No slip image available.</p>
+        )}
+      </Modal>
+
       <ConfirmActionModal
         isOpen={confirmGenerateOpen}
         title="Generate Invoices"
@@ -1690,6 +2106,30 @@ export default function InvoicesPage() {
                         <td className="px-3 py-2 text-right">{formatMoney(previewInvoice.rent_amount)}</td>
                         <td className="px-3 py-2 text-right">{formatMoney(previewInvoice.rent_amount)}</td>
                       </tr>
+                      {!!(() => {
+                        const summary = calculateProratedRentByBillingDay(
+                          toNumber(previewInvoice.room_price_month || previewInvoice.rent_amount),
+                          previewInvoice.tenant_move_in_date,
+                          printSettings?.billing_day
+                        );
+                        return (
+                          summary &&
+                          Math.abs(toNumber(previewInvoice.rent_amount) - summary.rentAmount) < 0.01
+                        );
+                      })() && (
+                        <tr className="border-t border-amber-200 bg-amber-50">
+                          <td className="px-3 py-2 text-xs text-amber-800" colSpan={4}>
+                            สูตรคำนวณ:{" "}
+                            {
+                              calculateProratedRentByBillingDay(
+                                toNumber(previewInvoice.room_price_month || previewInvoice.rent_amount),
+                                previewInvoice.tenant_move_in_date,
+                                printSettings?.billing_day
+                              )?.formulaText
+                            }
+                          </td>
+                        </tr>
+                      )}
                       <tr className="border-t border-slate-100">
                         <td className="px-3 py-2">ค่าน้ำ</td>
                         <td className="px-3 py-2 text-right">

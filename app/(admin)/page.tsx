@@ -8,8 +8,10 @@ import { createClient } from "@/lib/supabase-client";
 type DashboardStats = {
   totalRooms: number;
   occupiedRooms: number;
+  vacantRooms: number;
   maintenanceRooms: number;
   pendingIncome: number;
+  roomGap: number;
 };
 
 type ActivityItem = {
@@ -28,18 +30,23 @@ export default function DashboardPage() {
   const [stats, setStats] = useState<DashboardStats>({
     totalRooms: 0,
     occupiedRooms: 0,
+    vacantRooms: 0,
     maintenanceRooms: 0,
     pendingIncome: 0,
+    roomGap: 0,
   });
   const [activities, setActivities] = useState<ActivityItem[]>([]);
+  const [ghostRooms, setGhostRooms] = useState<
+    { id: string; room_number: string; status: string | null; reason: string }[]
+  >([]);
 
   useEffect(() => {
     const load = async () => {
       setLoading(true);
       setError(null);
 
-      const [roomsRes, invoicesRes, recentInvoicesRes, recentTenantsRes] = await Promise.all([
-        supabase.from("rooms").select("id,status"),
+      const [roomsRes, invoicesRes, recentInvoicesRes, recentTenantsRes, activeTenantsRes] = await Promise.all([
+        supabase.from("rooms").select("id,room_number,status"),
         supabase
           .from("invoices")
           .select("total_amount")
@@ -54,31 +61,81 @@ export default function DashboardPage() {
           .select("id,full_name,created_at,rooms(room_number)")
           .order("created_at", { ascending: false })
           .limit(4),
+        supabase.from("tenants").select("room_id").eq("status", "active"),
       ]);
 
-      if (roomsRes.error || invoicesRes.error || recentInvoicesRes.error || recentTenantsRes.error) {
+      if (
+        roomsRes.error ||
+        invoicesRes.error ||
+        recentInvoicesRes.error ||
+        recentTenantsRes.error ||
+        activeTenantsRes.error
+      ) {
         setError(
           roomsRes.error?.message ||
             invoicesRes.error?.message ||
             recentInvoicesRes.error?.message ||
             recentTenantsRes.error?.message ||
+            activeTenantsRes.error?.message ||
             "Failed to load dashboard."
         );
         setLoading(false);
         return;
       }
 
-      const rooms = roomsRes.data ?? [];
+      const rooms = ((roomsRes.data ?? []) as any[]).map((room) => ({
+        id: room.id as string,
+        room_number: (room.room_number as string) ?? "-",
+        status: (room.status as string | null) ?? null,
+      }));
       const pendingInvoices = invoicesRes.data ?? [];
+      const activeTenantRoomIds = new Set(
+        ((activeTenantsRes.data ?? []) as any[])
+          .map((tenant) => tenant.room_id as string | null)
+          .filter(Boolean) as string[]
+      );
       const totalRooms = rooms.length;
-      const occupiedRooms = rooms.filter((room: any) => room.status === "occupied").length;
-      const maintenanceRooms = rooms.filter((room: any) => room.status === "maintenance").length;
+      const occupiedRooms = rooms.filter((room) => room.status === "occupied").length;
+      const maintenanceRooms = rooms.filter((room) => room.status === "maintenance").length;
+      const vacantRooms = rooms.filter(
+        (room) => room.status === "vacant" || room.status === "available"
+      ).length;
+      const roomGap = totalRooms - (occupiedRooms + vacantRooms + maintenanceRooms);
       const pendingIncome = pendingInvoices.reduce(
         (sum: number, item: any) => sum + Number(item.total_amount ?? 0),
         0
       );
 
-      setStats({ totalRooms, occupiedRooms, maintenanceRooms, pendingIncome });
+      const nextGhostRooms = rooms
+        .map((room) => {
+          const status = room.status;
+          const statusKnown =
+            status === "occupied" ||
+            status === "maintenance" ||
+            status === "vacant" ||
+            status === "available";
+          if (!statusKnown) {
+            return {
+              id: room.id,
+              room_number: room.room_number,
+              status,
+              reason: "undefined/invalid room status",
+            };
+          }
+          if (status === "occupied" && !activeTenantRoomIds.has(room.id)) {
+            return {
+              id: room.id,
+              room_number: room.room_number,
+              status,
+              reason: "occupied but no active tenant",
+            };
+          }
+          return null;
+        })
+        .filter(Boolean) as { id: string; room_number: string; status: string | null; reason: string }[];
+
+      setStats({ totalRooms, occupiedRooms, vacantRooms, maintenanceRooms, pendingIncome, roomGap });
+      setGhostRooms(nextGhostRooms);
 
       const invoiceActivities = (recentInvoicesRes.data ?? []).map((item: any) => {
         const room = Array.isArray(item.rooms) ? item.rooms[0] : item.rooms;
@@ -192,6 +249,42 @@ export default function DashboardPage() {
                 <span>Maintenance: {stats.maintenanceRooms} rooms</span>
               </div>
             </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="space-y-4">
+            <h2 className="text-lg font-semibold text-slate-900">Occupancy Reconciliation</h2>
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+              <p>
+                Room Gap = Total ({stats.totalRooms}) - Occupied ({stats.occupiedRooms}) - Vacant (
+                {stats.vacantRooms}) - Maintenance ({stats.maintenanceRooms}) ={" "}
+                <span className={stats.roomGap === 0 ? "font-semibold text-green-700" : "font-semibold text-red-700"}>
+                  {stats.roomGap}
+                </span>
+              </p>
+            </div>
+            {stats.roomGap !== 0 && (
+              <div className="space-y-2">
+                <p className="text-sm font-medium text-slate-800">Ghost Rooms</p>
+                {ghostRooms.length === 0 ? (
+                  <p className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-500">
+                    No ghost rooms matched current rules.
+                  </p>
+                ) : (
+                  <ul className="space-y-2 text-xs text-slate-600">
+                    {ghostRooms.map((room) => (
+                      <li
+                        key={room.id}
+                        className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2"
+                      >
+                        Room {room.room_number} ({room.status ?? "null"}): {room.reason}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
           </CardContent>
         </Card>
 
