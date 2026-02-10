@@ -24,9 +24,8 @@ export default function RegisterPage() {
   const supabase = useMemo(() => createClient(), []);
   const [profile, setProfile] = useState<LiffProfile | null>(null);
   const [roomNumber, setRoomNumber] = useState("");
-  const [fullName, setFullName] = useState("");
-  const [securityDepositAmount, setSecurityDepositAmount] = useState("");
-  const [advanceRentAmount, setAdvanceRentAmount] = useState("");
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
   const [depositSlipUrl, setDepositSlipUrl] = useState("");
   const [advanceRentSlipUrl, setAdvanceRentSlipUrl] = useState("");
   const [suggestions, setSuggestions] = useState<RoomSuggestion[]>([]);
@@ -183,11 +182,9 @@ export default function RegisterPage() {
       },
       body: JSON.stringify({
         roomNumber: roomNumber.trim(),
-        fullName: fullName.trim(),
+        fullName: `${firstName.trim()} ${lastName.trim()}`.replace(/\s+/g, " ").trim(),
         userId: profile.userId,
         accessToken,
-        securityDepositAmount: securityDepositAmount ? Number(securityDepositAmount) : 0,
-        advanceRentAmount: advanceRentAmount ? Number(advanceRentAmount) : 0,
         depositSlipUrl: depositSlipUrl || null,
         advanceRentSlipUrl: advanceRentSlipUrl || null,
       }),
@@ -269,38 +266,25 @@ export default function RegisterPage() {
                 </div>
               )}
 
-              <label className="block text-sm text-slate-600">
-                ชื่อ-นามสกุลผู้เช่า
-                <input
-                  value={fullName}
-                  onChange={(event) => setFullName(event.target.value)}
-                  className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm"
-                  required
-                  placeholder="กรอกชื่อ-นามสกุลเต็ม"
-                />
-              </label>
-
               <div className="grid gap-4 md:grid-cols-2">
                 <label className="block text-sm text-slate-600">
-                  เงินประกัน (บาท)
+                  ชื่อผู้เช่า
                   <input
-                    type="number"
-                    min={0}
-                    value={securityDepositAmount}
-                    onChange={(event) => setSecurityDepositAmount(event.target.value)}
+                    value={firstName}
+                    onChange={(event) => setFirstName(event.target.value)}
                     className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm"
-                    placeholder="เช่น 5000"
+                    required
+                    placeholder="กรอกชื่อ"
                   />
                 </label>
                 <label className="block text-sm text-slate-600">
-                  ค่าเช่าล่วงหน้า (บาท)
+                  นามสกุลผู้เช่า
                   <input
-                    type="number"
-                    min={0}
-                    value={advanceRentAmount}
-                    onChange={(event) => setAdvanceRentAmount(event.target.value)}
+                    value={lastName}
+                    onChange={(event) => setLastName(event.target.value)}
                     className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm"
-                    placeholder="เช่น 3000"
+                    required
+                    placeholder="กรอกนามสกุล"
                   />
                 </label>
               </div>
