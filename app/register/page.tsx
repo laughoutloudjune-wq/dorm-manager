@@ -26,15 +26,14 @@ export default function RegisterPage() {
   const [roomNumber, setRoomNumber] = useState("");
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
-  const [depositSlipUrl, setDepositSlipUrl] = useState("");
-  const [advanceRentSlipUrl, setAdvanceRentSlipUrl] = useState("");
+  const [phoneNumber, setPhoneNumber] = useState("");
+  const [newTenantSlipUrl, setNewTenantSlipUrl] = useState("");
   const [suggestions, setSuggestions] = useState<RoomSuggestion[]>([]);
   const [status, setStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [suggestLoading, setSuggestLoading] = useState(false);
-  const [uploadingDeposit, setUploadingDeposit] = useState(false);
-  const [uploadingAdvance, setUploadingAdvance] = useState(false);
+  const [uploadingNewTenantSlip, setUploadingNewTenantSlip] = useState(false);
 
   useEffect(() => {
     const init = async () => {
@@ -133,17 +132,13 @@ export default function RegisterPage() {
     };
   }, [roomNumber]);
 
-  const uploadSlip = async (
-    file: File | null | undefined,
-    type: "deposit" | "advance"
-  ) => {
+  const uploadSlip = async (file: File | null | undefined) => {
     if (!file) return;
     const safeRoom = roomNumber.trim() || "unknown-room";
     const filename = `${Date.now()}-${file.name}`;
-    const path = `tenant-docs/register/${safeRoom}/${type}-${filename}`;
+    const path = `tenant-docs/register/${safeRoom}/new-tenant-${filename}`;
 
-    if (type === "deposit") setUploadingDeposit(true);
-    if (type === "advance") setUploadingAdvance(true);
+    setUploadingNewTenantSlip(true);
 
     try {
       const { error: uploadError } = await supabase.storage
@@ -156,12 +151,10 @@ export default function RegisterPage() {
       }
 
       const { data } = supabase.storage.from("tenant-docs").getPublicUrl(path);
-      if (type === "deposit") setDepositSlipUrl(data.publicUrl);
-      if (type === "advance") setAdvanceRentSlipUrl(data.publicUrl);
+      setNewTenantSlipUrl(data.publicUrl);
       setStatus("อัปโหลดสลิปสำเร็จ");
     } finally {
-      if (type === "deposit") setUploadingDeposit(false);
-      if (type === "advance") setUploadingAdvance(false);
+      setUploadingNewTenantSlip(false);
     }
   };
 
@@ -183,10 +176,11 @@ export default function RegisterPage() {
       body: JSON.stringify({
         roomNumber: roomNumber.trim(),
         fullName: `${firstName.trim()} ${lastName.trim()}`.replace(/\s+/g, " ").trim(),
+        phoneNumber: phoneNumber.trim(),
         userId: profile.userId,
         accessToken,
-        depositSlipUrl: depositSlipUrl || null,
-        advanceRentSlipUrl: advanceRentSlipUrl || null,
+        depositSlipUrl: newTenantSlipUrl || null,
+        advanceRentSlipUrl: newTenantSlipUrl || null,
       }),
     });
 
@@ -289,39 +283,33 @@ export default function RegisterPage() {
                 </label>
               </div>
 
+              <label className="block text-sm text-slate-600">
+                เบอร์โทรศัพท์
+                <input
+                  value={phoneNumber}
+                  onChange={(event) => setPhoneNumber(event.target.value)}
+                  className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm"
+                  required
+                  placeholder="เช่น 08xxxxxxxx"
+                />
+              </label>
+
               <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
-                <p className="text-sm font-semibold text-slate-700">อัปโหลดสลิปชำระเงิน</p>
+                <p className="text-sm font-semibold text-slate-700">สำหรับผู้เช่าใหม่เท่านั้น</p>
                 <div className="flex flex-wrap items-center gap-3">
                   <label className="inline-flex cursor-pointer items-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700">
-                    {uploadingDeposit ? "กำลังอัปโหลด..." : "อัปโหลดสลิปเงินประกัน"}
+                    {uploadingNewTenantSlip ? "กำลังอัปโหลด..." : "อัปโหลดสลิปเงินประกัน/ค่าเช่าล่วงหน้า"}
                     <input
                       type="file"
                       accept="image/*"
                       className="hidden"
-                      onChange={(event) => void uploadSlip(event.target.files?.[0], "deposit")}
-                      disabled={uploadingDeposit}
+                      onChange={(event) => void uploadSlip(event.target.files?.[0])}
+                      disabled={uploadingNewTenantSlip}
                     />
                   </label>
-                  {depositSlipUrl && (
-                    <a className="text-xs text-blue-600 underline" href={depositSlipUrl} target="_blank" rel="noreferrer">
-                      ดูสลิปเงินประกัน
-                    </a>
-                  )}
-                </div>
-                <div className="flex flex-wrap items-center gap-3">
-                  <label className="inline-flex cursor-pointer items-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700">
-                    {uploadingAdvance ? "กำลังอัปโหลด..." : "อัปโหลดสลิปค่าเช่าล่วงหน้า"}
-                    <input
-                      type="file"
-                      accept="image/*"
-                      className="hidden"
-                      onChange={(event) => void uploadSlip(event.target.files?.[0], "advance")}
-                      disabled={uploadingAdvance}
-                    />
-                  </label>
-                  {advanceRentSlipUrl && (
-                    <a className="text-xs text-blue-600 underline" href={advanceRentSlipUrl} target="_blank" rel="noreferrer">
-                      ดูสลิปค่าเช่าล่วงหน้า
+                  {newTenantSlipUrl && (
+                    <a className="text-xs text-blue-600 underline" href={newTenantSlipUrl} target="_blank" rel="noreferrer">
+                      ดูสลิป
                     </a>
                   )}
                 </div>

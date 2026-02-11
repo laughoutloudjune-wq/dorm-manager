@@ -7,6 +7,7 @@ export async function POST(req: Request) {
     const {
       roomNumber,
       fullName,
+      phoneNumber,
       userId,
       accessToken,
       securityDepositAmount,
@@ -15,7 +16,7 @@ export async function POST(req: Request) {
       advanceRentSlipUrl,
     } = body ?? {};
 
-    if (!roomNumber || !fullName || !userId) {
+    if (!roomNumber || !fullName || !phoneNumber || !userId) {
       return NextResponse.json({ error: "Missing required fields." }, { status: 400 });
     }
 
@@ -67,6 +68,7 @@ export async function POST(req: Request) {
         .update({
           line_user_id: tenant.line_user_id ?? userId,
           full_name: fullName,
+          phone_number: phoneNumber,
           security_deposit_amount: depositAmount,
           advance_rent_amount: advanceAmount,
           deposit_slip_url: depositSlipUrl ?? null,
@@ -81,6 +83,7 @@ export async function POST(req: Request) {
       const { error: insertError } = await supabase.from("tenants").insert({
         room_id: room.id,
         full_name: fullName,
+        phone_number: phoneNumber,
         line_user_id: userId,
         move_in_date: moveInDate,
         status: "active",
