@@ -56,7 +56,7 @@ function normalizeInvoice(row: any): InvoiceData {
     status: row.status,
     slip_url: row.slip_url,
     tenant_move_in_date: tenant?.move_in_date ?? null,
-    tenant_name: tenant?.full_name ?? "เธเธนเนเน€เธเนเธฒ",
+    tenant_name: tenant?.full_name ?? "ผู้เช่า",
     custom_payment_method: tenant?.custom_payment_method ?? null,
     room_number: room?.room_number ?? "-",
     room_price_month: Number(room?.price_month ?? 0),
@@ -174,7 +174,7 @@ export default function PaymentTokenPage() {
         .single();
 
       if (fetchError || !data) {
-        setError("เนเธกเนเธเธเนเธเนเธเนเธเธซเธเธตเน");
+        setError("ไม่พบใบแจ้งหนี้");
         return;
       }
 
@@ -231,7 +231,7 @@ export default function PaymentTokenPage() {
       setSubmitted(true);
       setUploading(false);
     } catch (uploadError: any) {
-      setError(uploadError?.message ?? "เธญเธฑเธเนเธซเธฅเธ”เธชเธฅเธดเธเนเธกเนเธชเธณเน€เธฃเนเธ");
+      setError(uploadError?.message ?? "อัปโหลดสลิปไม่สำเร็จ");
       setUploading(false);
     }
   };
@@ -241,10 +241,10 @@ export default function PaymentTokenPage() {
       <div className="min-h-screen px-4 py-10">
         <div className="mx-auto max-w-md rounded-3xl border border-white/60 bg-white/90 p-6 text-center shadow-xl">
           <CheckCircle2 className="mx-auto h-12 w-12 text-green-600" />
-          <h1 className="mt-4 text-2xl font-semibold text-slate-900">เธฃเธฑเธเธเนเธญเธกเธนเธฅเธเธฒเธฃเธเธณเธฃเธฐเน€เธเธดเธเนเธฅเนเธง</h1>
-          <p className="mt-2 text-sm text-slate-500">เธฃเธฐเธเธเธเธณเธฅเธฑเธเธฃเธญเธ•เธฃเธงเธเธชเธญเธเธชเธฅเธดเธเธเธญเธเธเธธเธ“</p>
+          <h1 className="mt-4 text-2xl font-semibold text-slate-900">รับข้อมูลการชำระเงินแล้ว</h1>
+          <p className="mt-2 text-sm text-slate-500">ระบบกำลังรอตรวจสอบสลิปของคุณ</p>
           <Badge variant="info" className="mt-4">
-            เธชเธ–เธฒเธเธฐ: เธฃเธญเธ•เธฃเธงเธเธชเธญเธ
+            สถานะ: รอตรวจสอบ
           </Badge>
         </div>
       </div>
@@ -255,7 +255,7 @@ export default function PaymentTokenPage() {
     return (
       <div className="min-h-screen px-4 py-10">
         <div className="mx-auto max-w-md rounded-3xl border border-white/60 bg-white/90 p-6 text-center shadow-xl">
-          <p className="text-sm text-slate-500">{error ?? "เธเธณเธฅเธฑเธเนเธซเธฅเธ”เนเธเนเธเนเธเธซเธเธตเน..."}</p>
+          <p className="text-sm text-slate-500">{error ?? "กำลังโหลดใบแจ้งหนี้..."}</p>
         </div>
       </div>
     );
@@ -267,22 +267,22 @@ export default function PaymentTokenPage() {
         <header className="rounded-3xl border border-white/60 bg-white/90 p-6 shadow-xl">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <p className="text-sm text-slate-500">เนเธเนเธเนเธเธซเธเธตเน</p>
-              <h1 className="text-2xl font-semibold text-slate-900">เธซเนเธญเธ {invoice.room_number}</h1>
+              <p className="text-sm text-slate-500">ใบแจ้งหนี้</p>
+              <h1 className="text-2xl font-semibold text-slate-900">ห้อง {invoice.room_number}</h1>
             </div>
             <div className="text-right">
               <p className="text-xs uppercase tracking-[0.2em] text-slate-400">TOTAL</p>
-              <p className="text-3xl font-semibold text-green-600">เธฟ{formatBaht(invoice.total_amount)}</p>
+              <p className="text-3xl font-semibold text-green-600">฿{formatBaht(invoice.total_amount)}</p>
             </div>
           </div>
         </header>
 
         <section className="rounded-3xl border border-white/60 bg-white/90 p-6 shadow-xl">
-          <h2 className="text-lg font-semibold text-slate-900">เธฃเธฒเธขเธฅเธฐเน€เธญเธตเธขเธ”เธเนเธฒเนเธเนเธเนเธฒเธข</h2>
+          <h2 className="text-lg font-semibold text-slate-900">รายละเอียดค่าใช้จ่าย</h2>
           <div className="mt-4 space-y-3 text-sm text-slate-600">
             <div className="flex items-center justify-between">
-              <span>เธเนเธฒเน€เธเนเธฒ</span>
-              <span className="font-semibold text-slate-900">เธฟ{formatBaht(invoice.rent_amount)}</span>
+              <span>ค่าเช่า</span>
+              <span className="font-semibold text-slate-900">฿{formatBaht(invoice.rent_amount)}</span>
             </div>
             {isProratedRent && proratePreview && (
               <div className="rounded-xl border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
@@ -292,27 +292,27 @@ export default function PaymentTokenPage() {
               </div>
             )}
             <div className="flex items-center justify-between">
-              <span>เธเนเธฒเธเนเธณ</span>
-              <span className="font-semibold text-slate-900">เธฟ{formatBaht(invoice.water_bill)}</span>
+              <span>ค่าน้ำ</span>
+              <span className="font-semibold text-slate-900">฿{formatBaht(invoice.water_bill)}</span>
             </div>
             <div className="flex items-center justify-between">
-              <span>เธเนเธฒเนเธ</span>
-              <span className="font-semibold text-slate-900">เธฟ{formatBaht(invoice.electricity_bill)}</span>
+              <span>ค่าไฟ</span>
+              <span className="font-semibold text-slate-900">฿{formatBaht(invoice.electricity_bill)}</span>
             </div>
             <div className="flex items-center justify-between">
-              <span>เธเนเธฒเธชเนเธงเธเธเธฅเธฒเธ</span>
-              <span className="font-semibold text-slate-900">เธฟ{formatBaht(invoice.common_fee)}</span>
+              <span>ค่าส่วนกลาง</span>
+              <span className="font-semibold text-slate-900">฿{formatBaht(invoice.common_fee)}</span>
             </div>
             <div className="flex items-center justify-between">
-              <span>เธเนเธฒเธเธฃเธฃเธกเน€เธเธตเธขเธกเน€เธเธดเนเธกเน€เธ•เธดเธก</span>
+              <span>ค่าธรรมเนียมเพิ่มเติม</span>
               <span className="font-semibold text-slate-900">
-                เธฟ{formatBaht(invoice.additional_fees_total)}
+                ฿{formatBaht(invoice.additional_fees_total)}
               </span>
             </div>
             {invoice.additional_fees_breakdown.map((fee: any, idx: number) => (
               <div key={`${fee.label ?? fee.detail}-${idx}`} className="flex items-center justify-between text-xs">
                 <span>{fee.detail ?? fee.label}</span>
-                <span>เธฟ{formatBaht(Number(fee.total_amount ?? fee.amount ?? 0))}</span>
+                <span>฿{formatBaht(Number(fee.total_amount ?? fee.amount ?? 0))}</span>
               </div>
             ))}
           </div>
@@ -320,16 +320,16 @@ export default function PaymentTokenPage() {
 
         <section className="rounded-3xl border border-white/60 bg-white/90 p-6 shadow-xl">
           <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-slate-900">เธเนเธญเธเธ—เธฒเธเธเธณเธฃเธฐเน€เธเธดเธ</h2>
-            <Badge variant="success">{invoice.custom_payment_method ? "เน€เธเธเธฒเธฐเธซเนเธญเธ" : "เธเนเธฒเน€เธฃเธดเนเธกเธ•เนเธ"}</Badge>
+            <h2 className="text-lg font-semibold text-slate-900">ช่องทางชำระเงิน</h2>
+            <Badge variant="success">{invoice.custom_payment_method ? "เฉพาะห้อง" : "ค่าเริ่มต้น"}</Badge>
           </div>
           {method ? (
             <div className="mt-4 space-y-3">
               <div className="rounded-2xl border border-slate-100 bg-slate-50 p-4 text-sm text-slate-600">
-                <p className="font-semibold text-slate-900">{method.label ?? "เธเธฒเธฃเธเธณเธฃเธฐเน€เธเธดเธ"}</p>
-                {method.bank_name && <p>เธเธเธฒเธเธฒเธฃ: {method.bank_name}</p>}
-                {method.account_name && <p>เธเธทเนเธญเธเธฑเธเธเธต: {method.account_name}</p>}
-                {method.account_number && <p>เน€เธฅเธเธเธฑเธเธเธต: {method.account_number}</p>}
+                <p className="font-semibold text-slate-900">{method.label ?? "การชำระเงิน"}</p>
+                {method.bank_name && <p>ธนาคาร: {method.bank_name}</p>}
+                {method.account_name && <p>ชื่อบัญชี: {method.account_name}</p>}
+                {method.account_number && <p>เลขบัญชี: {method.account_number}</p>}
               </div>
               {method.qr_url && (
                 <div className="flex flex-col items-center gap-3">
@@ -345,22 +345,22 @@ export default function PaymentTokenPage() {
                     className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-600"
                   >
                     <Download size={14} />
-                    เน€เธเธดเธ”เธฃเธนเธ QR
+                    เปิดรูป QR
                   </a>
                 </div>
               )}
             </div>
           ) : (
-            <p className="mt-4 text-sm text-slate-500">เธขเธฑเธเนเธกเนเนเธ”เนเธ•เธฑเนเธเธเนเธฒเธเนเธญเธเธ—เธฒเธเธเธณเธฃเธฐเน€เธเธดเธ</p>
+            <p className="mt-4 text-sm text-slate-500">ยังไม่ได้ตั้งค่าช่องทางชำระเงิน</p>
           )}
         </section>
 
         <section className="rounded-3xl border border-white/60 bg-white/90 p-6 shadow-xl">
-          <h2 className="text-lg font-semibold text-slate-900">เธญเธฑเธเนเธซเธฅเธ”เธชเธฅเธดเธเธเธฒเธฃเนเธญเธ</h2>
+          <h2 className="text-lg font-semibold text-slate-900">อัปโหลดสลิปการโอน</h2>
           <div className="mt-4 space-y-4">
             <label className="flex cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
               <UploadCloud size={24} />
-              <span>{uploading ? `เธเธณเธฅเธฑเธเธญเธฑเธเนเธซเธฅเธ”... ${uploadProgress}%` : "เนเธ•เธฐเน€เธเธทเนเธญเน€เธฅเธทเธญเธเนเธเธฅเนเธชเธฅเธดเธ"}</span>
+              <span>{uploading ? `กำลังอัปโหลด... ${uploadProgress}%` : "แตะเพื่อเลือกไฟล์สลิป"}</span>
               <input
                 type="file"
                 accept="image/*"
@@ -378,13 +378,13 @@ export default function PaymentTokenPage() {
                     style={{ width: `${uploadProgress}%` }}
                   />
                 </div>
-                <p className="mt-2 text-xs text-slate-500">เธเธณเธฅเธฑเธเธญเธฑเธเนเธซเธฅเธ”เธชเธฅเธดเธ {uploadProgress}%</p>
+                <p className="mt-2 text-xs text-slate-500">กำลังอัปโหลดสลิป {uploadProgress}%</p>
               </div>
             )}
 
             {preview && (
               <div className="rounded-2xl border border-slate-200 bg-white p-3">
-                <p className="text-xs text-slate-400">เธ•เธฑเธงเธญเธขเนเธฒเธเธชเธฅเธดเธ</p>
+                <p className="text-xs text-slate-400">ตัวอย่างสลิป</p>
                 <img src={preview} alt="Payment slip preview" className="mt-2 w-full rounded-xl" />
               </div>
             )}

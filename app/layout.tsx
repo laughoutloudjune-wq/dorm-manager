@@ -13,8 +13,8 @@ const sarabun = Sarabun({
 
 export const metadata: Metadata = {
   title: {
-    template: '%s | DormManager',
-    default: 'DormManager',
+    template: "%s | สุววรณอพาร์ทเม้นท์",
+    default: "สุววรณอพาร์ทเม้นท์",
   },
   description: "A modern dormitory management system.",
 };
