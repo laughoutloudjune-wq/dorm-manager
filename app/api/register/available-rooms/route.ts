@@ -29,8 +29,9 @@ export async function GET(req: Request) {
 
     const { data: linkedTenants, error: tenantError } = await supabase
       .from("tenants")
-      .select("room_id")
+      .select("room_id,status")
       .in("room_id", roomIds)
+      .eq("status", "active")
       .not("line_user_id", "is", null);
 
     if (tenantError) {

@@ -1336,16 +1336,14 @@ export default function InvoicesPage() {
       return;
     }
 
+    const billingDay = clampDay((settings as any).billing_day ?? 1);
     const dueDay = clampDay((settings as any).due_day ?? 5);
     const lateFeeStartDay = clampDay((settings as any).late_fee_start_day ?? 6);
     const lateFeePerDay = toNumber((settings as any).late_fee_per_day ?? 0);
-    const issueDateToday = new Date();
-    const issueDateText = toLocalDateString(issueDateToday);
-    const generatedDueDateText = toLocalDateString(
-      new Date(issueDateToday.getFullYear(), issueDateToday.getMonth(), dueDay)
-    );
+    const issueDateText = toLocalDateString(new Date(year, month - 1, billingDay));
+    const generatedDueDateText = toLocalDateString(new Date(year, month - 1, dueDay));
     const generatedLateFeeStartDateText = toLocalDateString(
-      new Date(issueDateToday.getFullYear(), issueDateToday.getMonth(), lateFeeStartDay)
+      new Date(year, month - 1, lateFeeStartDay)
     );
 
     const { data: occupiedRooms, error: roomError } = await supabase

@@ -236,7 +236,7 @@ export default function RegisterPage() {
               {showSuggestions && (
                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-2">
                   <p className="px-2 py-1 text-xs text-slate-500">
-                    {suggestLoading ? "กำลังค้นหาห้องว่าง..." : "ห้องว่างที่ตรงกับข้อมูล"}
+                    {suggestLoading ? "กำลังค้นหาห้อง..." : "ห้องที่ตรงกับข้อมูล"}
                   </p>
                   <div className="max-h-44 space-y-1 overflow-auto">
                     {suggestions.map((room) => (
@@ -254,7 +254,7 @@ export default function RegisterPage() {
                       </button>
                     ))}
                     {!suggestLoading && suggestions.length === 0 && (
-                      <p className="px-3 py-2 text-xs text-slate-500">ไม่พบห้องว่างที่ตรงกับเลขห้องที่พิมพ์</p>
+                      <p className="px-3 py-2 text-xs text-slate-500">ไม่พบห้องที่ลงทะเบียนได้ตามเลขห้องที่พิมพ์</p>
                     )}
                   </div>
                 </div>
