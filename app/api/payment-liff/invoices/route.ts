@@ -44,10 +44,10 @@ export async function POST(req: Request) {
     const { data: invoices, error: invoiceError } = await supabase
       .from("invoices")
       .select(
-        "id,public_token,issue_date,due_date,total_amount,status,rent_amount,water_bill,electricity_bill,common_fee,additional_fees_total"
+        "id,public_token,issue_date,due_date,total_amount,paid_amount,status,rent_amount,water_bill,electricity_bill,common_fee,additional_fees_total"
       )
       .eq("tenant_id", tenant.id)
-      .in("status", ["pending", "overdue", "verifying"])
+      .in("status", ["pending", "partial", "overdue", "verifying"])
       .order("issue_date", { ascending: false });
 
     if (invoiceError) {

@@ -6,7 +6,21 @@
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'invoice_status') THEN
-        CREATE TYPE public.invoice_status AS ENUM ('draft', 'pending', 'verifying', 'paid', 'overdue', 'cancelled');
+        CREATE TYPE public.invoice_status AS ENUM ('draft', 'pending', 'partial', 'verifying', 'paid', 'overdue', 'cancelled');
+    END IF;
+END$$;
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_type WHERE typname = 'invoice_status') THEN
+        IF NOT EXISTS (
+            SELECT 1
+            FROM pg_enum
+            WHERE enumtypid = 'public.invoice_status'::regtype
+              AND enumlabel = 'partial'
+        ) THEN
+            ALTER TYPE public.invoice_status ADD VALUE 'partial';
+        END IF;
     END IF;
 END$$;
 
@@ -131,7 +145,9 @@ ADD COLUMN IF NOT EXISTS discount_amount NUMERIC(10, 2) DEFAULT 0,
 ADD COLUMN IF NOT EXISTS discount_breakdown JSONB DEFAULT '[]'::jsonb,
 ADD COLUMN IF NOT EXISTS late_fee_amount NUMERIC(10, 2) DEFAULT 0,
 ADD COLUMN IF NOT EXISTS late_fee_per_day NUMERIC(10, 2) DEFAULT 0,
-ADD COLUMN IF NOT EXISTS late_fee_start_date DATE;
+ADD COLUMN IF NOT EXISTS late_fee_start_date DATE,
+ADD COLUMN IF NOT EXISTS paid_amount NUMERIC(10, 2) DEFAULT 0,
+ADD COLUMN IF NOT EXISTS payment_history JSONB DEFAULT '[]'::jsonb;
 
 -- Ensure payment_methods table exists before adding qr_url
 CREATE TABLE IF NOT EXISTS public.payment_methods (

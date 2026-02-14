@@ -11,6 +11,7 @@ import { FileText, Pencil, Printer, Send, Trash2, UploadCloud } from "lucide-rea
 const statusVariant = {
   draft: "default",
   pending: "warning",
+  partial: "warning",
   verifying: "info",
   paid: "success",
   overdue: "danger",
@@ -37,6 +38,8 @@ type InvoiceRecord = {
   late_fee_start_date: string | null;
   additional_fees_total: number;
   additional_fees_breakdown: any[];
+  paid_amount: number;
+  payment_history: any[];
   notes: string | null;
   public_token: string;
   slip_url: string | null;
@@ -155,6 +158,7 @@ const isInvoiceDetailEditable = (status: string) => status === "draft";
 const statusPillClass = (status: string) => {
   if (status === "draft") return "bg-slate-100 text-slate-700 border-slate-300";
   if (status === "pending") return "bg-amber-100 text-amber-800 border-amber-300";
+  if (status === "partial") return "bg-orange-100 text-orange-800 border-orange-300";
   if (status === "verifying") return "bg-sky-100 text-sky-800 border-sky-300";
   if (status === "paid") return "bg-green-100 text-green-800 border-green-300";
   if (status === "overdue") return "bg-red-100 text-red-800 border-red-300";
@@ -164,6 +168,7 @@ const statusPillClass = (status: string) => {
 const statusRowClass = (status: string) => {
   if (status === "draft") return "bg-slate-50";
   if (status === "pending") return "bg-amber-50/50";
+  if (status === "partial") return "bg-orange-50/60";
   if (status === "verifying") return "bg-sky-50/50";
   if (status === "paid") return "bg-green-50/50";
   if (status === "overdue") return "bg-red-50/50";
@@ -320,6 +325,8 @@ function normalizeInvoice(row: any): InvoiceRecord {
     additional_fees_breakdown: Array.isArray(row.additional_fees_breakdown)
       ? row.additional_fees_breakdown
       : [],
+    paid_amount: toNumber(row.paid_amount),
+    payment_history: Array.isArray(row.payment_history) ? row.payment_history : [],
     notes: row.notes ?? null,
     public_token: row.public_token,
     slip_url: row.slip_url ?? null,
@@ -363,6 +370,12 @@ export default function InvoicesPage() {
   const [defaultPaymentMethod, setDefaultPaymentMethod] = useState<PaymentMethodRow | null>(null);
   const [editableFeeItems, setEditableFeeItems] = useState<FeeLineItem[]>([]);
   const [editableDiscountItems, setEditableDiscountItems] = useState<FeeLineItem[]>([]);
+  const [showPaymentForm, setShowPaymentForm] = useState(false);
+  const [paymentMode, setPaymentMode] = useState<"full" | "partial">("full");
+  const [paymentAmountInput, setPaymentAmountInput] = useState<string>("");
+  const [paymentDate, setPaymentDate] = useState(toLocalDateString(new Date()));
+  const [paymentSlipFile, setPaymentSlipFile] = useState<File | null>(null);
+  const [paymentSubmitting, setPaymentSubmitting] = useState(false);
 
   const [form, setForm] = useState({
     issue_date: "",
@@ -381,6 +394,7 @@ export default function InvoicesPage() {
     late_fee_start_date: "",
     additional_fees_total: 0,
     total_amount: 0,
+    paid_amount: 0,
     status: "pending",
     notes: "",
   });
@@ -529,7 +543,7 @@ export default function InvoicesPage() {
     const { data, error: fetchError } = await supabase
       .from("invoices")
       .select(
-        "id,room_id,status,total_amount,issue_date,due_date,start_date,end_date,rent_amount,water_bill,electricity_bill,common_fee,discount_amount,discount_breakdown,late_fee_amount,late_fee_per_day,late_fee_start_date,additional_fees_total,additional_fees_breakdown,notes,public_token,slip_url,tenants(full_name,phone_number,line_user_id,custom_payment_method,move_in_date),rooms(room_number,price_month,buildings(name))"
+        "id,room_id,status,total_amount,paid_amount,payment_history,issue_date,due_date,start_date,end_date,rent_amount,water_bill,electricity_bill,common_fee,discount_amount,discount_breakdown,late_fee_amount,late_fee_per_day,late_fee_start_date,additional_fees_total,additional_fees_breakdown,notes,public_token,slip_url,tenants(full_name,phone_number,line_user_id,custom_payment_method,move_in_date),rooms(room_number,price_month,buildings(name))"
       )
       .eq("start_date", periodStart)
       .eq("end_date", periodEnd)
@@ -693,6 +707,105 @@ export default function InvoicesPage() {
     await loadInvoices();
   };
 
+  const uploadSlipFile = async (invoiceId: string, file: File) => {
+    const bucket = "payment_slips";
+    const filePath = `${invoiceId}/${Date.now()}-${file.name}`;
+    const { error: uploadError } = await supabase.storage
+      .from(bucket)
+      .upload(filePath, file, { upsert: true });
+    if (uploadError) throw new Error(uploadError.message);
+
+    const { data } = supabase.storage.from(bucket).getPublicUrl(filePath);
+    return data.publicUrl;
+  };
+
+  const submitPayment = async () => {
+    if (!activeInvoice) return;
+    const currentPaid = toNumber(form.paid_amount || activeInvoice.paid_amount);
+    const total = toNumber(form.total_amount || activeInvoice.total_amount);
+    const remaining = Math.max(0, total - currentPaid);
+    if (remaining <= 0) {
+      setError("This invoice is already fully paid.");
+      return;
+    }
+
+    const amountToPay =
+      paymentMode === "full" ? remaining : Math.min(remaining, toNumber(paymentAmountInput));
+    if (amountToPay <= 0) {
+      setError("Please enter a valid payment amount.");
+      return;
+    }
+
+    if (!paymentDate) {
+      setError("Please select payment date.");
+      return;
+    }
+
+    if (!paymentSlipFile) {
+      setError("Please upload payment slip.");
+      return;
+    }
+
+    setPaymentSubmitting(true);
+    try {
+      const publicUrl = await uploadSlipFile(activeInvoice.id, paymentSlipFile);
+      const nextPaidAmount = Math.min(total, currentPaid + amountToPay);
+      const paidAtIso = new Date(`${paymentDate}T12:00:00`).toISOString();
+      const nextStatus: keyof typeof statusVariant = nextPaidAmount >= total ? "paid" : "partial";
+      const existingHistory = Array.isArray(activeInvoice.payment_history)
+        ? activeInvoice.payment_history
+        : [];
+      const paymentEntry = {
+        amount: amountToPay,
+        mode: paymentMode,
+        paid_at: paidAtIso,
+        slip_url: publicUrl,
+        created_at: new Date().toISOString(),
+      };
+      const nextHistory = [...existingHistory, paymentEntry];
+
+      const { error: paymentError } = await supabase
+        .from("invoices")
+        .update({
+          paid_amount: nextPaidAmount,
+          payment_history: nextHistory,
+          slip_url: publicUrl,
+          slip_uploaded_at: paidAtIso,
+          status: nextStatus,
+        })
+        .eq("id", activeInvoice.id);
+
+      if (paymentError) {
+        setError(paymentError.message);
+        return;
+      }
+
+      setError(null);
+      setSlipPreview(publicUrl);
+      setShowPaymentForm(false);
+      setPaymentMode("full");
+      setPaymentAmountInput("");
+      setPaymentSlipFile(null);
+      setForm((prev) => ({ ...prev, paid_amount: nextPaidAmount, status: nextStatus }));
+      setActiveInvoice((prev) =>
+        prev
+          ? {
+              ...prev,
+              paid_amount: nextPaidAmount,
+              payment_history: nextHistory,
+              status: nextStatus,
+              slip_url: publicUrl,
+            }
+          : prev
+      );
+      await loadInvoices();
+    } catch (paymentError: any) {
+      setError(paymentError?.message ?? "Failed to process payment.");
+    } finally {
+      setPaymentSubmitting(false);
+    }
+  };
+
   const openInvoice = (invoice: InvoiceRecord) => {
     const feeItems = toFeeItems(invoice.additional_fees_breakdown ?? []);
     const discountItems = toFeeItems(invoice.discount_breakdown ?? []);
@@ -747,9 +860,15 @@ export default function InvoicesPage() {
       additional_fees_total:
         feeItems.length > 0 ? feeItemsTotal(feeItems) : invoice.additional_fees_total,
       total_amount: invoice.total_amount,
+      paid_amount: invoice.paid_amount,
       status: invoice.status,
       notes: invoice.notes || "",
     });
+    setShowPaymentForm(false);
+    setPaymentMode("full");
+    setPaymentAmountInput("");
+    setPaymentDate(todayLocal);
+    setPaymentSlipFile(null);
     setSlipPreview(invoice.slip_url);
     setDetailOpen(true);
   };
@@ -971,6 +1090,7 @@ export default function InvoicesPage() {
           label: item.detail,
         })),
         total_amount: toNumber(form.total_amount),
+        paid_amount: Math.min(toNumber(form.paid_amount), toNumber(form.total_amount)),
         status: form.status,
         notes: form.notes,
       })
@@ -1023,42 +1143,6 @@ export default function InvoicesPage() {
     }
   };
 
-  const handleUploadSlip = async (file?: File | null) => {
-    if (!activeInvoice || !file) return;
-
-    const bucket = "payment_slips";
-    const filePath = `${activeInvoice.id}/${Date.now()}-${file.name}`;
-
-    const { error: uploadError } = await supabase.storage
-      .from(bucket)
-      .upload(filePath, file, { upsert: true });
-
-    if (uploadError) {
-      setError(uploadError.message);
-      return;
-    }
-
-    const { data } = supabase.storage.from(bucket).getPublicUrl(filePath);
-    const publicUrl = data.publicUrl;
-
-    const { error: updateError } = await supabase
-      .from("invoices")
-      .update({
-        slip_url: publicUrl,
-        slip_uploaded_at: new Date().toISOString(),
-        status: "verifying",
-      })
-      .eq("id", activeInvoice.id);
-
-    if (updateError) {
-      setError(updateError.message);
-      return;
-    }
-
-    setSlipPreview(publicUrl);
-    await loadInvoices();
-  };
-
   const sendToLine = async (invoice: InvoiceRecord) => {
     if (!invoice.tenant_line_user_id) {
       setError(`Missing LINE user id for ${invoice.tenant_name}`);
@@ -1083,7 +1167,8 @@ export default function InvoicesPage() {
       return;
     }
 
-    await supabase.from("invoices").update({ status: "pending" }).eq("id", invoice.id);
+    const nextStatus = invoice.status === "draft" ? "pending" : invoice.status;
+    await supabase.from("invoices").update({ status: nextStatus }).eq("id", invoice.id);
     await loadInvoices();
   };
 
@@ -1642,12 +1727,19 @@ export default function InvoicesPage() {
                     <th className="px-4 py-3">Tenant</th>
                     <th className="px-4 py-3">Period</th>
                     <th className="px-4 py-3">Total</th>
+                    <th className="px-4 py-3">Paid</th>
+                    <th className="px-4 py-3">Balance</th>
                     <th className="px-4 py-3">Slip</th>
                     <th className="px-4 py-3">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {buildingInvoices.map((invoice) => (
+                  {buildingInvoices.map((invoice) => {
+                    const remaining = Math.max(
+                      0,
+                      toNumber(invoice.total_amount) - toNumber(invoice.paid_amount)
+                    );
+                    return (
                     <tr
                       key={invoice.id}
                       className={`border-t border-slate-100 ${statusRowClass(invoice.status)}`}
@@ -1683,6 +1775,12 @@ export default function InvoicesPage() {
                       </td>
                       <td className="px-4 py-3 font-semibold text-slate-900">
                         {formatMoney(invoice.total_amount)}
+                      </td>
+                      <td className="px-4 py-3 font-semibold text-emerald-700">
+                        {formatMoney(toNumber(invoice.paid_amount))}
+                      </td>
+                      <td className="px-4 py-3 font-semibold text-rose-700">
+                        {formatMoney(remaining)}
                       </td>
                       <td className="px-4 py-3">
                         <button
@@ -1739,7 +1837,8 @@ export default function InvoicesPage() {
                         </details>
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -1808,6 +1907,13 @@ export default function InvoicesPage() {
                 <div className="text-right">
                   <p className="text-xs text-slate-400">Total</p>
                   <p className="text-xl font-semibold text-blue-700">{formatMoney(form.total_amount)}</p>
+                  <p className="mt-1 text-xs text-slate-400">Paid: {formatMoney(toNumber(form.paid_amount))}</p>
+                  <p className="text-xs text-rose-600">
+                    Balance:{" "}
+                    {formatMoney(
+                      Math.max(0, toNumber(form.total_amount) - toNumber(form.paid_amount))
+                    )}
+                  </p>
                 </div>
               </div>
               <div className="mt-4 space-y-2">
@@ -1829,6 +1935,132 @@ export default function InvoicesPage() {
                     </option>
                   ))}
                 </select>
+              </div>
+              <div className="mt-4 rounded-xl border border-slate-200 bg-white p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    Payment Section
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setShowPaymentForm((prev) => !prev)}
+                    className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white"
+                  >
+                    {showPaymentForm ? "Close" : "Pay"}
+                  </button>
+                </div>
+                {showPaymentForm && (
+                  <div className="mt-3 space-y-3">
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+                      <p>Total: {formatMoney(toNumber(form.total_amount))}</p>
+                      <p>Paid: {formatMoney(toNumber(form.paid_amount))}</p>
+                      <p>
+                        Remaining:{" "}
+                        {formatMoney(Math.max(0, toNumber(form.total_amount) - toNumber(form.paid_amount)))}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 p-3">
+                      <p className="text-xs font-semibold text-slate-600">Previous payment history</p>
+                      {activeInvoice.payment_history.length === 0 ? (
+                        <p className="mt-2 text-xs text-slate-500">No payment history yet.</p>
+                      ) : (
+                        <div className="mt-2 space-y-2">
+                          {activeInvoice.payment_history.map((item: any, idx: number) => (
+                            <div
+                              key={`${item.paid_at ?? item.created_at ?? idx}-${idx}`}
+                              className="rounded-md border border-slate-200 bg-slate-50 p-2 text-xs text-slate-700"
+                            >
+                              <p className="font-semibold">{formatMoney(toNumber(item.amount))}</p>
+                              <p>
+                                {(item.mode ?? "-").toString().toUpperCase()} |{" "}
+                                {item.paid_at ? new Date(item.paid_at).toLocaleString("th-TH") : "-"}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div className="rounded-lg border border-slate-200 p-3">
+                      <p className="text-xs font-semibold text-slate-600">1) Choose payment type</p>
+                      <div className="mt-2 flex flex-wrap items-center gap-4 text-sm text-slate-700">
+                        <label className="inline-flex items-center gap-2">
+                          <input
+                            type="radio"
+                            name="payment-mode"
+                            checked={paymentMode === "full"}
+                            onChange={() => setPaymentMode("full")}
+                          />
+                          Pay in full
+                        </label>
+                        <label className="inline-flex items-center gap-2">
+                          <input
+                            type="radio"
+                            name="payment-mode"
+                            checked={paymentMode === "partial"}
+                            onChange={() => setPaymentMode("partial")}
+                          />
+                          Partial
+                        </label>
+                      </div>
+                      {paymentMode === "partial" && (
+                        <div className="mt-2">
+                          <p className="mb-1 text-xs text-slate-500">Partial amount</p>
+                          <input
+                            type="number"
+                            min={0}
+                            value={paymentAmountInput}
+                            onChange={(event) => setPaymentAmountInput(event.target.value)}
+                            className="w-full max-w-[220px] rounded-lg border border-slate-200 px-3 py-2 text-sm text-right"
+                            placeholder="Amount"
+                          />
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="rounded-lg border border-slate-200 p-3">
+                      <p className="text-xs font-semibold text-slate-600">2) Payment date & slip</p>
+                      <div className="mt-2 grid gap-2 md:grid-cols-2">
+                        <div>
+                          <p className="mb-1 text-xs text-slate-500">Payment date</p>
+                          <input
+                            type="date"
+                            value={paymentDate}
+                            onChange={(event) => setPaymentDate(event.target.value)}
+                            className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                          />
+                        </div>
+                        <div>
+                          <p className="mb-1 text-xs text-slate-500">Upload slip image</p>
+                          <label className="inline-flex w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-600">
+                            <UploadCloud size={14} />
+                            {paymentSlipFile ? paymentSlipFile.name : "Choose file"}
+                            <input
+                              type="file"
+                              accept="image/*"
+                              className="hidden"
+                              onChange={(event) => setPaymentSlipFile(event.target.files?.[0] ?? null)}
+                            />
+                          </label>
+                        </div>
+                      </div>
+                      {slipPreview && (
+                        <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-2">
+                          <p className="text-xs text-slate-500">Current slip</p>
+                          <img src={slipPreview} alt="Slip" className="mt-2 max-h-40 rounded-lg border" />
+                        </div>
+                      )}
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => void submitPayment()}
+                      disabled={paymentSubmitting}
+                      className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-70"
+                    >
+                      {paymentSubmitting ? "Processing..." : "Mark as Paid"}
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -2222,62 +2454,40 @@ export default function InvoicesPage() {
             </label>
             </fieldset>
 
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="space-y-3">
-                <p className="text-sm font-semibold text-slate-700">Payment Slip</p>
-                {slipPreview ? (
-                  <img src={slipPreview} alt="Slip" className="rounded-xl border" />
-                ) : (
-                  <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">
-                    No slip uploaded yet.
-                  </div>
-                )}
-                <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-600">
-                  <UploadCloud size={16} />
-                  Upload Slip
-                  <input
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={(event) => handleUploadSlip(event.target.files?.[0])}
-                  />
-                </label>
-              </div>
-              <div className="space-y-3">
-                <p className="text-sm font-semibold text-slate-700">Quick Actions</p>
-                <button
-                  onClick={() => void getInvoicePrintDetail(activeInvoice)}
-                  className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-4 py-2 text-sm text-slate-600"
-                >
-                  <Printer size={16} />
-                  Print Preview
-                </button>
-                <button
-                  onClick={() => void getInvoicePrintDetail(activeInvoice, "receipt")}
-                  disabled={!(activeInvoice.status === "verifying" || activeInvoice.status === "paid")}
-                  className="inline-flex items-center gap-2 rounded-xl border border-emerald-200 px-4 py-2 text-sm text-emerald-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
-                >
-                  <FileText size={16} />
-                  Print Receipt
-                </button>
-                <button
-                  onClick={() => sendToLine(activeInvoice)}
-                  className="inline-flex items-center gap-2 rounded-xl bg-green-600 px-4 py-2 text-sm text-white"
-                >
-                  <Send size={16} />
-                  Send to LINE
-                </button>
-                <button
-                  onClick={() => {
-                    setDeleteTargetIds([activeInvoice.id]);
-                    setConfirmDeleteOpen(true);
-                  }}
-                  className="inline-flex items-center gap-2 rounded-xl border border-red-200 px-4 py-2 text-sm text-red-600"
-                >
-                  <Trash2 size={16} />
-                  Delete Invoice
-                </button>
-              </div>
+            <div className="space-y-3">
+              <p className="text-sm font-semibold text-slate-700">Quick Actions</p>
+              <button
+                onClick={() => void getInvoicePrintDetail(activeInvoice)}
+                className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-4 py-2 text-sm text-slate-600"
+              >
+                <Printer size={16} />
+                Print Preview
+              </button>
+              <button
+                onClick={() => void getInvoicePrintDetail(activeInvoice, "receipt")}
+                disabled={!(activeInvoice.status === "verifying" || activeInvoice.status === "paid")}
+                className="inline-flex items-center gap-2 rounded-xl border border-emerald-200 px-4 py-2 text-sm text-emerald-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+              >
+                <FileText size={16} />
+                Print Receipt
+              </button>
+              <button
+                onClick={() => sendToLine(activeInvoice)}
+                className="inline-flex items-center gap-2 rounded-xl bg-green-600 px-4 py-2 text-sm text-white"
+              >
+                <Send size={16} />
+                Send to LINE
+              </button>
+              <button
+                onClick={() => {
+                  setDeleteTargetIds([activeInvoice.id]);
+                  setConfirmDeleteOpen(true);
+                }}
+                className="inline-flex items-center gap-2 rounded-xl border border-red-200 px-4 py-2 text-sm text-red-600"
+              >
+                <Trash2 size={16} />
+                Delete Invoice
+              </button>
             </div>
 
             <div className="flex items-center justify-end gap-3">

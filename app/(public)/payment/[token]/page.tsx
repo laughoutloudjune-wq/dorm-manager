@@ -16,7 +16,11 @@ type PaymentMethod = {
 
 type InvoiceData = {
   id: string;
+  room_id: string;
+  start_date: string;
   total_amount: number;
+  paid_amount: number;
+  payment_history: any[];
   rent_amount: number;
   water_bill: number;
   electricity_bill: number;
@@ -32,6 +36,18 @@ type InvoiceData = {
   room_price_month: number;
 };
 
+type MeterReadingRow = {
+  electricity_usage?: number | null;
+  water_usage?: number | null;
+  usage?: number | null;
+  previous_electricity?: number | null;
+  current_electricity?: number | null;
+  previous_water?: number | null;
+  current_water?: number | null;
+  previous_reading?: number | null;
+  current_reading?: number | null;
+};
+
 const formatBaht = (value: number) =>
   Number(value || 0).toLocaleString("th-TH", {
     minimumFractionDigits: 2,
@@ -44,7 +60,11 @@ function normalizeInvoice(row: any): InvoiceData {
 
   return {
     id: row.id,
+    room_id: row.room_id,
+    start_date: row.start_date,
     total_amount: Number(row.total_amount ?? 0),
+    paid_amount: Number(row.paid_amount ?? 0),
+    payment_history: Array.isArray(row.payment_history) ? row.payment_history : [],
     rent_amount: Number(row.rent_amount ?? 0),
     water_bill: Number(row.water_bill ?? 0),
     electricity_bill: Number(row.electricity_bill ?? 0),
@@ -62,6 +82,38 @@ function normalizeInvoice(row: any): InvoiceData {
     room_price_month: Number(room?.price_month ?? 0),
   };
 }
+
+const toNumber = (value: string | number | null | undefined) => {
+  const parsed = typeof value === "number" ? value : Number(value ?? 0);
+  return Number.isNaN(parsed) ? 0 : parsed;
+};
+
+const monthStartFromDate = (dateString: string) => {
+  const date = new Date(dateString);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-01`;
+};
+
+const resolveElectricityUsage = (reading: MeterReadingRow | null | undefined) => {
+  if (!reading) return null;
+  if (reading.electricity_usage != null) return toNumber(reading.electricity_usage);
+  if (reading.current_electricity != null && reading.previous_electricity != null) {
+    return toNumber(reading.current_electricity) - toNumber(reading.previous_electricity);
+  }
+  return null;
+};
+
+const resolveWaterUsage = (reading: MeterReadingRow | null | undefined) => {
+  if (!reading) return null;
+  if (reading.water_usage != null) return toNumber(reading.water_usage);
+  if (reading.usage != null) return toNumber(reading.usage);
+  if (reading.current_water != null && reading.previous_water != null) {
+    return toNumber(reading.current_water) - toNumber(reading.previous_water);
+  }
+  if (reading.current_reading != null && reading.previous_reading != null) {
+    return toNumber(reading.current_reading) - toNumber(reading.previous_reading);
+  }
+  return null;
+};
 
 const calculateProratePreview = (
   monthlyRent: number,
@@ -146,6 +198,10 @@ export default function PaymentTokenPage() {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [billingDay, setBillingDay] = useState<number | null>(null);
+  const [waterRate, setWaterRate] = useState(0);
+  const [electricityRate, setElectricityRate] = useState(0);
+  const [waterUnits, setWaterUnits] = useState<number | null>(null);
+  const [electricityUnits, setElectricityUnits] = useState<number | null>(null);
 
   useEffect(() => {
     const load = async () => {
@@ -160,15 +216,19 @@ export default function PaymentTokenPage() {
 
       const { data: settingsData } = await supabase
         .from("settings")
-        .select("billing_day")
+        .select("billing_day,water_rate,electricity_rate")
         .eq("id", 1)
         .maybeSingle();
       setBillingDay((settingsData as any)?.billing_day ?? null);
+      const nextWaterRate = toNumber((settingsData as any)?.water_rate);
+      const nextElectricityRate = toNumber((settingsData as any)?.electricity_rate);
+      setWaterRate(nextWaterRate);
+      setElectricityRate(nextElectricityRate);
 
       const { data, error: fetchError } = await supabase
         .from("invoices")
         .select(
-          "id,total_amount,rent_amount,water_bill,electricity_bill,common_fee,additional_fees_total,additional_fees_breakdown,status,slip_url,tenants(full_name,custom_payment_method,move_in_date),rooms(room_number,price_month)"
+          "id,room_id,start_date,total_amount,paid_amount,payment_history,rent_amount,water_bill,electricity_bill,common_fee,additional_fees_total,additional_fees_breakdown,status,slip_url,tenants(full_name,custom_payment_method,move_in_date),rooms(room_number,price_month)"
         )
         .eq("public_token", token)
         .single();
@@ -181,6 +241,30 @@ export default function PaymentTokenPage() {
       const normalized = normalizeInvoice(data);
       setInvoice(normalized);
       setPreview(normalized.slip_url ?? null);
+
+      const readingMonth = monthStartFromDate(normalized.start_date);
+      const { data: readingData } = await supabase
+        .from("meter_readings")
+        .select(
+          "electricity_usage,water_usage,usage,previous_electricity,current_electricity,previous_water,current_water,previous_reading,current_reading"
+        )
+        .eq("room_id", normalized.room_id)
+        .eq("reading_month", readingMonth)
+        .maybeSingle();
+
+      const reading = (readingData as MeterReadingRow | null) ?? null;
+      let nextWaterUnits = resolveWaterUsage(reading);
+      let nextElectricityUnits = resolveElectricityUsage(reading);
+
+      if (nextWaterUnits == null && nextWaterRate > 0) {
+        nextWaterUnits = toNumber(normalized.water_bill) / nextWaterRate;
+      }
+      if (nextElectricityUnits == null && nextElectricityRate > 0) {
+        nextElectricityUnits = toNumber(normalized.electricity_bill) / nextElectricityRate;
+      }
+
+      setWaterUnits(nextWaterUnits);
+      setElectricityUnits(nextElectricityUnits);
     };
 
     if (token) void load();
@@ -273,6 +357,10 @@ export default function PaymentTokenPage() {
             <div className="text-right">
               <p className="text-xs uppercase tracking-[0.2em] text-slate-400">TOTAL</p>
               <p className="text-3xl font-semibold text-green-600">฿{formatBaht(invoice.total_amount)}</p>
+              <p className="mt-1 text-xs text-slate-500">ชำระแล้ว: ฿{formatBaht(invoice.paid_amount)}</p>
+              <p className="text-xs text-rose-600">
+                คงเหลือ: ฿{formatBaht(Math.max(0, toNumber(invoice.total_amount) - toNumber(invoice.paid_amount)))}
+              </p>
             </div>
           </div>
         </header>
@@ -293,11 +381,25 @@ export default function PaymentTokenPage() {
             )}
             <div className="flex items-center justify-between">
               <span>ค่าน้ำ</span>
-              <span className="font-semibold text-slate-900">฿{formatBaht(invoice.water_bill)}</span>
+              <span className="text-right font-semibold text-slate-900">
+                <span className="block">฿{formatBaht(invoice.water_bill)}</span>
+                {waterUnits != null && waterRate > 0 && (
+                  <span className="block text-xs font-normal text-slate-500">
+                    {waterUnits.toFixed(2)} unit x ฿{formatBaht(waterRate)}
+                  </span>
+                )}
+              </span>
             </div>
             <div className="flex items-center justify-between">
               <span>ค่าไฟ</span>
-              <span className="font-semibold text-slate-900">฿{formatBaht(invoice.electricity_bill)}</span>
+              <span className="text-right font-semibold text-slate-900">
+                <span className="block">฿{formatBaht(invoice.electricity_bill)}</span>
+                {electricityUnits != null && electricityRate > 0 && (
+                  <span className="block text-xs font-normal text-slate-500">
+                    {electricityUnits.toFixed(2)} unit x ฿{formatBaht(electricityRate)}
+                  </span>
+                )}
+              </span>
             </div>
             <div className="flex items-center justify-between">
               <span>ค่าส่วนกลาง</span>
@@ -395,6 +497,38 @@ export default function PaymentTokenPage() {
               </div>
             )}
           </div>
+        </section>
+
+        <section className="rounded-3xl border border-white/60 bg-white/90 p-6 shadow-xl">
+          <h2 className="text-lg font-semibold text-slate-900">ประวัติการชำระเงิน</h2>
+          {invoice.payment_history.length === 0 ? (
+            <p className="mt-3 text-sm text-slate-500">ยังไม่มีประวัติการชำระเงิน</p>
+          ) : (
+            <div className="mt-3 space-y-2">
+              {invoice.payment_history.map((item: any, idx: number) => (
+                <div
+                  key={`${item.paid_at ?? item.created_at ?? idx}-${idx}`}
+                  className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700"
+                >
+                  <p className="font-semibold text-slate-900">฿{formatBaht(toNumber(item.amount))}</p>
+                  <p className="text-xs text-slate-500">
+                    {item.mode === "full" ? "Full" : "Partial"} |{" "}
+                    {item.paid_at ? new Date(item.paid_at).toLocaleString("th-TH") : "-"}
+                  </p>
+                  {item.slip_url && (
+                    <a
+                      href={item.slip_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="mt-1 inline-flex text-xs text-blue-600 underline"
+                    >
+                      ดูสลิป
+                    </a>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </section>
       </div>
     </div>

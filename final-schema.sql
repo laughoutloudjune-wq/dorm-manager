@@ -24,6 +24,7 @@ END$$;
 CREATE TYPE public.invoice_status AS ENUM (
   'draft',
   'pending',
+  'partial',
   'verifying',
   'paid',
   'overdue',
@@ -132,6 +133,8 @@ CREATE TABLE public.invoices (
   additional_fees_total NUMERIC DEFAULT 0,
   additional_fees_breakdown JSONB DEFAULT '[]'::jsonb,
   total_amount NUMERIC(10,2) NOT NULL,
+  paid_amount NUMERIC(10,2) NOT NULL DEFAULT 0.00,
+  payment_history JSONB NOT NULL DEFAULT '[]'::jsonb,
   status public.invoice_status NOT NULL DEFAULT 'draft',
   public_token UUID NOT NULL DEFAULT gen_random_uuid() UNIQUE,
   slip_url TEXT,

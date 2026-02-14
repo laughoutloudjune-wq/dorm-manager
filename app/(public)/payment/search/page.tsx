@@ -29,9 +29,9 @@ export default function SearchInvoicesPage() {
 
     const { data } = await supabase
       .from("invoices")
-      .select("id,public_token,issue_date,total_amount,status")
+      .select("id,public_token,issue_date,total_amount,paid_amount,status")
       .eq("room_id", room.id)
-      .in("status", ["pending", "overdue", "verifying"])
+      .in("status", ["pending", "partial", "overdue", "verifying"])
       .order("issue_date", { ascending: false });
 
     if (!data || data.length === 0) {
@@ -107,11 +107,17 @@ export default function SearchInvoicesPage() {
                           <p className="text-xs text-slate-500">
                             Total: ฿{invoice.total_amount.toFixed(2)}
                           </p>
+                          <p className="text-xs text-slate-500">
+                            Remaining: ฿
+                            {(Math.max(0, Number(invoice.total_amount || 0) - Number(invoice.paid_amount || 0))).toFixed(2)}
+                          </p>
                         </div>
                         <span
                           className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
                             invoice.status === "overdue"
                               ? "bg-red-100 text-red-700"
+                              : invoice.status === "partial"
+                              ? "bg-orange-100 text-orange-700"
                               : invoice.status === "verifying"
                               ? "bg-blue-100 text-blue-700"
                               : "bg-yellow-100 text-yellow-700"
