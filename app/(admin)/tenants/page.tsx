@@ -121,6 +121,23 @@ export default function TenantsPage() {
   const [confirmUnlinkOpen, setConfirmUnlinkOpen] = useState(false);
   const [confirmMoveOutOpen, setConfirmMoveOutOpen] = useState(false);
 
+  const callTenantsAction = async (action: string, payload: Record<string, unknown>) => {
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
+    if (!token) throw new Error("Session expired. Please log in again.");
+    const response = await fetch("/api/admin/tenants/actions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ action, ...payload }),
+    });
+    const dataJson = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(dataJson?.error ?? "Tenant action failed.");
+    return dataJson;
+  };
+
   const [form, setForm] = useState({
     full_name: "",
     address: "",
@@ -333,15 +350,14 @@ export default function TenantsPage() {
 
     if (activeTenant?.id) payload.id = activeTenant.id;
 
-    const { error } = await supabase.from("tenants").upsert(payload, { onConflict: "id" });
-    if (error) {
-      setStatus(error.message);
+    try {
+      await callTenantsAction("save_tenant", {
+        payload,
+        roomId: form.room_id || null,
+      });
+    } catch (error: any) {
+      setStatus(error?.message ?? "Failed to save tenant.");
       return;
-    }
-
-    if (form.room_id) {
-      await supabase.from("rooms").update({ status: "occupied" }).eq("id", form.room_id);
-      await logRoomEvent(form.room_id, "move_in");
     }
 
     await loadTenants();
@@ -362,9 +378,10 @@ export default function TenantsPage() {
 
   const deleteTenant = async () => {
     if (!activeTenant) return;
-    const { error } = await supabase.from("tenants").delete().eq("id", activeTenant.id);
-    if (error) {
-      setStatus(error.message);
+    try {
+      await callTenantsAction("delete_tenant", { tenantId: activeTenant.id });
+    } catch (error: any) {
+      setStatus(error?.message ?? "Failed to delete tenant.");
       return;
     }
     setStatus("Tenant deleted.");
@@ -374,9 +391,10 @@ export default function TenantsPage() {
 
   const unlinkTenantLine = async () => {
     if (!activeTenant) return;
-    const { error } = await supabase.from("tenants").update({ line_user_id: null }).eq("id", activeTenant.id);
-    if (error) {
-      setStatus(error.message);
+    try {
+      await callTenantsAction("unlink_line", { tenantId: activeTenant.id });
+    } catch (error: any) {
+      setStatus(error?.message ?? "Failed to unlink LINE.");
       return;
     }
     setActiveTenant({ ...activeTenant, line_user_id: null });
@@ -387,23 +405,21 @@ export default function TenantsPage() {
   const confirmMoveOut = async () => {
     if (!activeTenant) return;
     const today = new Date().toISOString().slice(0, 10);
-    const { error } = await supabase
-      .from("tenants")
-      .update({
+    try {
+      await callTenantsAction("move_out", {
+        tenantId: activeTenant.id,
+        roomId: activeTenant.room_id,
+        payload: {
         status: "inactive",
         move_out_date: today,
         final_electricity_reading: toNumber(form.final_electricity_reading),
         final_water_reading: toNumber(form.final_water_reading),
-      })
-      .eq("id", activeTenant.id);
-
-    if (error) {
-      setStatus(error.message);
+        },
+      });
+    } catch (error: any) {
+      setStatus(error?.message ?? "Failed to confirm move out.");
       return;
     }
-
-    await supabase.from("rooms").update({ status: "available" }).eq("id", activeTenant.room_id);
-    await logRoomEvent(activeTenant.room_id, "move_out");
     setStatus("Move out confirmed.");
     setIsModalOpen(false);
     await loadTenants();

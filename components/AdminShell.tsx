@@ -3,11 +3,13 @@
 import { ReactNode, useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import Sidebar from "./Sidebar";
-import { adminNav } from "./admin-nav";
+import { getAdminNav } from "./admin-nav";
 import { createClient } from "@/lib/supabase-client";
+import { t } from "@/lib/i18n";
+import { useUiLanguage } from "@/lib/use-ui-language";
 
-const toTitle = (pathname: string) => {
-  const match = adminNav.find((item) =>
+const toTitle = (pathname: string, labels: ReturnType<typeof getAdminNav>) => {
+  const match = labels.find((item) =>
     item.href === "/" ? pathname === "/" : pathname.startsWith(item.href)
   );
   return match?.label ?? "Dashboard";
@@ -17,9 +19,11 @@ export default function AdminShell({ children }: { children: ReactNode }) {
   const supabase = useMemo(() => createClient(), []);
   const pathname = usePathname();
   const router = useRouter();
+  const locale = useUiLanguage();
+  const navItems = useMemo(() => getAdminNav(locale), [locale]);
   const [checkingSession, setCheckingSession] = useState(true);
   const [loggingOut, setLoggingOut] = useState(false);
-  const pageTitle = useMemo(() => toTitle(pathname), [pathname]);
+  const pageTitle = useMemo(() => toTitle(pathname, navItems), [pathname, navItems]);
   const crumbs = [
     { label: "DormManager", href: "/" },
     { label: pageTitle, href: pathname },
@@ -63,9 +67,9 @@ export default function AdminShell({ children }: { children: ReactNode }) {
 
   if (checkingSession) {
     return (
-      <div className="min-h-screen bg-slate-50 px-6 py-10 text-sm text-slate-500">
-        Checking session...
-      </div>
+        <div className="min-h-screen bg-slate-50 px-6 py-10 text-sm text-slate-500">
+        {t(locale, "checking_session")}
+        </div>
     );
   }
 
@@ -92,13 +96,13 @@ export default function AdminShell({ children }: { children: ReactNode }) {
             </div>
             <div className="flex items-center gap-2 text-sm text-slate-500">
               <span className="inline-flex h-2.5 w-2.5 rounded-full bg-green-500" />
-              Supabase connected
+              {t(locale, "supabase_connected")}
               <button
                 onClick={() => void handleLogout()}
                 disabled={loggingOut}
                 className="ml-3 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60"
               >
-                {loggingOut ? "Signing out..." : "Logout"}
+                {loggingOut ? t(locale, "signing_out") : t(locale, "logout")}
               </button>
             </div>
           </div>

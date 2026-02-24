@@ -5,11 +5,15 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Building, Menu, X } from "lucide-react";
 import { useState } from "react";
-import { adminNav } from "./admin-nav";
+import { getAdminNav } from "./admin-nav";
+import { t } from "@/lib/i18n";
+import { useUiLanguage } from "@/lib/use-ui-language";
 
 export default function Sidebar() {
   const pathname = usePathname();
   const [isOpen, setIsOpen] = useState(false);
+  const locale = useUiLanguage();
+  const adminNav = getAdminNav(locale);
 
   return (
     <>
@@ -38,7 +42,7 @@ export default function Sidebar() {
             DormManager
           </Link>
           <p className="mt-3 text-xs uppercase tracking-[0.2em] text-slate-400">
-            Admin Console
+            {t(locale, "admin_console")}
           </p>
         </div>
         <nav className="flex-1 p-4 space-y-1">
@@ -64,8 +68,8 @@ export default function Sidebar() {
         </nav>
         <div className="p-4 text-xs text-slate-500">
           <div className="rounded-xl border border-slate-800 p-3">
-            <p className="font-semibold text-slate-300">Payment Status</p>
-            <p className="mt-1 text-slate-500">All gateways operational.</p>
+            <p className="font-semibold text-slate-300">{t(locale, "payment_status")}</p>
+            <p className="mt-1 text-slate-500">{t(locale, "all_gateways_operational")}</p>
           </div>
         </div>
       </aside>

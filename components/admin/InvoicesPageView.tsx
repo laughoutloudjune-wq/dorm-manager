@@ -6,6 +6,7 @@ import { Modal } from "@/components/ui/Modal";
 import { Input } from "@/components/ui/Input";
 import { ConfirmActionModal } from "@/components/ui/ConfirmActionModal";
 import { createClient } from "@/lib/supabase-client";
+import { usePermissions } from "@/lib/use-permissions";
 import { FileText, Pencil, Printer, Send, Trash2, UploadCloud } from "lucide-react";
 
 const statusVariant = {
@@ -343,6 +344,7 @@ function normalizeInvoice(row: any): InvoiceRecord {
 
 export default function InvoicesPage() {
   const supabase = useMemo(() => createClient(), []);
+  const { can } = usePermissions();
   const [invoices, setInvoices] = useState<InvoiceRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -600,6 +602,13 @@ export default function InvoicesPage() {
     void loadInvoices();
   }, [selectedMonth]);
 
+  const patchInvoiceInState = (invoiceId: string, patch: Partial<InvoiceRecord>) => {
+    setInvoices((prev) =>
+      prev.map((invoice) => (invoice.id === invoiceId ? { ...invoice, ...patch } : invoice))
+    );
+    setActiveInvoice((prev) => (prev && prev.id === invoiceId ? { ...prev, ...patch } : prev));
+  };
+
   useEffect(() => {
     const channel = supabase
       .channel("invoice-settings-realtime")
@@ -613,7 +622,29 @@ export default function InvoicesPage() {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "invoices" },
-        () => {
+        (payload: any) => {
+          if (payload?.eventType === "UPDATE" && payload?.new?.id) {
+            const invoiceId = String(payload.new.id);
+            patchInvoiceInState(invoiceId, {
+              status: (payload.new.status as keyof typeof statusVariant) ?? undefined,
+              paid_amount: toNumber(payload.new.paid_amount),
+              total_amount: toNumber(payload.new.total_amount),
+              slip_url: payload.new.slip_url ?? null,
+              payment_history: Array.isArray(payload.new.payment_history)
+                ? payload.new.payment_history
+                : undefined,
+            });
+            setForm((prev) => {
+              if (activeInvoice?.id !== invoiceId) return prev;
+              return {
+                ...prev,
+                status: (payload.new.status as keyof typeof statusVariant) ?? prev.status,
+                paid_amount: toNumber(payload.new.paid_amount ?? prev.paid_amount),
+                total_amount: toNumber(payload.new.total_amount ?? prev.total_amount),
+              };
+            });
+            return;
+          }
           void loadInvoices();
         }
       )
@@ -695,16 +726,58 @@ export default function InvoicesPage() {
     setSlipModalOpen(true);
   };
 
+  const callInvoiceAdminAction = async (action: string, payload: Record<string, unknown>) => {
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
+    if (!token) {
+      throw new Error("Session expired. Please log in again.");
+    }
+    const response = await fetch("/api/admin/invoices/actions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ action, ...payload }),
+    });
+    const dataJson = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(dataJson?.error ?? "Invoice action failed.");
+    }
+    return dataJson;
+  };
+
   const updateInvoiceStatus = async (
     invoiceId: string,
     status: keyof typeof statusVariant
   ) => {
-    const { error: statusError } = await supabase.from("invoices").update({ status }).eq("id", invoiceId);
-    if (statusError) {
-      setError(statusError.message);
+    if (!can("invoice.status.update")) {
+      setError("You do not have permission to change invoice status.");
       return;
     }
-    await loadInvoices();
+    const previousStatus =
+      invoices.find((invoice) => invoice.id === invoiceId)?.status ??
+      (activeInvoice?.id === invoiceId ? activeInvoice.status : undefined);
+
+    patchInvoiceInState(invoiceId, { status });
+    setForm((prev) => {
+      if (activeInvoice?.id !== invoiceId) return prev;
+      return { ...prev, status };
+    });
+
+    try {
+      await callInvoiceAdminAction("update_status", { invoiceId, status });
+    } catch (error: any) {
+      if (previousStatus) {
+        patchInvoiceInState(invoiceId, { status: previousStatus });
+        setForm((prev) => {
+          if (activeInvoice?.id !== invoiceId) return prev;
+          return { ...prev, status: previousStatus };
+        });
+      }
+      setError(error?.message ?? "Failed to update status.");
+      return;
+    }
   };
 
   const uploadSlipFile = async (invoiceId: string, file: File) => {
@@ -720,6 +793,10 @@ export default function InvoicesPage() {
   };
 
   const submitPayment = async () => {
+    if (!can("invoice.payment.record")) {
+      setError("You do not have permission to record payment.");
+      return;
+    }
     if (!activeInvoice) return;
     const currentPaid = toNumber(form.paid_amount || activeInvoice.paid_amount);
     const total = toNumber(form.total_amount || activeInvoice.total_amount);
@@ -764,21 +841,16 @@ export default function InvoicesPage() {
       };
       const nextHistory = [...existingHistory, paymentEntry];
 
-      const { error: paymentError } = await supabase
-        .from("invoices")
-        .update({
+      await callInvoiceAdminAction("record_payment", {
+        invoiceId: activeInvoice.id,
+        payload: {
           paid_amount: nextPaidAmount,
           payment_history: nextHistory,
           slip_url: publicUrl,
           slip_uploaded_at: paidAtIso,
           status: nextStatus,
-        })
-        .eq("id", activeInvoice.id);
-
-      if (paymentError) {
-        setError(paymentError.message);
-        return;
-      }
+        },
+      });
 
       setError(null);
       setSlipPreview(publicUrl);
@@ -1050,6 +1122,10 @@ export default function InvoicesPage() {
   };
 
   const saveInvoice = async () => {
+    if (!can("invoice.edit")) {
+      setError("You do not have permission to edit invoice details.");
+      return;
+    }
     if (!activeInvoice) return;
     if (!isInvoiceDetailEditable(activeInvoice.status)) {
       setError("Only draft invoices can be edited.");
@@ -1057,9 +1133,10 @@ export default function InvoicesPage() {
     }
     setSaving(true);
 
-    const { error: updateError } = await supabase
-      .from("invoices")
-      .update({
+    try {
+      await callInvoiceAdminAction("save_details", {
+        invoiceId: activeInvoice.id,
+        payload: {
         issue_date: form.issue_date,
         due_date: form.due_date,
         start_date: form.start_date,
@@ -1093,21 +1170,26 @@ export default function InvoicesPage() {
         paid_amount: Math.min(toNumber(form.paid_amount), toNumber(form.total_amount)),
         status: form.status,
         notes: form.notes,
-      })
-      .eq("id", activeInvoice.id);
+        },
+      });
+    } catch (error: any) {
+      setSaving(false);
+      setConfirmSaveOpen(false);
+      setError(error?.message ?? "Failed to save invoice.");
+      return;
+    }
 
     setSaving(false);
     setConfirmSaveOpen(false);
-
-    if (updateError) {
-      setError(updateError.message);
-    } else {
-      await loadInvoices();
-      setDetailOpen(false);
-    }
+    await loadInvoices();
+    setDetailOpen(false);
   };
 
   const deleteInvoices = async (invoiceIds: string[]) => {
+    if (!can("invoice.delete")) {
+      setError("You do not have permission to delete invoices.");
+      return;
+    }
     if (invoiceIds.length === 0) return;
 
     const targetInvoices = invoices.filter((invoice) => invoiceIds.includes(invoice.id));
@@ -1132,14 +1214,14 @@ export default function InvoicesPage() {
       return;
     }
 
-    const { error: deleteError } = await supabase.from("invoices").delete().in("id", invoiceIds);
-    if (deleteError) {
-      setError(deleteError.message);
-    } else {
+    try {
+      await callInvoiceAdminAction("delete_many", { invoiceIds });
       const idSet = new Set(invoiceIds);
       setInvoices((prev) => prev.filter((invoice) => !idSet.has(invoice.id)));
       setSelected((prev) => prev.filter((id) => !idSet.has(id)));
       if (activeInvoice && idSet.has(activeInvoice.id)) setDetailOpen(false);
+    } catch (error: any) {
+      setError(error?.message ?? "Failed to delete invoices.");
     }
   };
 
@@ -1168,8 +1250,7 @@ export default function InvoicesPage() {
     }
 
     const nextStatus = invoice.status === "draft" ? "pending" : invoice.status;
-    await supabase.from("invoices").update({ status: nextStatus }).eq("id", invoice.id);
-    await loadInvoices();
+    await updateInvoiceStatus(invoice.id, nextStatus);
   };
 
   const sendSelectedToLine = async () => {
@@ -1398,6 +1479,10 @@ export default function InvoicesPage() {
   };
 
   const generateInvoices = async () => {
+    if (!can("invoice.create")) {
+      setError("You do not have permission to generate invoices.");
+      return;
+    }
     setSaving(true);
     setError(null);
 
@@ -1675,6 +1760,11 @@ export default function InvoicesPage() {
         )
       : null;
   const canEditDetails = activeInvoice ? isInvoiceDetailEditable(activeInvoice.status) : false;
+  const canCreateInvoice = can("invoice.create");
+  const canEditInvoice = can("invoice.edit");
+  const canDeleteInvoice = can("invoice.delete");
+  const canUpdateInvoiceStatus = can("invoice.status.update");
+  const canRecordInvoicePayment = can("invoice.payment.record");
 
   return (
     <div className="space-y-6">
@@ -1690,6 +1780,7 @@ export default function InvoicesPage() {
         <div className="mt-3 flex justify-end">
           <button
             onClick={() => setConfirmGenerateOpen(true)}
+            disabled={!canCreateInvoice}
             className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-blue-600/20"
           >
             <FileText size={16} />
@@ -1757,6 +1848,7 @@ export default function InvoicesPage() {
                           onChange={(event) =>
                             void updateInvoiceStatus(invoice.id, event.target.value as keyof typeof statusVariant)
                           }
+                          disabled={!canUpdateInvoiceStatus}
                           className={`w-36 rounded-lg border px-2 py-1 text-xs font-semibold capitalize ${statusPillClass(
                             invoice.status
                           )}`}
@@ -1803,6 +1895,7 @@ export default function InvoicesPage() {
                           <div className="absolute right-0 z-20 mt-1 w-36 rounded-lg border border-slate-200 bg-white p-1 shadow-lg">
                             <button
                               onClick={() => openInvoice(invoice)}
+                              disabled={!(canEditInvoice || canRecordInvoicePayment || canUpdateInvoiceStatus)}
                               className="flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-xs font-medium text-sky-700 hover:bg-sky-50"
                             >
                               <Pencil size={12} />
@@ -1828,6 +1921,7 @@ export default function InvoicesPage() {
                                 setDeleteTargetIds([invoice.id]);
                                 setConfirmDeleteOpen(true);
                               }}
+                              disabled={!canDeleteInvoice}
                               className="flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-xs font-medium text-red-700 hover:bg-red-50"
                             >
                               <Trash2 size={12} />
@@ -1851,10 +1945,10 @@ export default function InvoicesPage() {
           <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
             <span className="font-semibold text-slate-700">{selected.length} invoices selected</span>
             <div className="flex flex-wrap items-center gap-2">
-              <button
-                onClick={sendSelectedToLine}
-                className="inline-flex items-center gap-2 rounded-xl bg-green-600 px-3 py-2 text-white"
-              >
+                <button
+                  onClick={sendSelectedToLine}
+                  className="inline-flex items-center gap-2 rounded-xl bg-green-600 px-3 py-2 text-white"
+                >
                 <Send size={14} />
                 Send to LINE
               </button>
@@ -1874,6 +1968,7 @@ export default function InvoicesPage() {
                   setDeleteTargetIds(selected);
                   setConfirmDeleteOpen(true);
                 }}
+                disabled={!canDeleteInvoice}
                 className="inline-flex items-center gap-2 rounded-xl border border-red-200 px-3 py-2 text-red-600"
               >
                 <Trash2 size={14} />
@@ -1925,6 +2020,7 @@ export default function InvoicesPage() {
                     setForm((prev) => ({ ...prev, status: nextStatus }));
                     void updateInvoiceStatus(activeInvoice.id, nextStatus);
                   }}
+                  disabled={!canUpdateInvoiceStatus}
                   className={`w-full rounded-xl border px-4 py-3 text-base font-semibold capitalize ${statusPillClass(
                     form.status
                   )}`}
@@ -1944,6 +2040,7 @@ export default function InvoicesPage() {
                   <button
                     type="button"
                     onClick={() => setShowPaymentForm((prev) => !prev)}
+                    disabled={!canRecordInvoicePayment}
                     className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white"
                   >
                     {showPaymentForm ? "Close" : "Pay"}
@@ -2054,7 +2151,7 @@ export default function InvoicesPage() {
                     <button
                       type="button"
                       onClick={() => void submitPayment()}
-                      disabled={paymentSubmitting}
+                      disabled={paymentSubmitting || !canRecordInvoicePayment}
                       className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-70"
                     >
                       {paymentSubmitting ? "Processing..." : "Mark as Paid"}
@@ -2064,7 +2161,10 @@ export default function InvoicesPage() {
               </div>
             </div>
 
-            <fieldset disabled={!canEditDetails} className={!canEditDetails ? "opacity-70" : ""}>
+            <fieldset
+              disabled={!(canEditDetails && canEditInvoice)}
+              className={!(canEditDetails && canEditInvoice) ? "opacity-70" : ""}
+            >
             <div className="space-y-3 rounded-xl border border-slate-200 p-4">
               <p className="text-sm font-semibold text-slate-700">Invoice Core Details</p>
               <div className="overflow-x-auto">
@@ -2483,6 +2583,7 @@ export default function InvoicesPage() {
                   setDeleteTargetIds([activeInvoice.id]);
                   setConfirmDeleteOpen(true);
                 }}
+                disabled={!canDeleteInvoice}
                 className="inline-flex items-center gap-2 rounded-xl border border-red-200 px-4 py-2 text-sm text-red-600"
               >
                 <Trash2 size={16} />
@@ -2499,7 +2600,7 @@ export default function InvoicesPage() {
               </button>
               <button
                 onClick={() => setConfirmSaveOpen(true)}
-                disabled={!canEditDetails}
+                disabled={!(canEditDetails && canEditInvoice)}
                 className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
               >
                 Save Changes

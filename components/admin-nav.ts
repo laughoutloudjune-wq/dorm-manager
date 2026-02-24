@@ -6,12 +6,21 @@ import {
   SlidersHorizontal,
   Users,
 } from "lucide-react";
+import { AppLocale, t } from "@/lib/i18n";
 
-export const adminNav = [
-  { href: "/", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/rooms", label: "Rooms", icon: Building },
-  { href: "/tenants", label: "Tenants", icon: Users },
-  { href: "/meters", label: "Meters", icon: SlidersHorizontal },
-  { href: "/invoices", label: "Invoices", icon: FileText },
-  { href: "/settings", label: "Settings", icon: Settings },
-];
+const adminNavKeys = [
+  { href: "/", labelKey: "nav_dashboard", icon: LayoutDashboard },
+  { href: "/rooms", labelKey: "nav_rooms", icon: Building },
+  { href: "/tenants", labelKey: "nav_tenants", icon: Users },
+  { href: "/meters", labelKey: "nav_meters", icon: SlidersHorizontal },
+  { href: "/invoices", labelKey: "nav_invoices", icon: FileText },
+  { href: "/settings", labelKey: "nav_settings", icon: Settings },
+] as const;
+
+export const getAdminNav = (locale: AppLocale) =>
+  adminNavKeys.map((item) => ({
+    ...item,
+    label: t(locale, item.labelKey),
+  }));
+
+export const adminNav = getAdminNav("en");

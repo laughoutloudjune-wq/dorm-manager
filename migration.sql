@@ -131,6 +131,8 @@ CREATE INDEX IF NOT EXISTS idx_meter_readings_room_month ON public.meter_reading
 ALTER TABLE public.settings
 ADD COLUMN IF NOT EXISTS water_min_units NUMERIC DEFAULT 0,
 ADD COLUMN IF NOT EXISTS water_min_price NUMERIC DEFAULT 0,
+ADD COLUMN IF NOT EXISTS ui_language TEXT DEFAULT 'th',
+ADD COLUMN IF NOT EXISTS role_permissions JSONB DEFAULT '{}'::jsonb,
 ADD COLUMN IF NOT EXISTS billing_day INT DEFAULT 1,
 ADD COLUMN IF NOT EXISTS due_day INT DEFAULT 5,
 ADD COLUMN IF NOT EXISTS late_fee_start_day INT DEFAULT 6,

@@ -64,6 +64,23 @@ export default function MetersPage() {
   const [electricityMax, setElectricityMax] = useState(9999);
   const [waterMax, setWaterMax] = useState(9999);
 
+  const callMetersAction = async (action: string, payload: Record<string, unknown>) => {
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
+    if (!token) throw new Error("Session expired. Please log in again.");
+    const response = await fetch("/api/admin/meters/actions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ action, ...payload }),
+    });
+    const dataJson = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(dataJson?.error ?? "Meter action failed.");
+    return dataJson;
+  };
+
   const calcUsage = (previous: number, current: number, maxValue: number, rollover: boolean) => {
     if (!rollover) return current - previous;
     if (current >= previous) return current - previous;
@@ -282,17 +299,14 @@ export default function MetersPage() {
         usage: row.water_usage,
       }));
 
-    const { error } = await supabase.from("meter_readings").upsert(payload, {
-      onConflict: "room_id,reading_month",
-    });
-
     setSaving(false);
     setConfirmOpen(false);
-    if (error) {
-      setStatus(error.message);
-    } else {
+    try {
+      await callMetersAction("save_all", { payload });
       setStatus("Meter readings saved.");
       await fetchData();
+    } catch (error: any) {
+      setStatus(error?.message ?? "Failed to save meter readings.");
     }
   };
 

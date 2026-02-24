@@ -95,6 +95,8 @@ CREATE TABLE public.settings (
   dorm_address TEXT,
   dorm_phone TEXT,
   default_payment_method JSONB,
+  ui_language TEXT DEFAULT 'th',
+  role_permissions JSONB DEFAULT '{}'::jsonb,
   water_rate NUMERIC(10,2),
   electricity_rate NUMERIC(10,2),
   common_fee NUMERIC(10,2),

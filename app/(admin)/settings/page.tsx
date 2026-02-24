@@ -5,7 +5,18 @@ import { Input } from "@/components/ui/Input";
 import { Badge } from "@/components/ui/Badge";
 import { Modal } from "@/components/ui/Modal";
 import { createClient } from "@/lib/supabase-client";
-import { Plus, Save, Trash2, Upload } from "lucide-react";
+import { AppLocale, t } from "@/lib/i18n";
+import { usePermissions } from "@/lib/use-permissions";
+import {
+  PERMISSION_KEYS,
+  PERMISSION_LABELS,
+  ROLE_LABELS,
+  RoleKey,
+  RolePermissionMap,
+  defaultRolePermissions,
+  normalizeRolePermissions,
+} from "@/lib/permissions";
+import { Lock, Plus, Save, Trash2, Upload } from "lucide-react";
 
 type SettingsRow = {
   id: number;
@@ -21,6 +32,8 @@ type SettingsRow = {
   due_day: number | null;
   late_fee_start_day: number | null;
   late_fee_per_day: number | null;
+  ui_language: AppLocale | null;
+  role_permissions: any;
   additional_fees: AdditionalFee[] | null;
   additional_discounts: AdditionalFee[] | null;
 };
@@ -50,12 +63,21 @@ type Room = {
   status: string;
 };
 
-const tabs = ["General", "Utilities", "Invoice Config", "Payment Methods", "Rooms"] as const;
+const tabs = ["General", "Utilities", "Invoice Config", "Payment Methods", "Rooms", "Permissions", "User Roles"] as const;
 
 type PendingAction = {
   title: string;
   message: string;
   action: () => Promise<void>;
+};
+
+type UserRoleRow = {
+  id: string;
+  email: string | null;
+  phone: string | null;
+  created_at: string | null;
+  last_sign_in_at: string | null;
+  role: RoleKey;
 };
 
 const toNumber = (value: string | number) => {
@@ -83,6 +105,7 @@ const newPaymentMethod = (): PaymentMethod => ({
 
 export default function SettingsPage() {
   const supabase = useMemo(() => createClient(), []);
+  const { can } = usePermissions();
   const [activeTab, setActiveTab] = useState<(typeof tabs)[number]>("General");
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
@@ -100,6 +123,8 @@ export default function SettingsPage() {
     due_day: 5,
     late_fee_start_day: 6,
     late_fee_per_day: 0,
+    ui_language: "th",
+    role_permissions: {},
     additional_fees: [],
     additional_discounts: [],
   });
@@ -111,6 +136,9 @@ export default function SettingsPage() {
   const [buildings, setBuildings] = useState<Building[]>([]);
   const [selectedBuilding, setSelectedBuilding] = useState<string>("");
   const [rooms, setRooms] = useState<Room[]>([]);
+  const [rolePermissions, setRolePermissions] = useState<RolePermissionMap>(defaultRolePermissions());
+  const [userRoles, setUserRoles] = useState<UserRoleRow[]>([]);
+  const [loadingUserRoles, setLoadingUserRoles] = useState(false);
   const [buildingName, setBuildingName] = useState("");
   const [buildingAddress, setBuildingAddress] = useState("");
   const [roomNumber, setRoomNumber] = useState("");
@@ -125,6 +153,28 @@ export default function SettingsPage() {
     setPendingAction(pending);
     setConfirmOpen(true);
   };
+
+  const tabPermission = (tab: (typeof tabs)[number]) => {
+    if (tab === "General") return "settings.general" as const;
+    if (tab === "Utilities") return "settings.utilities" as const;
+    if (tab === "Invoice Config") return "settings.invoice_config" as const;
+    if (tab === "Payment Methods") return "settings.payment_methods" as const;
+    if (tab === "Rooms") return "settings.rooms" as const;
+    return "settings.permissions" as const;
+  };
+
+  const tabLocked = (tab: (typeof tabs)[number]) => !can(tabPermission(tab));
+
+  const requireTabPermission = (tab: (typeof tabs)[number], actionLabel: string) => {
+    if (!tabLocked(tab)) return true;
+    const message = `No permission to ${actionLabel}.`;
+    setStatusMessage(message);
+    if (typeof window !== "undefined") window.alert(message);
+    return false;
+  };
+
+  const panelClass = (base: string, tab: (typeof tabs)[number]) =>
+    `${base} ${tabLocked(tab) ? "relative opacity-60 pointer-events-none cursor-not-allowed" : ""}`;
 
   const executePending = async () => {
     if (!pendingAction) return;
@@ -154,6 +204,7 @@ export default function SettingsPage() {
         .single();
       if (inserted) {
         setSettings(inserted as SettingsRow);
+        setRolePermissions(normalizeRolePermissions((inserted as any).role_permissions));
         setFees(Array.isArray(inserted.additional_fees) ? inserted.additional_fees : []);
         setDiscounts(
           Array.isArray((inserted as any).additional_discounts) ? (inserted as any).additional_discounts : []
@@ -163,6 +214,7 @@ export default function SettingsPage() {
     }
 
     setSettings(data as SettingsRow);
+    setRolePermissions(normalizeRolePermissions((data as any).role_permissions));
     setFees(Array.isArray(data.additional_fees) ? data.additional_fees : []);
     setDiscounts(Array.isArray((data as any).additional_discounts) ? (data as any).additional_discounts : []);
   };
@@ -200,6 +252,48 @@ export default function SettingsPage() {
     }
   };
 
+  const getAuthHeaders = async () => {
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
+    if (!token) throw new Error("Session expired. Please log in again.");
+    return {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    } as const;
+  };
+
+  const callSettingsAction = async (action: string, payload: Record<string, unknown>) => {
+    const response = await fetch("/api/admin/settings/actions", {
+      method: "POST",
+      headers: await getAuthHeaders(),
+      body: JSON.stringify({ action, ...payload }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data?.error ?? "Settings action failed.");
+    return data;
+  };
+
+  const loadUserRoles = async () => {
+    setLoadingUserRoles(true);
+    try {
+      const response = await fetch("/api/admin/user-roles", {
+        headers: await getAuthHeaders(),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setStatusMessage(data?.error ?? "Failed to load user roles.");
+        setUserRoles([]);
+        return;
+      }
+      setUserRoles((data?.users ?? []) as UserRoleRow[]);
+    } catch (error: any) {
+      setStatusMessage(error?.message ?? "Failed to load user roles.");
+      setUserRoles([]);
+    } finally {
+      setLoadingUserRoles(false);
+    }
+  };
+
   const loadRooms = async (buildingId: string) => {
     if (!buildingId) {
       setRooms([]);
@@ -227,6 +321,12 @@ export default function SettingsPage() {
   }, []);
 
   useEffect(() => {
+    if (activeTab === "User Roles" && !tabLocked("User Roles")) {
+      void loadUserRoles();
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
     if (selectedBuilding) {
       loadRooms(selectedBuilding);
     }
@@ -237,10 +337,15 @@ export default function SettingsPage() {
       dorm_name: settings.dorm_name,
       dorm_address: settings.dorm_address,
       dorm_phone: settings.dorm_phone,
+      ui_language: settings.ui_language ?? "th",
       updated_at: new Date().toISOString(),
     };
-    const { error } = await supabase.from("settings").update(payload).eq("id", 1);
-    setStatusMessage(error ? error.message : "General settings saved.");
+    try {
+      await callSettingsAction("save_general", { payload });
+      setStatusMessage("General settings saved.");
+    } catch (error: any) {
+      setStatusMessage(error?.message ?? "General settings save failed.");
+    }
   };
 
   const saveUtilities = async () => {
@@ -252,8 +357,12 @@ export default function SettingsPage() {
       water_min_price: settings.water_min_price,
       updated_at: new Date().toISOString(),
     };
-    const { error } = await supabase.from("settings").update(payload).eq("id", 1);
-    setStatusMessage(error ? error.message : "Utility settings saved.");
+    try {
+      await callSettingsAction("save_utilities", { payload });
+      setStatusMessage("Utility settings saved.");
+    } catch (error: any) {
+      setStatusMessage(error?.message ?? "Utility settings save failed.");
+    }
   };
 
   const saveInvoiceConfig = async () => {
@@ -275,8 +384,12 @@ export default function SettingsPage() {
       updated_at: new Date().toISOString(),
     };
 
-    const { error } = await supabase.from("settings").update(payload).eq("id", 1);
-    setStatusMessage(error ? error.message : "Invoice configuration saved.");
+    try {
+      await callSettingsAction("save_invoice_config", { payload });
+      setStatusMessage("Invoice configuration saved.");
+    } catch (error: any) {
+      setStatusMessage(error?.message ?? "Invoice configuration save failed.");
+    }
   };
 
   const savePaymentMethods = async () => {
@@ -289,49 +402,13 @@ export default function SettingsPage() {
       qr_url: method.qr_url,
     }));
 
-    const existingIdSet = new Set(initialMethodIds);
-    const existingRows = cleaned.filter((row) => row.id && existingIdSet.has(row.id));
-    const newRows = cleaned
-      .filter((row) => !row.id || (row.id && !existingIdSet.has(row.id)))
-      .map(({ id, ...rest }) => rest);
-
-    for (const row of existingRows) {
-      const { id, ...payload } = row;
-      const { error: updateError } = await supabase
-        .from("payment_methods")
-        .update(payload)
-        .eq("id", id as string);
-      if (updateError) {
-        setStatusMessage(updateError.message);
-        return;
-      }
+    try {
+      await callSettingsAction("save_payment_methods", { methods: cleaned, initialMethodIds });
+      setStatusMessage("Payment methods saved.");
+      await loadPaymentMethods();
+    } catch (error: any) {
+      setStatusMessage(error?.message ?? "Payment methods save failed.");
     }
-
-    if (newRows.length > 0) {
-      const { error: insertError } = await supabase.from("payment_methods").insert(newRows);
-      if (insertError) {
-        setStatusMessage(insertError.message);
-        return;
-      }
-    }
-
-    const currentIds = existingRows.map((row) => row.id).filter(Boolean) as string[];
-    const removedIds = initialMethodIds.filter((id) => !currentIds.includes(id));
-
-    if (removedIds.length > 0) {
-      const { error: deleteError } = await supabase
-        .from("payment_methods")
-        .delete()
-        .in("id", removedIds);
-
-      if (deleteError) {
-        setStatusMessage(deleteError.message);
-        return;
-      }
-    }
-
-    setStatusMessage("Payment methods saved.");
-    await loadPaymentMethods();
   };
 
   const uploadQr = async (index: number, file?: File | null) => {
@@ -370,13 +447,14 @@ export default function SettingsPage() {
       setStatusMessage("Building name is required.");
       return;
     }
-    const { data, error } = await supabase
-      .from("buildings")
-      .insert({ name: buildingName.trim(), address: buildingAddress.trim() || null })
-      .select("id,name")
-      .single();
-    if (error) {
-      setStatusMessage(error.message);
+    let data: any = null;
+    try {
+      const result = await callSettingsAction("add_building", {
+        payload: { name: buildingName.trim(), address: buildingAddress.trim() || null },
+      });
+      data = result?.data;
+    } catch (error: any) {
+      setStatusMessage(error?.message ?? "Failed to add building.");
       return;
     }
     setBuildingName("");
@@ -395,15 +473,18 @@ export default function SettingsPage() {
       setStatusMessage("Room number is required.");
       return;
     }
-    const { error } = await supabase.from("rooms").insert({
-      building_id: selectedBuilding,
-      room_number: roomNumber.trim(),
-      room_type: roomType.trim() || null,
-      price_month: roomPrice > 0 ? roomPrice : null,
-      status: "available",
-    });
-    if (error) {
-      setStatusMessage(error.message);
+    try {
+      await callSettingsAction("add_room", {
+        payload: {
+          building_id: selectedBuilding,
+          room_number: roomNumber.trim(),
+          room_type: roomType.trim() || null,
+          price_month: roomPrice > 0 ? roomPrice : null,
+          status: "available",
+        },
+      });
+    } catch (error: any) {
+      setStatusMessage(error?.message ?? "Failed to add room.");
       return;
     }
     setRoomNumber("");
@@ -414,32 +495,76 @@ export default function SettingsPage() {
   };
 
   const saveRooms = async () => {
-    for (const room of rooms) {
-      const { error } = await supabase
-        .from("rooms")
-        .update({
+    try {
+      await callSettingsAction("save_rooms", {
+        rooms: rooms.map((room) => ({
+          id: room.id,
           room_number: room.room_number,
           room_type: room.room_type,
           price_month: room.price_month,
           status: room.status,
-        })
-        .eq("id", room.id);
-      if (error) {
-        setStatusMessage(error.message);
-        return;
-      }
+        })),
+      });
+      setStatusMessage("Room changes saved.");
+    } catch (error: any) {
+      setStatusMessage(error?.message ?? "Failed to save room changes.");
     }
-    setStatusMessage("Room changes saved.");
   };
 
   const deleteRoom = async (roomId: string) => {
-    const { error } = await supabase.from("rooms").delete().eq("id", roomId);
-    if (error) {
-      setStatusMessage(error.message);
+    try {
+      await callSettingsAction("delete_room", { roomId });
+    } catch (error: any) {
+      setStatusMessage(error?.message ?? "Failed to delete room.");
       return;
     }
     setRooms((prev) => prev.filter((room) => room.id !== roomId));
     setStatusMessage("Room deleted.");
+  };
+
+  const savePermissions = async () => {
+    try {
+      await callSettingsAction("save_permissions", { role_permissions: rolePermissions });
+      setStatusMessage("Permissions saved.");
+    } catch (error: any) {
+      setStatusMessage(error?.message ?? "Failed to save permissions.");
+    }
+  };
+
+  const togglePermission = (role: RoleKey, permission: (typeof PERMISSION_KEYS)[number]) => {
+    setRolePermissions((prev) => ({
+      ...prev,
+      [role]: {
+        ...prev[role],
+        [permission]: !prev[role][permission],
+      },
+    }));
+  };
+
+  const saveUserRole = async (userId: string, role: RoleKey) => {
+    const response = await fetch("/api/admin/user-roles", {
+      method: "POST",
+      headers: await getAuthHeaders(),
+      body: JSON.stringify({ userId, role }),
+    });
+    const data = await response.json().catch(() => ({}));
+    setStatusMessage(response.ok ? "User role saved." : data?.error ?? "Failed to save user role.");
+    if (response.ok) {
+      setUserRoles((prev) =>
+        prev.map((row) => (row.id === userId ? { ...row, role } : row))
+      );
+    }
+  };
+
+  const locale = (settings.ui_language ?? "th") as AppLocale;
+  const tabLabel = (tab: (typeof tabs)[number]) => {
+    if (tab === "General") return t(locale, "settings_general");
+    if (tab === "Utilities") return t(locale, "settings_utilities");
+    if (tab === "Invoice Config") return t(locale, "settings_invoice_config");
+    if (tab === "Payment Methods") return t(locale, "settings_payment_methods");
+    if (tab === "Rooms") return t(locale, "settings_rooms");
+    if (tab === "User Roles") return "User Roles";
+    return t(locale, "settings_permissions");
   };
 
   return (
@@ -448,22 +573,37 @@ export default function SettingsPage() {
         {tabs.map((tab) => (
           <button
             key={tab}
-            onClick={() => setActiveTab(tab)}
+            onClick={() => {
+              if (tabLocked(tab)) {
+                setStatusMessage("This section is locked for your role.");
+                return;
+              }
+              setActiveTab(tab);
+            }}
             className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
               activeTab === tab
                 ? "bg-blue-600 text-white"
                 : "bg-white text-slate-600 border border-slate-200 hover:border-blue-200"
-            }`}
+            } ${tabLocked(tab) ? "cursor-not-allowed border-red-200 text-red-600 hover:border-red-300" : ""}`}
+            title={tabLocked(tab) ? "Locked: no permission" : undefined}
           >
-            {tab}
+            <span className="inline-flex items-center gap-2">
+              {tabLabel(tab)}
+              {tabLocked(tab) && <Lock size={12} />}
+            </span>
           </button>
         ))}
       </div>
 
       {statusMessage && <Badge variant="info">{statusMessage}</Badge>}
+      {tabLocked(activeTab) && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          This section is locked for your role.
+        </div>
+      )}
 
       {activeTab === "General" && (
-        <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className={panelClass("space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm", "General")}>
           <div className="grid gap-4 md:grid-cols-2">
             <Input
               label="Dorm Name"
@@ -475,6 +615,19 @@ export default function SettingsPage() {
               value={settings.dorm_phone ?? ""}
               onChange={(event) => setSettings((prev) => ({ ...prev, dorm_phone: event.target.value }))}
             />
+            <label className="text-sm text-slate-600">
+              {t(locale, "ui_language")}
+              <select
+                value={settings.ui_language ?? "th"}
+                onChange={(event) =>
+                  setSettings((prev) => ({ ...prev, ui_language: event.target.value as AppLocale }))
+                }
+                className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm"
+              >
+                <option value="th">{t(locale, "thai")}</option>
+                <option value="en">{t(locale, "english")}</option>
+              </select>
+            </label>
             <label className="md:col-span-2 text-sm text-slate-600">
               Address
               <textarea
@@ -503,7 +656,7 @@ export default function SettingsPage() {
       )}
 
       {activeTab === "Utilities" && (
-        <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className={panelClass("space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm", "Utilities")}>
           <div className="grid gap-4 md:grid-cols-3">
             <Input
               label="Electricity Unit Price"
@@ -563,7 +716,7 @@ export default function SettingsPage() {
       )}
 
       {activeTab === "Invoice Config" && (
-        <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className={panelClass("space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm", "Invoice Config")}>
           <div className="grid gap-4 md:grid-cols-3">
             <Input
               label="Common Fee"
@@ -790,7 +943,7 @@ export default function SettingsPage() {
       )}
 
       {activeTab === "Payment Methods" && (
-        <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className={panelClass("space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm", "Payment Methods")}>
           <div className="flex items-center justify-between">
             <p className="text-sm font-semibold text-slate-800">Payment Methods</p>
             <button
@@ -910,7 +1063,7 @@ export default function SettingsPage() {
       )}
 
       {activeTab === "Rooms" && (
-        <div className="space-y-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className={panelClass("space-y-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm", "Rooms")}>
           <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
             <p className="text-sm font-semibold text-slate-800">Add Building</p>
             <div className="mt-3 grid gap-3 md:grid-cols-3">
@@ -1104,6 +1257,150 @@ export default function SettingsPage() {
             <Save size={16} />
             Save Room Changes
           </button>
+        </div>
+      )}
+
+      {activeTab === "Permissions" && (
+        <div className={panelClass("space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm", "Permissions")}>
+          <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+            Configure role permissions here. Recommended next step is a `user_roles` table (map each
+            auth user to `owner/admin/staff/viewer`) and enforce checks in each page/action.
+          </div>
+
+          <div className="overflow-x-auto rounded-2xl border border-slate-200">
+            <table className="w-full min-w-[980px] text-sm">
+              <thead className="bg-slate-100 text-slate-600">
+                <tr>
+                  <th className="px-4 py-3 text-left">Permission</th>
+                  {(["owner", "admin", "staff", "viewer"] as RoleKey[]).map((role) => (
+                    <th key={role} className="px-4 py-3 text-center">
+                      {ROLE_LABELS[role]}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {PERMISSION_KEYS.map((permission) => (
+                  <tr key={permission} className="border-t border-slate-100">
+                    <td className="px-4 py-3">
+                      <div className="font-medium text-slate-800">{PERMISSION_LABELS[permission]}</div>
+                      <div className="text-xs text-slate-500">{permission}</div>
+                    </td>
+                    {(["owner", "admin", "staff", "viewer"] as RoleKey[]).map((role) => (
+                      <td key={`${role}-${permission}`} className="px-4 py-3 text-center">
+                        <input
+                          type="checkbox"
+                          checked={!!rolePermissions[role]?.[permission]}
+                          onChange={() => togglePermission(role, permission)}
+                        />
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <button
+            onClick={() =>
+              openConfirm({
+                title: "Save Permissions",
+                message: "Are you sure you want to save role permissions?",
+                action: savePermissions,
+              })
+            }
+            className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
+          >
+            <Save size={16} />
+            Save Permissions
+          </button>
+        </div>
+      )}
+
+      {activeTab === "User Roles" && (
+        <div className={panelClass("space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm", "User Roles")}>
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+            Assign each login account to a role. Permissions are controlled by the matrix in the
+            `Permissions` tab.
+          </div>
+
+          {loadingUserRoles ? (
+            <div className="rounded-xl border border-slate-200 p-4 text-sm text-slate-500">
+              Loading users...
+            </div>
+          ) : (
+            <div className="overflow-x-auto rounded-2xl border border-slate-200">
+              <table className="w-full min-w-[860px] text-sm">
+                <thead className="bg-slate-100 text-slate-600">
+                  <tr>
+                    <th className="px-4 py-3 text-left">Email</th>
+                    <th className="px-4 py-3 text-left">User ID</th>
+                    <th className="px-4 py-3 text-left">Last Sign In</th>
+                    <th className="px-4 py-3 text-left">Role</th>
+                    <th className="px-4 py-3 text-left">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {userRoles.map((user) => (
+                    <tr key={user.id} className="border-t border-slate-100">
+                      <td className="px-4 py-3">
+                        <div className="font-medium text-slate-800">{user.email ?? "-"}</div>
+                        {user.phone && <div className="text-xs text-slate-500">{user.phone}</div>}
+                      </td>
+                      <td className="px-4 py-3 font-mono text-xs text-slate-600">{user.id}</td>
+                      <td className="px-4 py-3 text-slate-600">
+                        {user.last_sign_in_at
+                          ? new Date(user.last_sign_in_at).toLocaleString()
+                          : "Never"}
+                      </td>
+                      <td className="px-4 py-3">
+                        <select
+                          value={user.role}
+                          onChange={(event) =>
+                            setUserRoles((prev) =>
+                              prev.map((row) =>
+                                row.id === user.id
+                                  ? { ...row, role: event.target.value as RoleKey }
+                                  : row
+                              )
+                            )
+                          }
+                          className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm"
+                        >
+                          <option value="owner">owner</option>
+                          <option value="admin">admin</option>
+                          <option value="staff">staff</option>
+                          <option value="viewer">viewer</option>
+                        </select>
+                      </td>
+                      <td className="px-4 py-3">
+                        <button
+                          onClick={() =>
+                            openConfirm({
+                              title: "Save User Role",
+                              message: `Set role for ${user.email ?? user.id}?`,
+                              action: async () => saveUserRole(user.id, user.role),
+                            })
+                          }
+                          className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700"
+                        >
+                          <Save size={12} />
+                          Save Role
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                  {userRoles.length === 0 && (
+                    <tr>
+                      <td colSpan={5} className="px-4 py-6 text-center text-sm text-slate-500">
+                        No auth users found.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 

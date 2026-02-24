@@ -311,6 +311,13 @@ export default function PaymentTokenPage() {
         return;
       }
 
+      // Fire-and-forget admin notification when tenant uploads a slip.
+      void fetch("/api/notify-slip-upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ invoiceId: invoice.id, slipUrl: publicUrl }),
+      });
+
       setPreview(publicUrl);
       setSubmitted(true);
       setUploading(false);

@@ -54,6 +54,23 @@ export default function RoomsPage() {
   const [confirmStatusOpen, setConfirmStatusOpen] = useState(false);
   const [pendingRoom, setPendingRoom] = useState<RoomRecord | null>(null);
 
+  const callRoomsAction = async (action: string, payload: Record<string, unknown>) => {
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
+    if (!token) throw new Error("Session expired. Please log in again.");
+    const response = await fetch("/api/admin/rooms/actions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ action, ...payload }),
+    });
+    const dataJson = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(dataJson?.error ?? "Room action failed.");
+    return dataJson;
+  };
+
   const loadRooms = async () => {
     const { data, error: fetchError } = await supabase
       .from("rooms")
@@ -84,13 +101,10 @@ export default function RoomsPage() {
     const currentIndex = order.indexOf(room.status);
     const nextStatus = order[(currentIndex + 1) % order.length];
 
-    const { error: updateError } = await supabase
-      .from("rooms")
-      .update({ status: nextStatus })
-      .eq("id", room.id);
-
-    if (updateError) {
-      setStatus(updateError.message);
+    try {
+      await callRoomsAction("toggle_status", { roomId: room.id, status: nextStatus });
+    } catch (error: any) {
+      setStatus(error?.message ?? "Failed to update room status.");
       return;
     }
 
