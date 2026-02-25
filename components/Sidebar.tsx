@@ -17,12 +17,12 @@ export default function Sidebar() {
 
   return (
     <>
-      <header className="md:hidden bg-slate-900 text-white px-4 py-3 flex items-center justify-between fixed top-0 left-0 right-0 z-30 shadow-md">
-        <Link href="/" className="inline-flex items-center gap-2 text-lg font-semibold">
-          <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-blue-600 text-white">
+      <header className="md:hidden bg-slate-900/95 backdrop-blur text-white px-4 py-3 flex items-center justify-between fixed top-0 left-0 right-0 z-30 shadow-md animate-fade-in-down">
+        <Link href="/" className="inline-flex items-center gap-2 text-lg font-semibold transition-transform duration-200 hover:scale-[1.02]">
+          <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-blue-500 to-cyan-500 text-white shadow-lg shadow-blue-700/30">
             <Building size={18} />
           </span>
-          DormManager
+          Apartment Flow
         </Link>
         <button
           onClick={() => setIsOpen((open) => !open)}
@@ -34,18 +34,18 @@ export default function Sidebar() {
       </header>
 
       <aside className="hidden md:flex md:flex-col md:w-64 bg-slate-900 text-white fixed h-full">
-        <div className="p-6 border-b border-slate-800">
-          <Link href="/" className="inline-flex items-center gap-3 text-xl font-semibold">
-            <span className="inline-flex h-10 w-10 items-center justify-center rounded-2xl bg-blue-600 text-white">
+        <div className="p-6 border-b border-slate-800 animate-fade-in-down">
+          <Link href="/" className="inline-flex items-center gap-3 text-xl font-semibold transition-transform duration-200 hover:translate-x-0.5">
+            <span className="inline-flex h-10 w-10 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-500 to-cyan-500 text-white shadow-lg shadow-blue-700/30">
               <Building size={20} />
             </span>
-            DormManager
+            Apartment Flow
           </Link>
           <p className="mt-3 text-xs uppercase tracking-[0.2em] text-slate-400">
             {t(locale, "admin_console")}
           </p>
         </div>
-        <nav className="flex-1 p-4 space-y-1">
+        <nav className="flex-1 p-4 space-y-1 animate-fade-in-up">
           {adminNav.map((item) => {
             const isActive =
               item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
@@ -54,10 +54,10 @@ export default function Sidebar() {
               <Link
                 key={item.href}
                 href={item.href}
-                className={`flex items-center gap-3 px-3 py-2.5 rounded-xl transition ${
+                className={`group flex items-center gap-3 px-3 py-2.5 rounded-xl transition duration-200 ${
                   isActive
                     ? "bg-blue-600 text-white shadow-lg shadow-blue-600/20"
-                    : "text-slate-200 hover:bg-slate-800"
+                    : "text-slate-200 hover:bg-slate-800 hover:translate-x-1"
                 }`}
               >
                 <Icon size={18} />
@@ -81,10 +81,10 @@ export default function Sidebar() {
       >
         <div className="p-4 flex items-center justify-between border-b border-slate-800">
           <Link href="/" className="inline-flex items-center gap-2 text-lg font-semibold">
-            <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-blue-600 text-white">
+            <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-blue-500 to-cyan-500 text-white">
               <Building size={18} />
             </span>
-            DormManager
+            Apartment Flow
           </Link>
           <button
             onClick={() => setIsOpen(false)}
@@ -104,10 +104,10 @@ export default function Sidebar() {
                 key={item.href}
                 href={item.href}
                 onClick={() => setIsOpen(false)}
-                className={`flex items-center gap-3 px-3 py-2.5 rounded-xl transition ${
+                className={`flex items-center gap-3 px-3 py-2.5 rounded-xl transition duration-200 ${
                   isActive
                     ? "bg-blue-600 text-white shadow-lg shadow-blue-600/20"
-                    : "text-slate-200 hover:bg-slate-800"
+                    : "text-slate-200 hover:bg-slate-800 hover:translate-x-1"
                 }`}
               >
                 <Icon size={18} />

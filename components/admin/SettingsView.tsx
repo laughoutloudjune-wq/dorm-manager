@@ -215,7 +215,7 @@ export default function SettingsView() {
 
       {activeTab === "General" && (
         <div className="grid gap-4 md:grid-cols-2">
-          <Input label="Dorm Name" placeholder="DormManager Residence" />
+          <Input label="Dorm Name" placeholder="Apartment Flow Residence" />
           <Input label="Phone" placeholder="02-000-0000" />
           <label className="md:col-span-2 text-sm text-slate-600">
             Address

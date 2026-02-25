@@ -25,7 +25,7 @@ export default function AdminShell({ children }: { children: ReactNode }) {
   const [loggingOut, setLoggingOut] = useState(false);
   const pageTitle = useMemo(() => toTitle(pathname, navItems), [pathname, navItems]);
   const crumbs = [
-    { label: "DormManager", href: "/" },
+    { label: "Apartment Flow", href: "/" },
     { label: pageTitle, href: pathname },
   ];
 
@@ -77,8 +77,8 @@ export default function AdminShell({ children }: { children: ReactNode }) {
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <Sidebar />
       <div className="md:pl-64 pt-20 md:pt-8">
-        <header className="px-5 md:px-10">
-          <div className="flex flex-wrap items-center justify-between gap-3">
+        <header className="px-5 md:px-10 animate-fade-in-down">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200/80 bg-white/70 px-4 py-3 shadow-sm backdrop-blur">
             <div>
               <nav className="text-xs uppercase tracking-[0.2em] text-slate-400">
                 {crumbs.map((crumb, index) => (
@@ -100,14 +100,14 @@ export default function AdminShell({ children }: { children: ReactNode }) {
               <button
                 onClick={() => void handleLogout()}
                 disabled={loggingOut}
-                className="ml-3 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+                className="ml-3 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:-translate-y-0.5 hover:bg-slate-50 disabled:opacity-60"
               >
                 {loggingOut ? t(locale, "signing_out") : t(locale, "logout")}
               </button>
             </div>
           </div>
         </header>
-        <main className="px-5 md:px-10 py-6">{children}</main>
+        <main className="px-5 md:px-10 py-6 animate-fade-in-up">{children}</main>
       </div>
     </div>
   );

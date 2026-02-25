@@ -1,10 +1,10 @@
-import type { Metadata } from "next";
+﻿import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import AdminShell from "@/components/AdminShell";
 
 export const metadata: Metadata = {
-  title: "DormManager Admin",
-  description: "Dormitory Management System admin console.",
+  title: "Apartment Flow Admin",
+  description: "Apartment Flow admin console.",
 };
 
 export default function AdminLayout({
@@ -12,7 +12,5 @@ export default function AdminLayout({
 }: Readonly<{
   children: ReactNode;
 }>) {
-  return (
-    <AdminShell>{children}</AdminShell>
-  );
+  return <AdminShell>{children}</AdminShell>;
 }

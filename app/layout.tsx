@@ -1,10 +1,9 @@
-// app/layout.tsx
+﻿// app/layout.tsx
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { Sarabun } from "next/font/google";
 import "./globals.css";
 
-// Configure the Sarabun font for Thai and English
 const sarabun = Sarabun({
   subsets: ["latin", "thai"],
   weight: ["300", "400", "500", "600", "700"],
@@ -13,10 +12,10 @@ const sarabun = Sarabun({
 
 export const metadata: Metadata = {
   title: {
-    template: "%s | สุววรณอพาร์ทเม้นท์",
-    default: "สุววรณอพาร์ทเม้นท์",
+    template: "%s | Apartment Flow",
+    default: "Apartment Flow",
   },
-  description: "A modern dormitory management system.",
+  description: "Apartment management system.",
 };
 
 export default function RootLayout({

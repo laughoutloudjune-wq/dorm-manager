@@ -16,4 +16,62 @@
   .text-balance {
     text-wrap: balance;
   }
+
+  .animate-fade-in-up {
+    animation: fadeInUp 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .animate-fade-in-down {
+    animation: fadeInDown 380ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .animate-soft-pop {
+    animation: softPop 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .hover-lift {
+    transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
+  }
+
+  .hover-lift:hover {
+    transform: translateY(-2px);
+  }
+
+  .stagger-1 { animation-delay: 40ms; }
+  .stagger-2 { animation-delay: 90ms; }
+  .stagger-3 { animation-delay: 140ms; }
+  .stagger-4 { animation-delay: 190ms; }
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes fadeInDown {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes softPop {
+  from {
+    opacity: 0;
+    transform: scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }

@@ -43,21 +43,21 @@ export default function SearchInvoicesPage() {
   };
 
   return (
-    <div className="min-h-screen px-4 py-10">
+    <div className="min-h-screen bg-gradient-to-b from-slate-100 via-slate-50 to-white px-4 py-10">
       <div className="mx-auto flex w-full max-w-md flex-col gap-6">
-        <header className="text-center">
+        <header className="text-center animate-fade-in-down">
           <div className="inline-flex items-center gap-3 text-3xl font-semibold text-slate-900">
-            <span className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-blue-600 text-white">
+            <span className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-500 to-cyan-500 text-white shadow-lg shadow-blue-600/25">
               <Building size={22} />
             </span>
-            DormManager
+            Apartment Flow
           </div>
           <p className="mt-3 text-sm text-slate-500">
             Enter your room number to view unpaid invoices.
           </p>
         </header>
 
-        <main className="rounded-3xl border border-white/60 bg-white/90 p-6 shadow-xl backdrop-blur">
+        <main className="rounded-3xl border border-white/60 bg-white/90 p-6 shadow-xl backdrop-blur animate-fade-in-up">
           <form onSubmit={handleSearch} className="flex flex-col gap-3">
             <label className="text-sm font-medium text-slate-600">Room Number</label>
             <div className="relative">
@@ -73,7 +73,7 @@ export default function SearchInvoicesPage() {
             </div>
             <button
               type="submit"
-              className="rounded-2xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-blue-600/20"
+              className="rounded-2xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-blue-600/20 transition hover:-translate-y-0.5"
             >
               Search Invoices
             </button>
@@ -95,7 +95,7 @@ export default function SearchInvoicesPage() {
                   <li key={invoice.id}>
                     <Link
                       href={`/payment/${invoice.public_token}`}
-                      className="block rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm transition hover:border-blue-300"
+                      className="block rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm transition hover:-translate-y-0.5 hover:border-blue-300 hover:shadow-md"
                     >
                       <div className="flex items-center justify-between gap-3">
                         <div>
@@ -134,7 +134,7 @@ export default function SearchInvoicesPage() {
           )}
         </main>
 
-        <footer className="text-center text-xs text-slate-400">&copy; {new Date().getFullYear()} DormManager</footer>
+        <footer className="text-center text-xs text-slate-400">&copy; {new Date().getFullYear()} Apartment Flow</footer>
       </div>
     </div>
   );

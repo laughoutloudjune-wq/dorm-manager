@@ -111,12 +111,12 @@ export default function RoomsPage() {
     setRooms((prev) =>
       prev.map((item) => (item.id === room.id ? { ...item, status: nextStatus } : item))
     );
-    setStatus(`Room ${room.room_number} status changed to ${nextStatus}.`);
+      setStatus(`เปลี่ยนสถานะห้อง ${room.room_number} เป็น ${nextStatus} แล้ว`);
   };
 
   const sendLineReminder = async (room: RoomRecord) => {
     if (!room.tenant_line_user_id) {
-      setStatus("Tenant has no LINE user ID linked.");
+      setStatus("ผู้เช่ายังไม่ได้เชื่อม LINE");
       return;
     }
 
@@ -129,7 +129,7 @@ export default function RoomsPage() {
       .maybeSingle();
 
     if (!latestInvoice) {
-      setStatus("No invoice found for this room.");
+      setStatus("ไม่พบใบแจ้งหนี้ของห้องนี้");
       return;
     }
 
@@ -152,11 +152,11 @@ export default function RoomsPage() {
       const detail = [data?.error, data?.lineStatus && `LINE ${data.lineStatus}`, data?.lineMessage]
         .filter(Boolean)
         .join(" | ");
-      setStatus(detail || "Failed to send LINE reminder");
+      setStatus(detail || "ส่งแจ้งเตือน LINE ไม่สำเร็จ");
       return;
     }
 
-    setStatus(`Reminder sent to room ${room.room_number}.`);
+    setStatus(`ส่งแจ้งเตือน LINE ไปห้อง ${room.room_number} แล้ว`);
   };
 
   const filteredRooms = rooms.filter((room) => room.building_name === activeBuilding);
@@ -207,13 +207,13 @@ export default function RoomsPage() {
                 {room.tenant_line_user_id && (
                   <span className="inline-flex items-center gap-1 rounded-full bg-green-50 px-2 py-1 text-[10px] font-semibold text-green-700">
                     <MessageCircle size={12} />
-                    LINE linked
+                    เชื่อม LINE
                   </span>
                 )}
               </div>
             </button>
             <div className="flex items-center justify-between border-t border-slate-100 px-5 py-3 text-xs text-slate-500">
-              <span>Room Settings</span>
+              <span>ตั้งค่าห้อง</span>
               <button
                 onClick={() => {
                   setPendingRoom(room);
@@ -222,7 +222,7 @@ export default function RoomsPage() {
                 className="inline-flex items-center gap-1 rounded-full border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-600 hover:border-blue-300"
               >
                 <Settings2 size={12} />
-                Toggle Status
+                เปลี่ยนสถานะ
               </button>
             </div>
           </Card>
@@ -232,25 +232,25 @@ export default function RoomsPage() {
       <Modal
         isOpen={!!selectedRoom}
         onClose={() => setSelectedRoom(null)}
-        title={`Tenant Details — Room ${selectedRoom?.room_number ?? ""}`}
+        title={`รายละเอียดผู้เช่า - ห้อง ${selectedRoom?.room_number ?? ""}`}
         size="lg"
       >
         {selectedRoom && (
           <div className="grid gap-4 md:grid-cols-2 text-sm text-slate-600">
             <div className="space-y-2">
-              <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Occupancy</p>
-              <p className="text-lg font-semibold text-slate-900">{selectedRoom.tenant_name ?? "Vacant"}</p>
-              <p>Building: {selectedRoom.building_name}</p>
-              <p>Status: {selectedRoom.status}</p>
-              <p>LINE: {selectedRoom.tenant_line_user_id ? "Connected" : "Not linked"}</p>
+              <p className="text-xs uppercase tracking-[0.2em] text-slate-400">การเข้าพัก</p>
+              <p className="text-lg font-semibold text-slate-900">{selectedRoom.tenant_name ?? "ว่าง"}</p>
+              <p>อาคาร: {selectedRoom.building_name}</p>
+              <p>สถานะ: {selectedRoom.status}</p>
+              <p>LINE: {selectedRoom.tenant_line_user_id ? "เชื่อมแล้ว" : "ยังไม่เชื่อม"}</p>
             </div>
             <div className="space-y-2">
-              <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Quick Actions</p>
+              <p className="text-xs uppercase tracking-[0.2em] text-slate-400">คำสั่งด่วน</p>
               <button
                 className="w-full rounded-xl bg-blue-600 px-4 py-2 text-white font-semibold"
                 onClick={() => sendLineReminder(selectedRoom)}
               >
-                Send LINE Reminder
+                ส่งแจ้งเตือน LINE
               </button>
               <button
                 className="w-full rounded-xl border border-slate-200 px-4 py-2 text-slate-700 font-semibold"
@@ -259,7 +259,7 @@ export default function RoomsPage() {
                   setConfirmStatusOpen(true);
                 }}
               >
-                Toggle Room Status
+                เปลี่ยนสถานะห้อง
               </button>
             </div>
           </div>
@@ -268,9 +268,9 @@ export default function RoomsPage() {
 
       <ConfirmActionModal
         isOpen={confirmStatusOpen}
-        title="Update Room Status"
-        message={`Change status for room ${pendingRoom?.room_number ?? ""}?`}
-        confirmLabel="Confirm"
+        title="อัปเดตสถานะห้อง"
+        message={`เปลี่ยนสถานะของห้อง ${pendingRoom?.room_number ?? ""}?`}
+        confirmLabel="ยืนยัน"
         onCancel={() => {
           setConfirmStatusOpen(false);
           setPendingRoom(null);

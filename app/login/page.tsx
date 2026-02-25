@@ -61,10 +61,10 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 px-4 py-12">
-      <div className="mx-auto w-full max-w-md rounded-3xl border border-slate-200 bg-white p-6 shadow-xl">
+    <div className="min-h-screen bg-gradient-to-b from-slate-100 to-slate-50 px-4 py-12">
+      <div className="mx-auto w-full max-w-md rounded-3xl border border-slate-200 bg-white p-6 shadow-xl animate-fade-in-up hover-lift">
         <h1 className="text-2xl font-semibold text-slate-900">Admin Login</h1>
-        <p className="mt-2 text-sm text-slate-500">Sign in to access DormManager admin.</p>
+        <p className="mt-2 text-sm text-slate-500">Sign in to access Apartment Flow admin.</p>
 
         <form onSubmit={handleSubmit} className="mt-6 space-y-4">
           <label className="block text-sm text-slate-600">
@@ -100,7 +100,7 @@ export default function LoginPage() {
           <button
             type="submit"
             disabled={loading}
-            className="w-full rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60"
+            className="w-full rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:-translate-y-0.5 hover:shadow-lg hover:shadow-blue-600/20 disabled:opacity-60"
           >
             {loading ? "Signing in..." : "Login"}
           </button>
@@ -109,4 +109,3 @@ export default function LoginPage() {
     </div>
   );
 }
-

@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/Input";
 import { Badge } from "@/components/ui/Badge";
 import { ConfirmActionModal } from "@/components/ui/ConfirmActionModal";
 import { createClient } from "@/lib/supabase-client";
+import { usePermissions } from "@/lib/use-permissions";
 import { Plus, Save, Search, Trash2, Upload } from "lucide-react";
 
 type TenantRow = {
@@ -100,8 +101,15 @@ const leaseEndDateText = (moveInDate: string, leaseMonths: number) => {
   return end.toISOString().slice(0, 10);
 };
 
+const tenantStatusLabel = (status: string) => {
+  if (status === "active") return "ใช้งานอยู่";
+  if (status === "inactive") return "ย้ายออกแล้ว";
+  return status;
+};
+
 export default function TenantsPage() {
   const supabase = useMemo(() => createClient(), []);
+  const { can } = usePermissions();
   const [tenants, setTenants] = useState<TenantRow[]>([]);
   const [rooms, setRooms] = useState<RoomRow[]>([]);
   const [methods, setMethods] = useState<PaymentMethod[]>([]);
@@ -120,11 +128,14 @@ export default function TenantsPage() {
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [confirmUnlinkOpen, setConfirmUnlinkOpen] = useState(false);
   const [confirmMoveOutOpen, setConfirmMoveOutOpen] = useState(false);
+  const canViewTenants = can("tenant.view");
+  const canEditTenant = can("tenant.edit");
+  const canManageTenantLine = can("tenant.line.manage");
 
   const callTenantsAction = async (action: string, payload: Record<string, unknown>) => {
     const { data } = await supabase.auth.getSession();
     const token = data.session?.access_token;
-    if (!token) throw new Error("Session expired. Please log in again.");
+    if (!token) throw new Error("เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่");
     const response = await fetch("/api/admin/tenants/actions", {
       method: "POST",
       headers: {
@@ -134,7 +145,7 @@ export default function TenantsPage() {
       body: JSON.stringify({ action, ...payload }),
     });
     const dataJson = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(dataJson?.error ?? "Tenant action failed.");
+    if (!response.ok) throw new Error(dataJson?.error ?? "ดำเนินการข้อมูลผู้เช่าไม่สำเร็จ");
     return dataJson;
   };
 
@@ -301,7 +312,7 @@ export default function TenantsPage() {
 
     const { data } = supabase.storage.from("tenant-docs").getPublicUrl(path);
     setForm((prev) => ({ ...prev, deposit_slip_url: data.publicUrl }));
-    setStatus("Deposit slip uploaded.");
+    setStatus("อัปโหลดสลิปมัดจำเรียบร้อย");
   };
 
   const logRoomEvent = async (roomId: string, eventType: "move_in" | "move_out") => {
@@ -311,7 +322,7 @@ export default function TenantsPage() {
       created_at: new Date().toISOString(),
     });
     if (error) {
-      setStatus(`Tenant saved, but failed to write room log: ${error.message}`);
+      setStatus(`บันทึกผู้เช่าแล้ว แต่บันทึกประวัติห้องไม่สำเร็จ: ${error.message}`);
     }
   };
 
@@ -356,12 +367,12 @@ export default function TenantsPage() {
         roomId: form.room_id || null,
       });
     } catch (error: any) {
-      setStatus(error?.message ?? "Failed to save tenant.");
+      setStatus(error?.message ?? "บันทึกข้อมูลผู้เช่าไม่สำเร็จ");
       return;
     }
 
     await loadTenants();
-    setStatus("Tenant saved.");
+    setStatus("บันทึกข้อมูลผู้เช่าเรียบร้อย");
     if (activeTenant?.id) {
       const { data: refreshed } = await supabase
         .from("tenants")
@@ -381,10 +392,10 @@ export default function TenantsPage() {
     try {
       await callTenantsAction("delete_tenant", { tenantId: activeTenant.id });
     } catch (error: any) {
-      setStatus(error?.message ?? "Failed to delete tenant.");
+      setStatus(error?.message ?? "ลบผู้เช่าไม่สำเร็จ");
       return;
     }
-    setStatus("Tenant deleted.");
+    setStatus("ลบผู้เช่าเรียบร้อย");
     setIsModalOpen(false);
     await loadTenants();
   };
@@ -394,11 +405,11 @@ export default function TenantsPage() {
     try {
       await callTenantsAction("unlink_line", { tenantId: activeTenant.id });
     } catch (error: any) {
-      setStatus(error?.message ?? "Failed to unlink LINE.");
+      setStatus(error?.message ?? "ยกเลิกการเชื่อม LINE ไม่สำเร็จ");
       return;
     }
     setActiveTenant({ ...activeTenant, line_user_id: null });
-    setStatus("LINE link removed.");
+    setStatus("ยกเลิกการเชื่อม LINE เรียบร้อย");
     await loadTenants();
   };
 
@@ -417,10 +428,10 @@ export default function TenantsPage() {
         },
       });
     } catch (error: any) {
-      setStatus(error?.message ?? "Failed to confirm move out.");
+      setStatus(error?.message ?? "ยืนยันการย้ายออกไม่สำเร็จ");
       return;
     }
-    setStatus("Move out confirmed.");
+    setStatus("ยืนยันการย้ายออกเรียบร้อย");
     setIsModalOpen(false);
     await loadTenants();
   };
@@ -469,20 +480,27 @@ export default function TenantsPage() {
           <input
             value={search}
             onChange={(event) => setSearch(event.target.value)}
-            placeholder="Search by name or room"
+            placeholder="ค้นหาชื่อผู้เช่าหรือเลขห้อง"
             className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-10 pr-4 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-600/40"
           />
         </div>
         <button
           onClick={() => void openModal()}
-          className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-blue-600/20"
+          disabled={!canEditTenant}
+          title={!canEditTenant ? "ไม่มีสิทธิ์เพิ่ม/แก้ไขข้อมูลผู้เช่า" : undefined}
+          className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-blue-600/20 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none"
         >
           <Plus size={16} />
-          Add Tenant
+          เพิ่มผู้เช่า
         </button>
       </div>
 
       {status && <Badge variant="info">{status}</Badge>}
+      {!canViewTenants && (
+        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          บัญชีนี้ไม่มีสิทธิ์ดูข้อมูลผู้เช่า
+        </div>
+      )}
 
       {Object.entries(groupedTenants)
         .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }))
@@ -493,10 +511,10 @@ export default function TenantsPage() {
               <table className="w-full text-left text-sm">
                 <thead className="bg-slate-100 text-xs uppercase tracking-wider text-slate-500">
                   <tr>
-                    <th className="px-4 py-3">Tenant</th>
-                    <th className="px-4 py-3">Room</th>
-                    <th className="px-4 py-3">Phone</th>
-                    <th className="px-4 py-3">Status</th>
+                    <th className="px-4 py-3">ผู้เช่า</th>
+                    <th className="px-4 py-3">ห้อง</th>
+                    <th className="px-4 py-3">เบอร์โทร</th>
+                    <th className="px-4 py-3">สถานะ</th>
                     <th className="px-4 py-3" />
                   </tr>
                 </thead>
@@ -508,15 +526,17 @@ export default function TenantsPage() {
                       <td className="px-4 py-3">{tenant.phone_number ?? "-"}</td>
                       <td className="px-4 py-3">
                         <Badge variant={tenant.status === "active" ? "success" : "warning"}>
-                          {tenant.status}
+                          {tenantStatusLabel(tenant.status)}
                         </Badge>
                       </td>
                       <td className="px-4 py-3">
                         <button
-                          className="rounded-lg border border-slate-200 px-3 py-1 text-xs text-slate-600"
+                          disabled={!canEditTenant}
+                          title={!canEditTenant ? "ไม่มีสิทธิ์แก้ไขข้อมูลผู้เช่า" : undefined}
+                          className="rounded-lg border border-slate-200 px-3 py-1 text-xs text-slate-600 disabled:cursor-not-allowed disabled:border-red-200 disabled:text-red-400"
                           onClick={() => void openModal(tenant)}
                         >
-                          Edit
+                          แก้ไข
                         </button>
                       </td>
                     </tr>
@@ -527,41 +547,50 @@ export default function TenantsPage() {
           </div>
         ))}
 
-      <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title="Tenant Details" size="xl">
+      <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title="รายละเอียดผู้เช่า" size="xl">
+        {!canEditTenant && (
+          <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            บัญชีนี้ไม่มีสิทธิ์แก้ไขข้อมูลผู้เช่า (ดูได้อย่างเดียว)
+          </div>
+        )}
         <div className="mb-4 flex gap-2">
           <button
             className={`rounded-full px-3 py-1.5 text-sm ${activeTab === "info" ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-700"}`}
             onClick={() => setActiveTab("info")}
           >
-            Info
+            ข้อมูลทั่วไป
           </button>
           <button
             className={`rounded-full px-3 py-1.5 text-sm ${activeTab === "move_in" ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-700"}`}
             onClick={() => setActiveTab("move_in")}
           >
-            Move In
+            เข้าอยู่
           </button>
           <button
             className={`rounded-full px-3 py-1.5 text-sm ${activeTab === "move_out" ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-700"}`}
             onClick={() => setActiveTab("move_out")}
           >
-            Move Out
+            ย้ายออก
           </button>
         </div>
 
         {activeTab === "info" && (
-          <div className="grid gap-4 md:grid-cols-2">
-            <Input label="Full Name" value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} />
-            <Input label="Address" value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} />
-            <Input label="Phone" value={form.phone_number} onChange={(e) => setForm({ ...form, phone_number: e.target.value })} />
+          <div
+            className={`grid gap-4 md:grid-cols-2 ${
+              !canEditTenant ? "cursor-not-allowed opacity-80 [&>*:not(.tenant-line-box)]:pointer-events-none" : ""
+            }`}
+          >
+            <Input label="ชื่อ-นามสกุล" value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} />
+            <Input label="ที่อยู่" value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} />
+            <Input label="เบอร์โทร" value={form.phone_number} onChange={(e) => setForm({ ...form, phone_number: e.target.value })} />
             <label className="text-sm text-slate-600">
-              Room
+              ห้อง
               <select
                 value={form.room_id}
                 onChange={(event) => setForm({ ...form, room_id: event.target.value })}
                 className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm"
               >
-                <option value="">Select room</option>
+                <option value="">เลือกห้อง</option>
                 {rooms.map((room) => (
                   <option key={room.id} value={room.id}>
                     {roomLabel(room)}
@@ -571,15 +600,15 @@ export default function TenantsPage() {
             </label>
 
             <div className="space-y-2 md:col-span-2">
-              <p className="text-sm font-medium text-slate-700">Payment Method</p>
+              <p className="text-sm font-medium text-slate-700">ช่องทางรับชำระ</p>
               <div className="flex items-center gap-3 text-sm text-slate-600">
                 <label className="flex items-center gap-2">
                   <input type="radio" checked={!useCustomPayment} onChange={() => setUseCustomPayment(false)} />
-                  Use default dorm payment
+                  ใช้ช่องทางชำระเงินกลางของหอ
                 </label>
                 <label className="flex items-center gap-2">
                   <input type="radio" checked={useCustomPayment} onChange={() => setUseCustomPayment(true)} />
-                  Assign specific bank/QR
+                  กำหนดบัญชี/QR เฉพาะผู้เช่า
                 </label>
               </div>
               {useCustomPayment && (
@@ -588,7 +617,7 @@ export default function TenantsPage() {
                   onChange={(event) => setSelectedMethodId(event.target.value)}
                   className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm"
                 >
-                  <option value="">Select payment method</option>
+                  <option value="">เลือกช่องทางชำระเงิน</option>
                   {methods.map((method) => (
                     <option key={method.id} value={method.id}>
                       {method.label} - {method.bank_name} ({method.account_number})
@@ -598,8 +627,8 @@ export default function TenantsPage() {
               )}
             </div>
 
-            <div className="space-y-2 md:col-span-2 rounded-xl border border-slate-200 p-4">
-              <p className="text-sm font-medium text-slate-700">LINE Connection</p>
+            <div className="tenant-line-box space-y-2 md:col-span-2 rounded-xl border border-slate-200 p-4">
+              <p className="text-sm font-medium text-slate-700">การเชื่อมต่อ LINE</p>
               <div
                 className={`rounded-xl border px-3 py-2 text-sm font-medium ${
                   activeTenant?.line_user_id
@@ -607,41 +636,45 @@ export default function TenantsPage() {
                     : "border-slate-200 bg-slate-50 text-slate-600"
                 }`}
               >
-                {activeTenant?.line_user_id ? "LINE connected" : "LINE not connected"}
+                {activeTenant?.line_user_id ? "เชื่อม LINE แล้ว" : "ยังไม่เชื่อม LINE"}
               </div>
               <button
                 onClick={() => setConfirmUnlinkOpen(true)}
-                disabled={!activeTenant?.line_user_id}
-                className="inline-flex items-center gap-2 rounded-xl border border-red-200 px-4 py-2 text-sm text-red-600 disabled:opacity-50"
+                disabled={!activeTenant?.line_user_id || !canManageTenantLine}
+                title={!canManageTenantLine ? "ไม่มีสิทธิ์จัดการการเชื่อม LINE" : undefined}
+                className="inline-flex items-center gap-2 rounded-xl border border-red-200 px-4 py-2 text-sm text-red-600 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                Remove LINE Link
+                ยกเลิกการเชื่อม LINE
               </button>
             </div>
           </div>
         )}
 
         {activeTab === "move_in" && (
-          <div className="grid gap-4 md:grid-cols-2">
+          <fieldset
+            disabled={!canEditTenant}
+            className="grid gap-4 md:grid-cols-2 disabled:cursor-not-allowed disabled:opacity-70"
+          >
             <Input
-              label="Move-in Date"
+              label="วันที่เข้าอยู่"
               type="date"
               value={form.move_in_date}
               onChange={(event) => setForm({ ...form, move_in_date: event.target.value })}
             />
             <Input
-              label="Lease Term (Months)"
+              label="ระยะสัญญา (เดือน)"
               type="number"
               value={form.lease_months}
               onChange={(event) => setForm({ ...form, lease_months: toNumber(event.target.value) })}
             />
             <div className="md:col-span-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
-              Lease End: {form.move_in_date ? leaseEnd : "-"} | Status:{" "}
+              วันสิ้นสุดสัญญา: {form.move_in_date ? leaseEnd : "-"} | สถานะสัญญา:{" "}
               <span className={leaseActive ? "text-green-700" : "text-red-700"}>
-                {leaseActive ? "Active" : "Expired"}
+                {leaseActive ? "ยังมีผล" : "หมดอายุ"}
               </span>
             </div>
             <Input
-              label="Initial Electricity Reading"
+              label="เลขมิเตอร์ไฟเริ่มต้น"
               type="number"
               value={form.initial_electricity_reading}
               onChange={(event) =>
@@ -649,43 +682,55 @@ export default function TenantsPage() {
               }
             />
             <Input
-              label="Initial Water Reading"
+              label="เลขมิเตอร์น้ำเริ่มต้น"
               type="number"
               value={form.initial_water_reading}
               onChange={(event) => setForm({ ...form, initial_water_reading: toNumber(event.target.value) })}
             />
             <Input
-              label="Advance Rent Amount"
+              label="ค่าเช่าล่วงหน้า"
               type="number"
               value={form.advance_rent_amount}
               onChange={(event) => setForm({ ...form, advance_rent_amount: toNumber(event.target.value) })}
             />
             <Input
-              label="Security Deposit Amount"
+              label="เงินประกัน"
               type="number"
               value={form.security_deposit_amount}
               onChange={(event) => setForm({ ...form, security_deposit_amount: toNumber(event.target.value) })}
             />
             <div className="md:col-span-2 flex items-center gap-3">
-              <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700">
+              <label
+                className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm ${
+                  canEditTenant
+                    ? "cursor-pointer border-slate-200 text-slate-700"
+                    : "cursor-not-allowed border-red-200 text-red-400"
+                }`}
+              >
                 <Upload size={14} />
-                Upload Deposit Slip
-                <input type="file" accept="image/*" className="hidden" onChange={(e) => void uploadDepositSlip(e.target.files?.[0])} />
+                อัปโหลดสลิปมัดจำ
+                <input
+                  type="file"
+                  accept="image/*"
+                  disabled={!canEditTenant}
+                  className="hidden"
+                  onChange={(e) => void uploadDepositSlip(e.target.files?.[0])}
+                />
               </label>
               {form.deposit_slip_url && (
                 <a href={form.deposit_slip_url} target="_blank" rel="noreferrer" className="text-sm text-blue-600 underline">
-                  View Slip
+                  ดูสลิป
                 </a>
               )}
             </div>
-          </div>
+          </fieldset>
         )}
 
         {activeTab === "move_out" && (
-          <div className="space-y-4">
+          <fieldset disabled={!canEditTenant} className="space-y-4 disabled:cursor-not-allowed disabled:opacity-70">
             <div className="grid gap-4 md:grid-cols-2">
               <Input
-                label={`Final Electricity Reading (Prev ${latestPrevElectricity})`}
+                label={`เลขมิเตอร์ไฟสุดท้าย (ก่อนหน้า ${latestPrevElectricity})`}
                 type="number"
                 value={form.final_electricity_reading}
                 onChange={(event) =>
@@ -693,7 +738,7 @@ export default function TenantsPage() {
                 }
               />
               <Input
-                label={`Final Water Reading (Prev ${latestPrevWater})`}
+                label={`เลขมิเตอร์น้ำสุดท้าย (ก่อนหน้า ${latestPrevWater})`}
                 type="number"
                 value={form.final_water_reading}
                 onChange={(event) => setForm({ ...form, final_water_reading: toNumber(event.target.value) })}
@@ -702,66 +747,70 @@ export default function TenantsPage() {
 
             <div className="rounded-2xl border border-slate-300 bg-white p-5 text-sm text-slate-700">
               <div className="mb-3 border-b border-dashed border-slate-300 pb-3">
-                <p className="text-lg font-semibold text-slate-900">Move-Out Receipt</p>
-                <p>Tenant: {form.full_name || "-"}</p>
-                <p>Room: {activeTenant ? tenantRoomNumber(activeTenant, roomsById) : "-"}</p>
+                <p className="text-lg font-semibold text-slate-900">สรุปย้ายออก</p>
+                <p>ผู้เช่า: {form.full_name || "-"}</p>
+                <p>ห้อง: {activeTenant ? tenantRoomNumber(activeTenant, roomsById) : "-"}</p>
               </div>
               <div className="space-y-1">
-                <p className="flex justify-between"><span>Room Rent</span><span>฿{formatMoney(roomPrice)}</span></p>
+                <p className="flex justify-between"><span>ค่าเช่าห้อง</span><span>฿{formatMoney(roomPrice)}</span></p>
                 <p className="flex justify-between">
-                  <span>Electricity ({electricityUsage} units)</span>
+                  <span>ค่าไฟ ({electricityUsage} หน่วย)</span>
                   <span>฿{formatMoney(electricityUsage * rates.electricity_rate)}</span>
                 </p>
                 <p className="flex justify-between">
-                  <span>Water ({waterUsage} units)</span>
+                  <span>ค่าน้ำ ({waterUsage} หน่วย)</span>
                   <span>฿{formatMoney(waterUsage * rates.water_rate)}</span>
                 </p>
               </div>
               <div className="my-3 border-t border-dashed border-slate-300" />
               <div className="space-y-1">
-                <p className="flex justify-between font-medium"><span>Total Charges</span><span>฿{formatMoney(totalCost)}</span></p>
-                <p className="flex justify-between"><span>Prepaid (Deposit + Advance)</span><span>฿{formatMoney(prepaid)}</span></p>
+                <p className="flex justify-between font-medium"><span>รวมค่าใช้จ่าย</span><span>฿{formatMoney(totalCost)}</span></p>
+                <p className="flex justify-between"><span>ชำระล่วงหน้า (ประกัน + ค่าเช่าล่วงหน้า)</span><span>฿{formatMoney(prepaid)}</span></p>
               </div>
               <div className="my-3 border-t border-dashed border-slate-300" />
               <p className="text-base font-semibold text-slate-900">
                 {net >= 0
-                  ? `Refund to Tenant: ฿${formatMoney(net)}`
-                  : `Tenant Owes: ฿${formatMoney(Math.abs(net))}`}
+                  ? `คืนเงินผู้เช่า: ฿${formatMoney(net)}`
+                  : `ผู้เช่าค้างชำระ: ฿${formatMoney(Math.abs(net))}`}
               </p>
             </div>
 
             <button
               onClick={() => setConfirmMoveOutOpen(true)}
-              className="rounded-xl bg-red-600 px-4 py-2 text-sm font-semibold text-white"
-              disabled={!activeTenant}
+              className="rounded-xl bg-red-600 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+              disabled={!activeTenant || !canEditTenant}
+              title={!canEditTenant ? "ไม่มีสิทธิ์แก้ไขข้อมูลผู้เช่า" : undefined}
             >
-              Confirm Move Out
+              ยืนยันการย้ายออก
             </button>
-          </div>
+          </fieldset>
         )}
 
         <div className="mt-6 flex items-center justify-between gap-3">
           <button
             onClick={() => setConfirmDeleteOpen(true)}
-            disabled={!activeTenant}
-            className="inline-flex items-center gap-2 rounded-xl border border-red-200 px-4 py-2 text-sm text-red-600 disabled:opacity-50"
+            disabled={!activeTenant || !canEditTenant}
+            title={!canEditTenant ? "ไม่มีสิทธิ์ลบผู้เช่า" : undefined}
+            className="inline-flex items-center gap-2 rounded-xl border border-red-200 px-4 py-2 text-sm text-red-600 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Trash2 size={16} />
-            Delete Tenant
+            ลบผู้เช่า
           </button>
           <div className="flex items-center gap-3">
             <button
               onClick={() => setIsModalOpen(false)}
               className="rounded-xl border border-slate-200 px-4 py-2 text-sm text-slate-600"
             >
-              Cancel
+              ยกเลิก
             </button>
             <button
               onClick={() => setConfirmSaveOpen(true)}
-              className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
+              disabled={!canEditTenant}
+              title={!canEditTenant ? "ไม่มีสิทธิ์แก้ไขข้อมูลผู้เช่า" : undefined}
+              className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
             >
               <Save size={16} />
-              Save Tenant
+              บันทึกผู้เช่า
             </button>
           </div>
         </div>
@@ -769,9 +818,9 @@ export default function TenantsPage() {
 
       <ConfirmActionModal
         isOpen={confirmSaveOpen}
-        title="Save Tenant"
-        message="Save tenant changes?"
-        confirmLabel="Save"
+        title="บันทึกผู้เช่า"
+        message="บันทึกการเปลี่ยนแปลงข้อมูลผู้เช่าใช่หรือไม่?"
+        confirmLabel="บันทึก"
         onCancel={() => setConfirmSaveOpen(false)}
         onConfirm={async () => {
           await saveTenant();
@@ -781,9 +830,9 @@ export default function TenantsPage() {
 
       <ConfirmActionModal
         isOpen={confirmDeleteOpen}
-        title="Delete Tenant"
-        message="This action cannot be undone. Delete tenant?"
-        confirmLabel="Delete"
+        title="ลบผู้เช่า"
+        message="การกระทำนี้ไม่สามารถย้อนกลับได้ ต้องการลบผู้เช่าหรือไม่?"
+        confirmLabel="ลบ"
         onCancel={() => setConfirmDeleteOpen(false)}
         onConfirm={async () => {
           await deleteTenant();
@@ -793,9 +842,9 @@ export default function TenantsPage() {
 
       <ConfirmActionModal
         isOpen={confirmUnlinkOpen}
-        title="Remove LINE Link"
-        message="Remove linked LINE ID from this tenant?"
-        confirmLabel="Remove"
+        title="ยกเลิกการเชื่อม LINE"
+        message="ต้องการลบ LINE ID ที่เชื่อมกับผู้เช่ารายนี้หรือไม่?"
+        confirmLabel="ยกเลิกการเชื่อม"
         onCancel={() => setConfirmUnlinkOpen(false)}
         onConfirm={async () => {
           await unlinkTenantLine();
@@ -805,9 +854,9 @@ export default function TenantsPage() {
 
       <ConfirmActionModal
         isOpen={confirmMoveOutOpen}
-        title="Confirm Move Out"
-        message="Confirm tenant move out and set room to available?"
-        confirmLabel="Confirm"
+        title="ยืนยันการย้ายออก"
+        message="ยืนยันการย้ายออกของผู้เช่าและปรับสถานะห้องเป็นว่างใช่หรือไม่?"
+        confirmLabel="ยืนยัน"
         onCancel={() => setConfirmMoveOutOpen(false)}
         onConfirm={async () => {
           await confirmMoveOut();

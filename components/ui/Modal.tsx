@@ -1,6 +1,7 @@
 "use client";
 
-import { ReactNode, useEffect } from "react";
+import { ReactNode, useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 
 const sizeClasses: Record<string, string> = {
@@ -22,6 +23,13 @@ export function Modal({
   size?: "md" | "lg" | "xl";
   children: ReactNode;
 }) {
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+    return () => setMounted(false);
+  }, []);
+
   useEffect(() => {
     if (!isOpen) return;
     const onKey = (event: KeyboardEvent) => {
@@ -31,9 +39,9 @@ export function Modal({
     return () => window.removeEventListener("keydown", onKey);
   }, [isOpen, onClose]);
 
-  if (!isOpen) return null;
+  if (!isOpen || !mounted) return null;
 
-  return (
+  const modalNode = (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 px-4"
       onClick={onClose}
@@ -58,4 +66,6 @@ export function Modal({
       </div>
     </div>
   );
+
+  return createPortal(modalNode, document.body);
 }

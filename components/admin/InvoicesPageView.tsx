@@ -176,6 +176,17 @@ const statusRowClass = (status: string) => {
   return "";
 };
 
+const statusLabelThai = (status: string) => {
+  if (status === "draft") return "ฉบับร่าง";
+  if (status === "pending") return "รอชำระ";
+  if (status === "partial") return "ชำระบางส่วน";
+  if (status === "verifying") return "รอตรวจสอบ";
+  if (status === "paid") return "ชำระแล้ว";
+  if (status === "overdue") return "เกินกำหนด";
+  if (status === "cancelled") return "ยกเลิก";
+  return status;
+};
+
 const clampDay = (value: number | null | undefined, min = 1, max = 28) => {
   const day = toNumber(value ?? min);
   if (day < min) return min;
@@ -721,7 +732,7 @@ export default function InvoicesPage() {
 
   const openSlipViewer = (invoice: InvoiceRecord) => {
     if (!invoice.slip_url) return;
-    setSlipModalTitle(`Payment Slip - Room ${invoice.room_number}`);
+    setSlipModalTitle(`สลิปการชำระเงิน - ห้อง ${invoice.room_number}`);
     setSlipModalUrl(invoice.slip_url);
     setSlipModalOpen(true);
   };
@@ -1209,7 +1220,7 @@ export default function InvoicesPage() {
         })
         .join(" | ");
       setError(
-        `Cannot delete invoice(s). Remove payment slip and/or change status first. ${details}`
+        `ไม่สามารถลบใบแจ้งหนี้ได้ กรุณาลบสลิปการชำระเงินหรือเปลี่ยนสถานะก่อน ${details}`
       );
       return;
     }
@@ -1729,7 +1740,7 @@ export default function InvoicesPage() {
     const alerts: string[] = [];
     if (existingRoomIds.size > 0 && insertPayload.length > 0) {
       alerts.push(
-        `Generated ${insertPayload.length} invoice(s). Skipped ${existingRoomIds.size} room(s) that already had invoices for this period.`
+        `สร้างใบแจ้งหนี้ ${insertPayload.length} รายการแล้ว และข้าม ${existingRoomIds.size} ห้องที่มีใบแจ้งหนี้ในงวดนี้อยู่แล้ว`
       );
     }
     if (missingTenantRooms.length > 0) {
@@ -1771,7 +1782,7 @@ export default function InvoicesPage() {
       <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
         <div className="grid gap-3 md:grid-cols-1">
           <Input
-            label="Invoice Month"
+            label="เดือนใบแจ้งหนี้"
             type="month"
             value={selectedMonth}
             onChange={(event) => setSelectedMonth(event.target.value)}
@@ -1781,10 +1792,11 @@ export default function InvoicesPage() {
           <button
             onClick={() => setConfirmGenerateOpen(true)}
             disabled={!canCreateInvoice}
-            className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-blue-600/20"
+            title={!canCreateInvoice ? "ไม่มีสิทธิ์สร้างใบแจ้งหนี้" : undefined}
+            className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-blue-600/20 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none"
           >
             <FileText size={16} />
-            Generate Monthly Invoices
+            สร้างใบแจ้งหนี้รายเดือน
           </button>
         </div>
       </div>
@@ -1793,7 +1805,7 @@ export default function InvoicesPage() {
 
       {loading ? (
         <div className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-500">
-          Loading invoices...
+          กำลังโหลดใบแจ้งหนี้...
         </div>
       ) : (
         Object.entries(grouped)
@@ -1813,15 +1825,15 @@ export default function InvoicesPage() {
                         disabled={visibleInvoiceIds.length === 0}
                       />
                     </th>
-                    <th className="px-4 py-3">Status</th>
-                    <th className="px-4 py-3">Room</th>
-                    <th className="px-4 py-3">Tenant</th>
-                    <th className="px-4 py-3">Period</th>
-                    <th className="px-4 py-3">Total</th>
-                    <th className="px-4 py-3">Paid</th>
-                    <th className="px-4 py-3">Balance</th>
-                    <th className="px-4 py-3">Slip</th>
-                    <th className="px-4 py-3">Actions</th>
+                    <th className="px-4 py-3">สถานะ</th>
+                    <th className="px-4 py-3">ห้อง</th>
+                    <th className="px-4 py-3">ผู้เช่า</th>
+                    <th className="px-4 py-3">รอบบิล</th>
+                    <th className="px-4 py-3">ยอดรวม</th>
+                    <th className="px-4 py-3">ชำระแล้ว</th>
+                    <th className="px-4 py-3">คงเหลือ</th>
+                    <th className="px-4 py-3">สลิป</th>
+                    <th className="px-4 py-3">การทำรายการ</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1849,13 +1861,14 @@ export default function InvoicesPage() {
                             void updateInvoiceStatus(invoice.id, event.target.value as keyof typeof statusVariant)
                           }
                           disabled={!canUpdateInvoiceStatus}
-                          className={`w-36 rounded-lg border px-2 py-1 text-xs font-semibold capitalize ${statusPillClass(
+                          title={!canUpdateInvoiceStatus ? "ไม่มีสิทธิ์เปลี่ยนสถานะใบแจ้งหนี้" : undefined}
+                          className={`w-36 rounded-lg border px-2 py-1 text-xs font-semibold capitalize disabled:cursor-not-allowed disabled:opacity-70 ${statusPillClass(
                             invoice.status
                           )}`}
                         >
                           {Object.keys(statusVariant).map((status) => (
                             <option key={status} value={status}>
-                              {status}
+                              {statusLabelThai(status)}
                             </option>
                           ))}
                         </select>
@@ -1884,29 +1897,30 @@ export default function InvoicesPage() {
                               : "bg-slate-100 text-slate-400"
                           }`}
                         >
-                          {invoice.slip_url ? "View Slip" : "No Slip"}
+                          {invoice.slip_url ? "ดูสลิป" : "ไม่มีสลิป"}
                         </button>
                       </td>
                       <td className="px-4 py-3">
                         <details className="relative">
                           <summary className="cursor-pointer rounded-lg bg-blue-100 px-3 py-1 text-xs font-semibold text-blue-700 hover:bg-blue-200">
-                            Actions
+                            เมนู
                           </summary>
                           <div className="absolute right-0 z-20 mt-1 w-36 rounded-lg border border-slate-200 bg-white p-1 shadow-lg">
                             <button
                               onClick={() => openInvoice(invoice)}
                               disabled={!(canEditInvoice || canRecordInvoicePayment || canUpdateInvoiceStatus)}
-                              className="flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-xs font-medium text-sky-700 hover:bg-sky-50"
+                              title={!(canEditInvoice || canRecordInvoicePayment || canUpdateInvoiceStatus) ? "ไม่มีสิทธิ์เปิดแก้ไขใบแจ้งหนี้" : undefined}
+                              className="flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-xs font-medium text-sky-700 hover:bg-sky-50 disabled:cursor-not-allowed disabled:text-red-400 disabled:hover:bg-transparent"
                             >
                               <Pencil size={12} />
-                              Edit
+                              เปิดรายละเอียด
                             </button>
                             <button
                               onClick={() => void getInvoicePrintDetail(invoice)}
                               className="flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-xs font-medium text-indigo-700 hover:bg-indigo-50"
                             >
                               <Printer size={12} />
-                              Preview
+                              พรีวิว
                             </button>
                             <button
                               onClick={() => void getInvoicePrintDetail(invoice, "receipt")}
@@ -1914,7 +1928,7 @@ export default function InvoicesPage() {
                               className="flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-xs font-medium text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:text-slate-400 disabled:hover:bg-transparent"
                             >
                               <FileText size={12} />
-                              Receipt
+                              ใบเสร็จ
                             </button>
                             <button
                               onClick={() => {
@@ -1922,10 +1936,11 @@ export default function InvoicesPage() {
                                 setConfirmDeleteOpen(true);
                               }}
                               disabled={!canDeleteInvoice}
-                              className="flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-xs font-medium text-red-700 hover:bg-red-50"
+                              title={!canDeleteInvoice ? "ไม่มีสิทธิ์ลบใบแจ้งหนี้" : undefined}
+                              className="flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-xs font-medium text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:text-red-300 disabled:hover:bg-transparent"
                             >
                               <Trash2 size={12} />
-                              Delete
+                              ลบ
                             </button>
                           </div>
                         </details>
@@ -1943,7 +1958,7 @@ export default function InvoicesPage() {
       {selected.length > 0 && (
         <div className="fixed bottom-4 left-1/2 z-40 w-[min(90vw,720px)] -translate-x-1/2 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-2xl">
           <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
-            <span className="font-semibold text-slate-700">{selected.length} invoices selected</span>
+            <span className="font-semibold text-slate-700">เลือกแล้ว {selected.length} ใบแจ้งหนี้</span>
             <div className="flex flex-wrap items-center gap-2">
                 <button
                   onClick={sendSelectedToLine}
@@ -1960,7 +1975,7 @@ export default function InvoicesPage() {
                 className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-slate-600"
               >
                 <Printer size={14} />
-                Print
+                พิมพ์
               </button>
               <button
                 onClick={() => {
@@ -1969,10 +1984,11 @@ export default function InvoicesPage() {
                   setConfirmDeleteOpen(true);
                 }}
                 disabled={!canDeleteInvoice}
-                className="inline-flex items-center gap-2 rounded-xl border border-red-200 px-3 py-2 text-red-600"
+                title={!canDeleteInvoice ? "ไม่มีสิทธิ์ลบใบแจ้งหนี้" : undefined}
+                className="inline-flex items-center gap-2 rounded-xl border border-red-200 px-3 py-2 text-red-600 disabled:cursor-not-allowed disabled:text-red-300"
               >
                 <Trash2 size={14} />
-                Delete
+                ลบ
               </button>
             </div>
           </div>
@@ -1982,29 +1998,34 @@ export default function InvoicesPage() {
       <Modal
         isOpen={detailOpen}
         onClose={() => setDetailOpen(false)}
-        title={activeInvoice ? `Invoice ${activeInvoice.id}` : "Invoice Detail"}
+        title={activeInvoice ? `ใบแจ้งหนี้ ${activeInvoice.id}` : "รายละเอียดใบแจ้งหนี้"}
         size="xl"
       >
         {activeInvoice && (
           <div className="space-y-6">
             {!isInvoiceDetailEditable(activeInvoice.status) && (
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                Invoice detail editing is disabled for <b>{activeInvoice.status}</b>. Switch status to
-                <b> draft</b> if you need to edit details.
+                ปิดการแก้ไขรายละเอียดสำหรับสถานะ <b>{statusLabelThai(activeInvoice.status)}</b> หากต้องการแก้ไข
+                ให้เปลี่ยนสถานะเป็น <b>ฉบับร่าง</b>
+              </div>
+            )}
+            {(!canEditInvoice || !canUpdateInvoiceStatus || !canRecordInvoicePayment) && (
+              <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                บางส่วนถูกล็อกตามสิทธิ์ของผู้ใช้ (ปุ่มที่ล็อกจะแสดงเคอร์เซอร์ห้ามใช้งาน)
               </div>
             )}
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Invoice</p>
-                  <p className="text-lg font-semibold text-slate-900">Room {activeInvoice.room_number}</p>
+                  <p className="text-lg font-semibold text-slate-900">ห้อง {activeInvoice.room_number}</p>
                 </div>
                 <div className="text-right">
-                  <p className="text-xs text-slate-400">Total</p>
+                  <p className="text-xs text-slate-400">ยอดรวม</p>
                   <p className="text-xl font-semibold text-blue-700">{formatMoney(form.total_amount)}</p>
-                  <p className="mt-1 text-xs text-slate-400">Paid: {formatMoney(toNumber(form.paid_amount))}</p>
+                  <p className="mt-1 text-xs text-slate-400">ชำระแล้ว: {formatMoney(toNumber(form.paid_amount))}</p>
                   <p className="text-xs text-rose-600">
-                    Balance:{" "}
+                    คงเหลือ:{" "}
                     {formatMoney(
                       Math.max(0, toNumber(form.total_amount) - toNumber(form.paid_amount))
                     )}
@@ -2012,7 +2033,7 @@ export default function InvoicesPage() {
                 </div>
               </div>
               <div className="mt-4 space-y-2">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Status</p>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">สถานะ</p>
                 <select
                   value={form.status}
                   onChange={(event) => {
@@ -2021,13 +2042,14 @@ export default function InvoicesPage() {
                     void updateInvoiceStatus(activeInvoice.id, nextStatus);
                   }}
                   disabled={!canUpdateInvoiceStatus}
-                  className={`w-full rounded-xl border px-4 py-3 text-base font-semibold capitalize ${statusPillClass(
+                  title={!canUpdateInvoiceStatus ? "ไม่มีสิทธิ์เปลี่ยนสถานะใบแจ้งหนี้" : undefined}
+                  className={`w-full rounded-xl border px-4 py-3 text-base font-semibold capitalize disabled:cursor-not-allowed disabled:opacity-70 ${statusPillClass(
                     form.status
                   )}`}
                 >
                   {Object.keys(statusVariant).map((status) => (
                     <option key={status} value={status}>
-                      {status}
+                      {statusLabelThai(status)}
                     </option>
                   ))}
                 </select>
@@ -2035,31 +2057,32 @@ export default function InvoicesPage() {
               <div className="mt-4 rounded-xl border border-slate-200 bg-white p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                    Payment Section
+                    ส่วนการรับชำระ
                   </p>
                   <button
                     type="button"
                     onClick={() => setShowPaymentForm((prev) => !prev)}
                     disabled={!canRecordInvoicePayment}
-                    className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white"
+                    title={!canRecordInvoicePayment ? "ไม่มีสิทธิ์บันทึกการชำระเงิน" : undefined}
+                    className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
                   >
-                    {showPaymentForm ? "Close" : "Pay"}
+                    {showPaymentForm ? "ปิด" : "ชำระเงิน"}
                   </button>
                 </div>
                 {showPaymentForm && (
                   <div className="mt-3 space-y-3">
                     <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
-                      <p>Total: {formatMoney(toNumber(form.total_amount))}</p>
-                      <p>Paid: {formatMoney(toNumber(form.paid_amount))}</p>
+                      <p>ยอดรวม: {formatMoney(toNumber(form.total_amount))}</p>
+                      <p>ชำระแล้ว: {formatMoney(toNumber(form.paid_amount))}</p>
                       <p>
-                        Remaining:{" "}
+                        คงเหลือ:{" "}
                         {formatMoney(Math.max(0, toNumber(form.total_amount) - toNumber(form.paid_amount)))}
                       </p>
                     </div>
                     <div className="rounded-lg border border-slate-200 p-3">
-                      <p className="text-xs font-semibold text-slate-600">Previous payment history</p>
+                      <p className="text-xs font-semibold text-slate-600">ประวัติการชำระก่อนหน้า</p>
                       {activeInvoice.payment_history.length === 0 ? (
-                        <p className="mt-2 text-xs text-slate-500">No payment history yet.</p>
+                        <p className="mt-2 text-xs text-slate-500">ยังไม่มีประวัติการชำระ</p>
                       ) : (
                         <div className="mt-2 space-y-2">
                           {activeInvoice.payment_history.map((item: any, idx: number) => (
@@ -2078,7 +2101,7 @@ export default function InvoicesPage() {
                       )}
                     </div>
                     <div className="rounded-lg border border-slate-200 p-3">
-                      <p className="text-xs font-semibold text-slate-600">1) Choose payment type</p>
+                      <p className="text-xs font-semibold text-slate-600">1) เลือกประเภทการชำระ</p>
                       <div className="mt-2 flex flex-wrap items-center gap-4 text-sm text-slate-700">
                         <label className="inline-flex items-center gap-2">
                           <input
@@ -2087,7 +2110,7 @@ export default function InvoicesPage() {
                             checked={paymentMode === "full"}
                             onChange={() => setPaymentMode("full")}
                           />
-                          Pay in full
+                          ชำระเต็มจำนวน
                         </label>
                         <label className="inline-flex items-center gap-2">
                           <input
@@ -2096,29 +2119,29 @@ export default function InvoicesPage() {
                             checked={paymentMode === "partial"}
                             onChange={() => setPaymentMode("partial")}
                           />
-                          Partial
+                          ชำระบางส่วน
                         </label>
                       </div>
                       {paymentMode === "partial" && (
                         <div className="mt-2">
-                          <p className="mb-1 text-xs text-slate-500">Partial amount</p>
+                          <p className="mb-1 text-xs text-slate-500">จำนวนเงินที่ชำระบางส่วน</p>
                           <input
                             type="number"
                             min={0}
                             value={paymentAmountInput}
                             onChange={(event) => setPaymentAmountInput(event.target.value)}
                             className="w-full max-w-[220px] rounded-lg border border-slate-200 px-3 py-2 text-sm text-right"
-                            placeholder="Amount"
+                            placeholder="จำนวนเงิน"
                           />
                         </div>
                       )}
                     </div>
 
                     <div className="rounded-lg border border-slate-200 p-3">
-                      <p className="text-xs font-semibold text-slate-600">2) Payment date & slip</p>
+                      <p className="text-xs font-semibold text-slate-600">2) วันที่ชำระและสลิป</p>
                       <div className="mt-2 grid gap-2 md:grid-cols-2">
                         <div>
-                          <p className="mb-1 text-xs text-slate-500">Payment date</p>
+                          <p className="mb-1 text-xs text-slate-500">วันที่ชำระ</p>
                           <input
                             type="date"
                             value={paymentDate}
@@ -2127,10 +2150,10 @@ export default function InvoicesPage() {
                           />
                         </div>
                         <div>
-                          <p className="mb-1 text-xs text-slate-500">Upload slip image</p>
+                          <p className="mb-1 text-xs text-slate-500">อัปโหลดรูปสลิป</p>
                           <label className="inline-flex w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-600">
                             <UploadCloud size={14} />
-                            {paymentSlipFile ? paymentSlipFile.name : "Choose file"}
+                            {paymentSlipFile ? paymentSlipFile.name : "เลือกไฟล์"}
                             <input
                               type="file"
                               accept="image/*"
@@ -2142,8 +2165,8 @@ export default function InvoicesPage() {
                       </div>
                       {slipPreview && (
                         <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-2">
-                          <p className="text-xs text-slate-500">Current slip</p>
-                          <img src={slipPreview} alt="Slip" className="mt-2 max-h-40 rounded-lg border" />
+                          <p className="text-xs text-slate-500">สลิปปัจจุบัน</p>
+                          <img src={slipPreview} alt="สลิป" className="mt-2 max-h-40 rounded-lg border" />
                         </div>
                       )}
                     </div>
@@ -2152,9 +2175,10 @@ export default function InvoicesPage() {
                       type="button"
                       onClick={() => void submitPayment()}
                       disabled={paymentSubmitting || !canRecordInvoicePayment}
-                      className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-70"
+                      title={!canRecordInvoicePayment ? "ไม่มีสิทธิ์บันทึกการชำระเงิน" : undefined}
+                      className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-70"
                     >
-                      {paymentSubmitting ? "Processing..." : "Mark as Paid"}
+                      {paymentSubmitting ? "กำลังบันทึก..." : "บันทึกการชำระ"}
                     </button>
                   </div>
                 )}
@@ -2163,21 +2187,21 @@ export default function InvoicesPage() {
 
             <fieldset
               disabled={!(canEditDetails && canEditInvoice)}
-              className={!(canEditDetails && canEditInvoice) ? "opacity-70" : ""}
+              className={!(canEditDetails && canEditInvoice) ? "cursor-not-allowed opacity-70" : ""}
             >
             <div className="space-y-3 rounded-xl border border-slate-200 p-4">
-              <p className="text-sm font-semibold text-slate-700">Invoice Core Details</p>
+              <p className="text-sm font-semibold text-slate-700">รายละเอียดหลักใบแจ้งหนี้</p>
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[680px] text-sm">
                   <thead className="bg-slate-100 text-slate-600">
                     <tr>
-                      <th className="px-3 py-2 text-left">Field</th>
-                      <th className="px-3 py-2 text-left">Value</th>
+                      <th className="px-3 py-2 text-left">รายการ</th>
+                      <th className="px-3 py-2 text-left">ค่า</th>
                     </tr>
                   </thead>
                   <tbody>
                     <tr className="border-t border-slate-100">
-                      <td className="px-3 py-2 font-medium">Issue Date</td>
+                      <td className="px-3 py-2 font-medium">วันที่ออกบิล</td>
                       <td className="px-3 py-2">
                         <input
                           type="date"
@@ -2188,7 +2212,7 @@ export default function InvoicesPage() {
                       </td>
                     </tr>
                     <tr className="border-t border-slate-100">
-                      <td className="px-3 py-2 font-medium">Due Date</td>
+                      <td className="px-3 py-2 font-medium">วันครบกำหนดชำระ</td>
                       <td className="px-3 py-2">
                         <input
                           type="date"
@@ -2199,7 +2223,7 @@ export default function InvoicesPage() {
                       </td>
                     </tr>
                     <tr className="border-t border-slate-100">
-                      <td className="px-3 py-2 font-medium">Rent Amount</td>
+                      <td className="px-3 py-2 font-medium">ค่าเช่าห้อง</td>
                       <td className="px-3 py-2">
                         <input
                           type="number"
@@ -2210,7 +2234,7 @@ export default function InvoicesPage() {
                       </td>
                     </tr>
                     <tr className="border-t border-slate-100 bg-amber-50">
-                      <td className="px-3 py-2 font-medium text-amber-900">Pro-rate</td>
+                      <td className="px-3 py-2 font-medium text-amber-900">คำนวณ pro-rate</td>
                       <td className="px-3 py-2">
                         <label className="inline-flex items-center gap-2 text-amber-900">
                           <input
@@ -2218,27 +2242,27 @@ export default function InvoicesPage() {
                             checked={useProrateInModal}
                             onChange={(event) => toggleProrateInModal(event.target.checked)}
                           />
-                          Use pro-rate for this room invoice
+                          ใช้การคิดค่าเช่าแบบ pro-rate สำหรับบิลนี้
                         </label>
                         {modalProrateSummary && (
                           <p className="mt-2 text-xs text-amber-800">
-                            Formula: {modalProrateSummary.formulaText} (Move-in day{" "}
-                            {modalProrateSummary.moveInDay}, Billing day {modalProrateSummary.billingDay})
+                            สูตรคำนวณ: {modalProrateSummary.formulaText} (วันเข้าอยู่{" "}
+                            {modalProrateSummary.moveInDay}, วันตัดรอบ {modalProrateSummary.billingDay})
                           </p>
                         )}
                       </td>
                     </tr>
                     <tr className="border-t border-slate-100">
                       <td className="px-3 py-2 font-medium">
-                        Water
+                        ค่าน้ำ
                         <p className="text-xs font-normal text-slate-500">
-                          Rate: {formatMoney(toNumber(printSettings?.water_rate))}/unit
+                          อัตรา: {formatMoney(toNumber(printSettings?.water_rate))}/หน่วย
                         </p>
                       </td>
                       <td className="px-3 py-2">
                         <div className="grid grid-cols-2 gap-2">
                           <div>
-                            <p className="mb-1 text-xs text-slate-500">Unit</p>
+                            <p className="mb-1 text-xs text-slate-500">หน่วย</p>
                             <input
                               type="number"
                               value={form.water_units}
@@ -2247,7 +2271,7 @@ export default function InvoicesPage() {
                             />
                           </div>
                           <div>
-                            <p className="mb-1 text-xs text-slate-500">Total</p>
+                            <p className="mb-1 text-xs text-slate-500">ยอดรวม</p>
                             <input
                               type="number"
                               value={form.water_bill}
@@ -2260,15 +2284,15 @@ export default function InvoicesPage() {
                     </tr>
                     <tr className="border-t border-slate-100">
                       <td className="px-3 py-2 font-medium">
-                        Electricity
+                        ค่าไฟ
                         <p className="text-xs font-normal text-slate-500">
-                          Rate: {formatMoney(toNumber(printSettings?.electricity_rate))}/unit
+                          อัตรา: {formatMoney(toNumber(printSettings?.electricity_rate))}/หน่วย
                         </p>
                       </td>
                       <td className="px-3 py-2">
                         <div className="grid grid-cols-2 gap-2">
                           <div>
-                            <p className="mb-1 text-xs text-slate-500">Unit</p>
+                            <p className="mb-1 text-xs text-slate-500">หน่วย</p>
                             <input
                               type="number"
                               value={form.electricity_units}
@@ -2277,7 +2301,7 @@ export default function InvoicesPage() {
                             />
                           </div>
                           <div>
-                            <p className="mb-1 text-xs text-slate-500">Total</p>
+                            <p className="mb-1 text-xs text-slate-500">ยอดรวม</p>
                             <input
                               type="number"
                               value={form.electricity_bill}
@@ -2289,7 +2313,7 @@ export default function InvoicesPage() {
                       </td>
                     </tr>
                     <tr className="border-t border-slate-100">
-                      <td className="px-3 py-2 font-medium">Common Fee</td>
+                      <td className="px-3 py-2 font-medium">ค่าส่วนกลาง</td>
                       <td className="px-3 py-2">
                         <input
                           type="number"
@@ -2300,7 +2324,7 @@ export default function InvoicesPage() {
                       </td>
                     </tr>
                     <tr className="border-t border-slate-100">
-                      <td className="px-3 py-2 font-medium">Discount Total</td>
+                      <td className="px-3 py-2 font-medium">รวมส่วนลด</td>
                       <td className="px-3 py-2">
                         <input
                           type="number"
@@ -2311,7 +2335,7 @@ export default function InvoicesPage() {
                       </td>
                     </tr>
                     <tr className="border-t border-slate-100">
-                      <td className="px-3 py-2 font-medium">Late Fee Amount</td>
+                      <td className="px-3 py-2 font-medium">ค่าปรับล่าช้า</td>
                       <td className="px-3 py-2">
                         <input
                           type="number"
@@ -2322,7 +2346,7 @@ export default function InvoicesPage() {
                       </td>
                     </tr>
                     <tr className="border-t border-slate-100">
-                      <td className="px-3 py-2 font-medium">Additional Fees Total</td>
+                      <td className="px-3 py-2 font-medium">รวมค่าธรรมเนียมเพิ่มเติม</td>
                       <td className="px-3 py-2">
                         <input
                           type="number"
@@ -2333,7 +2357,7 @@ export default function InvoicesPage() {
                       </td>
                     </tr>
                     <tr className="border-t border-slate-100 bg-slate-50">
-                      <td className="px-3 py-2 font-semibold">Total Amount</td>
+                      <td className="px-3 py-2 font-semibold">ยอดรวมสุทธิ</td>
                       <td className="px-3 py-2">
                         <input
                           type="number"
@@ -2350,28 +2374,28 @@ export default function InvoicesPage() {
 
             <div className="space-y-3 rounded-xl border border-slate-200 p-4">
               <div className="flex items-center justify-between">
-                <p className="text-sm font-semibold text-slate-700">Additional Fee Details</p>
+                <p className="text-sm font-semibold text-slate-700">รายละเอียดค่าธรรมเนียมเพิ่มเติม</p>
                 <button
                   type="button"
                   onClick={() => setEditableFeeItems((prev) => [...prev, emptyFeeItem()])}
                   className="rounded-lg border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-700"
                 >
-                  Add Fee Row
+                  เพิ่มแถวค่าธรรมเนียม
                 </button>
               </div>
 
               {editableFeeItems.length === 0 ? (
-                <p className="text-xs text-slate-500">No additional fee rows.</p>
+                <p className="text-xs text-slate-500">ยังไม่มีรายการค่าธรรมเนียมเพิ่มเติม</p>
               ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full min-w-[640px] text-sm">
                     <thead className="bg-slate-100 text-slate-600">
                       <tr>
-                        <th className="px-2 py-2 text-left">Detail</th>
-                        <th className="px-2 py-2 text-right">Unit</th>
-                        <th className="px-2 py-2 text-right">Price / Unit</th>
-                        <th className="px-2 py-2 text-right">Total</th>
-                        <th className="px-2 py-2 text-right">Action</th>
+                        <th className="px-2 py-2 text-left">รายละเอียด</th>
+                        <th className="px-2 py-2 text-right">หน่วย</th>
+                        <th className="px-2 py-2 text-right">ราคา/หน่วย</th>
+                        <th className="px-2 py-2 text-right">ยอดรวม</th>
+                        <th className="px-2 py-2 text-right">จัดการ</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -2383,7 +2407,7 @@ export default function InvoicesPage() {
                               value={item.detail}
                               onChange={(event) => updateFeeItem(index, "detail", event.target.value)}
                               className="w-full rounded-lg border border-slate-200 px-2 py-1"
-                              placeholder="e.g. Parking"
+                              placeholder="เช่น ค่าที่จอดรถ"
                             />
                           </td>
                           <td className="px-2 py-2">
@@ -2434,7 +2458,7 @@ export default function InvoicesPage() {
                               }
                               className="rounded-lg border border-red-200 px-2 py-1 text-xs text-red-600"
                             >
-                              Remove
+                              ลบ
                             </button>
                           </td>
                         </tr>
@@ -2447,28 +2471,28 @@ export default function InvoicesPage() {
 
             <div className="space-y-3 rounded-xl border border-slate-200 p-4">
               <div className="flex items-center justify-between">
-                <p className="text-sm font-semibold text-slate-700">Discount Details</p>
+                <p className="text-sm font-semibold text-slate-700">รายละเอียดส่วนลด</p>
                 <button
                   type="button"
                   onClick={() => setEditableDiscountItems((prev) => [...prev, emptyFeeItem()])}
                   className="rounded-lg border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-700"
                 >
-                  Add Discount Row
+                  เพิ่มแถวส่วนลด
                 </button>
               </div>
 
               {editableDiscountItems.length === 0 ? (
-                <p className="text-xs text-slate-500">No discount rows.</p>
+                <p className="text-xs text-slate-500">ยังไม่มีรายการส่วนลด</p>
               ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full min-w-[640px] text-sm">
                     <thead className="bg-slate-100 text-slate-600">
                       <tr>
-                        <th className="px-2 py-2 text-left">Detail</th>
-                        <th className="px-2 py-2 text-right">Unit</th>
-                        <th className="px-2 py-2 text-right">Price / Unit</th>
-                        <th className="px-2 py-2 text-right">Total</th>
-                        <th className="px-2 py-2 text-right">Action</th>
+                        <th className="px-2 py-2 text-left">รายละเอียด</th>
+                        <th className="px-2 py-2 text-right">หน่วย</th>
+                        <th className="px-2 py-2 text-right">ราคา/หน่วย</th>
+                        <th className="px-2 py-2 text-right">ยอดรวม</th>
+                        <th className="px-2 py-2 text-right">จัดการ</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -2480,7 +2504,7 @@ export default function InvoicesPage() {
                               value={item.detail}
                               onChange={(event) => updateDiscountItem(index, "detail", event.target.value)}
                               className="w-full rounded-lg border border-slate-200 px-2 py-1"
-                              placeholder="e.g. Early payment"
+                              placeholder="เช่น ส่วนลดชำระก่อนกำหนด"
                             />
                           </td>
                           <td className="px-2 py-2">
@@ -2532,7 +2556,7 @@ export default function InvoicesPage() {
                               }
                               className="rounded-lg border border-red-200 px-2 py-1 text-xs text-red-600"
                             >
-                              Remove
+                              ลบ
                             </button>
                           </td>
                         </tr>
@@ -2544,7 +2568,7 @@ export default function InvoicesPage() {
             </div>
 
             <label className="text-sm text-slate-600">
-              Notes
+              หมายเหตุ
               <textarea
                 value={form.notes}
                 onChange={(event) => updateForm("notes", event.target.value)}
@@ -2555,13 +2579,13 @@ export default function InvoicesPage() {
             </fieldset>
 
             <div className="space-y-3">
-              <p className="text-sm font-semibold text-slate-700">Quick Actions</p>
+              <p className="text-sm font-semibold text-slate-700">เมนูด่วน</p>
               <button
                 onClick={() => void getInvoicePrintDetail(activeInvoice)}
                 className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-4 py-2 text-sm text-slate-600"
               >
                 <Printer size={16} />
-                Print Preview
+                พรีวิวก่อนพิมพ์
               </button>
               <button
                 onClick={() => void getInvoicePrintDetail(activeInvoice, "receipt")}
@@ -2569,7 +2593,7 @@ export default function InvoicesPage() {
                 className="inline-flex items-center gap-2 rounded-xl border border-emerald-200 px-4 py-2 text-sm text-emerald-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
               >
                 <FileText size={16} />
-                Print Receipt
+                พิมพ์ใบเสร็จ
               </button>
               <button
                 onClick={() => sendToLine(activeInvoice)}
@@ -2584,10 +2608,11 @@ export default function InvoicesPage() {
                   setConfirmDeleteOpen(true);
                 }}
                 disabled={!canDeleteInvoice}
-                className="inline-flex items-center gap-2 rounded-xl border border-red-200 px-4 py-2 text-sm text-red-600"
+                title={!canDeleteInvoice ? "ไม่มีสิทธิ์ลบใบแจ้งหนี้" : undefined}
+                className="inline-flex items-center gap-2 rounded-xl border border-red-200 px-4 py-2 text-sm text-red-600 disabled:cursor-not-allowed disabled:text-red-300"
               >
                 <Trash2 size={16} />
-                Delete Invoice
+                ลบใบแจ้งหนี้
               </button>
             </div>
 
@@ -2596,14 +2621,15 @@ export default function InvoicesPage() {
                 onClick={() => setDetailOpen(false)}
                 className="rounded-xl border border-slate-200 px-4 py-2 text-sm text-slate-600"
               >
-                Cancel
+                ยกเลิก
               </button>
               <button
                 onClick={() => setConfirmSaveOpen(true)}
                 disabled={!(canEditDetails && canEditInvoice)}
-                className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
+                title={!(canEditDetails && canEditInvoice) ? "ไม่มีสิทธิ์แก้ไขรายละเอียดใบแจ้งหนี้" : undefined}
+                className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
               >
-                Save Changes
+                บันทึกการเปลี่ยนแปลง
               </button>
             </div>
           </div>
@@ -2613,31 +2639,31 @@ export default function InvoicesPage() {
       <Modal
         isOpen={slipModalOpen}
         onClose={() => setSlipModalOpen(false)}
-        title={slipModalTitle || "Payment Slip"}
+        title={slipModalTitle || "สลิปการชำระเงิน"}
         size="lg"
       >
         {slipModalUrl ? (
           <div className="space-y-3">
-            <img src={slipModalUrl} alt="Payment slip" className="w-full rounded-xl border border-slate-200" />
+            <img src={slipModalUrl} alt="สลิปการชำระเงิน" className="w-full rounded-xl border border-slate-200" />
             <div className="flex justify-end">
               <button
                 onClick={() => setSlipModalOpen(false)}
                 className="rounded-xl border border-slate-200 px-4 py-2 text-sm text-slate-600"
               >
-                Close
+                ปิด
               </button>
             </div>
           </div>
         ) : (
-          <p className="text-sm text-slate-500">No slip image available.</p>
+          <p className="text-sm text-slate-500">ไม่มีรูปสลิป</p>
         )}
       </Modal>
 
       <ConfirmActionModal
         isOpen={confirmGenerateOpen}
-        title="Generate Invoices"
-        message={`Generate invoices for ${selectedMonth}?`}
-        confirmLabel="Generate"
+        title="สร้างใบแจ้งหนี้"
+        message={`สร้างใบแจ้งหนี้สำหรับเดือน ${selectedMonth} ใช่หรือไม่?`}
+        confirmLabel="สร้าง"
         loading={saving}
         onCancel={() => setConfirmGenerateOpen(false)}
         onConfirm={generateInvoices}
@@ -2645,9 +2671,9 @@ export default function InvoicesPage() {
 
       <ConfirmActionModal
         isOpen={confirmSaveOpen}
-        title="Save Invoice"
-        message="Apply changes to this invoice?"
-        confirmLabel="Save"
+        title="บันทึกใบแจ้งหนี้"
+        message="ยืนยันการบันทึกการเปลี่ยนแปลงใบแจ้งหนี้นี้?"
+        confirmLabel="บันทึก"
         loading={saving}
         onCancel={() => setConfirmSaveOpen(false)}
         onConfirm={saveInvoice}
@@ -2655,13 +2681,13 @@ export default function InvoicesPage() {
 
       <ConfirmActionModal
         isOpen={confirmDeleteOpen}
-        title="Delete Invoice"
+        title="ลบใบแจ้งหนี้"
         message={
           deleteTargetIds.length > 1
-            ? `This action cannot be undone. Delete ${deleteTargetIds.length} invoices?`
-            : "This action cannot be undone. Delete this invoice?"
+            ? `การกระทำนี้ไม่สามารถย้อนกลับได้ ต้องการลบ ${deleteTargetIds.length} ใบแจ้งหนี้หรือไม่?`
+            : "การกระทำนี้ไม่สามารถย้อนกลับได้ ต้องการลบใบแจ้งหนี้นี้หรือไม่?"
         }
-        confirmLabel="Delete"
+        confirmLabel="ลบ"
         loading={saving}
         onCancel={() => setConfirmDeleteOpen(false)}
         onConfirm={async () => {
@@ -2683,7 +2709,7 @@ export default function InvoicesPage() {
         {previewInvoice && (
           <div className="space-y-5 text-sm text-slate-700">
             {previewLoading ? (
-              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">Loading preview...</div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">กำลังโหลดพรีวิว...</div>
             ) : (
               <>
                 <div className="flex flex-wrap justify-between gap-4 rounded-xl border border-slate-200 bg-white p-4">

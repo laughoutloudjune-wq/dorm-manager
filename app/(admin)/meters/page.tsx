@@ -352,27 +352,27 @@ export default function MetersPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="max-w-sm">
           <Input
-            label="Select Month"
+            label="เลือกเดือน"
             type="month"
             value={selectedMonth}
             onChange={(event) => setSelectedMonth(event.target.value)}
           />
         </div>
         <div className="flex flex-wrap items-end gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2">
-          <label className="text-sm text-slate-700">Meter max value</label>
+          <label className="text-sm text-slate-700">ค่าสูงสุดมิเตอร์</label>
           <input
             type="number"
             value={electricityMax}
             onChange={(event) => setElectricityMax(toNumber(event.target.value))}
             className="w-28 rounded-lg border border-slate-200 px-3 py-1.5 text-sm"
-            placeholder="Elec max"
+            placeholder="ไฟสูงสุด"
           />
           <input
             type="number"
             value={waterMax}
             onChange={(event) => setWaterMax(toNumber(event.target.value))}
             className="w-28 rounded-lg border border-slate-200 px-3 py-1.5 text-sm"
-            placeholder="Water max"
+            placeholder="น้ำสูงสุด"
           />
         </div>
         <button
@@ -380,7 +380,7 @@ export default function MetersPage() {
           className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
         >
           <Save size={16} />
-          Save All Readings
+          บันทึกมิเตอร์ทั้งหมด
         </button>
       </div>
 
@@ -388,7 +388,7 @@ export default function MetersPage() {
 
       {loading ? (
         <div className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-500">
-          Loading readings...
+          กำลังโหลดข้อมูลมิเตอร์...
         </div>
       ) : (
         <div className="grid gap-6 lg:grid-cols-2">
@@ -396,20 +396,20 @@ export default function MetersPage() {
           <div key={building} className="space-y-3">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold text-slate-900">{building}</h2>
-              <Badge variant="info">Electricity + Water</Badge>
+              <Badge variant="info">ไฟฟ้า + น้ำ</Badge>
             </div>
             <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
               <table className="w-full text-left text-sm">
                 <thead className="bg-slate-100 text-xs uppercase tracking-wider text-slate-500">
                   <tr>
-                    <th className="px-4 py-3">Room</th>
-                    <th className="px-4 py-3">Rollover</th>
-                    <th className="bg-amber-50 px-4 py-3 text-amber-800">Elec Prev</th>
-                    <th className="bg-amber-50 px-4 py-3 text-amber-800">Elec Current</th>
-                    <th className="bg-amber-50 px-4 py-3 text-amber-800">Elec Usage</th>
-                    <th className="bg-cyan-50 px-4 py-3 text-cyan-800">Water Prev</th>
-                    <th className="bg-cyan-50 px-4 py-3 text-cyan-800">Water Current</th>
-                    <th className="bg-cyan-50 px-4 py-3 text-cyan-800">Water Usage</th>
+                    <th className="px-4 py-3">ห้อง</th>
+                    <th className="px-4 py-3">มิเตอร์หมุน</th>
+                    <th className="bg-amber-50 px-4 py-3 text-amber-800">ไฟ ก่อนหน้า</th>
+                    <th className="bg-amber-50 px-4 py-3 text-amber-800">ไฟ ปัจจุบัน</th>
+                    <th className="bg-amber-50 px-4 py-3 text-amber-800">ไฟ ใช้ไป</th>
+                    <th className="bg-cyan-50 px-4 py-3 text-cyan-800">น้ำ ก่อนหน้า</th>
+                    <th className="bg-cyan-50 px-4 py-3 text-cyan-800">น้ำ ปัจจุบัน</th>
+                    <th className="bg-cyan-50 px-4 py-3 text-cyan-800">น้ำ ใช้ไป</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -425,7 +425,7 @@ export default function MetersPage() {
                               updateRollover(building, row.room_id, event.target.checked)
                             }
                           />
-                          Enabled
+                          เปิดใช้
                         </label>
                       </td>
                       <td className="bg-amber-50/60 px-4 py-3">{row.previous_electricity}</td>
@@ -502,9 +502,9 @@ export default function MetersPage() {
 
       <ConfirmActionModal
         isOpen={confirmOpen}
-        title="Confirm Save"
-        message="Save all electricity and water readings for this month?"
-        confirmLabel="Save All"
+        title="ยืนยันการบันทึก"
+        message="บันทึกค่ามิเตอร์ไฟฟ้าและน้ำทั้งหมดของเดือนนี้?"
+        confirmLabel="บันทึกทั้งหมด"
         loading={saving}
         onCancel={() => setConfirmOpen(false)}
         onConfirm={saveAll}
