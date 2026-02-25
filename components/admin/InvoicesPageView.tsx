@@ -459,23 +459,28 @@ export default function InvoicesPage() {
     return () => document.removeEventListener("mousedown", onDocPointerDown);
   }, [openActionMenuId]);
 
-  const applyPendingToOverdue = async () => {
+  const applyPendingToOverdue = async (periodStart: string, periodEnd: string) => {
     const today = toLocalDateString(new Date());
     const { error: overdueError } = await supabase
       .from("invoices")
       .update({ status: "overdue" })
       .eq("status", "pending")
+      .eq("start_date", periodStart)
+      .eq("end_date", periodEnd)
+      .is("slip_url", null)
       .lt("due_date", today);
     if (overdueError) {
       setError(overdueError.message);
     }
   };
 
-  const applySlipToVerifying = async () => {
+  const applySlipToVerifying = async (periodStart: string, periodEnd: string) => {
     const { error: verifyingError } = await supabase
       .from("invoices")
       .update({ status: "verifying" })
       .in("status", ["pending", "overdue"])
+      .eq("start_date", periodStart)
+      .eq("end_date", periodEnd)
       .not("slip_url", "is", null);
     if (verifyingError) {
       setError(verifyingError.message);
@@ -573,8 +578,8 @@ export default function InvoicesPage() {
     const periodStart = toLocalDateString(new Date(year, month - 1, 1));
     const periodEnd = toLocalDateString(new Date(year, month, 0));
 
-    await applySlipToVerifying();
-    await applyPendingToOverdue();
+    // Do not auto-mutate invoice statuses on page load.
+    // Automatic writes here can override manual status changes and feel random on refresh.
     await syncMonthInvoicesWithSettings(year, month);
 
     const { data, error: fetchError } = await supabase
@@ -1664,10 +1669,9 @@ export default function InvoicesPage() {
     const lateFeeStartDay = clampDay((settings as any).late_fee_start_day ?? 6);
     const lateFeePerDay = toNumber((settings as any).late_fee_per_day ?? 0);
     const issueDateText = toLocalDateString(new Date(year, month - 1, billingDay));
-    const generatedDueDateText = toLocalDateString(new Date(year, month - 1, dueDay));
-    const generatedLateFeeStartDateText = toLocalDateString(
-      new Date(year, month - 1, lateFeeStartDay)
-    );
+    // Invoice period is the selected month, but due date / late fee start belong to the next month.
+    const generatedDueDateText = toLocalDateString(new Date(year, month, dueDay));
+    const generatedLateFeeStartDateText = toLocalDateString(new Date(year, month, lateFeeStartDay));
 
     const { data: occupiedRooms, error: roomError } = await supabase
       .from("rooms")
