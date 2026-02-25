@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/Input";
 import { ConfirmActionModal } from "@/components/ui/ConfirmActionModal";
 import { createClient } from "@/lib/supabase-client";
 import { usePermissions } from "@/lib/use-permissions";
-import { FileText, Pencil, Printer, Send, Trash2, UploadCloud } from "lucide-react";
+import { CheckCircle2, Loader2, Send, Trash2, UploadCloud, FileText, Pencil, Printer, AlertCircle } from "lucide-react";
 
 const statusVariant = {
   draft: "default",
@@ -72,6 +72,8 @@ type PrintSettings = {
   dorm_address: string | null;
   water_rate: number | null;
   electricity_rate: number | null;
+  water_min_units?: number | null;
+  water_min_price?: number | null;
   billing_day: number | null;
   due_day: number | null;
   late_fee_start_day: number | null;
@@ -203,6 +205,12 @@ const computeDateByDayInMonth = (baseDate: string, day: number | null | undefine
   const date = new Date(baseDate);
   const normalized = clampDay(day ?? 1);
   return toLocalDateString(new Date(date.getFullYear(), date.getMonth(), normalized));
+};
+
+const computeDateByDayNextMonth = (baseDate: string, day: number | null | undefined) => {
+  const date = new Date(baseDate);
+  const normalized = clampDay(day ?? 1);
+  return toLocalDateString(new Date(date.getFullYear(), date.getMonth() + 1, normalized));
 };
 
 const isSameMonthAndYear = (left: Date, right: Date) =>
@@ -389,6 +397,11 @@ export default function InvoicesPage() {
   const [paymentDate, setPaymentDate] = useState(toLocalDateString(new Date()));
   const [paymentSlipFile, setPaymentSlipFile] = useState<File | null>(null);
   const [paymentSubmitting, setPaymentSubmitting] = useState(false);
+  const [lineSendModalOpen, setLineSendModalOpen] = useState(false);
+  const [lineSendState, setLineSendState] = useState<"sending" | "success" | "error">("sending");
+  const [lineSendTitle, setLineSendTitle] = useState("กำลังส่งใบแจ้งหนี้ไป LINE");
+  const [lineSendMessage, setLineSendMessage] = useState("กำลังดำเนินการ...");
+  const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
 
   const [form, setForm] = useState({
     issue_date: "",
@@ -434,6 +447,17 @@ export default function InvoicesPage() {
       mounted = false;
     };
   }, [supabase]);
+
+  useEffect(() => {
+    if (!openActionMenuId) return;
+    const onDocPointerDown = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("[data-invoice-action-menu]")) return;
+      setOpenActionMenuId(null);
+    };
+    document.addEventListener("mousedown", onDocPointerDown);
+    return () => document.removeEventListener("mousedown", onDocPointerDown);
+  }, [openActionMenuId]);
 
   const applyPendingToOverdue = async () => {
     const today = toLocalDateString(new Date());
@@ -673,7 +697,7 @@ export default function InvoicesPage() {
   const loadPrintConfig = async () => {
     const { data: settingData } = await supabase
       .from("settings")
-      .select("dorm_name,dorm_address,water_rate,electricity_rate,billing_day,due_day,late_fee_start_day,additional_discounts")
+      .select("dorm_name,dorm_address,water_rate,electricity_rate,water_min_units,water_min_price,billing_day,due_day,late_fee_start_day,additional_discounts")
       .eq("id", 1)
       .maybeSingle();
     setPrintSettings((settingData as PrintSettings) ?? null);
@@ -870,6 +894,13 @@ export default function InvoicesPage() {
       setPaymentAmountInput("");
       setPaymentSlipFile(null);
       setForm((prev) => ({ ...prev, paid_amount: nextPaidAmount, status: nextStatus }));
+      const activeNext = {
+        ...activeInvoice,
+        paid_amount: nextPaidAmount,
+        payment_history: nextHistory,
+        status: nextStatus,
+        slip_url: publicUrl,
+      } as InvoiceRecord;
       setActiveInvoice((prev) =>
         prev
           ? {
@@ -881,7 +912,14 @@ export default function InvoicesPage() {
             }
           : prev
       );
-      await loadInvoices();
+      patchInvoiceInState(activeInvoice.id, {
+        paid_amount: nextPaidAmount,
+        payment_history: nextHistory,
+        status: nextStatus,
+        slip_url: publicUrl,
+      });
+      // Keep local modal state in sync without reloading the full page list.
+      setActiveInvoice(activeNext);
     } catch (paymentError: any) {
       setError(paymentError?.message ?? "Failed to process payment.");
     } finally {
@@ -889,13 +927,37 @@ export default function InvoicesPage() {
     }
   };
 
-  const openInvoice = (invoice: InvoiceRecord) => {
+  const deletePaymentSlip = async () => {
+    if (!can("invoice.payment.record")) {
+      setError("ไม่มีสิทธิ์ลบสลิปการชำระเงิน");
+      return;
+    }
+    if (!activeInvoice?.slip_url) return;
+    try {
+      await callInvoiceAdminAction("record_payment", {
+        invoiceId: activeInvoice.id,
+        payload: {
+          slip_url: null,
+          slip_uploaded_at: null,
+        },
+      });
+      setSlipPreview(null);
+      setActiveInvoice((prev) => (prev ? { ...prev, slip_url: null } : prev));
+      patchInvoiceInState(activeInvoice.id, { slip_url: null });
+      setError(null);
+    } catch (error: any) {
+      setError(error?.message ?? "ลบสลิปการชำระเงินไม่สำเร็จ");
+    }
+  };
+
+  const openInvoice = async (invoice: InvoiceRecord) => {
     const feeItems = toFeeItems(invoice.additional_fees_breakdown ?? []);
     const discountItems = toFeeItems(invoice.discount_breakdown ?? []);
     const todayLocal = toLocalDateString(new Date());
-    const dueDateFromSetting = computeDateByDayInMonth(todayLocal, printSettings?.due_day);
-    const lateStartFromSetting = computeDateByDayInMonth(
-      todayLocal,
+    const periodBaseDate = invoice.end_date || invoice.start_date || invoice.issue_date || todayLocal;
+    const dueDateFromSetting = computeDateByDayNextMonth(periodBaseDate, printSettings?.due_day);
+    const lateStartFromSetting = computeDateByDayNextMonth(
+      periodBaseDate,
       printSettings?.late_fee_start_day
     );
     const monthlyRent = toNumber(invoice.room_price_month || invoice.rent_amount);
@@ -926,7 +988,7 @@ export default function InvoicesPage() {
         : toNumber(invoice.electricity_bill);
 
     setForm({
-      issue_date: todayLocal,
+      issue_date: invoice.issue_date || todayLocal,
       due_date: dueDateFromSetting,
       start_date: invoice.start_date,
       end_date: invoice.end_date,
@@ -954,18 +1016,54 @@ export default function InvoicesPage() {
     setPaymentSlipFile(null);
     setSlipPreview(invoice.slip_url);
     setDetailOpen(true);
+
+    // Replace inferred units with real meter usage for the invoice month.
+    // This is important when water billing uses a minimum charge, where
+    // water_bill / water_rate does not equal actual usage.
+    try {
+      const readingMonth = monthStartFromDate(invoice.start_date || invoice.issue_date);
+      const { data } = await supabase
+        .from("meter_readings")
+        .select(
+          "electricity_usage,water_usage,usage,previous_electricity,current_electricity,previous_water,current_water,previous_reading,current_reading"
+        )
+        .eq("room_id", invoice.room_id)
+        .eq("reading_month", readingMonth)
+        .maybeSingle();
+
+      const reading = (data as MeterReadingRow | null) ?? null;
+      if (!reading) return;
+
+      setForm((prev) => ({
+        ...prev,
+        electricity_units: resolveElectricityUsage(reading),
+        water_units: resolveWaterUsage(reading),
+        // Keep billed totals as-is (already calculated from settings/minimum rules)
+        electricity_bill: invoice.electricity_bill,
+        water_bill: invoice.water_bill,
+      }));
+    } catch {
+      // Non-blocking: modal can still open using inferred values.
+    }
   };
 
   const updateUtilityUnits = (field: "water_units" | "electricity_units", value: string | number) => {
     if (activeInvoice && !isInvoiceDetailEditable(activeInvoice.status)) return;
     const units = toNumber(value);
     const waterRate = toNumber(printSettings?.water_rate);
+    const waterMinUnits = toNumber(printSettings?.water_min_units);
+    const waterMinPrice = toNumber(printSettings?.water_min_price);
     const electricityRate = toNumber(printSettings?.electricity_rate);
 
     setForm((prev) => {
       const next = { ...prev, [field]: units } as typeof prev;
-      const nextWaterBill =
-        field === "water_units" ? units * waterRate : toNumber(next.water_units) * waterRate;
+      const nextWaterUnits = field === "water_units" ? units : toNumber(next.water_units);
+      const nextWaterBill = calculateWaterBillWithMinimum(
+        nextWaterUnits,
+        waterRate,
+        waterMinUnits,
+        waterMinPrice
+      );
       const nextElectricityBill =
         field === "electricity_units"
           ? units * electricityRate
@@ -1144,44 +1242,46 @@ export default function InvoicesPage() {
     }
     setSaving(true);
 
+    const payload = {
+      issue_date: form.issue_date,
+      due_date: form.due_date,
+      start_date: form.start_date,
+      end_date: form.end_date,
+      rent_amount: toNumber(form.rent_amount),
+      water_bill: toNumber(form.water_bill),
+      electricity_bill: toNumber(form.electricity_bill),
+      common_fee: toNumber(form.common_fee),
+      discount_amount: feeItemsTotal(editableDiscountItems),
+      discount_breakdown: editableDiscountItems.map((item) => ({
+        detail: item.detail,
+        unit: toNumber(item.unit),
+        price_per_unit: toNumber(item.price_per_unit),
+        total_amount: toNumber(item.total_amount),
+        amount: toNumber(item.total_amount),
+        label: item.detail,
+      })),
+      late_fee_amount: toNumber(form.late_fee_amount),
+      late_fee_per_day: toNumber(form.late_fee_per_day),
+      late_fee_start_date: form.late_fee_start_date || null,
+      additional_fees_total: feeItemsTotal(editableFeeItems),
+      additional_fees_breakdown: editableFeeItems.map((item) => ({
+        detail: item.detail,
+        unit: toNumber(item.unit),
+        price_per_unit: toNumber(item.price_per_unit),
+        total_amount: toNumber(item.total_amount),
+        amount: toNumber(item.total_amount),
+        label: item.detail,
+      })),
+      total_amount: toNumber(form.total_amount),
+      paid_amount: Math.min(toNumber(form.paid_amount), toNumber(form.total_amount)),
+      status: form.status,
+      notes: form.notes,
+    };
+
     try {
       await callInvoiceAdminAction("save_details", {
         invoiceId: activeInvoice.id,
-        payload: {
-        issue_date: form.issue_date,
-        due_date: form.due_date,
-        start_date: form.start_date,
-        end_date: form.end_date,
-        rent_amount: toNumber(form.rent_amount),
-        water_bill: toNumber(form.water_bill),
-        electricity_bill: toNumber(form.electricity_bill),
-        common_fee: toNumber(form.common_fee),
-        discount_amount: feeItemsTotal(editableDiscountItems),
-        discount_breakdown: editableDiscountItems.map((item) => ({
-          detail: item.detail,
-          unit: toNumber(item.unit),
-          price_per_unit: toNumber(item.price_per_unit),
-          total_amount: toNumber(item.total_amount),
-          amount: toNumber(item.total_amount),
-          label: item.detail,
-        })),
-        late_fee_amount: toNumber(form.late_fee_amount),
-        late_fee_per_day: toNumber(form.late_fee_per_day),
-        late_fee_start_date: form.late_fee_start_date || null,
-        additional_fees_total: feeItemsTotal(editableFeeItems),
-        additional_fees_breakdown: editableFeeItems.map((item) => ({
-          detail: item.detail,
-          unit: toNumber(item.unit),
-          price_per_unit: toNumber(item.price_per_unit),
-          total_amount: toNumber(item.total_amount),
-          amount: toNumber(item.total_amount),
-          label: item.detail,
-        })),
-        total_amount: toNumber(form.total_amount),
-        paid_amount: Math.min(toNumber(form.paid_amount), toNumber(form.total_amount)),
-        status: form.status,
-        notes: form.notes,
-        },
+        payload,
       });
     } catch (error: any) {
       setSaving(false);
@@ -1192,7 +1292,8 @@ export default function InvoicesPage() {
 
     setSaving(false);
     setConfirmSaveOpen(false);
-    await loadInvoices();
+    patchInvoiceInState(activeInvoice.id, payload as Partial<InvoiceRecord>);
+    setActiveInvoice((prev) => (prev ? ({ ...prev, ...(payload as any) } as InvoiceRecord) : prev));
     setDetailOpen(false);
   };
 
@@ -1236,10 +1337,9 @@ export default function InvoicesPage() {
     }
   };
 
-  const sendToLine = async (invoice: InvoiceRecord) => {
+  const sendInvoiceToLineRequest = async (invoice: InvoiceRecord) => {
     if (!invoice.tenant_line_user_id) {
-      setError(`Missing LINE user id for ${invoice.tenant_name}`);
-      return;
+      throw new Error(`ไม่พบ LINE user id ของ ${invoice.tenant_name}`);
     }
 
     const response = await fetch("/api/send-invoice", {
@@ -1256,18 +1356,60 @@ export default function InvoicesPage() {
       const detail = [data?.error, data?.lineStatus && `LINE ${data.lineStatus}`, data?.lineMessage]
         .filter(Boolean)
         .join(" | ");
-      setError(detail || "Failed to send LINE message");
-      return;
+      throw new Error(detail || "ส่งข้อความ LINE ไม่สำเร็จ");
     }
 
     const nextStatus = invoice.status === "draft" ? "pending" : invoice.status;
     await updateInvoiceStatus(invoice.id, nextStatus);
   };
 
+  const sendToLine = async (invoice: InvoiceRecord) => {
+    setLineSendModalOpen(true);
+    setLineSendState("sending");
+    setLineSendTitle("กำลังส่งใบแจ้งหนี้ไป LINE");
+    setLineSendMessage(`กำลังส่งห้อง ${invoice.room_number} (${invoice.tenant_name})`);
+    try {
+      await sendInvoiceToLineRequest(invoice);
+      setLineSendState("success");
+      setLineSendTitle("ส่งใบแจ้งหนี้สำเร็จ");
+      setLineSendMessage(`ส่งไปยัง ${invoice.tenant_name} (ห้อง ${invoice.room_number}) เรียบร้อย`);
+    } catch (error: any) {
+      setLineSendState("error");
+      setLineSendTitle("ส่งใบแจ้งหนี้ไม่สำเร็จ");
+      setLineSendMessage(error?.message ?? "เกิดข้อผิดพลาดระหว่างส่ง LINE");
+      setError(error?.message ?? "ส่ง LINE ไม่สำเร็จ");
+    }
+  };
+
   const sendSelectedToLine = async () => {
-    for (const id of selected) {
-      const invoice = invoices.find((item) => item.id === id);
-      if (invoice) await sendToLine(invoice);
+    const selectedInvoices = selected
+      .map((id) => invoices.find((item) => item.id === id))
+      .filter(Boolean) as InvoiceRecord[];
+    if (selectedInvoices.length === 0) return;
+
+    setLineSendModalOpen(true);
+    setLineSendState("sending");
+    setLineSendTitle("กำลังส่งใบแจ้งหนี้หลายรายการ");
+    let sentCount = 0;
+    try {
+      for (let i = 0; i < selectedInvoices.length; i += 1) {
+        const invoice = selectedInvoices[i];
+        setLineSendMessage(
+          `กำลังส่ง ${i + 1}/${selectedInvoices.length}: ห้อง ${invoice.room_number} (${invoice.tenant_name})`
+        );
+        await sendInvoiceToLineRequest(invoice);
+        sentCount += 1;
+      }
+      setLineSendState("success");
+      setLineSendTitle("ส่งใบแจ้งหนี้ครบแล้ว");
+      setLineSendMessage(`ส่งสำเร็จ ${sentCount}/${selectedInvoices.length} รายการ`);
+    } catch (error: any) {
+      setLineSendState("error");
+      setLineSendTitle("ส่งใบแจ้งหนี้บางรายการไม่สำเร็จ");
+      setLineSendMessage(
+        `${error?.message ?? "เกิดข้อผิดพลาด"} (ส่งสำเร็จ ${sentCount}/${selectedInvoices.length} รายการ)`
+      );
+      setError(error?.message ?? "ส่ง LINE ไม่สำเร็จ");
     }
   };
 
@@ -1845,18 +1987,22 @@ export default function InvoicesPage() {
                     return (
                     <tr
                       key={invoice.id}
-                      className={`border-t border-slate-100 ${statusRowClass(invoice.status)}`}
+                      onClick={() => void openInvoice(invoice)}
+                      className={`cursor-pointer border-t border-slate-100 hover:bg-slate-50/70 ${statusRowClass(invoice.status)}`}
+                      title="คลิกเพื่อเปิดรายละเอียดใบแจ้งหนี้"
                     >
                       <td className="px-4 py-3">
                         <input
                           type="checkbox"
                           checked={selected.includes(invoice.id)}
+                          onClick={(event) => event.stopPropagation()}
                           onChange={() => toggleSelect(invoice.id)}
                         />
                       </td>
                       <td className="px-4 py-3">
                         <select
                           value={invoice.status}
+                          onClick={(event) => event.stopPropagation()}
                           onChange={(event) =>
                             void updateInvoiceStatus(invoice.id, event.target.value as keyof typeof statusVariant)
                           }
@@ -1874,7 +2020,16 @@ export default function InvoicesPage() {
                         </select>
                       </td>
                       <td className="px-4 py-3 font-medium text-slate-900">{invoice.room_number}</td>
-                      <td className="px-4 py-3">{invoice.tenant_name}</td>
+                      <td className="px-4 py-3">
+                        <div className="flex flex-col gap-1">
+                          <span>{invoice.tenant_name}</span>
+                          {invoice.tenant_move_in_date?.slice(0, 7) === selectedMonth && (
+                            <span className="inline-flex w-fit items-center rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
+                              ผู้เช่าเข้าใหม่
+                            </span>
+                          )}
+                        </div>
+                      </td>
                       <td className="px-4 py-3">
                         {invoice.start_date} - {invoice.end_date}
                       </td>
@@ -1889,7 +2044,10 @@ export default function InvoicesPage() {
                       </td>
                       <td className="px-4 py-3">
                         <button
-                          onClick={() => openSlipViewer(invoice)}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            openSlipViewer(invoice);
+                          }}
                           disabled={!invoice.slip_url}
                           className={`rounded-full px-3 py-1 text-xs font-semibold ${
                             invoice.slip_url
@@ -1901,13 +2059,25 @@ export default function InvoicesPage() {
                         </button>
                       </td>
                       <td className="px-4 py-3">
-                        <details className="relative">
-                          <summary className="cursor-pointer rounded-lg bg-blue-100 px-3 py-1 text-xs font-semibold text-blue-700 hover:bg-blue-200">
+                        <div className="relative" data-invoice-action-menu>
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setOpenActionMenuId((prev) => (prev === invoice.id ? null : invoice.id));
+                            }}
+                            className="cursor-pointer rounded-lg bg-blue-100 px-3 py-1 text-xs font-semibold text-blue-700 hover:bg-blue-200"
+                          >
                             เมนู
-                          </summary>
-                          <div className="absolute right-0 z-20 mt-1 w-36 rounded-lg border border-slate-200 bg-white p-1 shadow-lg">
+                          </button>
+                          {openActionMenuId === invoice.id && (
+                          <div className="absolute right-0 z-20 mt-1 w-36 rounded-lg border border-slate-200 bg-white p-1 shadow-lg animate-soft-pop">
                             <button
-                              onClick={() => openInvoice(invoice)}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setOpenActionMenuId(null);
+                                void openInvoice(invoice);
+                              }}
                               disabled={!(canEditInvoice || canRecordInvoicePayment || canUpdateInvoiceStatus)}
                               title={!(canEditInvoice || canRecordInvoicePayment || canUpdateInvoiceStatus) ? "ไม่มีสิทธิ์เปิดแก้ไขใบแจ้งหนี้" : undefined}
                               className="flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-xs font-medium text-sky-700 hover:bg-sky-50 disabled:cursor-not-allowed disabled:text-red-400 disabled:hover:bg-transparent"
@@ -1916,14 +2086,22 @@ export default function InvoicesPage() {
                               เปิดรายละเอียด
                             </button>
                             <button
-                              onClick={() => void getInvoicePrintDetail(invoice)}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setOpenActionMenuId(null);
+                                void getInvoicePrintDetail(invoice);
+                              }}
                               className="flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-xs font-medium text-indigo-700 hover:bg-indigo-50"
                             >
                               <Printer size={12} />
                               พรีวิว
                             </button>
                             <button
-                              onClick={() => void getInvoicePrintDetail(invoice, "receipt")}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setOpenActionMenuId(null);
+                                void getInvoicePrintDetail(invoice, "receipt");
+                              }}
                               disabled={!(invoice.status === "verifying" || invoice.status === "paid")}
                               className="flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-xs font-medium text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:text-slate-400 disabled:hover:bg-transparent"
                             >
@@ -1931,7 +2109,9 @@ export default function InvoicesPage() {
                               ใบเสร็จ
                             </button>
                             <button
-                              onClick={() => {
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setOpenActionMenuId(null);
                                 setDeleteTargetIds([invoice.id]);
                                 setConfirmDeleteOpen(true);
                               }}
@@ -1943,7 +2123,8 @@ export default function InvoicesPage() {
                               ลบ
                             </button>
                           </div>
-                        </details>
+                          )}
+                        </div>
                       </td>
                     </tr>
                     );
@@ -2165,7 +2346,18 @@ export default function InvoicesPage() {
                       </div>
                       {slipPreview && (
                         <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-2">
-                          <p className="text-xs text-slate-500">สลิปปัจจุบัน</p>
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="text-xs text-slate-500">สลิปปัจจุบัน</p>
+                            <button
+                              type="button"
+                              onClick={() => void deletePaymentSlip()}
+                              disabled={!canRecordInvoicePayment || paymentSubmitting}
+                              title={!canRecordInvoicePayment ? "ไม่มีสิทธิ์ลบสลิปการชำระเงิน" : undefined}
+                              className="rounded-md border border-red-200 px-2 py-1 text-xs font-semibold text-red-600 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              ลบสลิป
+                            </button>
+                          </div>
                           <img src={slipPreview} alt="สลิป" className="mt-2 max-h-40 rounded-lg border" />
                         </div>
                       )}
@@ -2657,6 +2849,49 @@ export default function InvoicesPage() {
         ) : (
           <p className="text-sm text-slate-500">ไม่มีรูปสลิป</p>
         )}
+      </Modal>
+
+      <Modal
+        isOpen={lineSendModalOpen}
+        onClose={() => {
+          if (lineSendState === "sending") return;
+          setLineSendModalOpen(false);
+        }}
+        title={lineSendTitle}
+        size="md"
+      >
+        <div className="space-y-4">
+          <div
+            className={`rounded-xl border p-4 text-sm ${
+              lineSendState === "success"
+                ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                : lineSendState === "error"
+                  ? "border-red-200 bg-red-50 text-red-800"
+                  : "border-blue-200 bg-blue-50 text-blue-800"
+            }`}
+          >
+            <div className="flex items-start gap-3">
+              {lineSendState === "sending" ? (
+                <Loader2 size={18} className="mt-0.5 animate-spin" />
+              ) : lineSendState === "success" ? (
+                <CheckCircle2 size={18} className="mt-0.5" />
+              ) : (
+                <AlertCircle size={18} className="mt-0.5" />
+              )}
+              <p>{lineSendMessage}</p>
+            </div>
+          </div>
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={() => setLineSendModalOpen(false)}
+              disabled={lineSendState === "sending"}
+              className="rounded-xl border border-slate-200 px-4 py-2 text-sm text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {lineSendState === "sending" ? "กำลังส่ง..." : "ปิด"}
+            </button>
+          </div>
+        </div>
       </Modal>
 
       <ConfirmActionModal

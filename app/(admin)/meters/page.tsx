@@ -18,12 +18,27 @@ type MeterRow = {
   room_number: string;
   reading_month: string;
   rollover: boolean;
+  previous_source: "prev_month" | "move_in";
+  previous_month_electricity: number;
+  previous_month_water: number;
+  move_in_electricity: number | null;
+  move_in_water: number | null;
+  move_in_tenant_name: string | null;
+  move_in_date: string | null;
   previous_electricity: number;
   current_electricity: number;
   electricity_usage: number;
   previous_water: number;
   current_water: number;
   water_usage: number;
+};
+
+type MoveInTenantRow = {
+  room_id: string;
+  full_name: string | null;
+  move_in_date: string;
+  initial_electricity_reading: number | null;
+  initial_water_reading: number | null;
 };
 
 type MeterReadingDb = {
@@ -88,6 +103,23 @@ export default function MetersPage() {
     return safeMax - previous + current;
   };
 
+  const recalcRowUsage = (row: MeterRow) => {
+    const next = { ...row };
+    next.electricity_usage = calcUsage(
+      next.previous_electricity,
+      next.current_electricity,
+      Math.max(0, toNumber(electricityMax)),
+      next.rollover
+    );
+    next.water_usage = calcUsage(
+      next.previous_water,
+      next.current_water,
+      Math.max(0, toNumber(waterMax)),
+      next.rollover
+    );
+    return next;
+  };
+
   const fetchData = async () => {
     setLoading(true);
     setStatus(null);
@@ -130,6 +162,15 @@ export default function MetersPage() {
       .order("reading_month", { ascending: false })
       .order("created_at", { ascending: false });
 
+    const { data: moveInTenants } = await supabase
+      .from("tenants")
+      .select(
+        "room_id,full_name,move_in_date,initial_electricity_reading,initial_water_reading,status"
+      )
+      .gte("move_in_date", currentMonthKey)
+      .lt("move_in_date", nextMonthKey)
+      .order("move_in_date", { ascending: false });
+
     const previousMap = new Map<string, any>();
     for (const item of previousReadings ?? []) {
       if (!previousMap.has(item.room_id)) previousMap.set(item.room_id, item);
@@ -138,6 +179,19 @@ export default function MetersPage() {
     for (const item of (currentReadings ?? []) as MeterReadingDb[]) {
       if (!currentMap.has(item.room_id)) currentMap.set(item.room_id, item);
     }
+    const moveInMap = new Map<string, MoveInTenantRow>();
+    for (const item of ((moveInTenants ?? []) as any[])) {
+      if (!item?.room_id) continue;
+      if (!moveInMap.has(item.room_id)) {
+        moveInMap.set(item.room_id, {
+          room_id: item.room_id,
+          full_name: item.full_name ?? null,
+          move_in_date: item.move_in_date,
+          initial_electricity_reading: item.initial_electricity_reading ?? null,
+          initial_water_reading: item.initial_water_reading ?? null,
+        });
+      }
+    }
 
     const grouped: Record<string, MeterRow[]> = {};
 
@@ -145,10 +199,25 @@ export default function MetersPage() {
       const current = currentMap.get(room.id);
       const previous = previousMap.get(room.id) ?? {};
 
+      // Always derive previous readings from the prior month when available.
+      // This keeps later months in sync if an earlier month is edited later.
+      const previousMonthElec =
+        previous.current_electricity ?? current?.previous_electricity ?? 0;
+      const previousMonthWater =
+        previous.current_water ?? previous.current_reading ?? current?.previous_water ?? 0;
+      const moveInTenant = moveInMap.get(room.id) ?? null;
+      const hasMoveInReading =
+        moveInTenant &&
+        (moveInTenant.initial_electricity_reading != null || moveInTenant.initial_water_reading != null);
+      const previousSource: MeterRow["previous_source"] = hasMoveInReading ? "move_in" : "prev_month";
       const previousElec =
-        current?.previous_electricity ?? previous.current_electricity ?? 0;
+        previousSource === "move_in"
+          ? toNumber(moveInTenant?.initial_electricity_reading ?? previousMonthElec)
+          : toNumber(previousMonthElec);
       const previousWater =
-        current?.previous_water ?? previous.current_water ?? previous.current_reading ?? 0;
+        previousSource === "move_in"
+          ? toNumber(moveInTenant?.initial_water_reading ?? previousMonthWater)
+          : toNumber(previousMonthWater);
 
       const currentElec = current?.current_electricity ?? 0;
       const currentWater = current?.current_water ?? current?.current_reading ?? 0;
@@ -178,6 +247,13 @@ export default function MetersPage() {
         room_number: room.room_number,
         reading_month: currentMonthKey,
         rollover: inferredRollover,
+        previous_source: previousSource,
+        previous_month_electricity: toNumber(previousMonthElec),
+        previous_month_water: toNumber(previousMonthWater),
+        move_in_electricity: moveInTenant?.initial_electricity_reading ?? null,
+        move_in_water: moveInTenant?.initial_water_reading ?? null,
+        move_in_tenant_name: moveInTenant?.full_name ?? null,
+        move_in_date: moveInTenant?.move_in_date ?? null,
         previous_electricity: toNumber(previousElec),
         current_electricity: toNumber(currentElec),
         electricity_usage: electricityUsage,
@@ -239,20 +315,33 @@ export default function MetersPage() {
       ...prev,
       [building]: prev[building].map((row) => {
         if (row.room_id !== roomId) return row;
-        const next = { ...row, rollover: enabled };
-        next.electricity_usage = calcUsage(
-          next.previous_electricity,
-          next.current_electricity,
-          Math.max(0, toNumber(electricityMax)),
-          enabled
-        );
-        next.water_usage = calcUsage(
-          next.previous_water,
-          next.current_water,
-          Math.max(0, toNumber(waterMax)),
-          enabled
-        );
-        return next;
+        return recalcRowUsage({ ...row, rollover: enabled });
+      }),
+    }));
+  };
+
+  const updatePreviousSource = (
+    building: string,
+    roomId: string,
+    source: MeterRow["previous_source"]
+  ) => {
+    setRows((prev) => ({
+      ...prev,
+      [building]: prev[building].map((row) => {
+        if (row.room_id !== roomId) return row;
+        const next: MeterRow = {
+          ...row,
+          previous_source: source,
+          previous_electricity:
+            source === "move_in"
+              ? toNumber(row.move_in_electricity ?? row.previous_month_electricity)
+              : toNumber(row.previous_month_electricity),
+          previous_water:
+            source === "move_in"
+              ? toNumber(row.move_in_water ?? row.previous_month_water)
+              : toNumber(row.previous_month_water),
+        };
+        return recalcRowUsage(next);
       }),
     }));
   };
@@ -261,21 +350,7 @@ export default function MetersPage() {
     setRows((prev) => {
       const next: Record<string, MeterRow[]> = {};
       for (const [building, buildingRows] of Object.entries(prev)) {
-        next[building] = buildingRows.map((row) => ({
-          ...row,
-          electricity_usage: calcUsage(
-            row.previous_electricity,
-            row.current_electricity,
-            Math.max(0, toNumber(electricityMax)),
-            row.rollover
-          ),
-          water_usage: calcUsage(
-            row.previous_water,
-            row.current_water,
-            Math.max(0, toNumber(waterMax)),
-            row.rollover
-          ),
-        }));
+        next[building] = buildingRows.map((row) => recalcRowUsage(row));
       }
       return next;
     });
@@ -298,15 +373,15 @@ export default function MetersPage() {
         current_reading: row.current_water,
         usage: row.water_usage,
       }));
-
-    setSaving(false);
-    setConfirmOpen(false);
     try {
       await callMetersAction("save_all", { payload });
-      setStatus("Meter readings saved.");
+      setStatus("บันทึกค่ามิเตอร์เรียบร้อย");
+      setConfirmOpen(false);
       await fetchData();
     } catch (error: any) {
-      setStatus(error?.message ?? "Failed to save meter readings.");
+      setStatus(error?.message ?? "บันทึกค่ามิเตอร์ไม่สำเร็จ");
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -377,10 +452,11 @@ export default function MetersPage() {
         </div>
         <button
           onClick={() => setConfirmOpen(true)}
-          className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
+          disabled={saving}
+          className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
         >
           <Save size={16} />
-          บันทึกมิเตอร์ทั้งหมด
+          {saving ? "กำลังบันทึก..." : "บันทึกมิเตอร์ทั้งหมด"}
         </button>
       </div>
 
@@ -403,7 +479,7 @@ export default function MetersPage() {
                 <thead className="bg-slate-100 text-xs uppercase tracking-wider text-slate-500">
                   <tr>
                     <th className="px-4 py-3">ห้อง</th>
-                    <th className="px-4 py-3">มิเตอร์หมุน</th>
+                    <th className="px-4 py-3">ตัวเลือกคำนวณ</th>
                     <th className="bg-amber-50 px-4 py-3 text-amber-800">ไฟ ก่อนหน้า</th>
                     <th className="bg-amber-50 px-4 py-3 text-amber-800">ไฟ ปัจจุบัน</th>
                     <th className="bg-amber-50 px-4 py-3 text-amber-800">ไฟ ใช้ไป</th>
@@ -417,16 +493,41 @@ export default function MetersPage() {
                     <tr key={row.room_id} className="border-t border-slate-100">
                       <td className="px-4 py-3 font-medium text-slate-900">{row.room_number}</td>
                       <td className="px-4 py-3">
-                        <label className="inline-flex items-center gap-2 text-xs text-slate-600">
-                          <input
-                            type="checkbox"
-                            checked={row.rollover}
-                            onChange={(event) =>
-                              updateRollover(building, row.room_id, event.target.checked)
-                            }
-                          />
-                          เปิดใช้
-                        </label>
+                        <div className="space-y-2">
+                          <label className="inline-flex items-center gap-2 text-xs text-slate-600">
+                            <input
+                              type="checkbox"
+                              checked={row.rollover}
+                              onChange={(event) =>
+                                updateRollover(building, row.room_id, event.target.checked)
+                              }
+                            />
+                            มิเตอร์หมุน
+                          </label>
+
+                          {row.move_in_date && (
+                            <div className="space-y-1">
+                              <div className="rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] text-emerald-700">
+                                ผู้เช่าเข้าใหม่ {row.move_in_tenant_name ? `(${row.move_in_tenant_name})` : ""}{" "}
+                                วันที่ {row.move_in_date}
+                              </div>
+                              <select
+                                value={row.previous_source}
+                                onChange={(event) =>
+                                  updatePreviousSource(
+                                    building,
+                                    row.room_id,
+                                    event.target.value as MeterRow["previous_source"]
+                                  )
+                                }
+                                className="w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-[11px] text-slate-700"
+                              >
+                                <option value="move_in">ใช้ค่าเริ่มต้นตอนเข้าอยู่</option>
+                                <option value="prev_month">ใช้ค่าจากเดือนก่อน</option>
+                              </select>
+                            </div>
+                          )}
+                        </div>
                       </td>
                       <td className="bg-amber-50/60 px-4 py-3">{row.previous_electricity}</td>
                       <td className="bg-amber-50/60 px-4 py-3">

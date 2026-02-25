@@ -1,6 +1,7 @@
 "use client";
 
 import { Modal } from "@/components/ui/Modal";
+import { Loader2 } from "lucide-react";
 
 export function ConfirmActionModal({
   isOpen,
@@ -36,9 +37,10 @@ export function ConfirmActionModal({
           <button
             onClick={onConfirm}
             disabled={loading}
-            className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+            className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {loading ? "Processing..." : confirmLabel}
+            {loading && <Loader2 size={16} className="animate-spin" />}
+            {loading ? "กำลังดำเนินการ..." : confirmLabel}
           </button>
         </div>
       </div>

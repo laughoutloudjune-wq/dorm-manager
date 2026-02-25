@@ -15,7 +15,7 @@ import {
   defaultRolePermissions,
   normalizeRolePermissions,
 } from "@/lib/permissions";
-import { Lock, Plus, Save, Trash2, Upload } from "lucide-react";
+import { Loader2, Lock, Plus, Save, Trash2, Upload } from "lucide-react";
 
 type SettingsRow = {
   id: number;
@@ -1501,9 +1501,10 @@ export default function SettingsPage() {
             </button>
             <button
               onClick={executePending}
-              className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+              className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
               disabled={saving}
             >
+              {saving && <Loader2 size={16} className="animate-spin" />}
               {saving ? "กำลังบันทึก..." : "ยืนยัน"}
             </button>
           </div>
