@@ -44,6 +44,9 @@ type InvoiceRecord = {
   notes: string | null;
   public_token: string;
   slip_url: string | null;
+  opened_count: number;
+  first_opened_at: string | null;
+  last_opened_at: string | null;
   tenant_name: string;
   tenant_phone: string | null;
   tenant_line_user_id: string | null;
@@ -350,6 +353,9 @@ function normalizeInvoice(row: any): InvoiceRecord {
     notes: row.notes ?? null,
     public_token: row.public_token,
     slip_url: row.slip_url ?? null,
+    opened_count: toNumber(row.opened_count),
+    first_opened_at: row.first_opened_at ?? null,
+    last_opened_at: row.last_opened_at ?? null,
     tenant_name: tenant?.full_name ?? "Unknown",
     tenant_phone: tenant?.phone_number ?? null,
     tenant_line_user_id: tenant?.line_user_id ?? null,
@@ -585,7 +591,7 @@ export default function InvoicesPage() {
     const { data, error: fetchError } = await supabase
       .from("invoices")
       .select(
-        "id,room_id,status,total_amount,paid_amount,payment_history,issue_date,due_date,start_date,end_date,rent_amount,water_bill,electricity_bill,common_fee,discount_amount,discount_breakdown,late_fee_amount,late_fee_per_day,late_fee_start_date,additional_fees_total,additional_fees_breakdown,notes,public_token,slip_url,tenants(full_name,phone_number,line_user_id,custom_payment_method,move_in_date),rooms(room_number,price_month,buildings(name))"
+        "id,room_id,status,total_amount,paid_amount,payment_history,issue_date,due_date,start_date,end_date,rent_amount,water_bill,electricity_bill,common_fee,discount_amount,discount_breakdown,late_fee_amount,late_fee_per_day,late_fee_start_date,additional_fees_total,additional_fees_breakdown,notes,public_token,slip_url,opened_count,first_opened_at,last_opened_at,tenants(full_name,phone_number,line_user_id,custom_payment_method,move_in_date),rooms(room_number,price_month,buildings(name))"
       )
       .eq("start_date", periodStart)
       .eq("end_date", periodEnd)
@@ -670,6 +676,9 @@ export default function InvoicesPage() {
               paid_amount: toNumber(payload.new.paid_amount),
               total_amount: toNumber(payload.new.total_amount),
               slip_url: payload.new.slip_url ?? null,
+              opened_count: toNumber(payload.new.opened_count),
+              first_opened_at: payload.new.first_opened_at ?? null,
+              last_opened_at: payload.new.last_opened_at ?? null,
               payment_history: Array.isArray(payload.new.payment_history)
                 ? payload.new.payment_history
                 : undefined,
@@ -2027,6 +2036,15 @@ export default function InvoicesPage() {
                       <td className="px-4 py-3">
                         <div className="flex flex-col gap-1">
                           <span>{invoice.tenant_name}</span>
+                          {invoice.opened_count > 0 ? (
+                            <span className="inline-flex w-fit items-center rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-700">
+                              เปิดแล้ว {invoice.opened_count} ครั้ง
+                            </span>
+                          ) : (
+                            <span className="inline-flex w-fit items-center rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-semibold text-slate-500">
+                              ยังไม่เปิดใบแจ้งหนี้
+                            </span>
+                          )}
                           {invoice.tenant_move_in_date?.slice(0, 7) === selectedMonth && (
                             <span className="inline-flex w-fit items-center rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
                               ผู้เช่าเข้าใหม่
@@ -2218,6 +2236,26 @@ export default function InvoicesPage() {
                 </div>
               </div>
               <div className="mt-4 space-y-2">
+                <div className="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600">
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                    <span>
+                      การเปิดดูใบแจ้งหนี้:{" "}
+                      <b className={activeInvoice.opened_count > 0 ? "text-blue-700" : "text-slate-700"}>
+                        {activeInvoice.opened_count > 0
+                          ? `เปิดแล้ว ${activeInvoice.opened_count} ครั้ง`
+                          : "ยังไม่เปิด"}
+                      </b>
+                    </span>
+                    <span>
+                      เปิดครั้งแรก:{" "}
+                      <b>{activeInvoice.first_opened_at ? new Date(activeInvoice.first_opened_at).toLocaleString("th-TH") : "-"}</b>
+                    </span>
+                    <span>
+                      ล่าสุด:{" "}
+                      <b>{activeInvoice.last_opened_at ? new Date(activeInvoice.last_opened_at).toLocaleString("th-TH") : "-"}</b>
+                    </span>
+                  </div>
+                </div>
                   <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">สถานะ</p>
                 <select
                   value={form.status}

@@ -149,7 +149,10 @@ ADD COLUMN IF NOT EXISTS late_fee_amount NUMERIC(10, 2) DEFAULT 0,
 ADD COLUMN IF NOT EXISTS late_fee_per_day NUMERIC(10, 2) DEFAULT 0,
 ADD COLUMN IF NOT EXISTS late_fee_start_date DATE,
 ADD COLUMN IF NOT EXISTS paid_amount NUMERIC(10, 2) DEFAULT 0,
-ADD COLUMN IF NOT EXISTS payment_history JSONB DEFAULT '[]'::jsonb;
+ADD COLUMN IF NOT EXISTS payment_history JSONB DEFAULT '[]'::jsonb,
+ADD COLUMN IF NOT EXISTS opened_count INT NOT NULL DEFAULT 0,
+ADD COLUMN IF NOT EXISTS first_opened_at TIMESTAMPTZ,
+ADD COLUMN IF NOT EXISTS last_opened_at TIMESTAMPTZ;
 
 -- Ensure payment_methods table exists before adding qr_url
 CREATE TABLE IF NOT EXISTS public.payment_methods (

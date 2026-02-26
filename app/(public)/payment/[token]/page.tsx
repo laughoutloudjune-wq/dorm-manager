@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { Badge } from "@/components/ui/Badge";
 import { createClient } from "@/lib/supabase-client";
@@ -202,6 +202,7 @@ export default function PaymentTokenPage() {
   const [electricityRate, setElectricityRate] = useState(0);
   const [waterUnits, setWaterUnits] = useState<number | null>(null);
   const [electricityUnits, setElectricityUnits] = useState<number | null>(null);
+  const hasLoggedInvoiceView = useRef(false);
 
   useEffect(() => {
     const load = async () => {
@@ -269,6 +270,18 @@ export default function PaymentTokenPage() {
 
     if (token) void load();
   }, [token, supabase]);
+
+  useEffect(() => {
+    if (!token || !invoice?.id || hasLoggedInvoiceView.current) return;
+    hasLoggedInvoiceView.current = true;
+    void fetch("/api/invoice-view", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    }).catch(() => {
+      // Tracking should not block the invoice page.
+    });
+  }, [token, invoice?.id]);
 
   const method: PaymentMethod | null = invoice?.custom_payment_method ?? defaultMethod ?? null;
   const proratePreview =
