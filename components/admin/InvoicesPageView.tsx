@@ -7,7 +7,20 @@ import { Input } from "@/components/ui/Input";
 import { ConfirmActionModal } from "@/components/ui/ConfirmActionModal";
 import { createClient } from "@/lib/supabase-client";
 import { usePermissions } from "@/lib/use-permissions";
-import { CheckCircle2, Loader2, Send, Trash2, UploadCloud, FileText, Pencil, Printer, AlertCircle } from "lucide-react";
+import {
+  CheckCircle2,
+  Loader2,
+  Send,
+  Trash2,
+  UploadCloud,
+  FileText,
+  Pencil,
+  Printer,
+  AlertCircle,
+  Mail,
+  MailOpen,
+  UserPlus,
+} from "lucide-react";
 
 const statusVariant = {
   draft: "default",
@@ -1983,6 +1996,7 @@ export default function InvoicesPage() {
                     <th className="px-4 py-3">สถานะ</th>
                     <th className="px-4 py-3">ห้อง</th>
                     <th className="px-4 py-3">ผู้เช่า</th>
+                    <th className="px-4 py-3 text-center">เปิดดู</th>
                     <th className="px-4 py-3">รอบบิล</th>
                     <th className="px-4 py-3">ยอดรวม</th>
                     <th className="px-4 py-3">ชำระแล้ว</th>
@@ -2034,23 +2048,33 @@ export default function InvoicesPage() {
                       </td>
                       <td className="px-4 py-3 font-medium text-slate-900">{invoice.room_number}</td>
                       <td className="px-4 py-3">
-                        <div className="flex flex-col gap-1">
+                        <div className="flex items-center gap-2">
                           <span>{invoice.tenant_name}</span>
-                          {invoice.opened_count > 0 ? (
-                            <span className="inline-flex w-fit items-center rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-700">
-                              เปิดแล้ว {invoice.opened_count} ครั้ง
-                            </span>
-                          ) : (
-                            <span className="inline-flex w-fit items-center rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-semibold text-slate-500">
-                              ยังไม่เปิดใบแจ้งหนี้
-                            </span>
-                          )}
                           {invoice.tenant_move_in_date?.slice(0, 7) === selectedMonth && (
-                            <span className="inline-flex w-fit items-center rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
-                              ผู้เช่าเข้าใหม่
+                            <span
+                              title={`ผู้เช่าเข้าใหม่ (${invoice.tenant_move_in_date})`}
+                              className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-emerald-200 bg-emerald-50 text-emerald-700"
+                            >
+                              <UserPlus size={12} />
                             </span>
                           )}
                         </div>
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <span
+                          title={
+                            invoice.opened_count > 0
+                              ? `เปิดแล้ว ${invoice.opened_count} ครั้ง${invoice.last_opened_at ? ` | ล่าสุด ${new Date(invoice.last_opened_at).toLocaleString("th-TH")}` : ""}`
+                              : "ยังไม่เปิดใบแจ้งหนี้"
+                          }
+                          className={`inline-flex h-8 w-8 items-center justify-center rounded-full border ${
+                            invoice.opened_count > 0
+                              ? "border-blue-200 bg-blue-50 text-blue-700"
+                              : "border-slate-200 bg-slate-50 text-slate-400"
+                          }`}
+                        >
+                          {invoice.opened_count > 0 ? <MailOpen size={15} /> : <Mail size={15} />}
+                        </span>
                       </td>
                       <td className="px-4 py-3">
                         {invoice.start_date} - {invoice.end_date}
