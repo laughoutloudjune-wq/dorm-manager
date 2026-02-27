@@ -425,7 +425,8 @@ export default function PaymentTokenPage() {
                   </span>
                 )}
                 <span className="block text-xs font-normal text-slate-500">
-                  มิเตอร์ก่อนหน้า {formatMeterValue(waterPrevious)} | มิเตอร์ล่าสุด {formatMeterValue(waterCurrent)}
+                  ({formatMeterValue(waterPrevious)} - {formatMeterValue(waterCurrent)}) ={" "}
+                  {waterUnits != null ? waterUnits.toFixed(2) : "-"} unit
                 </span>
               </span>
             </div>
@@ -439,7 +440,8 @@ export default function PaymentTokenPage() {
                   </span>
                 )}
                 <span className="block text-xs font-normal text-slate-500">
-                  มิเตอร์ก่อนหน้า {formatMeterValue(electricityPrevious)} | มิเตอร์ล่าสุด {formatMeterValue(electricityCurrent)}
+                  ({formatMeterValue(electricityPrevious)} - {formatMeterValue(electricityCurrent)}) ={" "}
+                  {electricityUnits != null ? electricityUnits.toFixed(2) : "-"} unit
                 </span>
               </span>
             </div>
