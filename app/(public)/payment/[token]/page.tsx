@@ -62,6 +62,14 @@ const formatMeterValue = (value: number | null | undefined) => {
   });
 };
 
+const formatUnitNumber = (value: number | null | undefined) => {
+  if (value == null || Number.isNaN(Number(value))) return "-";
+  return Number(value).toLocaleString("th-TH", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  });
+};
+
 function normalizeInvoice(row: any): InvoiceData {
   const tenant = Array.isArray(row.tenants) ? row.tenants[0] : row.tenants;
   const room = Array.isArray(row.rooms) ? row.rooms[0] : row.rooms;
@@ -422,7 +430,7 @@ export default function PaymentTokenPage() {
                 <span className="block text-xs font-normal text-slate-500">
                   ({formatMeterValue(waterPrevious)} - {formatMeterValue(waterCurrent)} ={" "}
                   {waterUnits != null ? waterUnits.toFixed(2) : "-"} หน่วย) x ฿
-                  {formatBaht(waterRate)}
+                  {formatUnitNumber(waterRate)}
                 </span>
               </span>
             </div>
@@ -433,7 +441,7 @@ export default function PaymentTokenPage() {
                 <span className="block text-xs font-normal text-slate-500">
                   ({formatMeterValue(electricityPrevious)} - {formatMeterValue(electricityCurrent)} ={" "}
                   {electricityUnits != null ? electricityUnits.toFixed(2) : "-"} หน่วย) x ฿
-                  {formatBaht(electricityRate)}
+                  {formatUnitNumber(electricityRate)}
                 </span>
               </span>
             </div>
