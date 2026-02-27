@@ -56,26 +56,17 @@ const formatBaht = (value: number) =>
 
 const formatMeterValue = (value: number | null | undefined) => {
   if (value == null || Number.isNaN(Number(value))) return "-";
-  return Number(value).toLocaleString("th-TH", {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 2,
-  });
+  return Number(Number(value).toFixed(2)).toString();
 };
 
 const formatUnitNumber = (value: number | null | undefined) => {
   if (value == null || Number.isNaN(Number(value))) return "-";
-  return Number(value).toLocaleString("th-TH", {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 2,
-  });
+  return Number(Number(value).toFixed(2)).toString();
 };
 
 const formatUnitInteger = (value: number | null | undefined) => {
   if (value == null || Number.isNaN(Number(value))) return "-";
-  return Math.round(Number(value)).toLocaleString("th-TH", {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  });
+  return Math.round(Number(value)).toString();
 };
 
 function normalizeInvoice(row: any): InvoiceData {
