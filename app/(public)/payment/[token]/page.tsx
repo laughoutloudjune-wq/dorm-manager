@@ -54,6 +54,14 @@ const formatBaht = (value: number) =>
     maximumFractionDigits: 2,
   });
 
+const formatMeterValue = (value: number | null | undefined) => {
+  if (value == null || Number.isNaN(Number(value))) return "-";
+  return Number(value).toLocaleString("th-TH", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  });
+};
+
 function normalizeInvoice(row: any): InvoiceData {
   const tenant = Array.isArray(row.tenants) ? row.tenants[0] : row.tenants;
   const room = Array.isArray(row.rooms) ? row.rooms[0] : row.rooms;
@@ -202,6 +210,7 @@ export default function PaymentTokenPage() {
   const [electricityRate, setElectricityRate] = useState(0);
   const [waterUnits, setWaterUnits] = useState<number | null>(null);
   const [electricityUnits, setElectricityUnits] = useState<number | null>(null);
+  const [meterReading, setMeterReading] = useState<MeterReadingRow | null>(null);
   const hasLoggedInvoiceView = useRef(false);
 
   useEffect(() => {
@@ -254,6 +263,7 @@ export default function PaymentTokenPage() {
         .maybeSingle();
 
       const reading = (readingData as MeterReadingRow | null) ?? null;
+      setMeterReading(reading);
       let nextWaterUnits = resolveWaterUsage(reading);
       let nextElectricityUnits = resolveElectricityUsage(reading);
 
@@ -284,6 +294,12 @@ export default function PaymentTokenPage() {
   }, [token, invoice?.id]);
 
   const method: PaymentMethod | null = invoice?.custom_payment_method ?? defaultMethod ?? null;
+  const electricityPrevious =
+    meterReading?.previous_electricity ?? meterReading?.previous_reading ?? null;
+  const electricityCurrent =
+    meterReading?.current_electricity ?? meterReading?.current_reading ?? null;
+  const waterPrevious = meterReading?.previous_water ?? meterReading?.previous_reading ?? null;
+  const waterCurrent = meterReading?.current_water ?? meterReading?.current_reading ?? null;
   const proratePreview =
     invoice && billingDay
       ? calculateProratePreview(invoice.room_price_month, invoice.tenant_move_in_date, billingDay)
@@ -408,6 +424,9 @@ export default function PaymentTokenPage() {
                     {waterUnits.toFixed(2)} unit x ฿{formatBaht(waterRate)}
                   </span>
                 )}
+                <span className="block text-xs font-normal text-slate-500">
+                  มิเตอร์ก่อนหน้า {formatMeterValue(waterPrevious)} | มิเตอร์ล่าสุด {formatMeterValue(waterCurrent)}
+                </span>
               </span>
             </div>
             <div className="flex items-center justify-between">
@@ -419,6 +438,9 @@ export default function PaymentTokenPage() {
                     {electricityUnits.toFixed(2)} unit x ฿{formatBaht(electricityRate)}
                   </span>
                 )}
+                <span className="block text-xs font-normal text-slate-500">
+                  มิเตอร์ก่อนหน้า {formatMeterValue(electricityPrevious)} | มิเตอร์ล่าสุด {formatMeterValue(electricityCurrent)}
+                </span>
               </span>
             </div>
             <div className="flex items-center justify-between">

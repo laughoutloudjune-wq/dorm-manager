@@ -954,6 +954,74 @@ export default function InvoicesPage() {
     }
   };
 
+  const cancelPaymentEntry = async (historyIndex: number) => {
+    if (!can("invoice.payment.record")) {
+      setError("ไม่มีสิทธิ์ยกเลิกรายการชำระเงิน");
+      return;
+    }
+    if (!activeInvoice) return;
+    const existingHistory = Array.isArray(activeInvoice.payment_history)
+      ? activeInvoice.payment_history
+      : [];
+    if (historyIndex < 0 || historyIndex >= existingHistory.length) return;
+
+    const target = existingHistory[historyIndex] as any;
+    const targetAmount = Math.max(0, toNumber(target?.amount));
+    const confirmed = window.confirm(
+      `ยืนยันยกเลิกรายการชำระเงิน ${formatMoney(targetAmount)} ?`
+    );
+    if (!confirmed) return;
+
+    setPaymentSubmitting(true);
+    try {
+      const nextHistory = existingHistory.filter((_, idx) => idx !== historyIndex);
+      const total = toNumber(form.total_amount || activeInvoice.total_amount);
+      const currentPaid = toNumber(form.paid_amount || activeInvoice.paid_amount);
+      const nextPaidAmount = Math.max(0, currentPaid - targetAmount);
+      const lastEntry = nextHistory.length > 0 ? (nextHistory[nextHistory.length - 1] as any) : null;
+      const nextSlipUrl = (lastEntry?.slip_url as string | null | undefined) ?? null;
+      const nextSlipUploadedAt = (lastEntry?.paid_at as string | null | undefined) ?? null;
+      const nextStatus: keyof typeof statusVariant =
+        nextPaidAmount >= total ? "paid" : nextPaidAmount > 0 ? "partial" : "pending";
+
+      await callInvoiceAdminAction("record_payment", {
+        invoiceId: activeInvoice.id,
+        payload: {
+          paid_amount: nextPaidAmount,
+          payment_history: nextHistory,
+          slip_url: nextSlipUrl,
+          slip_uploaded_at: nextSlipUploadedAt,
+          status: nextStatus,
+        },
+      });
+
+      setForm((prev) => ({ ...prev, paid_amount: nextPaidAmount, status: nextStatus }));
+      setSlipPreview(nextSlipUrl);
+      setActiveInvoice((prev) =>
+        prev
+          ? {
+              ...prev,
+              paid_amount: nextPaidAmount,
+              payment_history: nextHistory,
+              status: nextStatus,
+              slip_url: nextSlipUrl,
+            }
+          : prev
+      );
+      patchInvoiceInState(activeInvoice.id, {
+        paid_amount: nextPaidAmount,
+        payment_history: nextHistory,
+        status: nextStatus,
+        slip_url: nextSlipUrl,
+      });
+      setError(null);
+    } catch (error: any) {
+      setError(error?.message ?? "ยกเลิกรายการชำระเงินไม่สำเร็จ");
+    } finally {
+      setPaymentSubmitting(false);
+    }
+  };
+
   const deletePaymentSlip = async () => {
     if (!can("invoice.payment.record")) {
       setError("ไม่มีสิทธิ์ลบสลิปการชำระเงิน");
@@ -2338,10 +2406,21 @@ export default function InvoicesPage() {
                               className="rounded-md border border-slate-200 bg-slate-50 p-2 text-xs text-slate-700"
                             >
                               <p className="font-semibold">{formatMoney(toNumber(item.amount))}</p>
-                              <p>
-                                {(item.mode ?? "-").toString().toUpperCase()} |{" "}
-                                {item.paid_at ? new Date(item.paid_at).toLocaleString("th-TH") : "-"}
-                              </p>
+                              <div className="mt-1 flex items-center justify-between gap-2">
+                                <p>
+                                  {(item.mode ?? "-").toString().toUpperCase()} |{" "}
+                                  {item.paid_at ? new Date(item.paid_at).toLocaleString("th-TH") : "-"}
+                                </p>
+                                <button
+                                  type="button"
+                                  onClick={() => void cancelPaymentEntry(idx)}
+                                  disabled={!canRecordInvoicePayment || paymentSubmitting}
+                                  title={!canRecordInvoicePayment ? "ไม่มีสิทธิ์ยกเลิกรายการชำระเงิน" : undefined}
+                                  className="rounded-md border border-red-200 px-2 py-1 text-[11px] font-semibold text-red-600 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  ยกเลิกรายการ
+                                </button>
+                              </div>
                             </div>
                           ))}
                         </div>
