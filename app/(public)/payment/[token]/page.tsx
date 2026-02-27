@@ -70,6 +70,14 @@ const formatUnitNumber = (value: number | null | undefined) => {
   });
 };
 
+const formatUnitInteger = (value: number | null | undefined) => {
+  if (value == null || Number.isNaN(Number(value))) return "-";
+  return Math.round(Number(value)).toLocaleString("th-TH", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  });
+};
+
 function normalizeInvoice(row: any): InvoiceData {
   const tenant = Array.isArray(row.tenants) ? row.tenants[0] : row.tenants;
   const room = Array.isArray(row.rooms) ? row.rooms[0] : row.rooms;
@@ -429,7 +437,7 @@ export default function PaymentTokenPage() {
                 <span className="block">฿{formatBaht(invoice.water_bill)}</span>
                 <span className="block text-xs font-normal text-slate-500">
                   ({formatMeterValue(waterPrevious)} - {formatMeterValue(waterCurrent)} ={" "}
-                  {waterUnits != null ? waterUnits.toFixed(2) : "-"} หน่วย) x ฿
+                  {formatUnitInteger(waterUnits)} หน่วย) x ฿
                   {formatUnitNumber(waterRate)}
                 </span>
               </span>
@@ -440,7 +448,7 @@ export default function PaymentTokenPage() {
                 <span className="block">฿{formatBaht(invoice.electricity_bill)}</span>
                 <span className="block text-xs font-normal text-slate-500">
                   ({formatMeterValue(electricityPrevious)} - {formatMeterValue(electricityCurrent)} ={" "}
-                  {electricityUnits != null ? electricityUnits.toFixed(2) : "-"} หน่วย) x ฿
+                  {formatUnitInteger(electricityUnits)} หน่วย) x ฿
                   {formatUnitNumber(electricityRate)}
                 </span>
               </span>
