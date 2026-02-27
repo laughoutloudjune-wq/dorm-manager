@@ -419,14 +419,10 @@ export default function PaymentTokenPage() {
               <span>ค่าน้ำ</span>
               <span className="text-right font-semibold text-slate-900">
                 <span className="block">฿{formatBaht(invoice.water_bill)}</span>
-                {waterUnits != null && waterRate > 0 && (
-                  <span className="block text-xs font-normal text-slate-500">
-                    {waterUnits.toFixed(2)} unit x ฿{formatBaht(waterRate)}
-                  </span>
-                )}
                 <span className="block text-xs font-normal text-slate-500">
-                  ({formatMeterValue(waterPrevious)} - {formatMeterValue(waterCurrent)}) ={" "}
-                  {waterUnits != null ? waterUnits.toFixed(2) : "-"} unit
+                  ({formatMeterValue(waterPrevious)} - {formatMeterValue(waterCurrent)} ={" "}
+                  {waterUnits != null ? waterUnits.toFixed(2) : "-"} หน่วย) x ฿
+                  {formatBaht(waterRate)}
                 </span>
               </span>
             </div>
@@ -434,14 +430,10 @@ export default function PaymentTokenPage() {
               <span>ค่าไฟ</span>
               <span className="text-right font-semibold text-slate-900">
                 <span className="block">฿{formatBaht(invoice.electricity_bill)}</span>
-                {electricityUnits != null && electricityRate > 0 && (
-                  <span className="block text-xs font-normal text-slate-500">
-                    {electricityUnits.toFixed(2)} unit x ฿{formatBaht(electricityRate)}
-                  </span>
-                )}
                 <span className="block text-xs font-normal text-slate-500">
-                  ({formatMeterValue(electricityPrevious)} - {formatMeterValue(electricityCurrent)}) ={" "}
-                  {electricityUnits != null ? electricityUnits.toFixed(2) : "-"} unit
+                  ({formatMeterValue(electricityPrevious)} - {formatMeterValue(electricityCurrent)} ={" "}
+                  {electricityUnits != null ? electricityUnits.toFixed(2) : "-"} หน่วย) x ฿
+                  {formatBaht(electricityRate)}
                 </span>
               </span>
             </div>
