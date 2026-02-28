@@ -32,6 +32,38 @@ const escapeHtml = (value: string) =>
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
 
+const monthStartFromDate = (dateString: string) => {
+  const date = new Date(dateString);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-01`;
+};
+
+const resolveElectricityUsage = (reading: any) => {
+  if (!reading) return null;
+  if (reading.electricity_usage != null) return toNumber(reading.electricity_usage);
+  if (reading.current_electricity != null && reading.previous_electricity != null) {
+    return toNumber(reading.current_electricity) - toNumber(reading.previous_electricity);
+  }
+  return null;
+};
+
+const resolveWaterUsage = (reading: any) => {
+  if (!reading) return null;
+  if (reading.water_usage != null) return toNumber(reading.water_usage);
+  if (reading.usage != null) return toNumber(reading.usage);
+  if (reading.current_water != null && reading.previous_water != null) {
+    return toNumber(reading.current_water) - toNumber(reading.previous_water);
+  }
+  if (reading.current_reading != null && reading.previous_reading != null) {
+    return toNumber(reading.current_reading) - toNumber(reading.previous_reading);
+  }
+  return null;
+};
+
+const formatUnit = (value: number | null | undefined) => {
+  if (value == null || Number.isNaN(Number(value))) return "-";
+  return Number(value).toFixed(2);
+};
+
 const rowHtml = (label: string, value: string) => `
   <div class="row">
     <span class="label">${escapeHtml(label)}</span>
@@ -52,7 +84,7 @@ export async function GET(req: Request) {
     const { data, error } = await supabase
       .from("invoices")
       .select(
-        "id,public_token,status,issue_date,due_date,total_amount,paid_amount,rent_amount,water_bill,electricity_bill,common_fee,additional_fees_total,discount_amount,late_fee_amount,payment_history,tenants(full_name,address,custom_receipt_profile),rooms(room_number,buildings(name))"
+        "id,room_id,start_date,public_token,status,issue_date,due_date,total_amount,paid_amount,rent_amount,water_bill,electricity_bill,common_fee,additional_fees_total,additional_fees_breakdown,discount_amount,late_fee_amount,payment_history,slip_uploaded_at,tenants(full_name,address,phone_number,custom_receipt_profile),rooms(room_number,buildings(name))"
       )
       .eq("public_token", token)
       .single();
@@ -70,8 +102,30 @@ export async function GET(req: Request) {
 
     const tenant = Array.isArray((data as any).tenants) ? (data as any).tenants[0] : (data as any).tenants;
     const room = Array.isArray((data as any).rooms) ? (data as any).rooms[0] : (data as any).rooms;
-    const building =
-      Array.isArray(room?.buildings) ? room?.buildings?.[0] : room?.buildings;
+    const building = Array.isArray(room?.buildings) ? room?.buildings?.[0] : room?.buildings;
+
+    const { data: settings } = await supabase
+      .from("settings")
+      .select("dorm_name,dorm_address,dorm_phone,water_rate,electricity_rate")
+      .eq("id", 1)
+      .maybeSingle();
+
+    const readingMonth = monthStartFromDate(
+      String((data as any).start_date ?? (data as any).issue_date)
+    );
+    const { data: reading } = await supabase
+      .from("meter_readings")
+      .select(
+        "electricity_usage,water_usage,usage,previous_electricity,current_electricity,previous_water,current_water,previous_reading,current_reading"
+      )
+      .eq("room_id", String((data as any).room_id))
+      .eq("reading_month", readingMonth)
+      .maybeSingle();
+
+    const waterUsage = resolveWaterUsage(reading);
+    const electricityUsage = resolveElectricityUsage(reading);
+    const waterRate = toNumber((settings as any)?.water_rate);
+    const electricityRate = toNumber((settings as any)?.electricity_rate);
 
     const customReceipt = (tenant as any)?.custom_receipt_profile ?? null;
     const paymentHistory = Array.isArray((data as any).payment_history)
@@ -80,8 +134,20 @@ export async function GET(req: Request) {
     const paymentDate =
       paymentHistory.length > 0
         ? paymentHistory[paymentHistory.length - 1]?.paid_at
-        : null;
+        : (data as any).slip_uploaded_at ?? null;
     const receiptNo = `RC-${String((data as any).id).slice(0, 8).toUpperCase()}`;
+
+    const issuerName = String(
+      customReceipt?.company_name ?? (settings as any)?.dorm_name ?? "Apartment Flow"
+    );
+    const issuerAddress = String(customReceipt?.address ?? (settings as any)?.dorm_address ?? "-");
+    const issuerPhone = String((settings as any)?.dorm_phone ?? "-");
+    const issuerTaxId = customReceipt?.tax_id ? String(customReceipt.tax_id) : null;
+    const issuerBranch = customReceipt?.branch ? String(customReceipt.branch) : null;
+
+    const additionalFees = Array.isArray((data as any).additional_fees_breakdown)
+      ? (data as any).additional_fees_breakdown
+      : [];
 
     const html = `
 <!doctype html>
@@ -91,42 +157,79 @@ export async function GET(req: Request) {
     <style>
       @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700&display=swap');
       @page { size: A4; margin: 12mm; }
-      body { font-family: "Sarabun", "Tahoma", sans-serif; color: #111827; font-size: 12px; }
-      h1 { margin: 0; font-size: 22px; }
-      .sub { color: #4b5563; margin-top: 4px; margin-bottom: 14px; }
-      .card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; margin-bottom: 12px; }
-      .card h2 { margin: 0 0 10px 0; font-size: 13px; }
+      body { font-family: "Sarabun", "Tahoma", sans-serif; color: #111827; font-size: 14px; }
+      h1 { margin: 0; font-size: 28px; color: #0f172a; }
+      .sub { color: #334155; margin-top: 4px; margin-bottom: 14px; font-size: 13px; }
+      .header { border: 2px solid #1e40af; border-radius: 12px; background: #eff6ff; padding: 14px; margin-bottom: 14px; }
+      .card { border: 1.5px solid #cbd5e1; border-radius: 10px; padding: 12px; margin-bottom: 12px; background: #ffffff; }
+      .card h2 { margin: 0 0 10px 0; font-size: 15px; color: #1e3a8a; }
       .row { display: flex; justify-content: space-between; gap: 16px; margin-bottom: 6px; }
       .label { color: #4b5563; }
       .value { font-weight: 600; text-align: right; white-space: pre-wrap; }
-      .total { margin-top: 10px; padding-top: 8px; border-top: 1px solid #d1d5db; font-size: 14px; font-weight: 700; }
+      .total { margin-top: 10px; padding-top: 8px; border-top: 1px solid #d1d5db; font-size: 16px; font-weight: 700; color: #0f172a; }
+      .formula { color: #475569; font-size: 12px; margin-top: 2px; }
+      .charges-table { width: 100%; border-collapse: collapse; }
+      .charges-table th, .charges-table td { border-bottom: 1px solid #e2e8f0; padding: 8px 4px; text-align: left; }
+      .charges-table th:last-child, .charges-table td:last-child { text-align: right; }
     </style>
   </head>
   <body>
-    <h1>ใบเสร็จรับเงิน</h1>
-    <div class="sub">เลขที่ใบเสร็จ: ${escapeHtml(receiptNo)} | วันที่ชำระ: ${escapeHtml(formatDate(paymentDate))}</div>
+    <div class="header">
+      <h1>ใบเสร็จรับเงิน</h1>
+      <div class="sub">เลขที่ใบเสร็จ: ${escapeHtml(receiptNo)} | วันที่ชำระ: ${escapeHtml(formatDate(paymentDate))}</div>
+      ${rowHtml("ผู้ออกเอกสาร", issuerName)}
+      ${rowHtml("ที่อยู่ผู้ออกเอกสาร", issuerAddress)}
+      ${rowHtml("โทรศัพท์", issuerPhone)}
+      ${issuerTaxId ? rowHtml("เลขผู้เสียภาษี", issuerTaxId) : ""}
+      ${issuerBranch ? rowHtml("สาขา", issuerBranch) : ""}
+    </div>
 
     <div class="card">
-      <h2>ข้อมูลผู้รับใบเสร็จ</h2>
-      ${customReceipt?.label ? rowHtml("โปรไฟล์ใบเสร็จ", String(customReceipt.label)) : ""}
-      ${rowHtml("ชื่อ", String(customReceipt?.company_name ?? tenant?.full_name ?? "-"))}
-      ${customReceipt?.tax_id ? rowHtml("เลขผู้เสียภาษี", String(customReceipt.tax_id)) : ""}
-      ${customReceipt?.branch ? rowHtml("สาขา", String(customReceipt.branch)) : ""}
-      ${rowHtml("ที่อยู่", String(customReceipt?.address ?? tenant?.address ?? "-"))}
-      ${rowHtml("อาคาร / ห้อง", `${String(building?.name ?? "-")} / ${String(room?.room_number ?? "-")}`)}
+      <h2>ข้อมูลผู้เช่า</h2>
+      ${rowHtml("ชื่อ-นามสกุล", String(tenant?.full_name ?? "-"))}
+      ${rowHtml("ที่อยู่", String(tenant?.address ?? "-"))}
+      ${rowHtml("เบอร์โทรศัพท์", String(tenant?.phone_number ?? "-"))}
+      ${rowHtml("เลขห้อง", `${String(room?.room_number ?? "-")}${building?.name ? ` (${String(building.name)})` : ""}`)}
       ${rowHtml("งวดบิล", formatDate(String((data as any).issue_date)))}
       ${rowHtml("วันครบกำหนด", formatDate(String((data as any).due_date)))}
     </div>
 
     <div class="card">
       <h2>รายละเอียดค่าใช้จ่าย</h2>
-      ${rowHtml("ค่าเช่า", formatMoney(toNumber((data as any).rent_amount)))}
-      ${rowHtml("ค่าน้ำ", formatMoney(toNumber((data as any).water_bill)))}
-      ${rowHtml("ค่าไฟ", formatMoney(toNumber((data as any).electricity_bill)))}
-      ${rowHtml("ค่าส่วนกลาง", formatMoney(toNumber((data as any).common_fee)))}
-      ${rowHtml("ค่าธรรมเนียมเพิ่มเติม", formatMoney(toNumber((data as any).additional_fees_total)))}
-      ${rowHtml("ส่วนลด", `-${formatMoney(toNumber((data as any).discount_amount))}`)}
-      ${rowHtml("ค่าปรับล่าช้า", formatMoney(toNumber((data as any).late_fee_amount)))}
+      <table class="charges-table">
+        <thead>
+          <tr><th>รายการ</th><th>จำนวนเงิน (บาท)</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>ค่าเช่า</td><td>${escapeHtml(formatMoney(toNumber((data as any).rent_amount)))}</td></tr>
+          <tr>
+            <td>ค่าน้ำ
+              <div class="formula">(${escapeHtml(formatUnit((reading as any)?.previous_water ?? (reading as any)?.previous_reading ?? null))} - ${escapeHtml(formatUnit((reading as any)?.current_water ?? (reading as any)?.current_reading ?? null))} = ${escapeHtml(formatUnit(waterUsage))} หน่วย) x ${escapeHtml(formatUnit(waterRate))}</div>
+            </td>
+            <td>${escapeHtml(formatMoney(toNumber((data as any).water_bill)))}</td>
+          </tr>
+          <tr>
+            <td>ค่าไฟ
+              <div class="formula">(${escapeHtml(formatUnit((reading as any)?.previous_electricity ?? (reading as any)?.previous_reading ?? null))} - ${escapeHtml(formatUnit((reading as any)?.current_electricity ?? (reading as any)?.current_reading ?? null))} = ${escapeHtml(formatUnit(electricityUsage))} หน่วย) x ${escapeHtml(formatUnit(electricityRate))}</div>
+            </td>
+            <td>${escapeHtml(formatMoney(toNumber((data as any).electricity_bill)))}</td>
+          </tr>
+          <tr><td>ค่าส่วนกลาง</td><td>${escapeHtml(formatMoney(toNumber((data as any).common_fee)))}</td></tr>
+          ${additionalFees
+            .map(
+              (fee: any) =>
+                `<tr><td>${escapeHtml(String(fee?.detail ?? fee?.label ?? "ค่าธรรมเนียมเพิ่มเติม"))}</td><td>${escapeHtml(
+                  formatMoney(toNumber(fee?.total_amount ?? fee?.amount ?? 0))
+                )}</td></tr>`
+            )
+            .join("")}
+          <tr><td>ค่าธรรมเนียมเพิ่มเติม (รวม)</td><td>${escapeHtml(
+            formatMoney(toNumber((data as any).additional_fees_total))
+          )}</td></tr>
+          <tr><td>ส่วนลด</td><td>-${escapeHtml(formatMoney(toNumber((data as any).discount_amount)))}</td></tr>
+          <tr><td>ค่าปรับล่าช้า</td><td>${escapeHtml(formatMoney(toNumber((data as any).late_fee_amount)))}</td></tr>
+        </tbody>
+      </table>
       <div class="total row">
         <span>ยอดที่ชำระ</span>
         <span>${escapeHtml(
@@ -150,7 +253,7 @@ export async function GET(req: Request) {
 
     const page = await browser.newPage();
     await page.setContent(html, { waitUntil: "networkidle0" });
-    const pdfBuffer = await page.pdf({
+    const pdfBytes = await page.pdf({
       format: "A4",
       printBackground: true,
       margin: { top: "12mm", right: "12mm", bottom: "12mm", left: "12mm" },
@@ -162,7 +265,7 @@ export async function GET(req: Request) {
       7
     )}.pdf`;
 
-    return new Response(Buffer.from(pdfBuffer), {
+    return new Response(Buffer.from(pdfBytes), {
       headers: {
         "Content-Type": "application/pdf",
         "Content-Disposition": `attachment; filename="${filename}"`,
@@ -176,3 +279,4 @@ export async function GET(req: Request) {
     );
   }
 }
+

@@ -52,16 +52,41 @@ export async function POST(req: Request) {
     if (action === "approve_paid") {
       const { data: current, error: fetchError } = await supabase
         .from("invoices")
-        .select("total_amount,paid_amount")
+        .select("total_amount,paid_amount,payment_history,slip_url")
         .eq("id", invoiceId)
         .single();
       if (fetchError || !current) {
         return NextResponse.json({ error: fetchError?.message ?? "Invoice not found" }, { status: 404 });
       }
       const total = Number((current as any).total_amount ?? 0);
+      const currentPaid = Number((current as any).paid_amount ?? 0);
+      const addAmount = Math.max(0, total - currentPaid);
+      const nowIso = new Date().toISOString();
+      const existingHistory = Array.isArray((current as any).payment_history)
+        ? ((current as any).payment_history as any[])
+        : [];
+      const nextHistory =
+        addAmount > 0
+          ? [
+              ...existingHistory,
+              {
+                amount: addAmount,
+                mode: "full",
+                paid_at: nowIso,
+                slip_url: (current as any).slip_url ?? null,
+                created_at: nowIso,
+                source: "admin_liff_approve",
+              },
+            ]
+          : existingHistory;
       const { error } = await supabase
         .from("invoices")
-        .update({ status: "paid", paid_amount: total })
+        .update({
+          status: "paid",
+          paid_amount: total,
+          payment_history: nextHistory,
+          slip_uploaded_at: nowIso,
+        })
         .eq("id", invoiceId);
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
       return NextResponse.json({ success: true });
@@ -75,4 +100,3 @@ export async function POST(req: Request) {
     );
   }
 }
-
