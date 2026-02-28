@@ -394,7 +394,9 @@ export default function PaymentTokenPage() {
         <header className="rounded-3xl border border-white/60 bg-white/90 p-6 shadow-xl">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <p className="text-sm text-slate-500">ใบแจ้งหนี้</p>
+              <p className="text-sm text-slate-500">
+                {invoice.status === "paid" ? "ใบเสร็จรับเงิน" : "ใบแจ้งหนี้"}
+              </p>
               <h1 className="text-2xl font-semibold text-slate-900">ห้อง {invoice.room_number}</h1>
             </div>
             <div className="text-right">
@@ -510,47 +512,49 @@ export default function PaymentTokenPage() {
           )}
         </section>
 
-        <section className="rounded-3xl border border-white/60 bg-white/90 p-6 shadow-xl">
-          <h2 className="text-lg font-semibold text-slate-900">อัปโหลดสลิปการโอน</h2>
-          <div className="mt-4 space-y-4">
-            <label className="flex cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
-              <UploadCloud size={24} />
-              <span>{uploading ? `กำลังอัปโหลด... ${uploadProgress}%` : "แตะเพื่อเลือกไฟล์สลิป"}</span>
-              <input
-                type="file"
-                accept="image/*"
-                className="hidden"
-                disabled={uploading}
-                onChange={(event) => handleUpload(event.target.files?.[0])}
-              />
-            </label>
+        {invoice.status !== "paid" && (
+          <section className="rounded-3xl border border-white/60 bg-white/90 p-6 shadow-xl">
+            <h2 className="text-lg font-semibold text-slate-900">อัปโหลดสลิปการโอน</h2>
+            <div className="mt-4 space-y-4">
+              <label className="flex cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
+                <UploadCloud size={24} />
+                <span>{uploading ? `กำลังอัปโหลด... ${uploadProgress}%` : "แตะเพื่อเลือกไฟล์สลิป"}</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  disabled={uploading}
+                  onChange={(event) => handleUpload(event.target.files?.[0])}
+                />
+              </label>
 
-            {uploading && (
-              <div className="rounded-xl border border-slate-200 bg-white p-3">
-                <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100">
-                  <div
-                    className="h-2 rounded-full bg-blue-600 transition-all duration-200"
-                    style={{ width: `${uploadProgress}%` }}
-                  />
+              {uploading && (
+                <div className="rounded-xl border border-slate-200 bg-white p-3">
+                  <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100">
+                    <div
+                      className="h-2 rounded-full bg-blue-600 transition-all duration-200"
+                      style={{ width: `${uploadProgress}%` }}
+                    />
+                  </div>
+                  <p className="mt-2 text-xs text-slate-500">กำลังอัปโหลดสลิป {uploadProgress}%</p>
                 </div>
-                <p className="mt-2 text-xs text-slate-500">กำลังอัปโหลดสลิป {uploadProgress}%</p>
-              </div>
-            )}
+              )}
 
-            {preview && (
-              <div className="rounded-2xl border border-slate-200 bg-white p-3">
-                <p className="text-xs text-slate-400">ตัวอย่างสลิป</p>
-                <img src={preview} alt="Payment slip preview" className="mt-2 w-full rounded-xl" />
-              </div>
-            )}
+              {preview && (
+                <div className="rounded-2xl border border-slate-200 bg-white p-3">
+                  <p className="text-xs text-slate-400">ตัวอย่างสลิป</p>
+                  <img src={preview} alt="Payment slip preview" className="mt-2 w-full rounded-xl" />
+                </div>
+              )}
 
-            {error && (
-              <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-                {error}
-              </div>
-            )}
-          </div>
-        </section>
+              {error && (
+                <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                  {error}
+                </div>
+              )}
+            </div>
+          </section>
+        )}
 
         <section className="rounded-3xl border border-white/60 bg-white/90 p-6 shadow-xl">
           <h2 className="text-lg font-semibold text-slate-900">ประวัติการชำระเงิน</h2>

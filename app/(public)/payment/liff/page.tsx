@@ -18,6 +18,13 @@ type InvoiceRow = {
   status?: string;
 };
 
+type TenantInfo = {
+  id: string;
+  full_name: string;
+  room_number: string;
+  has_corporate_receipt?: boolean;
+};
+
 const NGROK_SKIP_QUERY = "ngrok-skip-browser-warning=true";
 
 export default function PaymentLiffPage() {
@@ -80,7 +87,8 @@ export default function PaymentLiffPage() {
           return;
         }
 
-        if (!data?.tenant) {
+        const tenant = (data?.tenant ?? null) as TenantInfo | null;
+        if (!tenant) {
           setMessage(data?.message ?? "ยังไม่ได้ลงทะเบียนผู้เช่า");
           setShowRegisterButton(true);
           setLoading(false);
@@ -92,6 +100,11 @@ export default function PaymentLiffPage() {
         setPaidInvoices(paid);
 
         if (invoices.length === 0) {
+          if (paid.length > 0 && !tenant.has_corporate_receipt) {
+            const latestPaid = paid[0];
+            window.location.replace(`/payment/${latestPaid.public_token}`);
+            return;
+          }
           setMessage("ไม่พบบิลค้างชำระ");
           setLoading(false);
           return;

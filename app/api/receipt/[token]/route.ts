@@ -89,8 +89,9 @@ export async function GET(req: Request) {
   <head>
     <meta charset="utf-8" />
     <style>
+      @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700&display=swap');
       @page { size: A4; margin: 12mm; }
-      body { font-family: "Noto Sans Thai", "Tahoma", sans-serif; color: #111827; font-size: 12px; }
+      body { font-family: "Sarabun", "Tahoma", sans-serif; color: #111827; font-size: 12px; }
       h1 { margin: 0; font-size: 22px; }
       .sub { color: #4b5563; margin-top: 4px; margin-bottom: 14px; }
       .card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; margin-bottom: 12px; }
