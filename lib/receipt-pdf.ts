@@ -57,9 +57,9 @@ export async function renderReceiptPdf(invoice: ReceiptInvoiceData): Promise<Buf
   const chunks: Buffer[] = [];
 
   return await new Promise<Buffer>((resolve, reject) => {
-    doc.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+    doc.on("data", (chunk: Uint8Array | Buffer | string) => chunks.push(Buffer.from(chunk)));
     doc.on("end", () => resolve(Buffer.concat(chunks)));
-    doc.on("error", reject);
+    doc.on("error", (error: unknown) => reject(error));
 
     doc.font("Helvetica-Bold").fontSize(20).fillColor("#111827").text("RECEIPT");
     doc
