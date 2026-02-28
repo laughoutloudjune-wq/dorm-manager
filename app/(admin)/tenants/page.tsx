@@ -28,6 +28,7 @@ type TenantRow = {
   final_electricity_reading: number | null;
   final_water_reading: number | null;
   custom_payment_method: any;
+  custom_receipt_profile: any;
   rooms:
     | { room_number: string; price_month: number | null; buildings: { name: string }[] | null }
     | { room_number: string; price_month: number | null; buildings: { name: string }[] | null }[]
@@ -48,6 +49,15 @@ type PaymentMethod = {
   account_name: string;
   account_number: string;
   qr_url: string | null;
+};
+
+type ReceiptProfile = {
+  id: string;
+  label: string;
+  company_name: string;
+  tax_id: string | null;
+  branch: string | null;
+  address: string;
 };
 
 type SettingsRates = {
@@ -113,6 +123,7 @@ export default function TenantsPage() {
   const [tenants, setTenants] = useState<TenantRow[]>([]);
   const [rooms, setRooms] = useState<RoomRow[]>([]);
   const [methods, setMethods] = useState<PaymentMethod[]>([]);
+  const [receiptProfiles, setReceiptProfiles] = useState<ReceiptProfile[]>([]);
   const [rates, setRates] = useState<SettingsRates>({ water_rate: 0, electricity_rate: 0 });
   const [search, setSearch] = useState("");
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -120,6 +131,8 @@ export default function TenantsPage() {
   const [activeTab, setActiveTab] = useState<"info" | "move_in" | "move_out">("info");
   const [useCustomPayment, setUseCustomPayment] = useState(false);
   const [selectedMethodId, setSelectedMethodId] = useState<string>("");
+  const [useCustomReceipt, setUseCustomReceipt] = useState(false);
+  const [selectedReceiptProfileId, setSelectedReceiptProfileId] = useState<string>("");
   const [status, setStatus] = useState<string | null>(null);
   const [latestPrevElectricity, setLatestPrevElectricity] = useState(0);
   const [latestPrevWater, setLatestPrevWater] = useState(0);
@@ -170,7 +183,7 @@ export default function TenantsPage() {
     const { data, error } = await supabase
       .from("tenants")
       .select(
-        "id,full_name,address,phone_number,line_user_id,move_in_date,move_out_date,status,room_id,lease_months,initial_electricity_reading,initial_water_reading,advance_rent_amount,security_deposit_amount,deposit_slip_url,final_electricity_reading,final_water_reading,custom_payment_method,rooms(room_number,price_month,buildings(name))"
+        "id,full_name,address,phone_number,line_user_id,move_in_date,move_out_date,status,room_id,lease_months,initial_electricity_reading,initial_water_reading,advance_rent_amount,security_deposit_amount,deposit_slip_url,final_electricity_reading,final_water_reading,custom_payment_method,custom_receipt_profile,rooms(room_number,price_month,buildings(name))"
       )
       .order("move_in_date", { ascending: false });
 
@@ -198,6 +211,14 @@ export default function TenantsPage() {
     setMethods((data ?? []) as PaymentMethod[]);
   };
 
+  const loadReceiptProfiles = async () => {
+    const { data } = await supabase
+      .from("receipt_profiles")
+      .select("id,label,company_name,tax_id,branch,address")
+      .order("label", { ascending: true });
+    setReceiptProfiles((data ?? []) as ReceiptProfile[]);
+  };
+
   const loadRates = async () => {
     const { data } = await supabase
       .from("settings")
@@ -216,6 +237,7 @@ export default function TenantsPage() {
     void loadTenants();
     void loadRooms();
     void loadMethods();
+    void loadReceiptProfiles();
     void loadRates();
   }, []);
 
@@ -266,6 +288,14 @@ export default function TenantsPage() {
         setUseCustomPayment(false);
         setSelectedMethodId("");
       }
+      const customReceipt = tenant.custom_receipt_profile;
+      if (customReceipt?.profileId) {
+        setUseCustomReceipt(true);
+        setSelectedReceiptProfileId(customReceipt.profileId);
+      } else {
+        setUseCustomReceipt(false);
+        setSelectedReceiptProfileId("");
+      }
 
       await loadLatestReadings(
         tenant.room_id,
@@ -292,6 +322,8 @@ export default function TenantsPage() {
       });
       setUseCustomPayment(false);
       setSelectedMethodId("");
+      setUseCustomReceipt(false);
+      setSelectedReceiptProfileId("");
       setLatestPrevElectricity(0);
       setLatestPrevWater(0);
     }
@@ -340,6 +372,20 @@ export default function TenantsPage() {
             qr_url: selectedMethod.qr_url,
           }
         : null;
+    const selectedReceiptProfile = receiptProfiles.find(
+      (profile) => profile.id === selectedReceiptProfileId
+    );
+    const customReceipt =
+      useCustomReceipt && selectedReceiptProfile
+        ? {
+            profileId: selectedReceiptProfile.id,
+            label: selectedReceiptProfile.label,
+            company_name: selectedReceiptProfile.company_name,
+            tax_id: selectedReceiptProfile.tax_id,
+            branch: selectedReceiptProfile.branch,
+            address: selectedReceiptProfile.address,
+          }
+        : null;
 
     const payload: any = {
       full_name: form.full_name,
@@ -357,6 +403,7 @@ export default function TenantsPage() {
       final_electricity_reading: toNumber(form.final_electricity_reading),
       final_water_reading: toNumber(form.final_water_reading),
       custom_payment_method: customPayment,
+      custom_receipt_profile: customReceipt,
     };
 
     if (activeTenant?.id) payload.id = activeTenant.id;
@@ -377,7 +424,7 @@ export default function TenantsPage() {
       const { data: refreshed } = await supabase
         .from("tenants")
         .select(
-          "id,full_name,address,phone_number,line_user_id,move_in_date,move_out_date,status,room_id,lease_months,initial_electricity_reading,initial_water_reading,advance_rent_amount,security_deposit_amount,deposit_slip_url,final_electricity_reading,final_water_reading,custom_payment_method,rooms(room_number,price_month,buildings(name))"
+          "id,full_name,address,phone_number,line_user_id,move_in_date,move_out_date,status,room_id,lease_months,initial_electricity_reading,initial_water_reading,advance_rent_amount,security_deposit_amount,deposit_slip_url,final_electricity_reading,final_water_reading,custom_payment_method,custom_receipt_profile,rooms(room_number,price_month,buildings(name))"
         )
         .eq("id", activeTenant.id)
         .maybeSingle();
@@ -621,6 +668,34 @@ export default function TenantsPage() {
                   {methods.map((method) => (
                     <option key={method.id} value={method.id}>
                       {method.label} - {method.bank_name} ({method.account_number})
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+
+            <div className="space-y-2 md:col-span-2">
+              <p className="text-sm font-medium text-slate-700">ข้อมูลออกใบเสร็จ (นิติบุคคล)</p>
+              <div className="flex items-center gap-3 text-sm text-slate-600">
+                <label className="flex items-center gap-2">
+                  <input type="radio" checked={!useCustomReceipt} onChange={() => setUseCustomReceipt(false)} />
+                  ใช้ชื่อ/ที่อยู่ผู้เช่าปกติ
+                </label>
+                <label className="flex items-center gap-2">
+                  <input type="radio" checked={useCustomReceipt} onChange={() => setUseCustomReceipt(true)} />
+                  กำหนดข้อมูลนิติบุคคลเฉพาะห้อง
+                </label>
+              </div>
+              {useCustomReceipt && (
+                <select
+                  value={selectedReceiptProfileId}
+                  onChange={(event) => setSelectedReceiptProfileId(event.target.value)}
+                  className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm"
+                >
+                  <option value="">เลือกโปรไฟล์ใบเสร็จ</option>
+                  {receiptProfiles.map((profile) => (
+                    <option key={profile.id} value={profile.id}>
+                      {profile.label} - {profile.company_name}
                     </option>
                   ))}
                 </select>

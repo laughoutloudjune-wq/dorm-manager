@@ -47,6 +47,7 @@ ADD COLUMN IF NOT EXISTS price_month NUMERIC(10, 2);
 -- This preserves all existing data.
 ALTER TABLE public.tenants
 ADD COLUMN IF NOT EXISTS custom_payment_method JSONB,
+ADD COLUMN IF NOT EXISTS custom_receipt_profile JSONB,
 ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active',
 ADD COLUMN IF NOT EXISTS address TEXT,
 ADD COLUMN IF NOT EXISTS lease_months INT,
@@ -60,6 +61,7 @@ ADD COLUMN IF NOT EXISTS final_electricity_reading NUMERIC(10, 2),
 ADD COLUMN IF NOT EXISTS final_water_reading NUMERIC(10, 2);
 
 COMMENT ON COLUMN public.tenants.custom_payment_method IS 'Overrides default payment method. {"type": "bank", "details": {...}} or {"type": "qr", "url": "..."}';
+COMMENT ON COLUMN public.tenants.custom_receipt_profile IS 'Optional corporate receipt profile override for this tenant/room.';
 
 -- 5. Alter 'invoices' table to add new columns.
 -- This assumes an 'invoices' table already exists.
@@ -162,6 +164,17 @@ CREATE TABLE IF NOT EXISTS public.payment_methods (
     account_name TEXT NOT NULL DEFAULT '',
     account_number TEXT NOT NULL DEFAULT '',
     qr_url TEXT,
+    is_active BOOLEAN DEFAULT TRUE NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT now() NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS public.receipt_profiles (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    label TEXT NOT NULL DEFAULT '',
+    company_name TEXT NOT NULL DEFAULT '',
+    tax_id TEXT,
+    branch TEXT,
+    address TEXT NOT NULL DEFAULT '',
     is_active BOOLEAN DEFAULT TRUE NOT NULL,
     created_at TIMESTAMPTZ DEFAULT now() NOT NULL
 );

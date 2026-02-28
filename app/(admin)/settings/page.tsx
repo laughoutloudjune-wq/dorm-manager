@@ -53,6 +53,15 @@ type PaymentMethod = {
   qr_url: string | null;
 };
 
+type ReceiptProfile = {
+  id?: string;
+  label: string;
+  company_name: string;
+  tax_id: string;
+  branch: string;
+  address: string;
+};
+
 type Building = { id: string; name: string };
 type Room = {
   id: string;
@@ -100,6 +109,14 @@ const newPaymentMethod = (): PaymentMethod => ({
   account_name: "",
   account_number: "",
   qr_url: null,
+});
+
+const newReceiptProfile = (): ReceiptProfile => ({
+  label: "",
+  company_name: "",
+  tax_id: "",
+  branch: "",
+  address: "",
 });
 
 const roleLabelThai = (role: RoleKey) => {
@@ -162,6 +179,8 @@ export default function SettingsPage() {
   const [discounts, setDiscounts] = useState<AdditionalFee[]>([]);
   const [methods, setMethods] = useState<PaymentMethod[]>([]);
   const [initialMethodIds, setInitialMethodIds] = useState<string[]>([]);
+  const [receiptProfiles, setReceiptProfiles] = useState<ReceiptProfile[]>([]);
+  const [initialReceiptProfileIds, setInitialReceiptProfileIds] = useState<string[]>([]);
   const [buildings, setBuildings] = useState<Building[]>([]);
   const [selectedBuilding, setSelectedBuilding] = useState<string>("");
   const [rooms, setRooms] = useState<Room[]>([]);
@@ -266,6 +285,23 @@ export default function SettingsPage() {
     setInitialMethodIds(rows.map((row) => row.id!).filter(Boolean));
   };
 
+  const loadReceiptProfiles = async () => {
+    const { data, error } = await supabase
+      .from("receipt_profiles")
+      .select("id,label,company_name,tax_id,branch,address")
+      .order("label", { ascending: true });
+
+    if (error) {
+      setStatusMessage(error.message);
+      setReceiptProfiles([]);
+      return;
+    }
+
+    const rows = (data as ReceiptProfile[]) ?? [];
+    setReceiptProfiles(rows);
+    setInitialReceiptProfileIds(rows.map((row) => row.id!).filter(Boolean));
+  };
+
   const loadBuildings = async () => {
     const { data, error } = await supabase
       .from("buildings")
@@ -349,6 +385,7 @@ export default function SettingsPage() {
   useEffect(() => {
     loadSettings();
     loadPaymentMethods();
+    loadReceiptProfiles();
     loadBuildings();
   }, []);
 
@@ -443,6 +480,28 @@ export default function SettingsPage() {
     }
   };
 
+  const saveReceiptProfiles = async () => {
+    const cleaned = receiptProfiles.map((profile) => ({
+      id: profile.id,
+      label: profile.label.trim(),
+      company_name: profile.company_name.trim(),
+      tax_id: profile.tax_id.trim() || null,
+      branch: profile.branch.trim() || null,
+      address: profile.address.trim(),
+    }));
+
+    try {
+      await callSettingsAction("save_receipt_profiles", {
+        profiles: cleaned,
+        initialProfileIds: initialReceiptProfileIds,
+      });
+      setStatusMessage("บันทึกข้อมูลออกใบเสร็จเรียบร้อย");
+      await loadReceiptProfiles();
+    } catch (error: any) {
+      setStatusMessage(error?.message ?? "บันทึกข้อมูลออกใบเสร็จไม่สำเร็จ");
+    }
+  };
+
   const uploadQr = async (index: number, file?: File | null) => {
     if (!file) return;
 
@@ -472,6 +531,10 @@ export default function SettingsPage() {
 
   const removeMethod = (index: number) => {
     setMethods((prev) => prev.filter((_, idx) => idx !== index));
+  };
+
+  const removeReceiptProfile = (index: number) => {
+    setReceiptProfiles((prev) => prev.filter((_, idx) => idx !== index));
   };
 
   const addBuilding = async () => {
@@ -1093,6 +1156,114 @@ export default function SettingsPage() {
             <Save size={16} />
             บันทึกช่องทางชำระเงิน
           </button>
+
+          <div className="mt-6 border-t border-slate-200 pt-6">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-semibold text-slate-800">ข้อมูลออกใบเสร็จ (นิติบุคคล)</p>
+              <button
+                onClick={() => setReceiptProfiles((prev) => [...prev, newReceiptProfile()])}
+                className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700"
+              >
+                <Plus size={14} />
+                เพิ่มโปรไฟล์ใบเสร็จ
+              </button>
+            </div>
+
+            <div className="mt-3 space-y-3">
+              {receiptProfiles.map((profile, index) => (
+                <div key={profile.id ?? `receipt-${index}`} className="rounded-xl border border-slate-200 p-4">
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <Input
+                      label="ชื่อโปรไฟล์"
+                      value={profile.label}
+                      onChange={(event) =>
+                        setReceiptProfiles((prev) =>
+                          prev.map((item, idx) =>
+                            idx === index ? { ...item, label: event.target.value } : item
+                          )
+                        )
+                      }
+                    />
+                    <Input
+                      label="ชื่อนิติบุคคล/บริษัท"
+                      value={profile.company_name}
+                      onChange={(event) =>
+                        setReceiptProfiles((prev) =>
+                          prev.map((item, idx) =>
+                            idx === index ? { ...item, company_name: event.target.value } : item
+                          )
+                        )
+                      }
+                    />
+                    <Input
+                      label="เลขผู้เสียภาษี"
+                      value={profile.tax_id}
+                      onChange={(event) =>
+                        setReceiptProfiles((prev) =>
+                          prev.map((item, idx) =>
+                            idx === index ? { ...item, tax_id: event.target.value } : item
+                          )
+                        )
+                      }
+                    />
+                    <Input
+                      label="สาขา"
+                      value={profile.branch}
+                      onChange={(event) =>
+                        setReceiptProfiles((prev) =>
+                          prev.map((item, idx) =>
+                            idx === index ? { ...item, branch: event.target.value } : item
+                          )
+                        )
+                      }
+                    />
+                    <div className="md:col-span-2">
+                      <Input
+                        label="ที่อยู่ออกใบเสร็จ"
+                        value={profile.address}
+                        onChange={(event) =>
+                          setReceiptProfiles((prev) =>
+                            prev.map((item, idx) =>
+                              idx === index ? { ...item, address: event.target.value } : item
+                            )
+                          )
+                        }
+                      />
+                    </div>
+                  </div>
+                  <div className="mt-3">
+                    <button
+                      onClick={() =>
+                        openConfirm({
+                          title: "ลบโปรไฟล์ใบเสร็จ",
+                          message: "ยืนยันการลบโปรไฟล์ใบเสร็จนี้?",
+                          action: async () => removeReceiptProfile(index),
+                        })
+                      }
+                      className="inline-flex items-center gap-2 rounded-xl border border-red-200 px-3 py-2 text-sm text-red-600"
+                    >
+                      <Trash2 size={14} />
+                      ลบ
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <button
+              onClick={() =>
+                openConfirm({
+                  title: "บันทึกโปรไฟล์ใบเสร็จ",
+                  message: "ยืนยันการบันทึกข้อมูลออกใบเสร็จ?",
+                  action: saveReceiptProfiles,
+                })
+              }
+              className="mt-3 inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
+            >
+              <Save size={16} />
+              บันทึกโปรไฟล์ใบเสร็จ
+            </button>
+          </div>
         </div>
       )}
 

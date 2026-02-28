@@ -41,7 +41,7 @@ export async function POST(req: Request) {
       });
     }
 
-    const { data: invoices, error: invoiceError } = await supabase
+    const { data: pendingInvoices, error: pendingError } = await supabase
       .from("invoices")
       .select(
         "id,public_token,issue_date,due_date,total_amount,paid_amount,status,rent_amount,water_bill,electricity_bill,common_fee,additional_fees_total"
@@ -50,8 +50,20 @@ export async function POST(req: Request) {
       .in("status", ["pending", "partial", "overdue", "verifying"])
       .order("issue_date", { ascending: false });
 
-    if (invoiceError) {
-      return NextResponse.json({ error: invoiceError.message }, { status: 500 });
+    if (pendingError) {
+      return NextResponse.json({ error: pendingError.message }, { status: 500 });
+    }
+
+    const { data: paidInvoices, error: paidError } = await supabase
+      .from("invoices")
+      .select("id,public_token,issue_date,due_date,total_amount,paid_amount,status")
+      .eq("tenant_id", tenant.id)
+      .eq("status", "paid")
+      .order("issue_date", { ascending: false })
+      .limit(12);
+
+    if (paidError) {
+      return NextResponse.json({ error: paidError.message }, { status: 500 });
     }
 
     const roomRel = Array.isArray((tenant as any).rooms) ? (tenant as any).rooms[0] : (tenant as any).rooms;
@@ -62,7 +74,9 @@ export async function POST(req: Request) {
         full_name: (tenant as any).full_name,
         room_number: roomRel?.room_number ?? "-",
       },
-      invoices: invoices ?? [],
+      invoices: pendingInvoices ?? [],
+      pending_invoices: pendingInvoices ?? [],
+      paid_invoices: paidInvoices ?? [],
       message: null,
     });
   } catch (error: any) {

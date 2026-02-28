@@ -6,6 +6,7 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 -- Drop dependent tables first
 DROP TABLE IF EXISTS public.meter_readings;
 DROP TABLE IF EXISTS public.invoices;
+DROP TABLE IF EXISTS public.receipt_profiles;
 DROP TABLE IF EXISTS public.payment_methods;
 DROP TABLE IF EXISTS public.tenants;
 DROP TABLE IF EXISTS public.rooms;
@@ -73,6 +74,7 @@ CREATE TABLE public.tenants (
   final_electricity_reading NUMERIC(10,2),
   final_water_reading NUMERIC(10,2),
   custom_payment_method JSONB,
+  custom_receipt_profile JSONB,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -84,6 +86,18 @@ CREATE TABLE public.payment_methods (
   account_name TEXT NOT NULL DEFAULT '',
   account_number TEXT NOT NULL DEFAULT '',
   qr_url TEXT,
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Receipt Profiles (corporate receipt address templates)
+CREATE TABLE public.receipt_profiles (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  label TEXT NOT NULL DEFAULT '',
+  company_name TEXT NOT NULL DEFAULT '',
+  tax_id TEXT,
+  branch TEXT,
+  address TEXT NOT NULL DEFAULT '',
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

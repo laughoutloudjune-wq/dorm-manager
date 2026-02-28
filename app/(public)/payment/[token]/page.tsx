@@ -406,6 +406,16 @@ export default function PaymentTokenPage() {
               </p>
             </div>
           </div>
+          {invoice.status === "paid" && (
+            <div className="mt-4">
+              <a
+                href={`/api/receipt/${token}`}
+                className="inline-flex rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
+              >
+                ดาวน์โหลด PDF ใบเสร็จรับเงิน
+              </a>
+            </div>
+          )}
         </header>
 
         <section className="rounded-3xl border border-white/60 bg-white/90 p-6 shadow-xl">

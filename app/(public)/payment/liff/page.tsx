@@ -14,6 +14,8 @@ type InvoiceRow = {
   issue_date: string;
   due_date: string;
   total_amount: number;
+  paid_amount?: number;
+  status?: string;
 };
 
 const NGROK_SKIP_QUERY = "ngrok-skip-browser-warning=true";
@@ -22,6 +24,7 @@ export default function PaymentLiffPage() {
   const [profile, setProfile] = useState<LiffProfile | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [showRegisterButton, setShowRegisterButton] = useState(false);
+  const [paidInvoices, setPaidInvoices] = useState<InvoiceRow[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -84,7 +87,10 @@ export default function PaymentLiffPage() {
           return;
         }
 
-        const invoices = (data.invoices ?? []) as InvoiceRow[];
+        const invoices = (data.pending_invoices ?? data.invoices ?? []) as InvoiceRow[];
+        const paid = (data.paid_invoices ?? []) as InvoiceRow[];
+        setPaidInvoices(paid);
+
         if (invoices.length === 0) {
           setMessage("ไม่พบบิลค้างชำระ");
           setLoading(false);
@@ -124,6 +130,38 @@ export default function PaymentLiffPage() {
           <div className="space-y-3">
             {message && (
               <div className="rounded-xl bg-slate-100 p-3 text-sm text-slate-700">{message}</div>
+            )}
+            {!showRegisterButton && paidInvoices.length > 0 && (
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <p className="text-sm font-semibold text-slate-900">ใบเสร็จรับเงิน (ดาวน์โหลด PDF)</p>
+                <div className="mt-3 space-y-2">
+                  {paidInvoices.map((invoice) => (
+                    <div
+                      key={invoice.id}
+                      className="flex items-center justify-between rounded-xl border border-slate-200 px-3 py-2"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium text-slate-900">
+                          งวด {new Date(invoice.issue_date).toLocaleDateString("th-TH", { month: "long", year: "numeric" })}
+                        </p>
+                        <p className="text-xs text-slate-500">
+                          ยอดชำระ ฿
+                          {Number(invoice.paid_amount ?? invoice.total_amount ?? 0).toLocaleString("th-TH", {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2,
+                          })}
+                        </p>
+                      </div>
+                      <a
+                        href={`/api/receipt/${invoice.public_token}`}
+                        className="rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white"
+                      >
+                        ดาวน์โหลด PDF
+                      </a>
+                    </div>
+                  ))}
+                </div>
+              </div>
             )}
             {showRegisterButton && (
               <a

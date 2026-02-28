@@ -59,6 +59,36 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: true });
     }
 
+    if (action === "save_receipt_profiles") {
+      const auth = await requireAdminPermission(req, "settings.payment_methods");
+      if ("error" in auth) return auth.error;
+      const profiles = Array.isArray(body?.profiles) ? body.profiles : [];
+      const initialProfileIds = Array.isArray(body?.initialProfileIds) ? body.initialProfileIds : [];
+
+      const existingIdSet = new Set(initialProfileIds);
+      const existingRows = profiles.filter((row: any) => row.id && existingIdSet.has(row.id));
+      const newRows = profiles
+        .filter((row: any) => !row.id || !existingIdSet.has(row.id))
+        .map(({ id, ...rest }: any) => rest);
+
+      for (const row of existingRows) {
+        const { id, ...payload } = row;
+        const { error } = await auth.supabase.from("receipt_profiles").update(payload).eq("id", id);
+        if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      }
+      if (newRows.length > 0) {
+        const { error } = await auth.supabase.from("receipt_profiles").insert(newRows);
+        if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      }
+      const currentIds = existingRows.map((r: any) => r.id).filter(Boolean);
+      const removedIds = (initialProfileIds as string[]).filter((id) => !currentIds.includes(id));
+      if (removedIds.length > 0) {
+        const { error } = await auth.supabase.from("receipt_profiles").delete().in("id", removedIds);
+        if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      }
+      return NextResponse.json({ success: true });
+    }
+
     if (action === "add_building") {
       const auth = await requireAdminPermission(req, "settings.rooms");
       if ("error" in auth) return auth.error;
@@ -113,4 +143,3 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: error?.message ?? "Unexpected server error." }, { status: 500 });
   }
 }
-
