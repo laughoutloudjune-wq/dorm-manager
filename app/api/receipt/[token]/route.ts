@@ -148,6 +148,7 @@ export async function GET(req: Request) {
     const additionalFees = Array.isArray((data as any).additional_fees_breakdown)
       ? (data as any).additional_fees_breakdown
       : [];
+    const hasAdditionalFeeBreakdown = additionalFees.length > 0;
 
     const html = `
 <!doctype html>
@@ -223,9 +224,13 @@ export async function GET(req: Request) {
                 )}</td></tr>`
             )
             .join("")}
-          <tr><td>ค่าธรรมเนียมเพิ่มเติม (รวม)</td><td>${escapeHtml(
-            formatMoney(toNumber((data as any).additional_fees_total))
-          )}</td></tr>
+          ${
+            hasAdditionalFeeBreakdown
+              ? ""
+              : `<tr><td>ค่าธรรมเนียมเพิ่มเติม</td><td>${escapeHtml(
+                  formatMoney(toNumber((data as any).additional_fees_total))
+                )}</td></tr>`
+          }
           <tr><td>ส่วนลด</td><td>-${escapeHtml(formatMoney(toNumber((data as any).discount_amount)))}</td></tr>
           <tr><td>ค่าปรับล่าช้า</td><td>${escapeHtml(formatMoney(toNumber((data as any).late_fee_amount)))}</td></tr>
         </tbody>
@@ -279,4 +284,3 @@ export async function GET(req: Request) {
     );
   }
 }
-
