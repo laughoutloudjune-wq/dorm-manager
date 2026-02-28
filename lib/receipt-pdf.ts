@@ -37,7 +37,7 @@ const dateText = (value: string | null | undefined) => {
   return d.toLocaleDateString("th-TH");
 };
 
-function line(doc: PDFKit.PDFDocument, label: string, value: string, y: number) {
+function line(doc: any, label: string, value: string, y: number) {
   doc.font("Helvetica").fontSize(11).fillColor("#4b5563").text(label, 50, y, { width: 250 });
   doc
     .font("Helvetica-Bold")
@@ -124,4 +124,3 @@ export async function renderReceiptPdf(invoice: ReceiptInvoiceData): Promise<Buf
     doc.end();
   });
 }
-
