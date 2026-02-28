@@ -191,8 +191,6 @@ export async function GET(req: Request) {
       ${rowHtml("ที่อยู่", String(tenant?.address ?? "-"))}
       ${rowHtml("เบอร์โทรศัพท์", String(tenant?.phone_number ?? "-"))}
       ${rowHtml("เลขห้อง", `${String(room?.room_number ?? "-")}${building?.name ? ` (${String(building.name)})` : ""}`)}
-      ${rowHtml("งวดบิล", formatDate(String((data as any).issue_date)))}
-      ${rowHtml("วันครบกำหนด", formatDate(String((data as any).due_date)))}
     </div>
 
     <div class="card">
@@ -210,7 +208,7 @@ export async function GET(req: Request) {
             <td>${escapeHtml(formatMoney(toNumber((data as any).water_bill)))}</td>
           </tr>
           <tr>
-            <td>ค่าไฟ
+            <td>ค่าไฟฟ้า
               <div class="formula">(${escapeHtml(formatUnit((reading as any)?.previous_electricity ?? (reading as any)?.previous_reading ?? null))} - ${escapeHtml(formatUnit((reading as any)?.current_electricity ?? (reading as any)?.current_reading ?? null))} = ${escapeHtml(formatUnit(electricityUsage))} หน่วย) x ${escapeHtml(formatUnit(electricityRate))}</div>
             </td>
             <td>${escapeHtml(formatMoney(toNumber((data as any).electricity_bill)))}</td>
@@ -227,9 +225,11 @@ export async function GET(req: Request) {
           ${
             hasAdditionalFeeBreakdown
               ? ""
-              : `<tr><td>ค่าธรรมเนียมเพิ่มเติม</td><td>${escapeHtml(
-                  formatMoney(toNumber((data as any).additional_fees_total))
-                )}</td></tr>`
+              : toNumber((data as any).additional_fees_total) > 0
+                ? `<tr><td>ค่าธรรมเนียมเพิ่มเติม</td><td>${escapeHtml(
+                    formatMoney(toNumber((data as any).additional_fees_total))
+                  )}</td></tr>`
+                : ""
           }
           <tr><td>ส่วนลด</td><td>-${escapeHtml(formatMoney(toNumber((data as any).discount_amount)))}</td></tr>
           <tr><td>ค่าปรับล่าช้า</td><td>${escapeHtml(formatMoney(toNumber((data as any).late_fee_amount)))}</td></tr>
