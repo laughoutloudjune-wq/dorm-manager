@@ -94,6 +94,7 @@ export default function AdminLiffPage() {
   const [invoices, setInvoices] = useState<AdminLiffInvoice[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [filter, setFilter] = useState<string>("all");
+  const [roomFilter, setRoomFilter] = useState<string>("all");
   const [savingAction, setSavingAction] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -107,10 +108,39 @@ export default function AdminLiffPage() {
     [invoices, selectedId]
   );
 
+  const roomNumberCompare = (left: string, right: string) =>
+    left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" });
+
+  const roomOptions = useMemo(() => {
+    const roomSet = new Set<string>();
+    for (const invoice of invoices) {
+      const room = toArray(invoice.rooms)[0];
+      const roomNo = String(room?.room_number ?? "").trim();
+      if (roomNo) roomSet.add(roomNo);
+    }
+    return [...roomSet].sort(roomNumberCompare);
+  }, [invoices]);
+
   const visibleInvoices = useMemo(() => {
-    if (filter === "all") return invoices;
-    return invoices.filter((item) => item.status === filter);
-  }, [filter, invoices]);
+    const filtered =
+      filter === "all" ? invoices : invoices.filter((item) => item.status === filter);
+
+    const byRoom =
+      roomFilter === "all"
+        ? filtered
+        : filtered.filter((item) => {
+            const room = toArray(item.rooms)[0];
+            return String(room?.room_number ?? "").trim() === roomFilter;
+          });
+
+    return [...byRoom].sort((a, b) => {
+      const roomA = String(toArray(a.rooms)[0]?.room_number ?? "");
+      const roomB = String(toArray(b.rooms)[0]?.room_number ?? "");
+      const roomCmp = roomNumberCompare(roomA, roomB);
+      if (roomCmp !== 0) return roomCmp;
+      return new Date(b.issue_date ?? 0).getTime() - new Date(a.issue_date ?? 0).getTime();
+    });
+  }, [filter, roomFilter, invoices]);
 
   const loadInvoices = async (token: string, keepSelection = true) => {
     setRefreshing(true);
@@ -275,9 +305,23 @@ export default function AdminLiffPage() {
           >
             <option value="all">ทั้งหมด (รอจัดการ)</option>
             <option value="verifying">รอตรวจสอบ</option>
+            <option value="paid">ตรวจสอบแล้ว/ชำระแล้ว</option>
             <option value="pending">รอชำระ</option>
             <option value="partial">ชำระบางส่วน</option>
             <option value="overdue">เกินกำหนด</option>
+          </select>
+          <label className="mb-1 mt-3 block text-xs font-medium text-slate-500">ตัวกรองห้อง</label>
+          <select
+            value={roomFilter}
+            onChange={(e) => setRoomFilter(e.target.value)}
+            className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
+          >
+            <option value="all">ทุกห้อง</option>
+            {roomOptions.map((roomNo) => (
+              <option key={roomNo} value={roomNo}>
+                ห้อง {roomNo}
+              </option>
+            ))}
           </select>
         </div>
 
