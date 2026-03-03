@@ -23,6 +23,13 @@ type InvoiceRow = {
   issue_date: string;
 };
 
+type TenantMovementRow = {
+  id: string;
+  tenant_name: string;
+  move_in_date: string | null;
+  move_out_date: string | null;
+};
+
 const statusVariant: Record<string, "success" | "default" | "warning"> = {
   occupied: "success",
   available: "default",
@@ -50,6 +57,8 @@ export default function RoomsPage() {
   const [activeBuilding, setActiveBuilding] = useState<string>("");
   const [selectedRoom, setSelectedRoom] = useState<RoomRecord | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+  const [movementLogs, setMovementLogs] = useState<TenantMovementRow[]>([]);
+  const [movementLoading, setMovementLoading] = useState(false);
 
   const [confirmStatusOpen, setConfirmStatusOpen] = useState(false);
   const [pendingRoom, setPendingRoom] = useState<RoomRecord | null>(null);
@@ -161,6 +170,33 @@ export default function RoomsPage() {
 
   const filteredRooms = rooms.filter((room) => room.building_name === activeBuilding);
 
+  const loadMovementLogs = async (roomId: string) => {
+    setMovementLoading(true);
+    const { data, error } = await supabase
+      .from("room_tenant_logs")
+      .select("id,tenant_name,move_in_date,move_out_date")
+      .eq("room_id", roomId)
+      .order("move_in_date", { ascending: false });
+
+    if (error) {
+      setStatus(error.message);
+      setMovementLogs([]);
+      setMovementLoading(false);
+      return;
+    }
+
+    setMovementLogs((data ?? []) as TenantMovementRow[]);
+    setMovementLoading(false);
+  };
+
+  useEffect(() => {
+    if (!selectedRoom?.id) {
+      setMovementLogs([]);
+      return;
+    }
+    void loadMovementLogs(selectedRoom.id);
+  }, [selectedRoom?.id]);
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap gap-2">
@@ -236,15 +272,16 @@ export default function RoomsPage() {
         size="lg"
       >
         {selectedRoom && (
-          <div className="grid gap-4 md:grid-cols-2 text-sm text-slate-600">
-            <div className="space-y-2">
+          <div className="space-y-4 text-sm text-slate-600">
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
               <p className="text-xs uppercase tracking-[0.2em] text-slate-400">การเข้าพัก</p>
               <p className="text-lg font-semibold text-slate-900">{selectedRoom.tenant_name ?? "ว่าง"}</p>
               <p>อาคาร: {selectedRoom.building_name}</p>
               <p>สถานะ: {selectedRoom.status}</p>
               <p>LINE: {selectedRoom.tenant_line_user_id ? "เชื่อมแล้ว" : "ยังไม่เชื่อม"}</p>
-            </div>
-            <div className="space-y-2">
+              </div>
+              <div className="space-y-2">
               <p className="text-xs uppercase tracking-[0.2em] text-slate-400">คำสั่งด่วน</p>
               <button
                 className="w-full rounded-xl bg-blue-600 px-4 py-2 text-white font-semibold"
@@ -261,6 +298,45 @@ export default function RoomsPage() {
               >
                 เปลี่ยนสถานะห้อง
               </button>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+              <p className="text-xs uppercase tracking-[0.2em] text-slate-500">ประวัติผู้เช่าห้องนี้</p>
+              {movementLoading ? (
+                <p className="mt-3 text-sm text-slate-500">กำลังโหลดประวัติ...</p>
+              ) : movementLogs.length === 0 ? (
+                <p className="mt-3 text-sm text-slate-500">ยังไม่มีประวัติการเข้า-ออกของห้องนี้</p>
+              ) : (
+                <div className="mt-3 overflow-x-auto">
+                  <table className="w-full text-left text-xs text-slate-700">
+                    <thead className="text-slate-500">
+                      <tr>
+                        <th className="px-2 py-1">ชื่อผู้เช่า</th>
+                        <th className="px-2 py-1">วันที่เข้าอยู่</th>
+                        <th className="px-2 py-1">วันที่ย้ายออก</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {movementLogs.map((log) => (
+                        <tr key={log.id} className="border-t border-slate-200">
+                          <td className="px-2 py-1.5 font-medium text-slate-900">{log.tenant_name}</td>
+                          <td className="px-2 py-1.5">
+                            {log.move_in_date
+                              ? new Date(log.move_in_date).toLocaleDateString("th-TH")
+                              : "-"}
+                          </td>
+                          <td className="px-2 py-1.5">
+                            {log.move_out_date
+                              ? new Date(log.move_out_date).toLocaleDateString("th-TH")
+                              : "-"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           </div>
         )}

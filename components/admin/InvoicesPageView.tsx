@@ -880,17 +880,16 @@ export default function InvoicesPage() {
       return;
     }
 
-    if (!paymentSlipFile) {
-      setError("Please upload payment slip.");
-      return;
-    }
-
     setPaymentSubmitting(true);
     try {
-      const publicUrl = await uploadSlipFile(activeInvoice.id, paymentSlipFile);
+      let publicUrl: string | null = activeInvoice.slip_url ?? null;
+      if (paymentSlipFile) {
+        publicUrl = await uploadSlipFile(activeInvoice.id, paymentSlipFile);
+      }
       const nextPaidAmount = Math.min(total, currentPaid + amountToPay);
       const paidAtIso = new Date(`${paymentDate}T12:00:00`).toISOString();
-      const nextStatus: keyof typeof statusVariant = nextPaidAmount >= total ? "paid" : "partial";
+      const nextStatus: keyof typeof statusVariant =
+        paymentMode === "full" ? "paid" : "partial";
       const existingHistory = Array.isArray(activeInvoice.payment_history)
         ? activeInvoice.payment_history
         : [];
@@ -898,7 +897,7 @@ export default function InvoicesPage() {
         amount: amountToPay,
         mode: paymentMode,
         paid_at: paidAtIso,
-        slip_url: publicUrl,
+        slip_url: publicUrl ?? null,
         created_at: new Date().toISOString(),
       };
       const nextHistory = [...existingHistory, paymentEntry];
@@ -908,14 +907,14 @@ export default function InvoicesPage() {
         payload: {
           paid_amount: nextPaidAmount,
           payment_history: nextHistory,
-          slip_url: publicUrl,
-          slip_uploaded_at: paidAtIso,
+          slip_url: publicUrl ?? null,
+          slip_uploaded_at: publicUrl ? paidAtIso : null,
           status: nextStatus,
         },
       });
 
       setError(null);
-      setSlipPreview(publicUrl);
+      setSlipPreview(publicUrl ?? null);
       setShowPaymentForm(false);
       setPaymentMode("full");
       setPaymentAmountInput("");
@@ -926,7 +925,7 @@ export default function InvoicesPage() {
         paid_amount: nextPaidAmount,
         payment_history: nextHistory,
         status: nextStatus,
-        slip_url: publicUrl,
+        slip_url: publicUrl ?? null,
       } as InvoiceRecord;
       setActiveInvoice((prev) =>
         prev
@@ -935,7 +934,7 @@ export default function InvoicesPage() {
               paid_amount: nextPaidAmount,
               payment_history: nextHistory,
               status: nextStatus,
-              slip_url: publicUrl,
+              slip_url: publicUrl ?? null,
             }
           : prev
       );
@@ -943,7 +942,7 @@ export default function InvoicesPage() {
         paid_amount: nextPaidAmount,
         payment_history: nextHistory,
         status: nextStatus,
-        slip_url: publicUrl,
+        slip_url: publicUrl ?? null,
       });
       // Keep local modal state in sync without reloading the full page list.
       setActiveInvoice(activeNext);
@@ -1027,8 +1026,18 @@ export default function InvoicesPage() {
       setError("ไม่มีสิทธิ์ลบสลิปการชำระเงิน");
       return;
     }
-    if (!activeInvoice?.slip_url) return;
+    if (!activeInvoice) return;
     try {
+      const { data: files, error: listError } = await supabase.storage
+        .from("payment_slips")
+        .list(activeInvoice.id, { limit: 1000 });
+      if (listError) throw new Error(listError.message);
+      const paths = (files ?? []).map((file) => `${activeInvoice.id}/${file.name}`);
+      if (paths.length > 0) {
+        const { error: removeError } = await supabase.storage.from("payment_slips").remove(paths);
+        if (removeError) throw new Error(removeError.message);
+      }
+
       await callInvoiceAdminAction("record_payment", {
         invoiceId: activeInvoice.id,
         payload: {
@@ -2493,17 +2502,51 @@ export default function InvoicesPage() {
                         <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-2">
                           <div className="flex items-center justify-between gap-2">
                             <p className="text-xs text-slate-500">สลิปปัจจุบัน</p>
-                            <button
-                              type="button"
-                              onClick={() => void deletePaymentSlip()}
-                              disabled={!canRecordInvoicePayment || paymentSubmitting}
-                              title={!canRecordInvoicePayment ? "ไม่มีสิทธิ์ลบสลิปการชำระเงิน" : undefined}
-                              className="rounded-md border border-red-200 px-2 py-1 text-xs font-semibold text-red-600 disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                              ลบสลิป
-                            </button>
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (!slipPreview) return;
+                                  setSlipModalTitle(
+                                    `สลิปการชำระเงิน - ห้อง ${activeInvoice?.room_number ?? "-"}`
+                                  );
+                                  setSlipModalUrl(slipPreview);
+                                  setSlipModalOpen(true);
+                                }}
+                                className="rounded-md border border-blue-200 px-2 py-1 text-xs font-semibold text-blue-700"
+                              >
+                                เปิดภาพเต็ม
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void deletePaymentSlip()}
+                                disabled={!canRecordInvoicePayment || paymentSubmitting}
+                                title={!canRecordInvoicePayment ? "ไม่มีสิทธิ์ลบสลิปการชำระเงิน" : undefined}
+                                className="rounded-md border border-red-200 px-2 py-1 text-xs font-semibold text-red-600 disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                ลบสลิป
+                              </button>
+                            </div>
                           </div>
-                          <img src={slipPreview} alt="สลิป" className="mt-2 max-h-40 rounded-lg border" />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (!slipPreview) return;
+                              setSlipModalTitle(
+                                `สลิปการชำระเงิน - ห้อง ${activeInvoice?.room_number ?? "-"}`
+                              );
+                              setSlipModalUrl(slipPreview);
+                              setSlipModalOpen(true);
+                            }}
+                            className="mt-2 block w-full"
+                            title="คลิกเพื่อดูสลิปขนาดเต็ม"
+                          >
+                            <img
+                              src={slipPreview}
+                              alt="สลิป"
+                              className="max-h-56 w-full rounded-lg border object-contain"
+                            />
+                          </button>
                         </div>
                       )}
                     </div>

@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/Badge";
 import { ConfirmActionModal } from "@/components/ui/ConfirmActionModal";
 import { createClient } from "@/lib/supabase-client";
 import { usePermissions } from "@/lib/use-permissions";
-import { Plus, Save, Search, Trash2, Upload } from "lucide-react";
+import { Plus, Printer, Save, Search, Trash2, Upload } from "lucide-react";
 
 type TenantRow = {
   id: string;
@@ -483,6 +483,67 @@ export default function TenantsPage() {
     await loadTenants();
   };
 
+  const printMoveOutReceipt = () => {
+    if (!activeTenant) return;
+    const roomNo = tenantRoomNumber(activeTenant, roomsById);
+    const building = tenantBuildingName(activeTenant, roomsById);
+    const todayText = new Date().toLocaleDateString("th-TH");
+    const netLabel = net >= 0 ? "คืนเงินผู้เช่า" : "ผู้เช่าค้างชำระ";
+    const netAmount = formatMoney(Math.abs(net));
+
+    const html = `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>ใบสรุปย้ายออก - ห้อง ${roomNo}</title>
+    <style>
+      @page { size: A4; margin: 12mm; }
+      body { font-family: "Sarabun","Tahoma",sans-serif; color: #0f172a; }
+      .card { border: 1px solid #cbd5e1; border-radius: 10px; padding: 14px; margin-bottom: 12px; }
+      .header { border: 2px solid #334155; background: #f8fafc; }
+      h1 { margin: 0; font-size: 24px; }
+      .sub { color: #475569; margin-top: 6px; }
+      .row { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px dashed #e2e8f0; }
+      .row:last-child { border-bottom: 0; }
+      .label { color: #475569; }
+      .value { font-weight: 700; }
+      .total { margin-top: 10px; padding-top: 10px; border-top: 1px solid #94a3b8; font-size: 18px; font-weight: 700; }
+    </style>
+  </head>
+  <body>
+    <div class="card header">
+      <h1>ใบสรุปย้ายออก</h1>
+      <div class="sub">วันที่พิมพ์: ${todayText}</div>
+      <div class="sub">ผู้เช่า: ${form.full_name || "-"}</div>
+      <div class="sub">ห้อง: ${roomNo}${building ? ` (${building})` : ""}</div>
+    </div>
+    <div class="card">
+      <div class="row"><span class="label">ค่าเช่าห้อง</span><span class="value">฿${formatMoney(roomPrice)}</span></div>
+      <div class="row"><span class="label">ค่าไฟฟ้า (${electricityUsage} หน่วย)</span><span class="value">฿${formatMoney(electricityUsage * rates.electricity_rate)}</span></div>
+      <div class="row"><span class="label">ค่าน้ำ (${waterUsage} หน่วย)</span><span class="value">฿${formatMoney(waterUsage * rates.water_rate)}</span></div>
+      <div class="row"><span class="label">รวมค่าใช้จ่าย</span><span class="value">฿${formatMoney(totalCost)}</span></div>
+      <div class="row"><span class="label">ชำระล่วงหน้า (ประกัน + ค่าเช่าล่วงหน้า)</span><span class="value">฿${formatMoney(prepaid)}</span></div>
+      <div class="total">${netLabel}: ฿${netAmount}</div>
+    </div>
+  </body>
+</html>`;
+
+    const win = window.open("about:blank", "_blank", "width=900,height=1100");
+    if (!win) {
+      setStatus("ไม่สามารถเปิดหน้าพิมพ์ได้ (กรุณาอนุญาต pop-up)");
+      return;
+    }
+    win.document.open();
+    win.document.write(html);
+    win.document.close();
+    const triggerPrint = () => {
+      win.focus();
+      win.print();
+    };
+    win.onload = triggerPrint;
+    setTimeout(triggerPrint, 250);
+  };
+
   const roomsById = useMemo(() => new Map(rooms.map((room) => [room.id, room])), [rooms]);
 
   const filtered = tenants.filter((tenant) => {
@@ -851,6 +912,15 @@ export default function TenantsPage() {
             </div>
 
             <button
+              type="button"
+              onClick={printMoveOutReceipt}
+              disabled={!activeTenant}
+              className="mb-2 inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Printer size={16} />
+              พิมพ์ใบสรุปย้ายออก
+            </button>
+            <button
               onClick={() => setConfirmMoveOutOpen(true)}
               className="rounded-xl bg-red-600 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
               disabled={!activeTenant || !canEditTenant}
@@ -941,3 +1011,4 @@ export default function TenantsPage() {
     </div>
   );
 }
+

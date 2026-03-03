@@ -179,6 +179,43 @@ CREATE TABLE IF NOT EXISTS public.receipt_profiles (
     created_at TIMESTAMPTZ DEFAULT now() NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS public.room_tenant_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    room_id UUID NOT NULL REFERENCES public.rooms(id) ON DELETE CASCADE,
+    tenant_id UUID,
+    tenant_name TEXT NOT NULL,
+    move_in_date DATE NOT NULL,
+    move_out_date DATE,
+    created_at TIMESTAMPTZ DEFAULT now() NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT now() NOT NULL
+);
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'room_tenant_logs_room_tenant_movein_unique'
+          AND conrelid = 'public.room_tenant_logs'::regclass
+    ) THEN
+        ALTER TABLE public.room_tenant_logs
+        ADD CONSTRAINT room_tenant_logs_room_tenant_movein_unique
+        UNIQUE (room_id, tenant_id, move_in_date);
+    END IF;
+END $$;
+
+INSERT INTO public.room_tenant_logs (room_id, tenant_id, tenant_name, move_in_date, move_out_date)
+SELECT
+  t.room_id,
+  t.id,
+  t.full_name,
+  t.move_in_date,
+  t.move_out_date
+FROM public.tenants t
+WHERE t.room_id IS NOT NULL
+  AND t.move_in_date IS NOT NULL
+ON CONFLICT (room_id, tenant_id, move_in_date) DO NOTHING;
+
 ALTER TABLE public.payment_methods
 ADD COLUMN IF NOT EXISTS qr_url TEXT,
 ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;

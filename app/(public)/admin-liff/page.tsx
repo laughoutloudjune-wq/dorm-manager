@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 
 type LiffProfile = {
   userId: string;
@@ -46,6 +46,12 @@ function formatDate(value: string | null | undefined) {
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return "-";
   return d.toLocaleDateString("th-TH");
+}
+
+function toLocalDateString(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
+    date.getDate()
+  ).padStart(2, "0")}`;
 }
 
 function statusLabel(status: string) {
@@ -95,6 +101,7 @@ export default function AdminLiffPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [filter, setFilter] = useState<string>("all");
   const [roomFilter, setRoomFilter] = useState<string>("all");
+  const [paymentDate, setPaymentDate] = useState<string>(toLocalDateString(new Date()));
   const [savingAction, setSavingAction] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -134,6 +141,13 @@ export default function AdminLiffPage() {
           });
 
     return [...byRoom].sort((a, b) => {
+      const buildingA = String(toArray(toArray(a.rooms)[0]?.buildings as any)[0]?.name ?? "");
+      const buildingB = String(toArray(toArray(b.rooms)[0]?.buildings as any)[0]?.name ?? "");
+      const buildingCmp = buildingA.localeCompare(buildingB, undefined, {
+        numeric: true,
+        sensitivity: "base",
+      });
+      if (buildingCmp !== 0) return buildingCmp;
       const roomA = String(toArray(a.rooms)[0]?.room_number ?? "");
       const roomB = String(toArray(b.rooms)[0]?.room_number ?? "");
       const roomCmp = roomNumberCompare(roomA, roomB);
@@ -234,7 +248,10 @@ export default function AdminLiffPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filter]);
 
-  const applyAction = async (action: "approve_paid" | "update_status", payload?: { status?: string }) => {
+  const applyAction = async (
+    action: "approve_paid" | "update_status",
+    payload?: { status?: string; paymentDate?: string }
+  ) => {
     if (!accessToken || !selectedInvoice) return;
     const actionKey = `${action}:${selectedInvoice.id}`;
     setSavingAction(actionKey);
@@ -345,50 +362,59 @@ export default function AdminLiffPage() {
                 {visibleInvoices.length === 0 ? (
                   <div className="p-4 text-sm text-slate-500">ไม่พบใบแจ้งหนี้ในสถานะนี้</div>
                 ) : (
-                  visibleInvoices.map((invoice) => {
-                    const rowTenant = toArray(invoice.tenants)[0];
-                    const rowRoom = toArray(invoice.rooms)[0];
-                    const rowBuilding = toArray(rowRoom?.buildings as any)[0];
-                    const rowTotal = Number(invoice.total_amount ?? 0);
-                    const rowPaid = Number(invoice.paid_amount ?? 0);
-                    const rowRemaining = Math.max(0, rowTotal - rowPaid);
-                    const active = selectedId === invoice.id;
-                    return (
-                      <button
-                        key={invoice.id}
-                        type="button"
-                        onClick={() => {
-                          setSelectedId(invoice.id);
-                          const url = new URL(window.location.href);
-                          url.searchParams.set("invoiceId", invoice.id);
-                          window.history.replaceState({}, "", url.toString());
-                        }}
-                        className={`w-full border-b border-slate-100 px-3 py-3 text-left transition ${
-                          active ? "bg-blue-50" : "bg-white"
-                        }`}
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="min-w-0">
-                            <p className="truncate text-sm font-semibold text-slate-900">
-                              ห้อง {rowRoom?.room_number ?? "-"} {rowBuilding?.name ? `• ${rowBuilding.name}` : ""}
-                            </p>
-                            <p className="truncate text-xs text-slate-500">{rowTenant?.full_name ?? "-"}</p>
-                            <p className="mt-1 text-xs text-slate-500">
-                              ครบกำหนด {formatDate(invoice.due_date)}
-                            </p>
-                          </div>
-                          <div className="text-right">
-                            <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${statusClasses(invoice.status)}`}>
-                              {statusLabel(invoice.status)}
-                            </span>
-                            <p className="mt-1 text-xs font-medium text-slate-700">
-                              คงเหลือ {formatMoney(rowRemaining)}
-                            </p>
-                          </div>
-                        </div>
-                      </button>
-                    );
-                  })
+                  (() => {
+                    let previousBuilding = "";
+                    return visibleInvoices.map((invoice) => {
+                      const rowTenant = toArray(invoice.tenants)[0];
+                      const rowRoom = toArray(invoice.rooms)[0];
+                      const rowBuilding = toArray(rowRoom?.buildings as any)[0];
+                      const buildingName = String(rowBuilding?.name ?? "Unassigned");
+                      const showBuildingHeader = buildingName !== previousBuilding;
+                      previousBuilding = buildingName;
+                      const rowTotal = Number(invoice.total_amount ?? 0);
+                      const rowPaid = Number(invoice.paid_amount ?? 0);
+                      const rowRemaining = Math.max(0, rowTotal - rowPaid);
+                      const active = selectedId === invoice.id;
+                      return (
+                        <Fragment key={invoice.id}>
+                          {showBuildingHeader && (
+                            <div className="sticky top-0 z-10 border-y border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-600">
+                              Building {buildingName}
+                            </div>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedId(invoice.id);
+                              const url = new URL(window.location.href);
+                              url.searchParams.set("invoiceId", invoice.id);
+                              window.history.replaceState({}, "", url.toString());
+                            }}
+                            className={`w-full border-b border-slate-100 px-3 py-3 text-left transition ${
+                              active ? "bg-blue-50" : "bg-white"
+                            }`}
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0">
+                                <p className="truncate text-sm font-semibold text-slate-900">
+                                  Room {rowRoom?.room_number ?? "-"} {rowBuilding?.name ? `• ${rowBuilding.name}` : ""}
+                                </p>
+                                <p className="truncate text-xs text-slate-500">{rowTenant?.full_name ?? "-"}</p>
+                                <p className="mt-1 text-xs text-slate-500">Due {formatDate(invoice.due_date)}</p>
+                              </div>
+                              <div className="text-right">
+                                <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${statusClasses(invoice.status)}`}>
+                                  {statusLabel(invoice.status)}
+                                </span>
+                                <p className="mt-1 text-xs font-medium text-slate-700">Remaining {formatMoney(rowRemaining)}</p>
+                              </div>
+                            </div>
+                          </button>
+                        </Fragment>
+                      );
+                    });
+                  })()
+                
                 )}
               </div>
             </div>
@@ -425,6 +451,16 @@ export default function AdminLiffPage() {
                 <div className="mt-3 space-y-1 text-xs text-slate-500">
                   <p>งวดบิล: {formatDate(selectedInvoice.issue_date)}</p>
                   <p>ครบกำหนด: {formatDate(selectedInvoice.due_date)}</p>
+                </div>
+
+                <div className="mt-3">
+                  <label className="mb-1 block text-xs font-medium text-slate-500">วันที่ชำระเงิน</label>
+                  <input
+                    type="date"
+                    value={paymentDate}
+                    onChange={(e) => setPaymentDate(e.target.value)}
+                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
+                  />
                 </div>
 
                 {selectedInvoice.slip_url ? (
@@ -494,7 +530,7 @@ export default function AdminLiffPage() {
                 <div className="mt-4 space-y-2">
                   <button
                     type="button"
-                    onClick={() => void applyAction("approve_paid")}
+                    onClick={() => void applyAction("approve_paid", { paymentDate })}
                     disabled={!!savingAction}
                     className="w-full rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
                   >

@@ -51,7 +51,6 @@ export async function POST(req: Request) {
       .eq("room_id", room.id)
       .maybeSingle();
 
-    const moveInDate = new Date().toISOString().slice(0, 10);
     const depositAmount = Number.isFinite(Number(securityDepositAmount))
       ? Number(securityDepositAmount)
       : 0;
@@ -85,7 +84,7 @@ export async function POST(req: Request) {
         full_name: fullName,
         phone_number: phoneNumber,
         line_user_id: userId,
-        move_in_date: moveInDate,
+        move_in_date: null,
         status: "active",
         security_deposit_amount: depositAmount,
         advance_rent_amount: advanceAmount,

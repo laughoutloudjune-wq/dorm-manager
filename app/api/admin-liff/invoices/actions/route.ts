@@ -50,6 +50,10 @@ export async function POST(req: Request) {
     }
 
     if (action === "approve_paid") {
+      const paymentDateInput = String(body?.paymentDate ?? "").trim();
+      const selectedDate = /^\d{4}-\d{2}-\d{2}$/.test(paymentDateInput)
+        ? paymentDateInput
+        : null;
       const { data: current, error: fetchError } = await supabase
         .from("invoices")
         .select("total_amount,paid_amount,payment_history,slip_url")
@@ -61,7 +65,9 @@ export async function POST(req: Request) {
       const total = Number((current as any).total_amount ?? 0);
       const currentPaid = Number((current as any).paid_amount ?? 0);
       const addAmount = Math.max(0, total - currentPaid);
-      const nowIso = new Date().toISOString();
+      const nowIso = selectedDate
+        ? new Date(`${selectedDate}T12:00:00`).toISOString()
+        : new Date().toISOString();
       const existingHistory = Array.isArray((current as any).payment_history)
         ? ((current as any).payment_history as any[])
         : [];

@@ -6,6 +6,7 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 -- Drop dependent tables first
 DROP TABLE IF EXISTS public.meter_readings;
 DROP TABLE IF EXISTS public.invoices;
+DROP TABLE IF EXISTS public.room_tenant_logs;
 DROP TABLE IF EXISTS public.receipt_profiles;
 DROP TABLE IF EXISTS public.payment_methods;
 DROP TABLE IF EXISTS public.tenants;
@@ -100,6 +101,19 @@ CREATE TABLE public.receipt_profiles (
   address TEXT NOT NULL DEFAULT '',
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Permanent room tenant movement logs
+CREATE TABLE public.room_tenant_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  room_id UUID NOT NULL REFERENCES public.rooms(id) ON DELETE CASCADE,
+  tenant_id UUID,
+  tenant_name TEXT NOT NULL,
+  move_in_date DATE NOT NULL,
+  move_out_date DATE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT room_tenant_logs_room_tenant_movein_unique UNIQUE (room_id, tenant_id, move_in_date)
 );
 
 -- Settings (single row)
