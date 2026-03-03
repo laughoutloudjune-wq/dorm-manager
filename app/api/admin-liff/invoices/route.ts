@@ -1,41 +1,15 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase-admin";
-
-const adminLineUserIds = (process.env.LINE_ADMIN_USER_IDS || "")
-  .split(",")
-  .map((id) => id.trim())
-  .filter(Boolean);
-
-async function verifyLineAccessToken(accessToken: string) {
-  const profileResponse = await fetch("https://api.line.me/v2/profile", {
-    headers: { Authorization: `Bearer ${accessToken}` },
-    cache: "no-store",
-  });
-  if (!profileResponse.ok) return null;
-  return (await profileResponse.json()) as {
-    userId: string;
-    displayName: string;
-    pictureUrl?: string;
-  };
-}
+import { requireLineAdminAccess } from "@/lib/line-admin-auth";
 
 export async function POST(req: Request) {
   try {
     const body = await req.json();
     const accessToken = String(body?.accessToken ?? "");
     const statuses = Array.isArray(body?.statuses) ? (body.statuses as string[]) : null;
-    if (!accessToken) {
-      return NextResponse.json({ error: "Missing access token" }, { status: 400 });
-    }
-
-    const profile = await verifyLineAccessToken(accessToken);
-    if (!profile) {
-      return NextResponse.json({ error: "LINE profile verification failed" }, { status: 401 });
-    }
-
-    if (!adminLineUserIds.includes(profile.userId)) {
-      return NextResponse.json({ error: "LINE account is not allowed for admin LIFF" }, { status: 403 });
-    }
+    const auth = await requireLineAdminAccess(accessToken);
+    if ("error" in auth) return auth.error;
+    const profile = auth.profile;
 
     const supabase = createAdminClient();
     const validStatuses =
@@ -67,4 +41,3 @@ export async function POST(req: Request) {
     );
   }
 }
-

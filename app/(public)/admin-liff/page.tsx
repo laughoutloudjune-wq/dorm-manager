@@ -1,19 +1,10 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-type LiffProfile = {
-  userId: string;
-  displayName: string;
-  pictureUrl?: string;
-};
+type TabKey = "dashboard" | "invoices" | "tenants";
 
-type PaymentHistoryItem = {
-  amount?: number;
-  mode?: string;
-  paid_at?: string;
-  slip_url?: string;
-};
+type LiffProfile = { userId: string; displayName: string; pictureUrl?: string };
 
 type AdminLiffInvoice = {
   id: string;
@@ -23,262 +14,212 @@ type AdminLiffInvoice = {
   due_date: string | null;
   total_amount: number | null;
   paid_amount: number | null;
-  slip_url: string | null;
-  payment_history: PaymentHistoryItem[] | null;
-  tenants?: { full_name?: string | null; phone_number?: string | null } | Array<{ full_name?: string | null; phone_number?: string | null }> | null;
-  rooms?: { room_number?: string | null; buildings?: { name?: string | null } | Array<{ name?: string | null }> | null } | Array<{ room_number?: string | null; buildings?: { name?: string | null } | Array<{ name?: string | null }> | null }> | null;
+  tenants?:
+    | { full_name?: string | null; line_user_id?: string | null }
+    | Array<{ full_name?: string | null; line_user_id?: string | null }>
+    | null;
+  rooms?:
+    | {
+        room_number?: string | null;
+        buildings?: { name?: string | null } | Array<{ name?: string | null }> | null;
+      }
+    | Array<{
+        room_number?: string | null;
+        buildings?: { name?: string | null } | Array<{ name?: string | null }> | null;
+      }>
+    | null;
 };
 
-const NGROK_SKIP_QUERY = "ngrok-skip-browser-warning=true";
+type DashboardSummary = {
+  month: string;
+  invoice_count: number;
+  tenant_active_count: number;
+  total_amount: number;
+  outstanding_amount: number;
+  by_status: Record<string, number>;
+};
 
-function toArray<T>(value: T | T[] | null | undefined): T[] {
-  if (!value) return [];
-  return Array.isArray(value) ? value : [value];
-}
+type TenantRow = {
+  id: string;
+  full_name: string;
+  phone_number: string;
+  line_user_id: string | null;
+  move_in_date: string | null;
+  room_number: string;
+  building_name: string;
+};
 
-function formatMoney(value: number | null | undefined) {
-  const n = Number(value ?? 0);
-  return new Intl.NumberFormat("th-TH", { maximumFractionDigits: 2 }).format(n);
-}
-
-function formatDate(value: string | null | undefined) {
-  if (!value) return "-";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "-";
-  return d.toLocaleDateString("th-TH");
-}
-
-function toLocalDateString(date: Date) {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
-    date.getDate()
-  ).padStart(2, "0")}`;
-}
-
-function statusLabel(status: string) {
-  switch (status) {
-    case "pending":
-      return "รอชำระ";
-    case "partial":
-      return "ชำระบางส่วน";
-    case "verifying":
-      return "รอตรวจสอบ";
-    case "paid":
-      return "ชำระแล้ว";
-    case "overdue":
-      return "เกินกำหนด";
-    case "cancelled":
-      return "ยกเลิก";
-    case "draft":
-      return "ฉบับร่าง";
-    default:
-      return status;
-  }
-}
-
-function statusClasses(status: string) {
-  switch (status) {
-    case "paid":
-      return "bg-emerald-100 text-emerald-700";
-    case "verifying":
-      return "bg-amber-100 text-amber-700";
-    case "partial":
-      return "bg-blue-100 text-blue-700";
-    case "overdue":
-      return "bg-rose-100 text-rose-700";
-    case "pending":
-      return "bg-slate-200 text-slate-700";
-    default:
-      return "bg-slate-100 text-slate-600";
-  }
-}
+const toArray = <T,>(v: T | T[] | null | undefined) => (Array.isArray(v) ? v : v ? [v] : []);
+const fmtDate = (v?: string | null) => (v ? new Date(v).toLocaleDateString("th-TH") : "-");
+const fmtMoney = (v?: number | null) =>
+  `฿${Number(v ?? 0).toLocaleString("th-TH", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+const roomCmp = (a: string, b: string) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+const statusLabel = (s: string) =>
+  ({
+    pending: "รอชำระ",
+    partial: "ชำระบางส่วน",
+    verifying: "รอตรวจสอบ",
+    paid: "ชำระแล้ว",
+    overdue: "เกินกำหนด",
+    draft: "ฉบับร่าง",
+    cancelled: "ยกเลิก",
+  } as Record<string, string>)[s] ?? s;
 
 export default function AdminLiffPage() {
   const [profile, setProfile] = useState<LiffProfile | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [accessToken, setAccessToken] = useState("");
+  const [loadingAuth, setLoadingAuth] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
-  const [accessToken, setAccessToken] = useState<string>("");
-  const [invoices, setInvoices] = useState<AdminLiffInvoice[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [filter, setFilter] = useState<string>("all");
-  const [roomFilter, setRoomFilter] = useState<string>("all");
-  const [paymentDate, setPaymentDate] = useState<string>(toLocalDateString(new Date()));
-  const [savingAction, setSavingAction] = useState<string | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
 
-  const baseUrl = useMemo(
-    () => (process.env.NEXT_PUBLIC_BASE_URL || "").trim().replace(/\/$/, ""),
-    []
-  );
+  const [tab, setTab] = useState<TabKey>("dashboard");
+  const [month, setMonth] = useState(new Date().toISOString().slice(0, 7));
+
+  const [dashboard, setDashboard] = useState<DashboardSummary | null>(null);
+  const [invoices, setInvoices] = useState<AdminLiffInvoice[]>([]);
+  const [invoiceFilter, setInvoiceFilter] = useState("all");
+  const [roomFilter, setRoomFilter] = useState("all");
+  const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(null);
+  const [paymentDate, setPaymentDate] = useState(new Date().toISOString().slice(0, 10));
+  const [editDueDate, setEditDueDate] = useState("");
+  const [editTotal, setEditTotal] = useState("0");
+  const [editStatus, setEditStatus] = useState("pending");
+  const [savingAction, setSavingAction] = useState<string | null>(null);
+
+  const [tenantQuery, setTenantQuery] = useState("");
+  const [tenants, setTenants] = useState<TenantRow[]>([]);
 
   const selectedInvoice = useMemo(
-    () => invoices.find((item) => item.id === selectedId) ?? null,
-    [invoices, selectedId]
+    () => invoices.find((x) => x.id === selectedInvoiceId) ?? null,
+    [invoices, selectedInvoiceId]
   );
 
-  const roomNumberCompare = (left: string, right: string) =>
-    left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" });
-
   const roomOptions = useMemo(() => {
-    const roomSet = new Set<string>();
-    for (const invoice of invoices) {
-      const room = toArray(invoice.rooms)[0];
-      const roomNo = String(room?.room_number ?? "").trim();
-      if (roomNo) roomSet.add(roomNo);
-    }
-    return [...roomSet].sort(roomNumberCompare);
+    const s = new Set<string>();
+    invoices.forEach((i) => {
+      const r = toArray(i.rooms)[0];
+      if (r?.room_number) s.add(String(r.room_number));
+    });
+    return [...s].sort(roomCmp);
   }, [invoices]);
 
   const visibleInvoices = useMemo(() => {
-    const filtered =
-      filter === "all" ? invoices : invoices.filter((item) => item.status === filter);
-
+    const byStatus = invoiceFilter === "all" ? invoices : invoices.filter((i) => i.status === invoiceFilter);
     const byRoom =
       roomFilter === "all"
-        ? filtered
-        : filtered.filter((item) => {
-            const room = toArray(item.rooms)[0];
-            return String(room?.room_number ?? "").trim() === roomFilter;
-          });
-
+        ? byStatus
+        : byStatus.filter((i) => String(toArray(i.rooms)[0]?.room_number ?? "") === roomFilter);
     return [...byRoom].sort((a, b) => {
-      const buildingA = String(toArray(toArray(a.rooms)[0]?.buildings as any)[0]?.name ?? "");
-      const buildingB = String(toArray(toArray(b.rooms)[0]?.buildings as any)[0]?.name ?? "");
-      const buildingCmp = buildingA.localeCompare(buildingB, undefined, {
-        numeric: true,
-        sensitivity: "base",
-      });
-      if (buildingCmp !== 0) return buildingCmp;
-      const roomA = String(toArray(a.rooms)[0]?.room_number ?? "");
-      const roomB = String(toArray(b.rooms)[0]?.room_number ?? "");
-      const roomCmp = roomNumberCompare(roomA, roomB);
-      if (roomCmp !== 0) return roomCmp;
-      return new Date(b.issue_date ?? 0).getTime() - new Date(a.issue_date ?? 0).getTime();
+      const aBuild = String(toArray(toArray(a.rooms)[0]?.buildings as any)[0]?.name ?? "");
+      const bBuild = String(toArray(toArray(b.rooms)[0]?.buildings as any)[0]?.name ?? "");
+      const bc = aBuild.localeCompare(bBuild, undefined, { numeric: true, sensitivity: "base" });
+      if (bc !== 0) return bc;
+      return roomCmp(
+        String(toArray(a.rooms)[0]?.room_number ?? ""),
+        String(toArray(b.rooms)[0]?.room_number ?? "")
+      );
     });
-  }, [filter, roomFilter, invoices]);
+  }, [invoices, invoiceFilter, roomFilter]);
 
-  const loadInvoices = async (token: string, keepSelection = true) => {
-    setRefreshing(true);
-    try {
-      const statuses =
-        filter === "all" ? ["pending", "partial", "overdue", "verifying"] : [filter];
-      const response = await fetch("/api/admin-liff/invoices", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "ngrok-skip-browser-warning": "true",
-        },
-        body: JSON.stringify({ accessToken: token, statuses }),
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        setMessage(data?.error ?? "โหลดบิลไม่สำเร็จ");
-        return;
-      }
-      const rows = (data?.invoices ?? []) as AdminLiffInvoice[];
-      setInvoices(rows);
-      if (keepSelection) {
-        const requestedId = new URLSearchParams(window.location.search).get("invoiceId");
-        const preferredId = requestedId || selectedId;
-        const found = preferredId ? rows.find((r) => r.id === preferredId) : null;
-        setSelectedId(found?.id ?? rows[0]?.id ?? null);
-      } else {
-        setSelectedId(rows[0]?.id ?? null);
-      }
-      setMessage(null);
-    } catch (error: any) {
-      setMessage(error?.message ?? "เกิดข้อผิดพลาดในการโหลดบิล");
-    } finally {
-      setRefreshing(false);
-      setLoading(false);
-    }
+  const postJson = async (url: string, payload: Record<string, unknown>) => {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "ngrok-skip-browser-warning": "true",
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data?.error ?? "Request failed");
+    return data;
+  };
+
+  const loadDashboard = async () => {
+    if (!accessToken) return;
+    const data = await postJson("/api/admin-liff/dashboard", { accessToken, month });
+    setDashboard(data.summary ?? null);
+  };
+
+  const loadInvoices = async () => {
+    if (!accessToken) return;
+    const statuses =
+      invoiceFilter === "all"
+        ? ["pending", "partial", "overdue", "verifying", "paid", "draft", "cancelled"]
+        : [invoiceFilter];
+    const data = await postJson("/api/admin-liff/invoices", { accessToken, statuses });
+    const rows = (data.invoices ?? []) as AdminLiffInvoice[];
+    setInvoices(rows);
+    setSelectedInvoiceId((prev) => (rows.some((r) => r.id === prev) ? prev : rows[0]?.id ?? null));
+  };
+
+  const loadTenants = async () => {
+    if (!accessToken) return;
+    const data = await postJson("/api/admin-liff/tenants", { accessToken, query: tenantQuery });
+    setTenants((data.tenants ?? []) as TenantRow[]);
   };
 
   useEffect(() => {
     const boot = async () => {
       try {
-        if (
-          window.location.hostname.includes("ngrok") &&
-          !window.location.search.includes("ngrok-skip-browser-warning")
-        ) {
-          const nextUrl = new URL(window.location.href);
-          nextUrl.searchParams.set("ngrok-skip-browser-warning", "true");
-          window.location.replace(nextUrl.toString());
-          return;
-        }
-
         const { default: liff } = await import("@line/liff");
         const liffId = process.env.NEXT_PUBLIC_ADMIN_LIFF_ID;
-        if (!liffId) {
-          setMessage("ไม่พบ NEXT_PUBLIC_ADMIN_LIFF_ID ในระบบ");
-          setLoading(false);
-          return;
-        }
-
+        if (!liffId) throw new Error("Missing NEXT_PUBLIC_ADMIN_LIFF_ID");
         await liff.init({ liffId });
         if (!liff.isLoggedIn()) {
-          const redirect = new URL(window.location.href);
-          redirect.searchParams.set("ngrok-skip-browser-warning", "true");
-          liff.login({ redirectUri: redirect.toString() });
+          liff.login({ redirectUri: window.location.href });
           return;
         }
-
         const p = await liff.getProfile();
-        setProfile({
-          userId: p.userId,
-          displayName: p.displayName,
-          pictureUrl: p.pictureUrl,
-        });
-
-        const token = liff.getAccessToken() || "";
-        setAccessToken(token);
-        await loadInvoices(token);
+        setProfile({ userId: p.userId, displayName: p.displayName, pictureUrl: p.pictureUrl });
+        setAccessToken(liff.getAccessToken() || "");
       } catch (error: any) {
         setMessage(error?.message ?? "เชื่อมต่อ LINE LIFF ไม่สำเร็จ");
-        setLoading(false);
+      } finally {
+        setLoadingAuth(false);
       }
     };
-
     void boot();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    if (!accessToken || loading) return;
-    void loadInvoices(accessToken);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filter]);
+    if (!accessToken) return;
+    void loadDashboard().catch((e) => setMessage(e?.message ?? "โหลด dashboard ไม่สำเร็จ"));
+  }, [accessToken, month]);
 
-  const applyAction = async (
-    action: "approve_paid" | "update_status",
-    payload?: { status?: string; paymentDate?: string }
+  useEffect(() => {
+    if (!accessToken) return;
+    if (tab === "invoices") void loadInvoices().catch((e) => setMessage(e?.message ?? "โหลดบิลไม่สำเร็จ"));
+    if (tab === "tenants") void loadTenants().catch((e) => setMessage(e?.message ?? "โหลดผู้เช่าไม่สำเร็จ"));
+  }, [accessToken, tab, invoiceFilter, roomFilter, tenantQuery]);
+
+  useEffect(() => {
+    if (!selectedInvoice) return;
+    setEditDueDate(selectedInvoice.due_date ? String(selectedInvoice.due_date).slice(0, 10) : "");
+    setEditTotal(String(Number(selectedInvoice.total_amount ?? 0)));
+    setEditStatus(selectedInvoice.status);
+  }, [selectedInvoice]);
+
+  const runInvoiceAction = async (
+    action: "approve_paid" | "update_status" | "edit_invoice" | "resend_invoice",
+    payload?: Record<string, unknown>
   ) => {
     if (!accessToken || !selectedInvoice) return;
-    const actionKey = `${action}:${selectedInvoice.id}`;
-    setSavingAction(actionKey);
-    setMessage(null);
+    const key = `${action}:${selectedInvoice.id}`;
+    setSavingAction(key);
     try {
-      const response = await fetch("/api/admin-liff/invoices/actions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "ngrok-skip-browser-warning": "true",
-        },
-        body: JSON.stringify({
-          accessToken,
-          invoiceId: selectedInvoice.id,
-          action,
-          ...(payload ?? {}),
-        }),
+      await postJson("/api/admin-liff/invoices/actions", {
+        accessToken,
+        invoiceId: selectedInvoice.id,
+        action,
+        ...(payload ?? {}),
       });
-      const data = await response.json();
-      if (!response.ok) {
-        setMessage(data?.error ?? "บันทึกสถานะไม่สำเร็จ");
-        return;
-      }
-      setMessage("บันทึกสถานะเรียบร้อย");
-      await loadInvoices(accessToken);
+      setMessage("บันทึกสำเร็จ");
+      await Promise.all([loadInvoices(), loadDashboard()]);
     } catch (error: any) {
-      setMessage(error?.message ?? "เกิดข้อผิดพลาดในการบันทึกสถานะ");
+      setMessage(error?.message ?? "บันทึกไม่สำเร็จ");
     } finally {
       setSavingAction(null);
     }
@@ -289,311 +230,130 @@ export default function AdminLiffPage() {
   const building = toArray(room?.buildings as any)[0];
   const total = Number(selectedInvoice?.total_amount ?? 0);
   const paid = Number(selectedInvoice?.paid_amount ?? 0);
-  const remaining = Math.max(0, total - paid);
 
   return (
     <div className="min-h-screen bg-slate-100 px-3 py-4">
-      <div className="mx-auto flex w-full max-w-md flex-col gap-3">
+      <div className="mx-auto w-full max-w-md space-y-3">
         <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="text-xs font-medium text-slate-500">Apartment Flow - Admin LIFF</p>
-              <h1 className="text-lg font-semibold text-slate-900">จัดการใบแจ้งหนี้ (มือถือ)</h1>
-            </div>
-            {refreshing && (
-              <span className="inline-flex items-center rounded-full bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700">
-                กำลังโหลด...
-              </span>
-            )}
+          <p className="text-xs font-medium text-slate-500">Apartment Flow - Admin LIFF</p>
+          <h1 className="mt-1 text-lg font-semibold text-slate-900">จัดการหอพักบนมือถือ</h1>
+          {profile && <p className="mt-2 text-sm text-slate-600">{profile.displayName}</p>}
+        </div>
+
+        <div className="rounded-2xl border border-slate-200 bg-white p-2 shadow-sm">
+          <div className="grid grid-cols-3 gap-1">
+            {([
+              ["dashboard", "สรุป"],
+              ["invoices", "บิล"],
+              ["tenants", "ผู้เช่า"],
+            ] as Array<[TabKey, string]>).map(([k, label]) => (
+              <button
+                key={k}
+                type="button"
+                onClick={() => setTab(k)}
+                className={`rounded-xl px-2 py-2 text-xs font-semibold ${
+                  tab === k ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-700"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
           </div>
-          {profile && (
-            <p className="mt-2 text-sm text-slate-600">
-              {profile.displayName}
-            </p>
-          )}
         </div>
 
         <div className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
-          <label className="mb-1 block text-xs font-medium text-slate-500">ตัวกรองสถานะ</label>
-          <select
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
-          >
-            <option value="all">ทั้งหมด (รอจัดการ)</option>
-            <option value="verifying">รอตรวจสอบ</option>
-            <option value="paid">ตรวจสอบแล้ว/ชำระแล้ว</option>
-            <option value="pending">รอชำระ</option>
-            <option value="partial">ชำระบางส่วน</option>
-            <option value="overdue">เกินกำหนด</option>
-          </select>
-          <label className="mb-1 mt-3 block text-xs font-medium text-slate-500">ตัวกรองห้อง</label>
-          <select
-            value={roomFilter}
-            onChange={(e) => setRoomFilter(e.target.value)}
-            className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
-          >
-            <option value="all">ทุกห้อง</option>
-            {roomOptions.map((roomNo) => (
-              <option key={roomNo} value={roomNo}>
-                ห้อง {roomNo}
-              </option>
-            ))}
-          </select>
+          <label className="mb-1 block text-xs font-medium text-slate-500">เดือนข้อมูล</label>
+          <input
+            type="month"
+            value={month}
+            onChange={(e) => setMonth(e.target.value)}
+            className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
+          />
         </div>
 
-        {message && (
-          <div className="rounded-xl border border-slate-200 bg-white p-3 text-sm text-slate-700 shadow-sm">
-            {message}
-          </div>
-        )}
+        {message && <div className="rounded-xl border border-slate-200 bg-white p-3 text-sm text-slate-700">{message}</div>}
 
-        {loading ? (
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-500 shadow-sm">
-            กำลังเชื่อมต่อ LIFF และโหลดข้อมูล...
-          </div>
+        {loadingAuth ? (
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-500">กำลังเชื่อมต่อ LINE LIFF...</div>
         ) : (
           <>
-            <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-              <div className="border-b border-slate-200 px-3 py-2 text-xs font-semibold text-slate-500">
-                รายการใบแจ้งหนี้ ({visibleInvoices.length})
+            {tab === "dashboard" && dashboard && (
+              <div className="space-y-2">
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="rounded-xl border border-slate-200 bg-white p-3"><p className="text-xs text-slate-500">ใบแจ้งหนี้</p><p className="text-lg font-bold">{dashboard.invoice_count}</p></div>
+                  <div className="rounded-xl border border-slate-200 bg-white p-3"><p className="text-xs text-slate-500">ผู้เช่าใช้งาน</p><p className="text-lg font-bold">{dashboard.tenant_active_count}</p></div>
+                  <div className="rounded-xl border border-slate-200 bg-white p-3"><p className="text-xs text-slate-500">ยอดรวมเดือนนี้</p><p className="text-sm font-bold">{fmtMoney(dashboard.total_amount)}</p></div>
+                  <div className="rounded-xl border border-slate-200 bg-white p-3"><p className="text-xs text-slate-500">คงค้าง</p><p className="text-sm font-bold text-rose-700">{fmtMoney(dashboard.outstanding_amount)}</p></div>
+                </div>
+                <div className="rounded-2xl border border-slate-200 bg-white p-3">
+                  <p className="mb-2 text-xs font-semibold text-slate-500">สถานะใบแจ้งหนี้</p>
+                  {Object.entries(dashboard.by_status).map(([s, c]) => <div key={s} className="flex items-center justify-between text-sm"><span>{statusLabel(s)}</span><span className="font-semibold">{c}</span></div>)}
+                </div>
               </div>
-              <div className="max-h-72 overflow-y-auto">
-                {visibleInvoices.length === 0 ? (
-                  <div className="p-4 text-sm text-slate-500">ไม่พบใบแจ้งหนี้ในสถานะนี้</div>
-                ) : (
-                  (() => {
-                    let previousBuilding = "";
-                    return visibleInvoices.map((invoice) => {
-                      const rowTenant = toArray(invoice.tenants)[0];
-                      const rowRoom = toArray(invoice.rooms)[0];
-                      const rowBuilding = toArray(rowRoom?.buildings as any)[0];
-                      const buildingName = String(rowBuilding?.name ?? "Unassigned");
-                      const showBuildingHeader = buildingName !== previousBuilding;
-                      previousBuilding = buildingName;
-                      const rowTotal = Number(invoice.total_amount ?? 0);
-                      const rowPaid = Number(invoice.paid_amount ?? 0);
-                      const rowRemaining = Math.max(0, rowTotal - rowPaid);
-                      const active = selectedId === invoice.id;
-                      return (
-                        <Fragment key={invoice.id}>
-                          {showBuildingHeader && (
-                            <div className="sticky top-0 z-10 border-y border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-600">
-                              Building {buildingName}
-                            </div>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setSelectedId(invoice.id);
-                              const url = new URL(window.location.href);
-                              url.searchParams.set("invoiceId", invoice.id);
-                              window.history.replaceState({}, "", url.toString());
-                            }}
-                            className={`w-full border-b border-slate-100 px-3 py-3 text-left transition ${
-                              active ? "bg-blue-50" : "bg-white"
-                            }`}
-                          >
-                            <div className="flex items-start justify-between gap-2">
-                              <div className="min-w-0">
-                                <p className="truncate text-sm font-semibold text-slate-900">
-                                  Room {rowRoom?.room_number ?? "-"} {rowBuilding?.name ? `• ${rowBuilding.name}` : ""}
-                                </p>
-                                <p className="truncate text-xs text-slate-500">{rowTenant?.full_name ?? "-"}</p>
-                                <p className="mt-1 text-xs text-slate-500">Due {formatDate(invoice.due_date)}</p>
-                              </div>
-                              <div className="text-right">
-                                <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${statusClasses(invoice.status)}`}>
-                                  {statusLabel(invoice.status)}
-                                </span>
-                                <p className="mt-1 text-xs font-medium text-slate-700">Remaining {formatMoney(rowRemaining)}</p>
-                              </div>
-                            </div>
-                          </button>
-                        </Fragment>
-                      );
-                    });
-                  })()
-                
-                )}
-              </div>
-            </div>
+            )}
 
-            {selectedInvoice && (
-              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <p className="text-sm font-semibold text-slate-900">
-                      ห้อง {room?.room_number ?? "-"} {building?.name ? `• ${building.name}` : ""}
-                    </p>
+            {tab === "invoices" && (
+              <div className="space-y-3">
+                <div className="rounded-2xl border border-slate-200 bg-white p-3">
+                  <label className="mb-1 block text-xs">สถานะ</label>
+                  <select value={invoiceFilter} onChange={(e) => setInvoiceFilter(e.target.value)} className="w-full rounded-lg border border-slate-300 px-2 py-2 text-sm">
+                    <option value="all">ทั้งหมด</option><option value="pending">รอชำระ</option><option value="partial">ชำระบางส่วน</option><option value="verifying">รอตรวจสอบ</option><option value="paid">ชำระแล้ว</option><option value="overdue">เกินกำหนด</option>
+                  </select>
+                  <label className="mb-1 mt-2 block text-xs">ห้อง</label>
+                  <select value={roomFilter} onChange={(e) => setRoomFilter(e.target.value)} className="w-full rounded-lg border border-slate-300 px-2 py-2 text-sm"><option value="all">ทุกห้อง</option>{roomOptions.map((r) => <option key={r} value={r}>ห้อง {r}</option>)}</select>
+                </div>
+
+                <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                  <div className="border-b border-slate-200 px-3 py-2 text-xs font-semibold">รายการใบแจ้งหนี้ ({visibleInvoices.length})</div>
+                  <div className="max-h-64 overflow-y-auto">
+                    {visibleInvoices.map((inv) => {
+                      const t = toArray(inv.tenants)[0]; const r = toArray(inv.rooms)[0]; const b = toArray(r?.buildings as any)[0];
+                      return <button key={inv.id} type="button" onClick={() => setSelectedInvoiceId(inv.id)} className={`w-full border-b border-slate-100 px-3 py-3 text-left ${selectedInvoiceId === inv.id ? "bg-blue-50" : "bg-white"}`}>
+                        <p className="text-sm font-semibold">ห้อง {r?.room_number ?? "-"} {b?.name ? `• ${b.name}` : ""}</p>
+                        <p className="text-xs text-slate-500">{t?.full_name ?? "-"}</p>
+                        <p className="text-xs text-slate-600">{statusLabel(inv.status)} • คงเหลือ {fmtMoney(Number(inv.total_amount ?? 0) - Number(inv.paid_amount ?? 0))}</p>
+                      </button>;
+                    })}
+                  </div>
+                </div>
+                {selectedInvoice && (
+                  <div className="space-y-2 rounded-2xl border border-slate-200 bg-white p-3">
+                    <p className="text-sm font-semibold">ห้อง {room?.room_number ?? "-"} {building?.name ? `• ${building.name}` : ""}</p>
                     <p className="text-xs text-slate-500">{tenant?.full_name ?? "-"}</p>
-                  </div>
-                  <span className={`inline-flex rounded-full px-2 py-1 text-xs font-semibold ${statusClasses(selectedInvoice.status)}`}>
-                    {statusLabel(selectedInvoice.status)}
-                  </span>
-                </div>
-
-                <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
-                  <div className="rounded-xl bg-slate-50 p-2">
-                    <p className="text-xs text-slate-500">ยอดรวม</p>
-                    <p className="font-semibold text-slate-900">{formatMoney(total)}</p>
-                  </div>
-                  <div className="rounded-xl bg-slate-50 p-2">
-                    <p className="text-xs text-slate-500">ชำระแล้ว</p>
-                    <p className="font-semibold text-slate-900">{formatMoney(paid)}</p>
-                  </div>
-                  <div className="col-span-2 rounded-xl bg-blue-50 p-2">
-                    <p className="text-xs text-blue-700">คงเหลือ</p>
-                    <p className="font-semibold text-blue-900">{formatMoney(remaining)}</p>
-                  </div>
-                </div>
-
-                <div className="mt-3 space-y-1 text-xs text-slate-500">
-                  <p>งวดบิล: {formatDate(selectedInvoice.issue_date)}</p>
-                  <p>ครบกำหนด: {formatDate(selectedInvoice.due_date)}</p>
-                </div>
-
-                <div className="mt-3">
-                  <label className="mb-1 block text-xs font-medium text-slate-500">วันที่ชำระเงิน</label>
-                  <input
-                    type="date"
-                    value={paymentDate}
-                    onChange={(e) => setPaymentDate(e.target.value)}
-                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
-                  />
-                </div>
-
-                {selectedInvoice.slip_url ? (
-                  <div className="mt-4 space-y-2">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                      สลิปชำระเงิน
-                    </p>
-                    <a
-                      href={selectedInvoice.slip_url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="block overflow-hidden rounded-xl border border-slate-200"
-                    >
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={selectedInvoice.slip_url}
-                        alt="payment slip"
-                        className="h-56 w-full object-cover"
-                      />
-                    </a>
-                    <a
-                      href={selectedInvoice.slip_url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex rounded-lg border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700"
-                    >
-                      เปิดรูปสลิป
-                    </a>
-                  </div>
-                ) : (
-                  <div className="mt-4 rounded-xl bg-slate-50 p-3 text-sm text-slate-500">
-                    ยังไม่มีสลิปแนบในใบแจ้งหนี้นี้
-                  </div>
-                )}
-
-                {(selectedInvoice.payment_history ?? []).length > 0 && (
-                  <div className="mt-4">
-                    <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                      ประวัติการชำระ
-                    </p>
-                    <div className="space-y-2">
-                      {(selectedInvoice.payment_history ?? []).slice().reverse().slice(0, 5).map((item, idx) => (
-                        <div key={`${item.paid_at ?? "n"}-${idx}`} className="rounded-xl border border-slate-200 p-2">
-                          <div className="flex items-center justify-between gap-2 text-sm">
-                            <span className="font-medium text-slate-800">{formatMoney(item.amount)}</span>
-                            <span className="text-xs text-slate-500">{formatDate(item.paid_at ?? null)}</span>
-                          </div>
-                          <div className="mt-1 flex items-center justify-between gap-2">
-                            <span className="text-xs text-slate-500">{item.mode === "full" ? "เต็มจำนวน" : "บางส่วน"}</span>
-                            {item.slip_url && (
-                              <a
-                                href={item.slip_url}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="text-xs font-medium text-blue-700"
-                              >
-                                ดูสลิป
-                              </a>
-                            )}
-                          </div>
-                        </div>
-                      ))}
+                    <p className="text-xs text-slate-500">ยอดรวม {fmtMoney(total)} | คงเหลือ {fmtMoney(total - paid)}</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      <input type="date" value={editDueDate} onChange={(e) => setEditDueDate(e.target.value)} className="rounded-lg border border-slate-300 px-2 py-1.5 text-sm" />
+                      <input type="number" value={editTotal} onChange={(e) => setEditTotal(e.target.value)} className="rounded-lg border border-slate-300 px-2 py-1.5 text-sm" />
+                      <select value={editStatus} onChange={(e) => setEditStatus(e.target.value)} className="col-span-2 rounded-lg border border-slate-300 px-2 py-1.5 text-sm">
+                        <option value="pending">รอชำระ</option><option value="partial">ชำระบางส่วน</option><option value="verifying">รอตรวจสอบ</option><option value="paid">ชำระแล้ว</option><option value="overdue">เกินกำหนด</option><option value="draft">ฉบับร่าง</option><option value="cancelled">ยกเลิก</option>
+                      </select>
+                      <input type="date" value={paymentDate} onChange={(e) => setPaymentDate(e.target.value)} className="col-span-2 rounded-lg border border-slate-300 px-2 py-1.5 text-sm" />
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button type="button" onClick={() => void runInvoiceAction("edit_invoice", { payload: { due_date: editDueDate, total_amount: Number(editTotal || 0), status: editStatus } })} disabled={!!savingAction} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold">บันทึกการแก้ไข</button>
+                      <button type="button" onClick={() => void runInvoiceAction("resend_invoice")} disabled={!!savingAction} className="rounded-lg border border-blue-300 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700">ส่งใบแจ้งหนี้ใหม่</button>
+                      <button type="button" onClick={() => void runInvoiceAction("approve_paid", { paymentDate })} disabled={!!savingAction} className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white">อนุมัติชำระเต็ม</button>
+                      <button type="button" onClick={() => void runInvoiceAction("update_status", { status: "pending" })} disabled={!!savingAction} className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-700">ตั้งเป็นรอชำระ</button>
                     </div>
                   </div>
                 )}
+              </div>
+            )}
 
-                <div className="mt-4 space-y-2">
-                  <button
-                    type="button"
-                    onClick={() => void applyAction("approve_paid", { paymentDate })}
-                    disabled={!!savingAction}
-                    className="w-full rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {savingAction === `approve_paid:${selectedInvoice.id}` ? "กำลังบันทึก..." : "อนุมัติชำระเต็มจำนวน"}
-                  </button>
-
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => void applyAction("update_status", { status: "verifying" })}
-                      disabled={!!savingAction}
-                      className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-800 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      ตั้งเป็นรอตรวจสอบ
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void applyAction("update_status", { status: "pending" })}
-                      disabled={!!savingAction}
-                      className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      ตั้งเป็นรอชำระ
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void applyAction("update_status", { status: "partial" })}
-                      disabled={!!savingAction}
-                      className="rounded-xl border border-blue-300 bg-blue-50 px-3 py-2 text-sm font-medium text-blue-800 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      ตั้งเป็นชำระบางส่วน
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void applyAction("update_status", { status: "overdue" })}
-                      disabled={!!savingAction}
-                      className="rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm font-medium text-rose-800 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      ตั้งเป็นเกินกำหนด
-                    </button>
-                  </div>
+            {tab === "tenants" && (
+              <div className="space-y-2">
+                <div className="rounded-2xl border border-slate-200 bg-white p-3">
+                  <input type="text" value={tenantQuery} onChange={(e) => setTenantQuery(e.target.value)} placeholder="ค้นหาผู้เช่า/ห้อง/เบอร์โทร" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
                 </div>
-
-                <div className="mt-4 flex gap-2">
-                  {selectedInvoice.public_token && (
-                    <a
-                      href={`/payment/${selectedInvoice.public_token}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="flex-1 rounded-xl border border-slate-300 px-3 py-2 text-center text-xs font-medium text-slate-700"
-                    >
-                      เปิดหน้าชำระเงิน
-                    </a>
-                  )}
-                  {baseUrl && (
-                    <a
-                      href={`${baseUrl}/invoices`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="flex-1 rounded-xl border border-slate-300 px-3 py-2 text-center text-xs font-medium text-slate-700"
-                    >
-                      เปิดหลังบ้าน
-                    </a>
-                  )}
+                <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                  <div className="border-b border-slate-200 px-3 py-2 text-xs font-semibold">ผู้เช่า ({tenants.length})</div>
+                  <div className="max-h-[28rem] overflow-y-auto">
+                    {tenants.map((t) => <div key={t.id} className="border-b border-slate-100 px-3 py-2 text-sm">
+                      <p className="font-semibold">ห้อง {t.room_number} • {t.building_name}</p>
+                      <p>{t.full_name}</p>
+                      <p className="text-xs text-slate-500">โทร: {t.phone_number} | ย้ายเข้า: {t.move_in_date ? fmtDate(t.move_in_date) : "-"} | LINE: {t.line_user_id ? "เชื่อมแล้ว" : "ยังไม่เชื่อม"}</p>
+                    </div>)}
+                  </div>
                 </div>
               </div>
             )}
@@ -603,3 +363,4 @@ export default function AdminLiffPage() {
     </div>
   );
 }
+
