@@ -2,8 +2,11 @@
 import { Client } from "@line/bot-sdk";
 import { createAdminClient } from "@/lib/supabase-admin";
 
-const channelAccessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN || "";
-const adminLineUserIds = (process.env.LINE_ADMIN_USER_IDS || "")
+const channelAccessToken =
+  process.env.LINE_SLIP_NOTIFY_CHANNEL_ACCESS_TOKEN || process.env.LINE_CHANNEL_ACCESS_TOKEN || "";
+const adminLineUserIds = (
+  process.env.LINE_SLIP_NOTIFY_ADMIN_USER_IDS || process.env.LINE_ADMIN_USER_IDS || ""
+)
   .split(",")
   .map((id) => id.trim())
   .filter(Boolean);
@@ -13,11 +16,20 @@ const lineClient = new Client({ channelAccessToken });
 export async function POST(req: Request) {
   try {
     if (!channelAccessToken) {
-      return NextResponse.json({ error: "LINE channel access token is missing." }, { status: 500 });
+      return NextResponse.json(
+        {
+          error:
+            "LINE channel access token is missing. Set LINE_SLIP_NOTIFY_CHANNEL_ACCESS_TOKEN (or fallback LINE_CHANNEL_ACCESS_TOKEN).",
+        },
+        { status: 500 }
+      );
     }
     if (adminLineUserIds.length === 0) {
       return NextResponse.json(
-        { error: "LINE_ADMIN_USER_IDS is missing. No admin recipients configured." },
+        {
+          error:
+            "Recipient LINE user IDs are missing. Set LINE_SLIP_NOTIFY_ADMIN_USER_IDS (or fallback LINE_ADMIN_USER_IDS).",
+        },
         { status: 400 }
       );
     }
