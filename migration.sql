@@ -343,4 +343,21 @@ BEGIN
 END
 $$;
 
+-- 13. LINE meter webhook user registry
+CREATE TABLE IF NOT EXISTS public.line_meter_users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    line_user_id TEXT NOT NULL UNIQUE,
+    display_name TEXT,
+    picture_url TEXT,
+    source_channel TEXT,
+    last_event_type TEXT,
+    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_line_meter_users_last_seen_at
+ON public.line_meter_users(last_seen_at DESC);
+
 -- End of migration script.
