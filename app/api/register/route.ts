@@ -14,6 +14,8 @@ export async function POST(req: Request) {
       advanceRentAmount,
       depositSlipUrl,
       advanceRentSlipUrl,
+      isNewTenant,
+      moveInDate,
     } = body ?? {};
 
     if (!roomNumber || !fullName || !phoneNumber || !userId) {
@@ -51,6 +53,12 @@ export async function POST(req: Request) {
       .eq("room_id", room.id)
       .maybeSingle();
 
+    const shouldMarkAsNewTenant = Boolean(isNewTenant);
+    const normalizedMoveInDate =
+      shouldMarkAsNewTenant && /^\d{4}-\d{2}-\d{2}$/.test(String(moveInDate ?? ""))
+        ? String(moveInDate)
+        : null;
+
     const depositAmount = Number.isFinite(Number(securityDepositAmount))
       ? Number(securityDepositAmount)
       : 0;
@@ -70,8 +78,9 @@ export async function POST(req: Request) {
           phone_number: phoneNumber,
           security_deposit_amount: depositAmount,
           advance_rent_amount: advanceAmount,
-          deposit_slip_url: depositSlipUrl ?? null,
-          advance_rent_slip_url: advanceRentSlipUrl ?? null,
+          deposit_slip_url: shouldMarkAsNewTenant ? depositSlipUrl ?? null : null,
+          advance_rent_slip_url: shouldMarkAsNewTenant ? advanceRentSlipUrl ?? null : null,
+          move_in_date: normalizedMoveInDate,
         })
         .eq("id", tenant.id);
 
@@ -84,12 +93,12 @@ export async function POST(req: Request) {
         full_name: fullName,
         phone_number: phoneNumber,
         line_user_id: userId,
-        move_in_date: null,
+        move_in_date: normalizedMoveInDate,
         status: "active",
         security_deposit_amount: depositAmount,
         advance_rent_amount: advanceAmount,
-        deposit_slip_url: depositSlipUrl ?? null,
-        advance_rent_slip_url: advanceRentSlipUrl ?? null,
+        deposit_slip_url: shouldMarkAsNewTenant ? depositSlipUrl ?? null : null,
+        advance_rent_slip_url: shouldMarkAsNewTenant ? advanceRentSlipUrl ?? null : null,
       });
 
       if (insertError) {

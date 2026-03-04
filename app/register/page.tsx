@@ -27,6 +27,8 @@ export default function RegisterPage() {
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [phoneNumber, setPhoneNumber] = useState("");
+  const [isNewTenant, setIsNewTenant] = useState(false);
+  const [moveInDate, setMoveInDate] = useState(new Date().toISOString().slice(0, 10));
   const [newTenantSlipUrl, setNewTenantSlipUrl] = useState("");
   const [suggestions, setSuggestions] = useState<RoomSuggestion[]>([]);
   const [status, setStatus] = useState<string | null>(null);
@@ -34,6 +36,7 @@ export default function RegisterPage() {
   const [submitting, setSubmitting] = useState(false);
   const [suggestLoading, setSuggestLoading] = useState(false);
   const [uploadingNewTenantSlip, setUploadingNewTenantSlip] = useState(false);
+  const [showSuccessOverlay, setShowSuccessOverlay] = useState(false);
 
   useEffect(() => {
     const init = async () => {
@@ -179,8 +182,10 @@ export default function RegisterPage() {
         phoneNumber: phoneNumber.trim(),
         userId: profile.userId,
         accessToken,
-        depositSlipUrl: newTenantSlipUrl || null,
-        advanceRentSlipUrl: newTenantSlipUrl || null,
+        isNewTenant,
+        moveInDate: isNewTenant ? moveInDate : null,
+        depositSlipUrl: isNewTenant ? newTenantSlipUrl || null : null,
+        advanceRentSlipUrl: isNewTenant ? newTenantSlipUrl || null : null,
       }),
     });
 
@@ -188,7 +193,16 @@ export default function RegisterPage() {
     if (!response.ok) {
       setStatus(data?.error ?? "ลงทะเบียนไม่สำเร็จ");
     } else {
-      setStatus("ลงทะเบียนสำเร็จ สามารถปิดหน้านี้ได้");
+      setStatus("ลงทะเบียนสำเร็จ");
+      setShowSuccessOverlay(true);
+      setRoomNumber("");
+      setFirstName("");
+      setLastName("");
+      setPhoneNumber("");
+      setSuggestions([]);
+      setIsNewTenant(false);
+      setMoveInDate(new Date().toISOString().slice(0, 10));
+      setNewTenantSlipUrl("");
     }
     setSubmitting(false);
   };
@@ -294,26 +308,53 @@ export default function RegisterPage() {
                 />
               </label>
 
-              <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
-                <p className="text-sm font-semibold text-slate-700">สำหรับผู้เช่าใหม่เท่านั้น</p>
-                <div className="flex flex-wrap items-center gap-3">
-                  <label className="inline-flex cursor-pointer items-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700">
-                    {uploadingNewTenantSlip ? "กำลังอัปโหลด..." : "อัปโหลดสลิปเงินประกัน/ค่าเช่าล่วงหน้า"}
+              <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={isNewTenant}
+                  onChange={(event) => {
+                    const checked = event.target.checked;
+                    setIsNewTenant(checked);
+                    if (!checked) {
+                      setNewTenantSlipUrl("");
+                    }
+                  }}
+                  className="h-4 w-4 rounded border-slate-300"
+                />
+                ผู้เช่าใหม่
+              </label>
+
+              {isNewTenant && (
+                <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <label className="block text-sm text-slate-600">
+                    วันที่ย้ายเข้า
                     <input
-                      type="file"
-                      accept="image/*"
-                      className="hidden"
-                      onChange={(event) => void uploadSlip(event.target.files?.[0])}
-                      disabled={uploadingNewTenantSlip}
+                      type="date"
+                      value={moveInDate}
+                      onChange={(event) => setMoveInDate(event.target.value)}
+                      className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm"
+                      required={isNewTenant}
                     />
                   </label>
-                  {newTenantSlipUrl && (
-                    <a className="text-xs text-blue-600 underline" href={newTenantSlipUrl} target="_blank" rel="noreferrer">
-                      ดูสลิป
-                    </a>
-                  )}
+                  <div className="flex flex-wrap items-center gap-3">
+                    <label className="inline-flex cursor-pointer items-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700">
+                      {uploadingNewTenantSlip ? "กำลังอัปโหลด..." : "อัปโหลดสลิปเงินประกัน/ค่าเช่าล่วงหน้า"}
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(event) => void uploadSlip(event.target.files?.[0])}
+                        disabled={uploadingNewTenantSlip}
+                      />
+                    </label>
+                    {newTenantSlipUrl && (
+                      <a className="text-xs text-blue-600 underline" href={newTenantSlipUrl} target="_blank" rel="noreferrer">
+                        ดูสลิป
+                      </a>
+                    )}
+                  </div>
                 </div>
-              </div>
+              )}
 
               <button
                 type="submit"
@@ -336,6 +377,23 @@ export default function RegisterPage() {
           กรุณาใส่ชื่อ-นามสกุลเต็มของผู้เช่าเพื่อความถูกต้องในการออกใบแจ้งหนี้และใบเสร็จ
         </p>
       </div>
+      {showSuccessOverlay && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 px-6">
+          <div className="w-full max-w-sm rounded-2xl bg-white p-6 text-center shadow-2xl">
+            <p className="text-lg font-semibold text-emerald-700">ลงทะเบียนสำเร็จ</p>
+            <p className="mt-2 text-sm text-slate-600">
+              บันทึกข้อมูลเรียบร้อยแล้ว สามารถปิดหน้านี้ได้
+            </p>
+            <button
+              type="button"
+              onClick={() => setShowSuccessOverlay(false)}
+              className="mt-5 w-full rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white"
+            >
+              รับทราบ
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -35,10 +35,10 @@ export async function POST(req: Request) {
         if (!readingMonth || !roomId) return null;
         const previousElectricity = toNumber(row?.previous_electricity);
         const currentElectricity = toNumber(row?.current_electricity);
-        const electricityUsage = Math.max(0, toNumber(row?.electricity_usage));
+        const electricityUsage = toNumber(row?.electricity_usage);
         const previousWater = toNumber(row?.previous_water);
         const currentWater = toNumber(row?.current_water);
-        const waterUsage = Math.max(0, toNumber(row?.water_usage));
+        const waterUsage = toNumber(row?.water_usage);
         return {
           room_id: roomId,
           reading_month: readingMonth,

@@ -70,15 +70,16 @@ export async function POST(req: Request) {
       const building = Array.isArray(room.buildings) ? room.buildings[0] : room.buildings;
       const previousElectricity = toNumber(prev?.current_electricity ?? current?.previous_electricity);
       const currentElectricity = toNumber(current?.current_electricity);
-      const electricityUsage = Math.max(
-        0,
-        toNumber(current?.electricity_usage ?? currentElectricity - previousElectricity)
+      const electricityUsage = toNumber(
+        current?.electricity_usage ?? currentElectricity - previousElectricity
       );
       const previousWater = toNumber(
         prev?.current_water ?? prev?.current_reading ?? current?.previous_water ?? current?.previous_reading
       );
       const currentWater = toNumber(current?.current_water ?? current?.current_reading);
-      const waterUsage = Math.max(0, toNumber(current?.water_usage ?? current?.usage ?? currentWater - previousWater));
+      const waterUsage = toNumber(
+        current?.water_usage ?? current?.usage ?? currentWater - previousWater
+      );
       return {
         room_id: room.id,
         room_number: room.room_number ?? "-",

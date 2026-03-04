@@ -14,6 +14,7 @@ type AdminLiffInvoice = {
   due_date: string | null;
   total_amount: number | null;
   paid_amount: number | null;
+  slip_url?: string | null;
   tenants?:
     | { full_name?: string | null; line_user_id?: string | null }
     | Array<{ full_name?: string | null; line_user_id?: string | null }>
@@ -83,9 +84,6 @@ export default function AdminLiffPage() {
   const [roomFilter, setRoomFilter] = useState("all");
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(null);
   const [paymentDate, setPaymentDate] = useState(new Date().toISOString().slice(0, 10));
-  const [editDueDate, setEditDueDate] = useState("");
-  const [editTotal, setEditTotal] = useState("0");
-  const [editStatus, setEditStatus] = useState("pending");
   const [savingAction, setSavingAction] = useState<string | null>(null);
 
   const [tenantQuery, setTenantQuery] = useState("");
@@ -195,15 +193,8 @@ export default function AdminLiffPage() {
     if (tab === "tenants") void loadTenants().catch((e) => setMessage(e?.message ?? "โหลดผู้เช่าไม่สำเร็จ"));
   }, [accessToken, tab, invoiceFilter, roomFilter, tenantQuery]);
 
-  useEffect(() => {
-    if (!selectedInvoice) return;
-    setEditDueDate(selectedInvoice.due_date ? String(selectedInvoice.due_date).slice(0, 10) : "");
-    setEditTotal(String(Number(selectedInvoice.total_amount ?? 0)));
-    setEditStatus(selectedInvoice.status);
-  }, [selectedInvoice]);
-
   const runInvoiceAction = async (
-    action: "approve_paid" | "update_status" | "edit_invoice" | "resend_invoice",
+    action: "approve_paid" | "update_status" | "resend_invoice",
     payload?: Record<string, unknown>
   ) => {
     if (!accessToken || !selectedInvoice) return;
@@ -321,16 +312,27 @@ export default function AdminLiffPage() {
                     <p className="text-sm font-semibold">ห้อง {room?.room_number ?? "-"} {building?.name ? `• ${building.name}` : ""}</p>
                     <p className="text-xs text-slate-500">{tenant?.full_name ?? "-"}</p>
                     <p className="text-xs text-slate-500">ยอดรวม {fmtMoney(total)} | คงเหลือ {fmtMoney(total - paid)}</p>
+                    {selectedInvoice.slip_url ? (
+                      <a
+                        href={selectedInvoice.slip_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="block overflow-hidden rounded-lg border border-slate-200"
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={selectedInvoice.slip_url}
+                          alt="payment slip"
+                          className="h-52 w-full object-cover"
+                        />
+                      </a>
+                    ) : (
+                      <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
+                        ไม่มีสลิปชำระเงิน
+                      </div>
+                    )}
+                    <input type="date" value={paymentDate} onChange={(e) => setPaymentDate(e.target.value)} className="w-full rounded-lg border border-slate-300 px-2 py-1.5 text-sm" />
                     <div className="grid grid-cols-2 gap-2">
-                      <input type="date" value={editDueDate} onChange={(e) => setEditDueDate(e.target.value)} className="rounded-lg border border-slate-300 px-2 py-1.5 text-sm" />
-                      <input type="number" value={editTotal} onChange={(e) => setEditTotal(e.target.value)} className="rounded-lg border border-slate-300 px-2 py-1.5 text-sm" />
-                      <select value={editStatus} onChange={(e) => setEditStatus(e.target.value)} className="col-span-2 rounded-lg border border-slate-300 px-2 py-1.5 text-sm">
-                        <option value="pending">รอชำระ</option><option value="partial">ชำระบางส่วน</option><option value="verifying">รอตรวจสอบ</option><option value="paid">ชำระแล้ว</option><option value="overdue">เกินกำหนด</option><option value="draft">ฉบับร่าง</option><option value="cancelled">ยกเลิก</option>
-                      </select>
-                      <input type="date" value={paymentDate} onChange={(e) => setPaymentDate(e.target.value)} className="col-span-2 rounded-lg border border-slate-300 px-2 py-1.5 text-sm" />
-                    </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <button type="button" onClick={() => void runInvoiceAction("edit_invoice", { payload: { due_date: editDueDate, total_amount: Number(editTotal || 0), status: editStatus } })} disabled={!!savingAction} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold">บันทึกการแก้ไข</button>
                       <button type="button" onClick={() => void runInvoiceAction("resend_invoice")} disabled={!!savingAction} className="rounded-lg border border-blue-300 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700">ส่งใบแจ้งหนี้ใหม่</button>
                       <button type="button" onClick={() => void runInvoiceAction("approve_paid", { paymentDate })} disabled={!!savingAction} className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white">อนุมัติชำระเต็ม</button>
                       <button type="button" onClick={() => void runInvoiceAction("update_status", { status: "pending" })} disabled={!!savingAction} className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-700">ตั้งเป็นรอชำระ</button>
@@ -363,4 +365,3 @@ export default function AdminLiffPage() {
     </div>
   );
 }
-
