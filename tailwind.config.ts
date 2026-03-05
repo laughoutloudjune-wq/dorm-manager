@@ -13,7 +13,7 @@ const config: Config = {
   theme: {
     extend: {
       fontFamily: {
-        sans: ["var(--font-sarabun)", ...fontFamily.sans],
+        sans: ["var(--font-app)", ...fontFamily.sans],
       },
       colors: {
         slate: {

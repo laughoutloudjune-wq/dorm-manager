@@ -3,8 +3,12 @@
 @tailwind utilities;
 
 @layer base {
+  :root {
+    --font-app: "Google Sans", "Google Sans Text", "Product Sans", "Noto Sans Thai", "Sarabun", system-ui, sans-serif;
+  }
+
   html {
-    font-family: var(--font-sarabun), system-ui, sans-serif;
+    font-family: var(--font-app);
   }
 
   body {

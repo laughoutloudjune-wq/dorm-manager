@@ -15,7 +15,6 @@ const dict = {
     nav_rooms: "Rooms",
     nav_tenants: "Tenants",
     nav_meters: "Meters",
-    nav_line_ids: "LINE IDs",
     nav_invoices: "Invoices",
     nav_settings: "Settings",
     admin_console: "Admin Console",
@@ -25,6 +24,9 @@ const dict = {
     supabase_connected: "Supabase connected",
     signing_out: "Signing out...",
     logout: "Logout",
+    ui_confirm: "Confirm",
+    ui_cancel: "Cancel",
+    ui_processing: "Processing...",
   },
   th: {
     settings_general: "ทั่วไป",
@@ -40,7 +42,6 @@ const dict = {
     nav_rooms: "ห้องพัก",
     nav_tenants: "ผู้เช่า",
     nav_meters: "มิเตอร์",
-    nav_line_ids: "LINE ID",
     nav_invoices: "ใบแจ้งหนี้",
     nav_settings: "ตั้งค่า",
     admin_console: "ระบบผู้ดูแล",
@@ -50,6 +51,9 @@ const dict = {
     supabase_connected: "เชื่อมต่อ Supabase แล้ว",
     signing_out: "กำลังออกจากระบบ...",
     logout: "ออกจากระบบ",
+    ui_confirm: "ยืนยัน",
+    ui_cancel: "ยกเลิก",
+    ui_processing: "กำลังดำเนินการ...",
   },
 } as const;
 

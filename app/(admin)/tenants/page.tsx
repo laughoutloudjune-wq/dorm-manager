@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useMemo, useState } from "react";
 import { Modal } from "@/components/ui/Modal";
@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/Badge";
 import { ConfirmActionModal } from "@/components/ui/ConfirmActionModal";
 import { createClient } from "@/lib/supabase-client";
 import { usePermissions } from "@/lib/use-permissions";
-import { Plus, Printer, Save, Search, Trash2, Upload } from "lucide-react";
+import { Loader2, Plus, Printer, Save, Search, Trash2, Upload } from "lucide-react";
 
 type TenantRow = {
   id: string;
@@ -65,6 +65,12 @@ type SettingsRates = {
   electricity_rate: number;
 };
 
+type MoveOutFeeLine = {
+  id: string;
+  label: string;
+  amount: number;
+};
+
 const toNumber = (value: string | number | null | undefined) => {
   const parsed = typeof value === "number" ? value : Number(value ?? 0);
   return Number.isNaN(parsed) ? 0 : parsed;
@@ -72,6 +78,20 @@ const toNumber = (value: string | number | null | undefined) => {
 
 const formatMoney = (value: number) =>
   value.toLocaleString("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+const escapeHtml = (text: string) =>
+  text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+
+const createMoveOutFeeLine = (): MoveOutFeeLine => ({
+  id: crypto.randomUUID(),
+  label: "",
+  amount: 0,
+});
 
 const roomNumberCompare = (a: string, b: string) =>
   a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
@@ -96,12 +116,12 @@ const tenantRoomPrice = (tenant: TenantRow, roomsById: Map<string, RoomRow>) => 
 const tenantBuildingName = (tenant: TenantRow, roomsById: Map<string, RoomRow>) => {
   const roomRel = Array.isArray(tenant.rooms) ? tenant.rooms[0] : tenant.rooms;
   if (roomRel?.buildings && Array.isArray(roomRel.buildings) && roomRel.buildings.length > 0) {
-    return roomRel.buildings[0]?.name ?? "Unassigned";
+    return roomRel.buildings[0]?.name ?? "ไม่ระบุอาคาร";
   }
   const room = roomsById.get(tenant.room_id);
-  if (!room?.buildings) return "Unassigned";
-  if (Array.isArray(room.buildings)) return room.buildings[0]?.name ?? "Unassigned";
-  return room.buildings.name ?? "Unassigned";
+  if (!room?.buildings) return "ไม่ระบุอาคาร";
+  if (Array.isArray(room.buildings)) return room.buildings[0]?.name ?? "ไม่ระบุอาคาร";
+  return room.buildings.name ?? "ไม่ระบุอาคาร";
 };
 
 const leaseEndDateText = (moveInDate: string, leaseMonths: number) => {
@@ -136,11 +156,19 @@ export default function TenantsPage() {
   const [status, setStatus] = useState<string | null>(null);
   const [latestPrevElectricity, setLatestPrevElectricity] = useState(0);
   const [latestPrevWater, setLatestPrevWater] = useState(0);
+  const [moveOutFeeLines, setMoveOutFeeLines] = useState<MoveOutFeeLine[]>([]);
 
   const [confirmSaveOpen, setConfirmSaveOpen] = useState(false);
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [confirmUnlinkOpen, setConfirmUnlinkOpen] = useState(false);
   const [confirmMoveOutOpen, setConfirmMoveOutOpen] = useState(false);
+  const [useProrate, setUseProrate] = useState(true);
+  const [isPageLoading, setIsPageLoading] = useState(true);
+  const [isSavingTenant, setIsSavingTenant] = useState(false);
+  const [isDeletingTenant, setIsDeletingTenant] = useState(false);
+  const [isUnlinkingLine, setIsUnlinkingLine] = useState(false);
+  const [isMovingOut, setIsMovingOut] = useState(false);
+  const [isUploadingDepositSlip, setIsUploadingDepositSlip] = useState(false);
   const canViewTenants = can("tenant.view");
   const canEditTenant = can("tenant.edit");
   const canManageTenantLine = can("tenant.line.manage");
@@ -177,6 +205,8 @@ export default function TenantsPage() {
     deposit_slip_url: "",
     final_electricity_reading: 0,
     final_water_reading: 0,
+    move_out_date: "",
+    final_move_out_date: "",
   });
 
   const loadTenants = async () => {
@@ -234,11 +264,16 @@ export default function TenantsPage() {
   };
 
   useEffect(() => {
-    void loadTenants();
-    void loadRooms();
-    void loadMethods();
-    void loadReceiptProfiles();
-    void loadRates();
+    let mounted = true;
+    const loadAll = async () => {
+      setIsPageLoading(true);
+      await Promise.all([loadTenants(), loadRooms(), loadMethods(), loadReceiptProfiles(), loadRates()]);
+      if (mounted) setIsPageLoading(false);
+    };
+    void loadAll();
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   const loadLatestReadings = async (roomId: string, fallbackElectric: number, fallbackWater: number) => {
@@ -279,7 +314,11 @@ export default function TenantsPage() {
         deposit_slip_url: tenant.deposit_slip_url ?? "",
         final_electricity_reading: toNumber(tenant.final_electricity_reading ?? 0),
         final_water_reading: toNumber(tenant.final_water_reading ?? 0),
+        move_out_date: tenant.move_out_date ?? new Date().toISOString().slice(0, 10),
+        final_move_out_date: tenant.move_out_date ?? new Date().toISOString().slice(0, 10),
       });
+      setMoveOutFeeLines([]);
+      setUseProrate(true);
       const custom = tenant.custom_payment_method;
       if (custom?.methodId) {
         setUseCustomPayment(true);
@@ -319,7 +358,11 @@ export default function TenantsPage() {
         deposit_slip_url: "",
         final_electricity_reading: 0,
         final_water_reading: 0,
+        move_out_date: new Date().toISOString().slice(0, 10),
+        final_move_out_date: new Date().toISOString().slice(0, 10),
       });
+      setMoveOutFeeLines([]);
+      setUseProrate(true);
       setUseCustomPayment(false);
       setSelectedMethodId("");
       setUseCustomReceipt(false);
@@ -333,18 +376,21 @@ export default function TenantsPage() {
 
   const uploadDepositSlip = async (file?: File | null) => {
     if (!file) return;
+    setIsUploadingDepositSlip(true);
     const tenantId = activeTenant?.id ?? crypto.randomUUID();
     const path = `tenant-docs/${tenantId}/${Date.now()}-${file.name}`;
 
     const { error } = await supabase.storage.from("tenant-docs").upload(path, file, { upsert: true });
     if (error) {
       setStatus(error.message);
+      setIsUploadingDepositSlip(false);
       return;
     }
 
     const { data } = supabase.storage.from("tenant-docs").getPublicUrl(path);
     setForm((prev) => ({ ...prev, deposit_slip_url: data.publicUrl }));
     setStatus("อัปโหลดสลิปมัดจำเรียบร้อย");
+    setIsUploadingDepositSlip(false);
   };
 
   const logRoomEvent = async (roomId: string, eventType: "move_in" | "move_out") => {
@@ -359,6 +405,7 @@ export default function TenantsPage() {
   };
 
   const saveTenant = async () => {
+    setIsSavingTenant(true);
     const selectedMethod = methods.find((method) => method.id === selectedMethodId);
     const customPayment =
       useCustomPayment && selectedMethod
@@ -415,6 +462,7 @@ export default function TenantsPage() {
       });
     } catch (error: any) {
       setStatus(error?.message ?? "บันทึกข้อมูลผู้เช่าไม่สำเร็จ");
+      setIsSavingTenant(false);
       return;
     }
 
@@ -432,55 +480,66 @@ export default function TenantsPage() {
         setActiveTenant(refreshed as TenantRow);
       }
     }
+    setIsSavingTenant(false);
   };
 
   const deleteTenant = async () => {
     if (!activeTenant) return;
+    setIsDeletingTenant(true);
     try {
       await callTenantsAction("delete_tenant", { tenantId: activeTenant.id });
     } catch (error: any) {
       setStatus(error?.message ?? "ลบผู้เช่าไม่สำเร็จ");
+      setIsDeletingTenant(false);
       return;
     }
     setStatus("ลบผู้เช่าเรียบร้อย");
     setIsModalOpen(false);
     await loadTenants();
+    setIsDeletingTenant(false);
   };
 
   const unlinkTenantLine = async () => {
     if (!activeTenant) return;
+    setIsUnlinkingLine(true);
     try {
       await callTenantsAction("unlink_line", { tenantId: activeTenant.id });
     } catch (error: any) {
       setStatus(error?.message ?? "ยกเลิกการเชื่อม LINE ไม่สำเร็จ");
+      setIsUnlinkingLine(false);
       return;
     }
     setActiveTenant({ ...activeTenant, line_user_id: null });
     setStatus("ยกเลิกการเชื่อม LINE เรียบร้อย");
     await loadTenants();
+    setIsUnlinkingLine(false);
   };
 
   const confirmMoveOut = async () => {
     if (!activeTenant) return;
-    const today = new Date().toISOString().slice(0, 10);
+    setIsMovingOut(true);
+    const moveOutDate =
+      form.final_move_out_date || form.move_out_date || new Date().toISOString().slice(0, 10);
     try {
-      await callTenantsAction("move_out", {
+      await callTenantsAction("final_move_out", {
         tenantId: activeTenant.id,
         roomId: activeTenant.room_id,
         payload: {
         status: "inactive",
-        move_out_date: today,
+        move_out_date: moveOutDate,
         final_electricity_reading: toNumber(form.final_electricity_reading),
         final_water_reading: toNumber(form.final_water_reading),
         },
       });
     } catch (error: any) {
       setStatus(error?.message ?? "ยืนยันการย้ายออกไม่สำเร็จ");
+      setIsMovingOut(false);
       return;
     }
     setStatus("ยืนยันการย้ายออกเรียบร้อย");
     setIsModalOpen(false);
     await loadTenants();
+    setIsMovingOut(false);
   };
 
   const printMoveOutReceipt = () => {
@@ -490,7 +549,15 @@ export default function TenantsPage() {
     const todayText = new Date().toLocaleDateString("th-TH");
     const netLabel = net >= 0 ? "คืนเงินผู้เช่า" : "ผู้เช่าค้างชำระ";
     const netAmount = formatMoney(Math.abs(net));
-
+    const feeRows = moveOutFeeLines
+      .filter((line) => line.label.trim() && toNumber(line.amount) > 0)
+      .map(
+        (line) =>
+          `<div class="row"><span class="label">${escapeHtml(line.label.trim())}</span><span class="value">฿${formatMoney(
+            toNumber(line.amount)
+          )}</span></div>`
+      )
+      .join("");
     const html = `<!doctype html>
 <html>
   <head>
@@ -498,7 +565,7 @@ export default function TenantsPage() {
     <title>ใบสรุปย้ายออก - ห้อง ${roomNo}</title>
     <style>
       @page { size: A4; margin: 12mm; }
-      body { font-family: "Sarabun","Tahoma",sans-serif; color: #0f172a; }
+      body { font-family: "Google Sans", "Google Sans Text", "Product Sans", "Noto Sans Thai", "Sarabun", "Tahoma", sans-serif; color: #0f172a; }
       .card { border: 1px solid #cbd5e1; border-radius: 10px; padding: 14px; margin-bottom: 12px; }
       .header { border: 2px solid #334155; background: #f8fafc; }
       h1 { margin: 0; font-size: 24px; }
@@ -519,8 +586,16 @@ export default function TenantsPage() {
     </div>
     <div class="card">
       <div class="row"><span class="label">ค่าเช่าห้อง</span><span class="value">฿${formatMoney(roomPrice)}</span></div>
+      ${
+        overstayRentCharge > 0
+          ? `<div class="row"><span class="label">ค่าเช่าคิดตามจำนวนวันค้าง (${overstayDays} วัน)</span><span class="value">฿${formatMoney(
+              overstayRentCharge
+            )}</span></div>`
+          : ""
+      }
       <div class="row"><span class="label">ค่าไฟฟ้า (${electricityUsage} หน่วย)</span><span class="value">฿${formatMoney(electricityUsage * rates.electricity_rate)}</span></div>
       <div class="row"><span class="label">ค่าน้ำ (${waterUsage} หน่วย)</span><span class="value">฿${formatMoney(waterUsage * rates.water_rate)}</span></div>
+      ${feeRows}
       <div class="row"><span class="label">รวมค่าใช้จ่าย</span><span class="value">฿${formatMoney(totalCost)}</span></div>
       <div class="row"><span class="label">ชำระล่วงหน้า (ประกัน + ค่าเช่าล่วงหน้า)</span><span class="value">฿${formatMoney(prepaid)}</span></div>
       <div class="total">${netLabel}: ฿${netAmount}</div>
@@ -576,7 +651,28 @@ export default function TenantsPage() {
   const waterUsage = Math.max(toNumber(form.final_water_reading) - latestPrevWater, 0);
   const roomPrice = activeTenant ? tenantRoomPrice(activeTenant, roomsById) : 0;
   const utilityTotal = electricityUsage * rates.electricity_rate + waterUsage * rates.water_rate;
-  const totalCost = roomPrice + utilityTotal;
+  const dailyRent = roomPrice > 0 ? roomPrice / 30 : 0;
+  const advanceCoveredDays =
+    dailyRent > 0 && toNumber(form.advance_rent_amount) > 0
+      ? Math.max(1, Math.round(toNumber(form.advance_rent_amount) / dailyRent))
+      : 0;
+  const moveOutRequestDate = form.move_out_date ? new Date(form.move_out_date) : null;
+  const advanceCoveredEndDate = moveOutRequestDate
+    ? new Date(moveOutRequestDate.getTime() + advanceCoveredDays * 24 * 60 * 60 * 1000)
+    : null;
+  const actualMoveOutDate = form.final_move_out_date ? new Date(form.final_move_out_date) : null;
+  const overstayDays =
+    useProrate && advanceCoveredEndDate && actualMoveOutDate
+      ? Math.max(
+          0,
+          Math.floor(
+            (actualMoveOutDate.getTime() - advanceCoveredEndDate.getTime()) / (24 * 60 * 60 * 1000)
+          )
+        )
+      : 0;
+  const overstayRentCharge = overstayDays * dailyRent;
+  const additionalFeesTotal = moveOutFeeLines.reduce((sum, line) => sum + toNumber(line.amount), 0);
+  const totalCost = roomPrice + utilityTotal + overstayRentCharge + additionalFeesTotal;
   const prepaid = toNumber(form.security_deposit_amount) + toNumber(form.advance_rent_amount);
   const net = prepaid - totalCost;
 
@@ -589,14 +685,14 @@ export default function TenantsPage() {
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             placeholder="ค้นหาชื่อผู้เช่าหรือเลขห้อง"
-            className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-10 pr-4 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-600/40"
+            className="w-full rounded-xl border border-slate-200 bg-white py-3 pl-10 pr-4 text-base shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-600/40"
           />
         </div>
         <button
           onClick={() => void openModal()}
           disabled={!canEditTenant}
           title={!canEditTenant ? "ไม่มีสิทธิ์เพิ่ม/แก้ไขข้อมูลผู้เช่า" : undefined}
-          className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-blue-600/20 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none"
+          className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-base font-semibold text-white shadow-lg shadow-blue-600/20 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none"
         >
           <Plus size={16} />
           เพิ่มผู้เช่า
@@ -604,6 +700,12 @@ export default function TenantsPage() {
       </div>
 
       {status && <Badge variant="info">{status}</Badge>}
+      {isPageLoading && (
+        <div className="inline-flex items-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-4 py-2 text-base text-blue-700">
+          <Loader2 size={16} className="animate-spin" />
+          กำลังโหลดข้อมูลผู้เช่า...
+        </div>
+      )}
       {!canViewTenants && (
         <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           บัญชีนี้ไม่มีสิทธิ์ดูข้อมูลผู้เช่า
@@ -616,8 +718,15 @@ export default function TenantsPage() {
           <div key={building} className="space-y-3">
             <h2 className="text-lg font-semibold text-slate-900">{building}</h2>
             <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-              <table className="w-full text-left text-sm">
-                <thead className="bg-slate-100 text-xs uppercase tracking-wider text-slate-500">
+              <table className="w-full table-fixed text-left text-base">
+                <colgroup>
+                  <col className="w-[30%]" />
+                  <col className="w-[16%]" />
+                  <col className="w-[22%]" />
+                  <col className="w-[16%]" />
+                  <col className="w-[16%]" />
+                </colgroup>
+                <thead className="bg-slate-100 text-sm tracking-wide text-slate-600">
                   <tr>
                     <th className="px-4 py-3">ผู้เช่า</th>
                     <th className="px-4 py-3">ห้อง</th>
@@ -641,7 +750,7 @@ export default function TenantsPage() {
                         <button
                           disabled={!canEditTenant}
                           title={!canEditTenant ? "ไม่มีสิทธิ์แก้ไขข้อมูลผู้เช่า" : undefined}
-                          className="rounded-lg border border-slate-200 px-3 py-1 text-xs text-slate-600 disabled:cursor-not-allowed disabled:border-red-200 disabled:text-red-400"
+                          className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 disabled:cursor-not-allowed disabled:border-red-200 disabled:text-red-400"
                           onClick={() => void openModal(tenant)}
                         >
                           แก้ไข
@@ -661,21 +770,22 @@ export default function TenantsPage() {
             บัญชีนี้ไม่มีสิทธิ์แก้ไขข้อมูลผู้เช่า (ดูได้อย่างเดียว)
           </div>
         )}
-        <div className="mb-4 flex gap-2">
+        <div className="[&_label]:text-base [&_input]:text-base [&_select]:text-base [&_p]:text-base">
+        <div className="mb-4 flex gap-2 text-base">
           <button
-            className={`rounded-full px-3 py-1.5 text-sm ${activeTab === "info" ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-700"}`}
+            className={`rounded-full px-3 py-2 text-base ${activeTab === "info" ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-700"}`}
             onClick={() => setActiveTab("info")}
           >
             ข้อมูลทั่วไป
           </button>
           <button
-            className={`rounded-full px-3 py-1.5 text-sm ${activeTab === "move_in" ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-700"}`}
+            className={`rounded-full px-3 py-2 text-base ${activeTab === "move_in" ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-700"}`}
             onClick={() => setActiveTab("move_in")}
           >
-            เข้าอยู่
+            ย้ายเข้า
           </button>
           <button
-            className={`rounded-full px-3 py-1.5 text-sm ${activeTab === "move_out" ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-700"}`}
+            className={`rounded-full px-3 py-2 text-base ${activeTab === "move_out" ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-700"}`}
             onClick={() => setActiveTab("move_out")}
           >
             ย้ายออก
@@ -688,15 +798,15 @@ export default function TenantsPage() {
               !canEditTenant ? "cursor-not-allowed opacity-80 [&>*:not(.tenant-line-box)]:pointer-events-none" : ""
             }`}
           >
-            <Input label="ชื่อ-นามสกุล" value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} />
-            <Input label="ที่อยู่" value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} />
-            <Input label="เบอร์โทร" value={form.phone_number} onChange={(e) => setForm({ ...form, phone_number: e.target.value })} />
-            <label className="text-sm text-slate-600">
+            <Input className="text-base" label="ชื่อ-นามสกุล" value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} />
+            <Input className="text-base" label="ที่อยู่" value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} />
+            <Input className="text-base" label="เบอร์โทร" value={form.phone_number} onChange={(e) => setForm({ ...form, phone_number: e.target.value })} />
+            <label className="text-base text-slate-700">
               ห้อง
               <select
                 value={form.room_id}
                 onChange={(event) => setForm({ ...form, room_id: event.target.value })}
-                className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm"
+                className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-base"
               >
                 <option value="">เลือกห้อง</option>
                 {rooms.map((room) => (
@@ -708,11 +818,11 @@ export default function TenantsPage() {
             </label>
 
             <div className="space-y-2 md:col-span-2">
-              <p className="text-sm font-medium text-slate-700">ช่องทางรับชำระ</p>
-              <div className="flex items-center gap-3 text-sm text-slate-600">
+              <p className="text-base font-medium text-slate-700">ช่องทางรับชำระ</p>
+              <div className="flex items-center gap-3 text-base text-slate-700">
                 <label className="flex items-center gap-2">
                   <input type="radio" checked={!useCustomPayment} onChange={() => setUseCustomPayment(false)} />
-                  ใช้ช่องทางชำระเงินกลางของหอ
+                  ใช้ช่องทางชำระกลางของหอ
                 </label>
                 <label className="flex items-center gap-2">
                   <input type="radio" checked={useCustomPayment} onChange={() => setUseCustomPayment(true)} />
@@ -723,7 +833,7 @@ export default function TenantsPage() {
                 <select
                   value={selectedMethodId}
                   onChange={(event) => setSelectedMethodId(event.target.value)}
-                  className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm"
+                  className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-base"
                 >
                   <option value="">เลือกช่องทางชำระเงิน</option>
                   {methods.map((method) => (
@@ -736,8 +846,8 @@ export default function TenantsPage() {
             </div>
 
             <div className="space-y-2 md:col-span-2">
-              <p className="text-sm font-medium text-slate-700">ข้อมูลออกใบเสร็จ (นิติบุคคล)</p>
-              <div className="flex items-center gap-3 text-sm text-slate-600">
+              <p className="text-base font-medium text-slate-700">ข้อมูลออกใบเสร็จ (นิติบุคคล)</p>
+              <div className="flex items-center gap-3 text-base text-slate-700">
                 <label className="flex items-center gap-2">
                   <input type="radio" checked={!useCustomReceipt} onChange={() => setUseCustomReceipt(false)} />
                   ใช้ชื่อ/ที่อยู่ผู้เช่าปกติ
@@ -751,7 +861,7 @@ export default function TenantsPage() {
                 <select
                   value={selectedReceiptProfileId}
                   onChange={(event) => setSelectedReceiptProfileId(event.target.value)}
-                  className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm"
+                  className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-base"
                 >
                   <option value="">เลือกโปรไฟล์ใบเสร็จ</option>
                   {receiptProfiles.map((profile) => (
@@ -764,7 +874,7 @@ export default function TenantsPage() {
             </div>
 
             <div className="tenant-line-box space-y-2 md:col-span-2 rounded-xl border border-slate-200 p-4">
-              <p className="text-sm font-medium text-slate-700">การเชื่อมต่อ LINE</p>
+              <p className="text-base font-medium text-slate-700">การเชื่อมต่อ LINE</p>
               <div
                 className={`rounded-xl border px-3 py-2 text-sm font-medium ${
                   activeTenant?.line_user_id
@@ -772,7 +882,7 @@ export default function TenantsPage() {
                     : "border-slate-200 bg-slate-50 text-slate-600"
                 }`}
               >
-                {activeTenant?.line_user_id ? "เชื่อม LINE แล้ว" : "ยังไม่เชื่อม LINE"}
+                {activeTenant?.line_user_id ? "เชื่อม LINE แล้ว" : "ยังไม่ได้เชื่อม LINE"}
               </div>
               <button
                 onClick={() => setConfirmUnlinkOpen(true)}
@@ -792,16 +902,18 @@ export default function TenantsPage() {
             className="grid gap-4 md:grid-cols-2 disabled:cursor-not-allowed disabled:opacity-70"
           >
             <Input
-              label="วันที่เข้าอยู่"
+              label="วันที่ย้ายเข้า"
               type="date"
               value={form.move_in_date}
               onChange={(event) => setForm({ ...form, move_in_date: event.target.value })}
+              className="text-base"
             />
             <Input
               label="ระยะสัญญา (เดือน)"
               type="number"
               value={form.lease_months}
               onChange={(event) => setForm({ ...form, lease_months: toNumber(event.target.value) })}
+              className="text-base"
             />
             <div className="md:col-span-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
               วันสิ้นสุดสัญญา: {form.move_in_date ? leaseEnd : "-"} | สถานะสัญญา:{" "}
@@ -816,24 +928,28 @@ export default function TenantsPage() {
               onChange={(event) =>
                 setForm({ ...form, initial_electricity_reading: toNumber(event.target.value) })
               }
+              className="text-base"
             />
             <Input
               label="เลขมิเตอร์น้ำเริ่มต้น"
               type="number"
               value={form.initial_water_reading}
               onChange={(event) => setForm({ ...form, initial_water_reading: toNumber(event.target.value) })}
+              className="text-base"
             />
             <Input
               label="ค่าเช่าล่วงหน้า"
               type="number"
               value={form.advance_rent_amount}
               onChange={(event) => setForm({ ...form, advance_rent_amount: toNumber(event.target.value) })}
+              className="text-base"
             />
             <Input
               label="เงินประกัน"
               type="number"
               value={form.security_deposit_amount}
               onChange={(event) => setForm({ ...form, security_deposit_amount: toNumber(event.target.value) })}
+              className="text-base"
             />
             <div className="md:col-span-2 flex items-center gap-3">
               <label
@@ -848,11 +964,12 @@ export default function TenantsPage() {
                 <input
                   type="file"
                   accept="image/*"
-                  disabled={!canEditTenant}
+                  disabled={!canEditTenant || isUploadingDepositSlip}
                   className="hidden"
                   onChange={(e) => void uploadDepositSlip(e.target.files?.[0])}
                 />
               </label>
+              {isUploadingDepositSlip && <Loader2 size={16} className="animate-spin text-blue-600" />}
               {form.deposit_slip_url && (
                 <a href={form.deposit_slip_url} target="_blank" rel="noreferrer" className="text-sm text-blue-600 underline">
                   ดูสลิป
@@ -866,19 +983,98 @@ export default function TenantsPage() {
           <fieldset disabled={!canEditTenant} className="space-y-4 disabled:cursor-not-allowed disabled:opacity-70">
             <div className="grid gap-4 md:grid-cols-2">
               <Input
+                label="วันที่แจ้งย้ายออก"
+                type="date"
+                value={form.move_out_date}
+                onChange={(event) => setForm({ ...form, move_out_date: event.target.value })}
+                className="text-base"
+              />
+              <Input
+                label="วันที่ย้ายออกจริง"
+                type="date"
+                value={form.final_move_out_date}
+                onChange={(event) => setForm({ ...form, final_move_out_date: event.target.value })}
+                className="text-base"
+              />
+              <Input
                 label={`เลขมิเตอร์ไฟสุดท้าย (ก่อนหน้า ${latestPrevElectricity})`}
                 type="number"
                 value={form.final_electricity_reading}
                 onChange={(event) =>
                   setForm({ ...form, final_electricity_reading: toNumber(event.target.value) })
                 }
+                className="text-base"
               />
               <Input
                 label={`เลขมิเตอร์น้ำสุดท้าย (ก่อนหน้า ${latestPrevWater})`}
                 type="number"
                 value={form.final_water_reading}
                 onChange={(event) => setForm({ ...form, final_water_reading: toNumber(event.target.value) })}
+                className="text-base"
               />
+            </div>
+
+            <label className="inline-flex items-center gap-2 text-base text-slate-700">
+              <input
+                type="checkbox"
+                checked={useProrate}
+                onChange={(event) => setUseProrate(event.target.checked)}
+              />
+              ใช้การคำนวณ Pro-rate สำหรับวันที่เกินจากค่าเช่าล่วงหน้า
+            </label>
+
+            <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-semibold text-slate-800">ค่าใช้จ่ายเพิ่มเติม (ย้ายออก)</p>
+                <button
+                  type="button"
+                  onClick={() => setMoveOutFeeLines((prev) => [...prev, createMoveOutFeeLine()])}
+                  className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700"
+                >
+                  <Plus size={14} />
+                  เพิ่มรายการ
+                </button>
+              </div>
+              {moveOutFeeLines.length === 0 && (
+                <p className="text-sm text-slate-500">ยังไม่มีค่าใช้จ่ายเพิ่มเติม</p>
+              )}
+              {moveOutFeeLines.map((line) => (
+                <div key={line.id} className="grid gap-2 md:grid-cols-[1fr_180px_auto]">
+                  <Input
+                    label="รายการ"
+                    value={line.label}
+                    onChange={(event) =>
+                      setMoveOutFeeLines((prev) =>
+                        prev.map((item) =>
+                          item.id === line.id ? { ...item, label: event.target.value } : item
+                        )
+                      )
+                    }
+                  />
+                  <Input
+                    label="จำนวนเงิน"
+                    type="number"
+                    value={line.amount}
+                    onChange={(event) =>
+                      setMoveOutFeeLines((prev) =>
+                        prev.map((item) =>
+                          item.id === line.id ? { ...item, amount: toNumber(event.target.value) } : item
+                        )
+                      )
+                    }
+                  />
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setMoveOutFeeLines((prev) => prev.filter((item) => item.id !== line.id))
+                    }
+                    className="mt-7 inline-flex h-10 items-center justify-center rounded-lg border border-red-200 px-3 text-red-600"
+                    title="ลบรายการ"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              ))}
             </div>
 
             <div className="rounded-2xl border border-slate-300 bg-white p-5 text-sm text-slate-700">
@@ -886,17 +1082,33 @@ export default function TenantsPage() {
                 <p className="text-lg font-semibold text-slate-900">สรุปย้ายออก</p>
                 <p>ผู้เช่า: {form.full_name || "-"}</p>
                 <p>ห้อง: {activeTenant ? tenantRoomNumber(activeTenant, roomsById) : "-"}</p>
+                <p>วันที่แจ้งย้ายออก: {form.move_out_date || "-"}</p>
+                <p>วันที่ย้ายออกจริง: {form.final_move_out_date || "-"}</p>
               </div>
               <div className="space-y-1">
                 <p className="flex justify-between"><span>ค่าเช่าห้อง</span><span>฿{formatMoney(roomPrice)}</span></p>
+                {overstayRentCharge > 0 && (
+                  <p className="flex justify-between">
+                    <span>ค่าเช่า Pro-rate จากวันที่เกิน ({overstayDays} วัน)</span>
+                    <span>฿{formatMoney(overstayRentCharge)}</span>
+                  </p>
+                )}
                 <p className="flex justify-between">
-                  <span>ค่าไฟ ({electricityUsage} หน่วย)</span>
+                  <span>ค่าไฟฟ้า ({electricityUsage} หน่วย)</span>
                   <span>฿{formatMoney(electricityUsage * rates.electricity_rate)}</span>
                 </p>
                 <p className="flex justify-between">
                   <span>ค่าน้ำ ({waterUsage} หน่วย)</span>
                   <span>฿{formatMoney(waterUsage * rates.water_rate)}</span>
                 </p>
+                {moveOutFeeLines
+                  .filter((line) => line.label.trim() && toNumber(line.amount) > 0)
+                  .map((line) => (
+                    <p key={line.id} className="flex justify-between">
+                      <span>{line.label.trim()}</span>
+                      <span>฿{formatMoney(toNumber(line.amount))}</span>
+                    </p>
+                  ))}
               </div>
               <div className="my-3 border-t border-dashed border-slate-300" />
               <div className="space-y-1">
@@ -913,20 +1125,29 @@ export default function TenantsPage() {
 
             <button
               type="button"
+              onClick={() => void saveTenant()}
+              disabled={!activeTenant || !canEditTenant || isSavingTenant}
+              className="inline-flex items-center gap-2 rounded-xl border border-blue-300 bg-blue-50 px-4 py-2.5 text-base font-semibold text-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isSavingTenant ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+              {isSavingTenant ? "กำลังบันทึก..." : "บันทึกแบบฟอร์มย้ายออก"}
+            </button>
+            <button
+              type="button"
               onClick={printMoveOutReceipt}
               disabled={!activeTenant}
-              className="mb-2 inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+              className="mb-2 inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-base font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Printer size={16} />
               พิมพ์ใบสรุปย้ายออก
             </button>
             <button
               onClick={() => setConfirmMoveOutOpen(true)}
-              className="rounded-xl bg-red-600 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
-              disabled={!activeTenant || !canEditTenant}
+              className="rounded-xl bg-red-600 px-4 py-2.5 text-base font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+              disabled={!activeTenant || !canEditTenant || isMovingOut}
               title={!canEditTenant ? "ไม่มีสิทธิ์แก้ไขข้อมูลผู้เช่า" : undefined}
             >
-              ยืนยันการย้ายออก
+              {isMovingOut ? "กำลังย้ายออก..." : "ยืนยันการย้ายออก"}
             </button>
           </fieldset>
         )}
@@ -934,38 +1155,40 @@ export default function TenantsPage() {
         <div className="mt-6 flex items-center justify-between gap-3">
           <button
             onClick={() => setConfirmDeleteOpen(true)}
-            disabled={!activeTenant || !canEditTenant}
+            disabled={!activeTenant || !canEditTenant || isDeletingTenant}
             title={!canEditTenant ? "ไม่มีสิทธิ์ลบผู้เช่า" : undefined}
-            className="inline-flex items-center gap-2 rounded-xl border border-red-200 px-4 py-2 text-sm text-red-600 disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex items-center gap-2 rounded-xl border border-red-200 px-4 py-2.5 text-base text-red-600 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            <Trash2 size={16} />
-            ลบผู้เช่า
+            {isDeletingTenant ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
+            {isDeletingTenant ? "กำลังลบ..." : "ลบผู้เช่า"}
           </button>
           <div className="flex items-center gap-3">
             <button
               onClick={() => setIsModalOpen(false)}
-              className="rounded-xl border border-slate-200 px-4 py-2 text-sm text-slate-600"
+              className="rounded-xl border border-slate-200 px-4 py-2.5 text-base text-slate-600"
             >
               ยกเลิก
             </button>
             <button
               onClick={() => setConfirmSaveOpen(true)}
-              disabled={!canEditTenant}
+              disabled={!canEditTenant || isSavingTenant}
               title={!canEditTenant ? "ไม่มีสิทธิ์แก้ไขข้อมูลผู้เช่า" : undefined}
-              className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+              className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-base font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
             >
-              <Save size={16} />
-              บันทึกผู้เช่า
+              {isSavingTenant ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+              {isSavingTenant ? "กำลังบันทึก..." : "บันทึกผู้เช่า"}
             </button>
           </div>
+        </div>
         </div>
       </Modal>
 
       <ConfirmActionModal
         isOpen={confirmSaveOpen}
         title="บันทึกผู้เช่า"
-        message="บันทึกการเปลี่ยนแปลงข้อมูลผู้เช่าใช่หรือไม่?"
+        message="ยืนยันการบันทึกการเปลี่ยนแปลงข้อมูลผู้เช่าหรือไม่?"
         confirmLabel="บันทึก"
+        loading={isSavingTenant}
         onCancel={() => setConfirmSaveOpen(false)}
         onConfirm={async () => {
           await saveTenant();
@@ -978,6 +1201,7 @@ export default function TenantsPage() {
         title="ลบผู้เช่า"
         message="การกระทำนี้ไม่สามารถย้อนกลับได้ ต้องการลบผู้เช่าหรือไม่?"
         confirmLabel="ลบ"
+        loading={isDeletingTenant}
         onCancel={() => setConfirmDeleteOpen(false)}
         onConfirm={async () => {
           await deleteTenant();
@@ -990,6 +1214,7 @@ export default function TenantsPage() {
         title="ยกเลิกการเชื่อม LINE"
         message="ต้องการลบ LINE ID ที่เชื่อมกับผู้เช่ารายนี้หรือไม่?"
         confirmLabel="ยกเลิกการเชื่อม"
+        loading={isUnlinkingLine}
         onCancel={() => setConfirmUnlinkOpen(false)}
         onConfirm={async () => {
           await unlinkTenantLine();
@@ -1000,8 +1225,9 @@ export default function TenantsPage() {
       <ConfirmActionModal
         isOpen={confirmMoveOutOpen}
         title="ยืนยันการย้ายออก"
-        message="ยืนยันการย้ายออกของผู้เช่าและปรับสถานะห้องเป็นว่างใช่หรือไม่?"
+        message="ยืนยันการย้ายออกของผู้เช่าและปรับสถานะห้องเป็นว่างหรือไม่?"
         confirmLabel="ยืนยัน"
+        loading={isMovingOut}
         onCancel={() => setConfirmMoveOutOpen(false)}
         onConfirm={async () => {
           await confirmMoveOut();
@@ -1011,4 +1237,7 @@ export default function TenantsPage() {
     </div>
   );
 }
+
+
+
 

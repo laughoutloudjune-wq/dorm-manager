@@ -1,7 +1,6 @@
 import {
   Building,
   FileText,
-  IdCard,
   LayoutDashboard,
   Settings,
   SlidersHorizontal,
@@ -14,7 +13,6 @@ const adminNavKeys = [
   { href: "/rooms", labelKey: "nav_rooms", icon: Building },
   { href: "/tenants", labelKey: "nav_tenants", icon: Users },
   { href: "/meters", labelKey: "nav_meters", icon: SlidersHorizontal },
-  { href: "/line-ids", labelKey: "nav_line_ids", icon: IdCard },
   { href: "/invoices", labelKey: "nav_invoices", icon: FileText },
   { href: "/settings", labelKey: "nav_settings", icon: Settings },
 ] as const;

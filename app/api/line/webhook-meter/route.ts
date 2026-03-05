@@ -10,7 +10,16 @@ type LineWebhookEvent = {
   };
 };
 
-const channelSecret = process.env.LINE_METER_WEBHOOK_CHANNEL_SECRET || process.env.LINE_CHANNEL_SECRET || "";
+const normalizeSecret = (value: string | undefined) =>
+  String(value ?? "")
+    .trim()
+    .replace(/^"(.*)"$/, "$1")
+    .replace(/^'(.*)'$/, "$1");
+
+const channelSecrets = [
+  normalizeSecret(process.env.LINE_METER_WEBHOOK_CHANNEL_SECRET),
+  normalizeSecret(process.env.LINE_CHANNEL_SECRET),
+].filter(Boolean);
 const channelAccessToken =
   process.env.LINE_METER_CHANNEL_ACCESS_TOKEN || process.env.LINE_CHANNEL_ACCESS_TOKEN || "";
 
@@ -18,6 +27,9 @@ const isValidSignature = (rawBody: string, signature: string, secret: string) =>
   const digest = crypto.createHmac("SHA256", secret).update(rawBody).digest("base64");
   return digest === signature;
 };
+
+const isValidWithAnySecret = (rawBody: string, signature: string) =>
+  channelSecrets.some((secret) => isValidSignature(rawBody, signature, secret));
 
 const fetchLineProfile = async (userId: string) => {
   if (!channelAccessToken) return null;
@@ -33,7 +45,7 @@ const fetchLineProfile = async (userId: string) => {
 
 export async function POST(req: Request) {
   try {
-    if (!channelSecret) {
+    if (channelSecrets.length === 0) {
       return NextResponse.json(
         { error: "Missing LINE_METER_WEBHOOK_CHANNEL_SECRET (or LINE_CHANNEL_SECRET)." },
         { status: 500 }
@@ -42,7 +54,7 @@ export async function POST(req: Request) {
 
     const rawBody = await req.text();
     const signature = req.headers.get("x-line-signature") || "";
-    if (!signature || !isValidSignature(rawBody, signature, channelSecret)) {
+    if (!signature || !isValidWithAnySecret(rawBody, signature)) {
       return NextResponse.json({ error: "Invalid LINE webhook signature." }, { status: 401 });
     }
 

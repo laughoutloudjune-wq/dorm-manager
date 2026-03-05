@@ -156,9 +156,9 @@ export async function GET(req: Request) {
   <head>
     <meta charset="utf-8" />
     <style>
-      @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700&display=swap');
+      @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;600;700&display=swap');
       @page { size: A4; margin: 12mm; }
-      body { font-family: "Sarabun", "Tahoma", sans-serif; color: #111827; font-size: 14px; }
+      body { font-family: "Google Sans", "Google Sans Text", "Product Sans", "Noto Sans Thai", "Sarabun", "Tahoma", sans-serif; color: #111827; font-size: 14px; }
       h1 { margin: 0; font-size: 28px; color: #0f172a; }
       .sub { color: #334155; margin-top: 4px; margin-bottom: 14px; font-size: 13px; }
       .header { border: 2px solid #1e40af; border-radius: 12px; background: #eff6ff; padding: 14px; margin-bottom: 14px; }

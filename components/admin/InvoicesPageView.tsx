@@ -1613,11 +1613,11 @@ export default function InvoicesPage() {
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
         <link
-          href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700&display=swap"
+          href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@300;400;500;600;700&display=swap"
           rel="stylesheet"
         />
         <style>
-          body { font-family: 'Sarabun', Tahoma, sans-serif; padding: 28px; color: #0f172a; }
+          body { font-family: 'Google Sans', 'Google Sans Text', 'Product Sans', 'Noto Sans Thai', 'Sarabun', Tahoma, sans-serif; padding: 28px; color: #0f172a; }
           .row { display: flex; justify-content: space-between; gap: 24px; }
           .box { flex: 1; }
           .title { font-size: 24px; font-weight: 700; margin: 0 0 4px 0; }
@@ -3320,3 +3320,4 @@ export default function InvoicesPage() {
     </div>
   );
 }
+

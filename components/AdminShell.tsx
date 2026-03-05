@@ -12,7 +12,7 @@ const toTitle = (pathname: string, labels: ReturnType<typeof getAdminNav>) => {
   const match = labels.find((item) =>
     item.href === "/" ? pathname === "/" : pathname.startsWith(item.href)
   );
-  return match?.label ?? "Dashboard";
+  return match?.label ?? null;
 };
 
 export default function AdminShell({ children }: { children: ReactNode }) {
@@ -23,7 +23,10 @@ export default function AdminShell({ children }: { children: ReactNode }) {
   const navItems = useMemo(() => getAdminNav(locale), [locale]);
   const [checkingSession, setCheckingSession] = useState(true);
   const [loggingOut, setLoggingOut] = useState(false);
-  const pageTitle = useMemo(() => toTitle(pathname, navItems), [pathname, navItems]);
+  const pageTitle = useMemo(
+    () => toTitle(pathname, navItems) ?? t(locale, "nav_dashboard"),
+    [locale, pathname, navItems]
+  );
   const crumbs = [
     { label: "Apartment Flow", href: "/" },
     { label: pageTitle, href: pathname },

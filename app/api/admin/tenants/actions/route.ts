@@ -136,6 +136,48 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: true });
     }
 
+    if (action === "final_move_out") {
+      const auth = await requireAdminPermission(req, "tenant.edit");
+      if ("error" in auth) return auth.error;
+      const roomAuth = await requireAdminPermission(req, "room.edit");
+      if ("error" in roomAuth) return roomAuth.error;
+
+      const tenantId = String(body?.tenantId ?? "");
+      const roomId = String(body?.roomId ?? "");
+      const payload = body?.payload ?? {};
+      const { error } = await auth.supabase.from("tenants").update(payload).eq("id", tenantId);
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+      const moveOutDate =
+        payload?.move_out_date ? String(payload.move_out_date) : new Date().toISOString().slice(0, 10);
+      const { data: openLog } = await auth.supabase
+        .from("room_tenant_logs")
+        .select("id")
+        .eq("room_id", roomId)
+        .eq("tenant_id", tenantId)
+        .is("move_out_date", null)
+        .order("move_in_date", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (openLog?.id) {
+        await auth.supabase
+          .from("room_tenant_logs")
+          .update({ move_out_date: moveOutDate, updated_at: new Date().toISOString() })
+          .eq("id", openLog.id);
+      }
+
+      await roomAuth.supabase.from("rooms").update({ status: "available" }).eq("id", roomId);
+      await roomAuth.supabase.from("room_logs").insert({
+        room_id: roomId,
+        event_type: "move_out",
+        created_at: new Date().toISOString(),
+      });
+
+      const { error: deleteError } = await auth.supabase.from("tenants").delete().eq("id", tenantId);
+      if (deleteError) return NextResponse.json({ error: deleteError.message }, { status: 500 });
+      return NextResponse.json({ success: true });
+    }
+
     return NextResponse.json({ error: "Unknown action." }, { status: 400 });
   } catch (error: any) {
     return NextResponse.json({ error: error?.message ?? "Unexpected server error." }, { status: 500 });
