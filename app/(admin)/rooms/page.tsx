@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/Badge";
 import { Card } from "@/components/ui/Card";
 import { Modal } from "@/components/ui/Modal";
-import { ConfirmActionModal } from "@/components/ui/ConfirmActionModal";
 import { createClient } from "@/lib/supabase-client";
 import { Building2, MessageCircle, Settings2 } from "lucide-react";
 
@@ -30,11 +29,28 @@ type TenantMovementRow = {
   move_out_date: string | null;
 };
 
-const statusVariant: Record<string, "success" | "default" | "warning"> = {
+const statusVariant: Record<string, "success" | "default" | "warning" | "info"> = {
   occupied: "success",
   available: "default",
+  vacant: "default",
   maintenance: "warning",
+  short_term: "info",
 };
+
+const statusLabel = (status: string) => {
+  if (status === "occupied") return "มีผู้เช่า";
+  if (status === "available" || status === "vacant") return "ว่าง";
+  if (status === "maintenance") return "ซ่อมบำรุง";
+  if (status === "short_term") return "ระยะสั้น";
+  return status;
+};
+
+const roomStatusOptions = [
+  { value: "available", label: "ว่าง" },
+  { value: "occupied", label: "มีผู้เช่า" },
+  { value: "maintenance", label: "ซ่อมบำรุง" },
+  { value: "short_term", label: "ระยะสั้น" },
+] as const;
 
 function normalizeRoom(row: any): RoomRecord {
   const building = Array.isArray(row.buildings) ? row.buildings[0] : row.buildings;
@@ -59,9 +75,6 @@ export default function RoomsPage() {
   const [status, setStatus] = useState<string | null>(null);
   const [movementLogs, setMovementLogs] = useState<TenantMovementRow[]>([]);
   const [movementLoading, setMovementLoading] = useState(false);
-
-  const [confirmStatusOpen, setConfirmStatusOpen] = useState(false);
-  const [pendingRoom, setPendingRoom] = useState<RoomRecord | null>(null);
 
   const callRoomsAction = async (action: string, payload: Record<string, unknown>) => {
     const { data } = await supabase.auth.getSession();
@@ -105,22 +118,20 @@ export default function RoomsPage() {
     loadRooms();
   }, []);
 
-  const toggleStatus = async (room: RoomRecord) => {
-    const order = ["occupied", "maintenance", "available"];
-    const currentIndex = order.indexOf(room.status);
-    const nextStatus = order[(currentIndex + 1) % order.length];
-
+  const updateStatus = async (room: RoomRecord, nextStatus: string) => {
+    if (room.status === nextStatus) return;
     try {
       await callRoomsAction("toggle_status", { roomId: room.id, status: nextStatus });
     } catch (error: any) {
-      setStatus(error?.message ?? "Failed to update room status.");
+      setStatus(error?.message ?? "อัปเดตสถานะห้องไม่สำเร็จ");
       return;
     }
 
     setRooms((prev) =>
       prev.map((item) => (item.id === room.id ? { ...item, status: nextStatus } : item))
     );
-      setStatus(`เปลี่ยนสถานะห้อง ${room.room_number} เป็น ${nextStatus} แล้ว`);
+    setSelectedRoom((prev) => (prev && prev.id === room.id ? { ...prev, status: nextStatus } : prev));
+    setStatus(`เปลี่ยนสถานะห้อง ${room.room_number} เป็น ${statusLabel(nextStatus)} แล้ว`);
   };
 
   const sendLineReminder = async (room: RoomRecord) => {
@@ -232,9 +243,9 @@ export default function RoomsPage() {
             <button className="w-full text-left p-5" onClick={() => setSelectedRoom(room)}>
               <div className="flex items-center justify-between">
                 <div className="text-3xl font-semibold text-slate-900">{room.room_number}</div>
-                <Badge variant={statusVariant[room.status] ?? "default"}>{room.status}</Badge>
+                <Badge variant={statusVariant[room.status] ?? "default"}>{statusLabel(room.status)}</Badge>
               </div>
-              <p className="mt-3 text-sm text-slate-500">{room.tenant_name ?? "Vacant"}</p>
+              <p className="mt-3 text-sm text-slate-500">{room.tenant_name ?? "ว่าง"}</p>
               <div className="mt-4 flex items-center justify-between text-xs text-slate-400">
                 <span className="inline-flex items-center gap-1">
                   <Building2 size={14} />
@@ -249,17 +260,21 @@ export default function RoomsPage() {
               </div>
             </button>
             <div className="flex items-center justify-between border-t border-slate-100 px-5 py-3 text-xs text-slate-500">
-              <span>ตั้งค่าห้อง</span>
-              <button
-                onClick={() => {
-                  setPendingRoom(room);
-                  setConfirmStatusOpen(true);
-                }}
-                className="inline-flex items-center gap-1 rounded-full border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-600 hover:border-blue-300"
-              >
+              <span className="inline-flex items-center gap-1">
                 <Settings2 size={12} />
-                เปลี่ยนสถานะ
-              </button>
+                ตั้งค่าสถานะ
+              </span>
+              <select
+                value={room.status}
+                onChange={(event) => void updateStatus(room, event.target.value)}
+                className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-700"
+              >
+                {roomStatusOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
             </div>
           </Card>
         ))}
@@ -278,7 +293,7 @@ export default function RoomsPage() {
               <p className="text-xs uppercase tracking-[0.2em] text-slate-400">การเข้าพัก</p>
               <p className="text-lg font-semibold text-slate-900">{selectedRoom.tenant_name ?? "ว่าง"}</p>
               <p>อาคาร: {selectedRoom.building_name}</p>
-              <p>สถานะ: {selectedRoom.status}</p>
+              <p>สถานะ: {statusLabel(selectedRoom.status)}</p>
               <p>LINE: {selectedRoom.tenant_line_user_id ? "เชื่อมแล้ว" : "ยังไม่เชื่อม"}</p>
               </div>
               <div className="space-y-2">
@@ -289,15 +304,20 @@ export default function RoomsPage() {
               >
                 ส่งแจ้งเตือน LINE
               </button>
-              <button
-                className="w-full rounded-xl border border-slate-200 px-4 py-2 text-slate-700 font-semibold"
-                onClick={() => {
-                  setPendingRoom(selectedRoom);
-                  setConfirmStatusOpen(true);
-                }}
-              >
-                เปลี่ยนสถานะห้อง
-              </button>
+              <label className="block">
+                <span className="mb-1 block text-xs text-slate-500">สถานะห้อง</span>
+                <select
+                  value={selectedRoom.status}
+                  onChange={(event) => void updateStatus(selectedRoom, event.target.value)}
+                  className="w-full rounded-xl border border-slate-200 bg-white px-4 py-2 text-slate-700 font-semibold"
+                >
+                  {roomStatusOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
               </div>
             </div>
 
@@ -341,23 +361,6 @@ export default function RoomsPage() {
           </div>
         )}
       </Modal>
-
-      <ConfirmActionModal
-        isOpen={confirmStatusOpen}
-        title="อัปเดตสถานะห้อง"
-        message={`เปลี่ยนสถานะของห้อง ${pendingRoom?.room_number ?? ""}?`}
-        confirmLabel="ยืนยัน"
-        onCancel={() => {
-          setConfirmStatusOpen(false);
-          setPendingRoom(null);
-        }}
-        onConfirm={async () => {
-          if (!pendingRoom) return;
-          await toggleStatus(pendingRoom);
-          setConfirmStatusOpen(false);
-          setPendingRoom(null);
-        }}
-      />
     </div>
   );
 }
