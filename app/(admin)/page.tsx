@@ -10,6 +10,7 @@ type DashboardStats = {
   occupiedRooms: number;
   vacantRooms: number;
   maintenanceRooms: number;
+  shortTermRooms: number;
   pendingIncome: number;
   roomGap: number;
 };
@@ -32,6 +33,7 @@ export default function DashboardPage() {
     occupiedRooms: 0,
     vacantRooms: 0,
     maintenanceRooms: 0,
+    shortTermRooms: 0,
     pendingIncome: 0,
     roomGap: 0,
   });
@@ -98,10 +100,11 @@ export default function DashboardPage() {
       const totalRooms = rooms.length;
       const occupiedRooms = rooms.filter((room) => room.status === "occupied").length;
       const maintenanceRooms = rooms.filter((room) => room.status === "maintenance").length;
+      const shortTermRooms = rooms.filter((room) => room.status === "short_term").length;
       const vacantRooms = rooms.filter(
         (room) => room.status === "vacant" || room.status === "available"
       ).length;
-      const roomGap = totalRooms - (occupiedRooms + vacantRooms + maintenanceRooms);
+      const roomGap = totalRooms - (occupiedRooms + vacantRooms + maintenanceRooms + shortTermRooms);
       const pendingIncome = pendingInvoices.reduce(
         (sum: number, item: any) => sum + Number(item.total_amount ?? 0),
         0
@@ -114,7 +117,8 @@ export default function DashboardPage() {
             status === "occupied" ||
             status === "maintenance" ||
             status === "vacant" ||
-            status === "available";
+            status === "available" ||
+            status === "short_term";
           if (!statusKnown) {
             return {
               id: room.id,
@@ -135,7 +139,15 @@ export default function DashboardPage() {
         })
         .filter(Boolean) as { id: string; room_number: string; status: string | null; reason: string }[];
 
-      setStats({ totalRooms, occupiedRooms, vacantRooms, maintenanceRooms, pendingIncome, roomGap });
+      setStats({
+        totalRooms,
+        occupiedRooms,
+        vacantRooms,
+        maintenanceRooms,
+        shortTermRooms,
+        pendingIncome,
+        roomGap,
+      });
       setGhostRooms(nextGhostRooms);
 
       const invoiceActivities = (recentInvoicesRes.data ?? []).map((item: any) => {
@@ -168,6 +180,38 @@ export default function DashboardPage() {
   }, [supabase]);
 
   const occupancyRate = stats.totalRooms ? Math.round((stats.occupiedRooms / stats.totalRooms) * 100) : 0;
+  const ghostReasonBreakdown = useMemo(() => {
+    return Object.entries(
+      ghostRooms.reduce<Record<string, number>>((acc, room) => {
+        acc[room.reason] = (acc[room.reason] ?? 0) + 1;
+        return acc;
+      }, {})
+    );
+  }, [ghostRooms]);
+  const roomStatusChartData = useMemo(
+    () => [
+      { key: "occupied", label: "มีผู้เช่า", value: stats.occupiedRooms, color: "#16a34a" },
+      { key: "vacant", label: "ว่าง", value: stats.vacantRooms, color: "#64748b" },
+      { key: "maintenance", label: "ซ่อมบำรุง", value: stats.maintenanceRooms, color: "#f59e0b" },
+      { key: "short_term", label: "ระยะสั้น", value: stats.shortTermRooms, color: "#0ea5e9" },
+    ],
+    [stats.maintenanceRooms, stats.occupiedRooms, stats.shortTermRooms, stats.vacantRooms]
+  );
+  const chartTotal = roomStatusChartData.reduce((sum, item) => sum + item.value, 0);
+  const radius = 70;
+  const circumference = 2 * Math.PI * radius;
+  let cumulative = 0;
+  const donutSegments = roomStatusChartData.map((item) => {
+    const fraction = chartTotal > 0 ? item.value / chartTotal : 0;
+    const length = fraction * circumference;
+    const segment = {
+      ...item,
+      dasharray: `${length} ${circumference - length}`,
+      dashoffset: -cumulative,
+    };
+    cumulative += length;
+    return segment;
+  });
 
   const cards = [
     {
@@ -255,6 +299,7 @@ export default function DashboardPage() {
               <div className="mt-3 flex justify-between text-xs text-slate-500">
                 <span>ห้องว่าง: {Math.max(stats.totalRooms - stats.occupiedRooms, 0)} ห้อง</span>
                 <span>ซ่อมบำรุง: {stats.maintenanceRooms} ห้อง</span>
+                <span>ระยะสั้น: {stats.shortTermRooms} ห้อง</span>
               </div>
             </div>
           </CardContent>
@@ -266,11 +311,51 @@ export default function DashboardPage() {
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
               <p>
                 ส่วนต่างห้อง = ทั้งหมด ({stats.totalRooms}) - มีผู้เช่า ({stats.occupiedRooms}) - ห้องว่าง ({stats.vacantRooms}) -
-                ซ่อมบำรุง ({stats.maintenanceRooms}) ={" "}
+                ซ่อมบำรุง ({stats.maintenanceRooms}) - ระยะสั้น ({stats.shortTermRooms}) ={" "}
                 <span className={stats.roomGap === 0 ? "font-semibold text-green-700" : "font-semibold text-red-700"}>
                   {stats.roomGap}
                 </span>
               </p>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600">
+              <p className="font-medium text-slate-800">สรุปสถานะห้อง</p>
+              <p className="mt-1">
+                มีผู้เช่า {stats.occupiedRooms} | ว่าง {stats.vacantRooms} | ซ่อมบำรุง {stats.maintenanceRooms} | ระยะสั้น {stats.shortTermRooms}
+              </p>
+              <div className="mt-3 flex items-center gap-5">
+                <div className="relative h-40 w-40 shrink-0">
+                  <svg viewBox="0 0 180 180" className="h-40 w-40 -rotate-90">
+                    <circle cx="90" cy="90" r={radius} stroke="#e2e8f0" strokeWidth="20" fill="none" />
+                    {donutSegments.map((segment) => (
+                      <circle
+                        key={segment.key}
+                        cx="90"
+                        cy="90"
+                        r={radius}
+                        stroke={segment.color}
+                        strokeWidth="20"
+                        strokeLinecap="butt"
+                        fill="none"
+                        strokeDasharray={segment.dasharray}
+                        strokeDashoffset={segment.dashoffset}
+                      />
+                    ))}
+                  </svg>
+                  <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
+                    <p className="text-xs text-slate-500">ทั้งหมด</p>
+                    <p className="text-2xl font-semibold text-slate-900">{chartTotal}</p>
+                  </div>
+                </div>
+                <div className="space-y-2 text-xs">
+                  {roomStatusChartData.map((item) => (
+                    <div key={item.key} className="flex items-center gap-2">
+                      <span className="inline-block h-3 w-3 rounded-full" style={{ backgroundColor: item.color }} />
+                      <span className="text-slate-700">{item.label}</span>
+                      <span className="text-sm font-semibold text-slate-900">{item.value}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
             {stats.roomGap !== 0 && (
               <div className="space-y-2">
@@ -280,13 +365,23 @@ export default function DashboardPage() {
                     ไม่พบห้องผิดปกติตามเงื่อนไขปัจจุบัน
                   </p>
                 ) : (
-                  <ul className="space-y-2 text-xs text-slate-600">
-                    {ghostRooms.map((room) => (
-                      <li key={room.id} className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2">
-                        ห้อง {room.room_number} ({room.status ?? "null"}): {room.reason}
-                      </li>
-                    ))}
-                  </ul>
+                  <div className="space-y-2">
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                      <p className="font-medium">สรุปสาเหตุ</p>
+                      {ghostReasonBreakdown.map(([reason, count]) => (
+                        <p key={reason}>
+                          - {reason}: {count} ห้อง
+                        </p>
+                      ))}
+                    </div>
+                    <ul className="space-y-2 text-xs text-slate-600">
+                      {ghostRooms.map((room) => (
+                        <li key={room.id} className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2">
+                          ห้อง {room.room_number} ({room.status ?? "null"}): {room.reason}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
                 )}
               </div>
             )}
