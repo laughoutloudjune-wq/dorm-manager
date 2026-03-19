@@ -168,6 +168,13 @@ const tenantStatusLabel = (status: string) => {
   return status;
 };
 
+const tenantPaymentMethodLabel = (tenant: TenantRow) => {
+  const method = tenant.custom_payment_method;
+  if (!method) return "-";
+  if (typeof method === "string") return method;
+  return method.label ?? method.type ?? "-";
+};
+
 export default function TenantsPage() {
   const supabase = useMemo(() => createClient(), []);
   const { can } = usePermissions();
@@ -890,17 +897,19 @@ export default function TenantsPage() {
             <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
               <table className="w-full table-fixed text-left text-base">
                 <colgroup>
-                  <col className="w-[30%]" />
-                  <col className="w-[16%]" />
                   <col className="w-[22%]" />
-                  <col className="w-[16%]" />
-                  <col className="w-[16%]" />
+                  <col className="w-[12%]" />
+                  <col className="w-[18%]" />
+                  <col className="w-[24%]" />
+                  <col className="w-[12%]" />
+                  <col className="w-[12%]" />
                 </colgroup>
                 <thead className="bg-slate-100 text-sm tracking-wide text-slate-600">
                   <tr>
                     <th className="px-4 py-3">ผู้เช่า</th>
                     <th className="px-4 py-3">ห้อง</th>
                     <th className="px-4 py-3">เบอร์โทร</th>
+                    <th className="px-4 py-3">วิธีชำระ</th>
                     <th className="px-4 py-3">สถานะ</th>
                     <th className="px-4 py-3" />
                   </tr>
@@ -911,6 +920,7 @@ export default function TenantsPage() {
                       <td className="px-4 py-3 font-medium text-slate-900">{tenant.full_name}</td>
                       <td className="px-4 py-3">{tenantRoomNumber(tenant, roomsById)}</td>
                       <td className="px-4 py-3">{tenant.phone_number ?? "-"}</td>
+                      <td className="px-4 py-3 text-sm text-slate-600">{tenantPaymentMethodLabel(tenant)}</td>
                       <td className="px-4 py-3">
                         <Badge variant={tenant.status === "active" ? "success" : "warning"}>
                           {tenantStatusLabel(tenant.status)}

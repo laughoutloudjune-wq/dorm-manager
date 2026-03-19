@@ -1,18 +1,17 @@
-﻿"use client";
+"use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { AlertTriangle, ArrowRight, CheckCircle2, FileClock, Home, ReceiptText, Users, Zap } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/Card";
-import { ArrowDownRight, ArrowUpRight, Wrench } from "lucide-react";
 import { createClient } from "@/lib/supabase-client";
 
-type DashboardStats = {
-  totalRooms: number;
-  occupiedRooms: number;
-  vacantRooms: number;
-  maintenanceRooms: number;
-  shortTermRooms: number;
-  pendingIncome: number;
-  roomGap: number;
+type Kpi = {
+  label: string;
+  value: string;
+  hint: string;
+  tone: string;
+  icon: any;
 };
 
 type ActivityItem = {
@@ -21,232 +20,281 @@ type ActivityItem = {
   created_at: string;
 };
 
+const toNumber = (value: any) => {
+  const parsed = typeof value === "number" ? value : Number(value ?? 0);
+  return Number.isNaN(parsed) ? 0 : parsed;
+};
+
 const formatMoney = (value: number) =>
-  value.toLocaleString("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  `฿${value.toLocaleString("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const formatDate = (value?: string | null) =>
+  value ? new Date(value).toLocaleDateString("th-TH") : "-";
+
+const monthKey = (value: string) => String(value).slice(0, 7);
+const relationItem = <T,>(value: T | T[] | null | undefined): T | null =>
+  Array.isArray(value) ? (value[0] ?? null) : (value ?? null);
+const roomCompare = (left: string, right: string) =>
+  left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" });
 
 export default function DashboardPage() {
   const supabase = useMemo(() => createClient(), []);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [stats, setStats] = useState<DashboardStats>({
-    totalRooms: 0,
-    occupiedRooms: 0,
-    vacantRooms: 0,
-    maintenanceRooms: 0,
-    shortTermRooms: 0,
-    pendingIncome: 0,
-    roomGap: 0,
-  });
-  const [activities, setActivities] = useState<ActivityItem[]>([]);
-  const [ghostRooms, setGhostRooms] = useState<
-    { id: string; room_number: string; status: string | null; reason: string }[]
-  >([]);
+  const [rooms, setRooms] = useState<any[]>([]);
+  const [tenants, setTenants] = useState<any[]>([]);
+  const [invoices, setInvoices] = useState<any[]>([]);
+  const [meters, setMeters] = useState<any[]>([]);
 
   useEffect(() => {
+    let mounted = true;
     const load = async () => {
       setLoading(true);
       setError(null);
-
-      const [roomsRes, invoicesRes, recentInvoicesRes, recentTenantsRes, activeTenantsRes] = await Promise.all([
-        supabase.from("rooms").select("id,room_number,status"),
-        supabase
-          .from("invoices")
-          .select("total_amount")
-          .in("status", ["pending", "overdue", "verifying", "partial"]),
-        supabase
-          .from("invoices")
-          .select("id,total_amount,created_at,rooms(room_number)")
-          .order("created_at", { ascending: false })
-          .limit(4),
+      const [roomsRes, tenantsRes, invoicesRes, metersRes] = await Promise.all([
+        supabase.from("rooms").select("id,room_number,status,buildings(name)").order("room_number"),
         supabase
           .from("tenants")
-          .select("id,full_name,created_at,rooms(room_number)")
-          .order("created_at", { ascending: false })
-          .limit(4),
-        supabase.from("tenants").select("room_id").eq("status", "active"),
+          .select("id,full_name,room_id,status,move_in_date,move_out_date,created_at,rooms(room_number,buildings(name))")
+          .order("created_at", { ascending: false }),
+        supabase
+          .from("invoices")
+          .select("id,status,total_amount,paid_amount,created_at,start_date,due_date,slip_url,room_id,tenant_id,rooms(room_number,buildings(name)),tenants(full_name)")
+          .order("created_at", { ascending: false }),
+        supabase
+          .from("meter_readings")
+          .select("id,room_id,reading_month,electricity_usage,water_usage,rooms(room_number,buildings(name))")
+          .order("reading_month", { ascending: false }),
       ]);
 
-      if (
-        roomsRes.error ||
-        invoicesRes.error ||
-        recentInvoicesRes.error ||
-        recentTenantsRes.error ||
-        activeTenantsRes.error
-      ) {
-        setError(
-          roomsRes.error?.message ||
-            invoicesRes.error?.message ||
-            recentInvoicesRes.error?.message ||
-            recentTenantsRes.error?.message ||
-            activeTenantsRes.error?.message ||
-            "โหลดข้อมูลแดชบอร์ดไม่สำเร็จ"
-        );
+      if (!mounted) return;
+      const firstError = roomsRes.error || tenantsRes.error || invoicesRes.error || metersRes.error;
+      if (firstError) {
+        setError(firstError.message);
         setLoading(false);
         return;
       }
 
-      const rooms = ((roomsRes.data ?? []) as any[]).map((room) => ({
-        id: room.id as string,
-        room_number: (room.room_number as string) ?? "-",
-        status: (room.status as string | null) ?? null,
-      }));
-      const pendingInvoices = invoicesRes.data ?? [];
-      const activeTenantRoomIds = new Set(
-        ((activeTenantsRes.data ?? []) as any[])
-          .map((tenant) => tenant.room_id as string | null)
-          .filter(Boolean) as string[]
-      );
-
-      const totalRooms = rooms.length;
-      const occupiedRooms = rooms.filter((room) => room.status === "occupied").length;
-      const maintenanceRooms = rooms.filter((room) => room.status === "maintenance").length;
-      const shortTermRooms = rooms.filter((room) => room.status === "short_term").length;
-      const vacantRooms = rooms.filter(
-        (room) => room.status === "vacant" || room.status === "available"
-      ).length;
-      const roomGap = totalRooms - (occupiedRooms + vacantRooms + maintenanceRooms + shortTermRooms);
-      const pendingIncome = pendingInvoices.reduce(
-        (sum: number, item: any) => sum + Number(item.total_amount ?? 0),
-        0
-      );
-
-      const nextGhostRooms = rooms
-        .map((room) => {
-          const status = room.status;
-          const statusKnown =
-            status === "occupied" ||
-            status === "maintenance" ||
-            status === "vacant" ||
-            status === "available" ||
-            status === "short_term";
-          if (!statusKnown) {
-            return {
-              id: room.id,
-              room_number: room.room_number,
-              status,
-              reason: "สถานะห้องไม่ถูกต้อง/ไม่รู้จัก",
-            };
-          }
-          if (status === "occupied" && !activeTenantRoomIds.has(room.id)) {
-            return {
-              id: room.id,
-              room_number: room.room_number,
-              status,
-              reason: "ห้องมีสถานะไม่ว่าง แต่ไม่พบผู้เช่า active",
-            };
-          }
-          return null;
-        })
-        .filter(Boolean) as { id: string; room_number: string; status: string | null; reason: string }[];
-
-      setStats({
-        totalRooms,
-        occupiedRooms,
-        vacantRooms,
-        maintenanceRooms,
-        shortTermRooms,
-        pendingIncome,
-        roomGap,
-      });
-      setGhostRooms(nextGhostRooms);
-
-      const invoiceActivities = (recentInvoicesRes.data ?? []).map((item: any) => {
-        const room = Array.isArray(item.rooms) ? item.rooms[0] : item.rooms;
-        return {
-          id: `invoice-${item.id}`,
-          text: `สร้างใบแจ้งหนี้ห้อง ${room?.room_number ?? "-"} ยอด ฿${formatMoney(Number(item.total_amount ?? 0))}`,
-          created_at: item.created_at,
-        };
-      });
-
-      const tenantActivities = (recentTenantsRes.data ?? []).map((item: any) => {
-        const room = Array.isArray(item.rooms) ? item.rooms[0] : item.rooms;
-        return {
-          id: `tenant-${item.id}`,
-          text: `เพิ่มผู้เช่า ${item.full_name} (${room?.room_number ?? "-"})`,
-          created_at: item.created_at,
-        };
-      });
-
-      const merged = [...invoiceActivities, ...tenantActivities]
-        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-        .slice(0, 6);
-
-      setActivities(merged);
+      setRooms(roomsRes.data ?? []);
+      setTenants(tenantsRes.data ?? []);
+      setInvoices((invoicesRes.data ?? []).filter((row: any) => String(row.status) !== "draft"));
+      setMeters(metersRes.data ?? []);
       setLoading(false);
     };
 
     void load();
+    return () => {
+      mounted = false;
+    };
   }, [supabase]);
 
-  const occupancyRate = stats.totalRooms ? Math.round((stats.occupiedRooms / stats.totalRooms) * 100) : 0;
-  const ghostReasonBreakdown = useMemo(() => {
-    return Object.entries(
-      ghostRooms.reduce<Record<string, number>>((acc, room) => {
-        acc[room.reason] = (acc[room.reason] ?? 0) + 1;
-        return acc;
-      }, {})
-    );
-  }, [ghostRooms]);
-  const roomStatusChartData = useMemo(
-    () => [
-      { key: "occupied", label: "มีผู้เช่า", value: stats.occupiedRooms, color: "#16a34a" },
-      { key: "vacant", label: "ว่าง", value: stats.vacantRooms, color: "#64748b" },
-      { key: "maintenance", label: "ซ่อมบำรุง", value: stats.maintenanceRooms, color: "#f59e0b" },
-      { key: "short_term", label: "ระยะสั้น", value: stats.shortTermRooms, color: "#0ea5e9" },
-    ],
-    [stats.maintenanceRooms, stats.occupiedRooms, stats.shortTermRooms, stats.vacantRooms]
-  );
-  const chartTotal = roomStatusChartData.reduce((sum, item) => sum + item.value, 0);
-  const radius = 70;
-  const circumference = 2 * Math.PI * radius;
-  let cumulative = 0;
-  const donutSegments = roomStatusChartData.map((item) => {
-    const fraction = chartTotal > 0 ? item.value / chartTotal : 0;
-    const length = fraction * circumference;
-    const segment = {
-      ...item,
-      dasharray: `${length} ${circumference - length}`,
-      dashoffset: -cumulative,
-    };
-    cumulative += length;
-    return segment;
-  });
+  const today = useMemo(() => {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  }, []);
 
-  const cards = [
-    {
-      label: "ห้องทั้งหมด",
-      value: String(stats.totalRooms),
-      trend: `มีผู้เช่าอยู่ ${stats.occupiedRooms} ห้อง`,
-      icon: ArrowUpRight,
-      iconWrap: "bg-blue-100 text-blue-700",
-      cardTone: "from-blue-50 to-white",
-    },
-    {
-      label: "อัตราการเข้าพัก",
-      value: `${occupancyRate}%`,
-      trend: `ห้องว่าง ${Math.max(stats.totalRooms - stats.occupiedRooms, 0)} ห้อง`,
-      icon: ArrowUpRight,
-      iconWrap: "bg-emerald-100 text-emerald-700",
-      cardTone: "from-emerald-50 to-white",
-    },
-    {
-      label: "รายได้รอรับ",
-      value: `฿${formatMoney(stats.pendingIncome)}`,
-      trend: "รวมสถานะรอชำระ / ชำระบางส่วน / เกินกำหนด / รอตรวจสอบ",
-      icon: ArrowDownRight,
-      iconWrap: "bg-amber-100 text-amber-700",
-      cardTone: "from-amber-50 to-white",
-    },
-    {
-      label: "ซ่อมบำรุง / ปัญหา",
-      value: String(stats.maintenanceRooms),
-      trend: "ห้องที่อยู่ระหว่างซ่อมบำรุง",
-      icon: Wrench,
-      iconWrap: "bg-rose-100 text-rose-700",
-      cardTone: "from-rose-50 to-white",
-    },
-  ];
+  const dashboard = useMemo(() => {
+    const todayText = today.toISOString().slice(0, 10);
+    const in30Days = new Date(today);
+    in30Days.setDate(in30Days.getDate() + 30);
+    const in30DaysText = in30Days.toISOString().slice(0, 10);
+
+    const activeTenants = tenants.filter((tenant) => tenant.status === "active");
+    const activeTenantRoomIds = new Set(activeTenants.map((tenant) => String(tenant.room_id)));
+
+    const pendingInvoices = invoices.filter((invoice) => ["pending", "partial", "overdue"].includes(String(invoice.status)));
+    const verifyingInvoices = invoices.filter((invoice) => String(invoice.status) === "verifying" || (!!invoice.slip_url && String(invoice.status) !== "paid"));
+    const overdueInvoices = invoices.filter((invoice) => String(invoice.status) === "overdue");
+
+    const totalOutstanding = pendingInvoices.reduce(
+      (sum, invoice) => sum + Math.max(toNumber(invoice.total_amount) - toNumber(invoice.paid_amount), 0),
+      0
+    );
+    const overdueAmount = overdueInvoices.reduce(
+      (sum, invoice) => sum + Math.max(toNumber(invoice.total_amount) - toNumber(invoice.paid_amount), 0),
+      0
+    );
+
+    const upcomingMoveIns = tenants.filter((tenant) => {
+      const date = String(tenant.move_in_date ?? "");
+      return date >= todayText && date <= in30DaysText;
+    });
+    const upcomingMoveOuts = tenants.filter((tenant) => {
+      const date = String(tenant.move_out_date ?? "");
+      return date >= todayText && date <= in30DaysText;
+    });
+
+    const vacantRooms = rooms.filter((room) => ["available", "vacant"].includes(String(room.status)));
+    const occupancyRate = rooms.length > 0 ? Math.round((activeTenants.length / rooms.length) * 100) : 0;
+
+    const byBuilding = new Map<string, { total: number; occupied: number; vacant: number }>();
+    for (const room of rooms) {
+      const building = relationItem(room.buildings)?.name ?? "ไม่ระบุอาคาร";
+      const current = byBuilding.get(building) ?? { total: 0, occupied: 0, vacant: 0 };
+      current.total += 1;
+      if (["available", "vacant"].includes(String(room.status))) current.vacant += 1;
+      if (String(room.status) === "occupied") current.occupied += 1;
+      byBuilding.set(building, current);
+    }
+    const buildingStats = [...byBuilding.entries()]
+      .map(([building, value]) => ({
+        building,
+        ...value,
+        occupancy: value.total > 0 ? Math.round((value.occupied / value.total) * 100) : 0,
+      }))
+      .sort((a, b) => a.building.localeCompare(b.building, undefined, { numeric: true, sensitivity: "base" }));
+
+    const latestMeterMonth = meters.length > 0 ? monthKey(String(meters[0].reading_month)) : null;
+    const meterKeySet = new Set(
+      meters
+        .filter((row) => !latestMeterMonth || monthKey(String(row.reading_month)) === latestMeterMonth)
+        .map((row) => `${row.room_id}:${monthKey(String(row.reading_month))}`)
+    );
+    const invoiceKeySet = new Set(
+      invoices
+        .filter((row) => !latestMeterMonth || monthKey(String(row.start_date)) === latestMeterMonth)
+        .map((row) => `${row.room_id}:${monthKey(String(row.start_date))}`)
+    );
+
+    const anomalies: { id: string; text: string; severity: "high" | "medium" }[] = [];
+    for (const room of rooms) {
+      const roomId = String(room.id);
+      const roomNo = String(room.room_number ?? "-");
+      const status = String(room.status ?? "");
+      if (status === "occupied" && !activeTenantRoomIds.has(roomId)) {
+        anomalies.push({ id: `occupied-no-tenant-${roomId}`, text: `ห้อง ${roomNo} สถานะ occupied แต่ไม่พบผู้เช่า active`, severity: "high" });
+      }
+      if (status !== "occupied" && activeTenantRoomIds.has(roomId)) {
+        anomalies.push({ id: `tenant-room-mismatch-${roomId}`, text: `ห้อง ${roomNo} มีผู้เช่า active แต่สถานะห้องไม่ใช่ occupied`, severity: "high" });
+      }
+      if (latestMeterMonth && meterKeySet.has(`${roomId}:${latestMeterMonth}`) && !invoiceKeySet.has(`${roomId}:${latestMeterMonth}`)) {
+        anomalies.push({ id: `meter-no-invoice-${roomId}`, text: `ห้อง ${roomNo} มีมิเตอร์เดือน ${latestMeterMonth} แต่ไม่มีบิล`, severity: "medium" });
+      }
+      if (latestMeterMonth && invoiceKeySet.has(`${roomId}:${latestMeterMonth}`) && !meterKeySet.has(`${roomId}:${latestMeterMonth}`)) {
+        anomalies.push({ id: `invoice-no-meter-${roomId}`, text: `ห้อง ${roomNo} มีบิลเดือน ${latestMeterMonth} แต่ไม่มีมิเตอร์`, severity: "medium" });
+      }
+    }
+
+    const recentActivities: ActivityItem[] = [
+      ...invoices.slice(0, 5).map((invoice: any) => {
+        const room = relationItem(invoice.rooms);
+        return {
+          id: `invoice-${invoice.id}`,
+          text: `บิลห้อง ${room?.room_number ?? "-"} สถานะ ${invoice.status} ยอด ${formatMoney(toNumber(invoice.total_amount))}`,
+          created_at: invoice.created_at,
+        };
+      }),
+      ...tenants.slice(0, 5).map((tenant: any) => {
+        const room = relationItem(tenant.rooms);
+        return {
+          id: `tenant-${tenant.id}`,
+          text: `ผู้เช่า ${tenant.full_name} ห้อง ${room?.room_number ?? "-"}`,
+          created_at: tenant.created_at,
+        };
+      }),
+    ]
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .slice(0, 8);
+
+    const monthBuckets = Array.from({ length: 6 }, (_, index) => {
+      const date = new Date(today.getFullYear(), today.getMonth() - (5 - index), 1);
+      return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+    });
+
+    const monthlyTrend = monthBuckets.map((month) => {
+      const monthInvoices = invoices.filter((invoice) => monthKey(String(invoice.start_date)) === month);
+      return {
+        month,
+        collected: monthInvoices.filter((invoice) => String(invoice.status) === "paid").reduce((sum, invoice) => sum + toNumber(invoice.paid_amount || invoice.total_amount), 0),
+        outstanding: monthInvoices
+          .filter((invoice) => ["pending", "partial", "overdue", "verifying"].includes(String(invoice.status)))
+          .reduce((sum, invoice) => sum + Math.max(toNumber(invoice.total_amount) - toNumber(invoice.paid_amount), 0), 0),
+      };
+    });
+
+    const utilityTrend = monthBuckets.map((month) => {
+      const monthMeters = meters.filter((meter) => monthKey(String(meter.reading_month)) === month);
+      return {
+        month,
+        electricity: monthMeters.reduce((sum, meter) => sum + toNumber(meter.electricity_usage), 0),
+        water: monthMeters.reduce((sum, meter) => sum + toNumber(meter.water_usage), 0),
+      };
+    });
+
+    const quickActions = [
+      { href: "/invoices", label: "ไปตรวจบิล", hint: "บิลค้าง / ตรวจสลิป", icon: ReceiptText },
+      { href: "/meters", label: "ไปบันทึกมิเตอร์", hint: "อัปเดตค่าน้ำค่าไฟ", icon: Zap },
+      { href: "/tenants", label: "ไปจัดการผู้เช่า", hint: "ดูย้ายเข้า / ย้ายออก", icon: Users },
+      { href: "/reports", label: "ไปหน้ารายงาน", hint: "ส่งข้อมูลให้บัญชี", icon: FileClock },
+    ];
+
+    const kpis: Kpi[] = [
+      {
+        label: "ยอดค้างชำระ",
+        value: formatMoney(totalOutstanding),
+        hint: `overdue ${overdueInvoices.length} | pending/partial ${pendingInvoices.length}`,
+        tone: "from-rose-50 to-white",
+        icon: AlertTriangle,
+      },
+      {
+        label: "บิลรอตรวจสอบ",
+        value: String(verifyingInvoices.length),
+        hint: "มีสลิปหรือสถานะ verifying",
+        tone: "from-amber-50 to-white",
+        icon: FileClock,
+      },
+      {
+        label: "ย้ายเข้า 30 วัน",
+        value: String(upcomingMoveIns.length),
+        hint: "รายการที่กำลังจะเข้าพัก",
+        tone: "from-emerald-50 to-white",
+        icon: Users,
+      },
+      {
+        label: "ย้ายออก 30 วัน",
+        value: String(upcomingMoveOuts.length),
+        hint: "ติดตามคืนห้องและสรุปยอด",
+        tone: "from-orange-50 to-white",
+        icon: ArrowRight,
+      },
+      {
+        label: "ห้องว่าง",
+        value: String(vacantRooms.length),
+        hint: `อัตราเข้าพัก ${occupancyRate}%`,
+        tone: "from-sky-50 to-white",
+        icon: Home,
+      },
+      {
+        label: "รายการผิดปกติ",
+        value: String(anomalies.length),
+        hint: latestMeterMonth ? `เช็ก room / meter / invoice เดือน ${latestMeterMonth}` : "ยังไม่มีข้อมูลมิเตอร์ล่าสุด",
+        tone: "from-violet-50 to-white",
+        icon: CheckCircle2,
+      },
+    ];
+
+    return {
+      kpis,
+      quickActions,
+      buildingStats,
+      recentActivities,
+      anomalies,
+      monthlyTrend,
+      utilityTrend,
+      upcomingMoveIns,
+      upcomingMoveOuts,
+      overdueAmount,
+      latestMeterMonth,
+    };
+  }, [invoices, meters, rooms, tenants, today]);
+
+  const maxTrendValue = Math.max(
+    1,
+    ...dashboard.monthlyTrend.flatMap((row) => [row.collected, row.outstanding])
+  );
+  const maxUtilityValue = Math.max(
+    1,
+    ...dashboard.utilityTrend.flatMap((row) => [row.electricity, row.water])
+  );
 
   return (
     <div className="space-y-8">
@@ -256,144 +304,229 @@ export default function DashboardPage() {
         </div>
       )}
 
-      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        {cards.map((stat) => {
-          const Icon = stat.icon;
+      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        {dashboard.kpis.map((item) => {
+          const Icon = item.icon;
           return (
-            <Card key={stat.label} className={`shadow-md bg-gradient-to-br ${stat.cardTone} animate-fade-in-up hover-lift`}>
+            <Card key={item.label} className={`bg-gradient-to-br ${item.tone} shadow-md hover-lift`}>
               <CardContent className="space-y-4">
                 <div className="flex items-center justify-between">
-                  <p className="text-sm font-medium text-slate-600">{stat.label}</p>
-                  <span className={`inline-flex h-9 w-9 items-center justify-center rounded-xl ${stat.iconWrap}`}>
+                  <p className="text-sm font-medium text-slate-600">{item.label}</p>
+                  <span className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-white text-slate-700 shadow-sm">
                     <Icon size={18} />
                   </span>
                 </div>
-                <div className="text-2xl font-semibold text-slate-900">{loading ? "-" : stat.value}</div>
-                <p className="text-xs text-slate-500">{stat.trend}</p>
+                <p className="text-3xl font-semibold text-slate-900">{loading ? "-" : item.value}</p>
+                <p className="text-xs text-slate-500">{item.hint}</p>
               </CardContent>
             </Card>
           );
         })}
       </section>
 
-      <section className="grid gap-6 xl:grid-cols-[2fr_1fr]">
-        <Card className="animate-fade-in-up stagger-1 hover-lift">
+      <section className="grid gap-6 xl:grid-cols-[1.2fr_1fr]">
+        <Card className="hover-lift">
           <CardContent className="space-y-4">
             <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-slate-900">ภาพรวมการเข้าพัก</h2>
-              <span className="text-xs text-slate-400">เรียลไทม์</span>
+              <h2 className="text-lg font-semibold text-slate-900">สิ่งที่ต้องทำวันนี้</h2>
+              <span className="text-xs text-slate-400">งานเร่งด่วน</span>
             </div>
-            <div className="rounded-xl bg-gradient-to-r from-blue-50 to-cyan-50 p-4">
-              <div className="flex items-center justify-between text-sm text-slate-600">
-                <span>มีผู้เช่าอยู่</span>
-                <span className="font-semibold text-slate-900">
-                  {stats.occupiedRooms} / {stats.totalRooms}
-                </span>
+            <div className="grid gap-3 md:grid-cols-2">
+              <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4">
+                <p className="text-sm font-medium text-rose-800">ยอด overdue</p>
+                <p className="mt-2 text-2xl font-semibold text-rose-900">{formatMoney(dashboard.overdueAmount)}</p>
+                <p className="mt-1 text-xs text-rose-700">ติดตามลูกหนี้เกินกำหนดก่อนเป็นอันดับแรก</p>
               </div>
-              <div className="mt-3 h-2 w-full rounded-full bg-white">
-                <div
-                  className="h-2 rounded-full bg-gradient-to-r from-blue-600 to-cyan-500"
-                  style={{ width: `${occupancyRate}%` }}
-                />
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                <p className="text-sm font-medium text-amber-800">บิลรอตรวจสอบ</p>
+                <p className="mt-2 text-2xl font-semibold text-amber-900">
+                  {dashboard.kpis.find((item) => item.label === "บิลรอตรวจสอบ")?.value ?? "0"}
+                </p>
+                <p className="mt-1 text-xs text-amber-700">เหมาะกับการเปิดหน้าใบแจ้งหนี้เพื่อตรวจสลิปต่อทันที</p>
               </div>
-              <div className="mt-3 flex justify-between text-xs text-slate-500">
-                <span>ห้องว่าง: {Math.max(stats.totalRooms - stats.occupiedRooms, 0)} ห้อง</span>
-                <span>ซ่อมบำรุง: {stats.maintenanceRooms} ห้อง</span>
-                <span>ระยะสั้น: {stats.shortTermRooms} ห้อง</span>
-              </div>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              {dashboard.quickActions.map((action) => {
+                const Icon = action.icon;
+                return (
+                  <Link key={action.href} href={action.href} className="rounded-2xl border border-slate-200 bg-white p-4 transition hover:-translate-y-0.5 hover:border-blue-200 hover:shadow-sm">
+                    <div className="flex items-center justify-between">
+                      <span className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100 text-slate-700">
+                        <Icon size={18} />
+                      </span>
+                      <ArrowRight size={16} className="text-slate-400" />
+                    </div>
+                    <p className="mt-4 font-semibold text-slate-900">{action.label}</p>
+                    <p className="mt-1 text-xs text-slate-500">{action.hint}</p>
+                  </Link>
+                );
+              })}
             </div>
           </CardContent>
         </Card>
 
-        <Card className="animate-fade-in-up stagger-2 hover-lift">
+        <Card className="hover-lift">
           <CardContent className="space-y-4">
-            <h2 className="text-lg font-semibold text-slate-900">ตรวจสอบความถูกต้องของสถานะห้อง</h2>
-            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
-              <p>
-                ส่วนต่างห้อง = ทั้งหมด ({stats.totalRooms}) - มีผู้เช่า ({stats.occupiedRooms}) - ห้องว่าง ({stats.vacantRooms}) -
-                ซ่อมบำรุง ({stats.maintenanceRooms}) - ระยะสั้น ({stats.shortTermRooms}) ={" "}
-                <span className={stats.roomGap === 0 ? "font-semibold text-green-700" : "font-semibold text-red-700"}>
-                  {stats.roomGap}
-                </span>
-              </p>
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-slate-900">การเคลื่อนไหวเร็ว ๆ นี้</h2>
+              <span className="text-xs text-slate-400">30 วัน</span>
             </div>
-            <div className="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600">
-              <p className="font-medium text-slate-800">สรุปสถานะห้อง</p>
-              <p className="mt-1">
-                มีผู้เช่า {stats.occupiedRooms} | ว่าง {stats.vacantRooms} | ซ่อมบำรุง {stats.maintenanceRooms} | ระยะสั้น {stats.shortTermRooms}
-              </p>
-              <div className="mt-3 flex items-center gap-5">
-                <div className="relative h-40 w-40 shrink-0">
-                  <svg viewBox="0 0 180 180" className="h-40 w-40 -rotate-90">
-                    <circle cx="90" cy="90" r={radius} stroke="#e2e8f0" strokeWidth="20" fill="none" />
-                    {donutSegments.map((segment) => (
-                      <circle
-                        key={segment.key}
-                        cx="90"
-                        cy="90"
-                        r={radius}
-                        stroke={segment.color}
-                        strokeWidth="20"
-                        strokeLinecap="butt"
-                        fill="none"
-                        strokeDasharray={segment.dasharray}
-                        strokeDashoffset={segment.dashoffset}
-                      />
-                    ))}
-                  </svg>
-                  <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
-                    <p className="text-xs text-slate-500">ทั้งหมด</p>
-                    <p className="text-2xl font-semibold text-slate-900">{chartTotal}</p>
+            <div className="space-y-3">
+              <MiniList
+                title="กำลังจะย้ายเข้า"
+                emptyText="ไม่มีรายการย้ายเข้าใน 30 วัน"
+                items={dashboard.upcomingMoveIns.map((tenant: any) => {
+                  const room = relationItem(tenant.rooms);
+                  return `${tenant.full_name} | ห้อง ${room?.room_number ?? "-"} | ${formatDate(tenant.move_in_date)}`;
+                })}
+              />
+              <MiniList
+                title="กำลังจะย้ายออก"
+                emptyText="ไม่มีรายการย้ายออกใน 30 วัน"
+                items={dashboard.upcomingMoveOuts.map((tenant: any) => {
+                  const room = relationItem(tenant.rooms);
+                  return `${tenant.full_name} | ห้อง ${room?.room_number ?? "-"} | ${formatDate(tenant.move_out_date)}`;
+                })}
+              />
+            </div>
+          </CardContent>
+        </Card>
+      </section>
+
+      <section className="grid gap-6 xl:grid-cols-[1.2fr_1fr]">
+        <Card className="hover-lift">
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-slate-900">แนวโน้มรายรับ 6 เดือนล่าสุด</h2>
+              <span className="text-xs text-slate-400">เก็บจริง vs ค้างชำระ</span>
+            </div>
+            <div className="grid h-72 grid-cols-6 items-end gap-4">
+              {dashboard.monthlyTrend.map((row) => (
+                <div key={row.month} className="flex h-full flex-col justify-end gap-2">
+                  <div className="flex h-56 items-end justify-center gap-2">
+                    <div
+                      className="w-5 rounded-t-full bg-emerald-500"
+                      style={{ height: `${Math.max((row.collected / maxTrendValue) * 100, row.collected > 0 ? 6 : 0)}%` }}
+                      title={`เก็บจริง ${formatMoney(row.collected)}`}
+                    />
+                    <div
+                      className="w-5 rounded-t-full bg-amber-400"
+                      style={{ height: `${Math.max((row.outstanding / maxTrendValue) * 100, row.outstanding > 0 ? 6 : 0)}%` }}
+                      title={`ค้างชำระ ${formatMoney(row.outstanding)}`}
+                    />
+                  </div>
+                  <div className="text-center">
+                    <p className="text-xs font-medium text-slate-700">{row.month.slice(5)}</p>
+                    <p className="text-[11px] text-slate-500">{formatMoney(row.collected)}</p>
                   </div>
                 </div>
-                <div className="space-y-2 text-xs">
-                  {roomStatusChartData.map((item) => (
-                    <div key={item.key} className="flex items-center gap-2">
-                      <span className="inline-block h-3 w-3 rounded-full" style={{ backgroundColor: item.color }} />
-                      <span className="text-slate-700">{item.label}</span>
-                      <span className="text-sm font-semibold text-slate-900">{item.value}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
+              ))}
             </div>
-            {stats.roomGap !== 0 && (
-              <div className="space-y-2">
-                <p className="text-sm font-medium text-slate-800">ห้องที่สถานะผิดปกติ</p>
-                {ghostRooms.length === 0 ? (
-                  <p className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-500">
-                    ไม่พบห้องผิดปกติตามเงื่อนไขปัจจุบัน
-                  </p>
-                ) : (
-                  <div className="space-y-2">
-                    <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                      <p className="font-medium">สรุปสาเหตุ</p>
-                      {ghostReasonBreakdown.map(([reason, count]) => (
-                        <p key={reason}>
-                          - {reason}: {count} ห้อง
-                        </p>
-                      ))}
-                    </div>
-                    <ul className="space-y-2 text-xs text-slate-600">
-                      {ghostRooms.map((room) => (
-                        <li key={room.id} className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2">
-                          ห้อง {room.room_number} ({room.status ?? "null"}): {room.reason}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </div>
-            )}
+            <div className="flex gap-4 text-xs text-slate-500">
+              <span className="inline-flex items-center gap-2"><span className="h-3 w-3 rounded-full bg-emerald-500" />เก็บเงินจริง</span>
+              <span className="inline-flex items-center gap-2"><span className="h-3 w-3 rounded-full bg-amber-400" />ยอดค้าง</span>
+            </div>
           </CardContent>
         </Card>
 
-        <Card className="animate-fade-in-up stagger-3 hover-lift">
+        <Card className="hover-lift">
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-slate-900">อัตราเข้าพักแยกตามอาคาร</h2>
+              <span className="text-xs text-slate-400">ปัจจุบัน</span>
+            </div>
+            <div className="space-y-4">
+              {dashboard.buildingStats.map((row) => (
+                <div key={row.building} className="space-y-2">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="font-medium text-slate-800">{row.building}</span>
+                    <span className="text-slate-500">
+                      {row.occupied}/{row.total} ห้อง | ว่าง {row.vacant}
+                    </span>
+                  </div>
+                  <div className="h-2 rounded-full bg-slate-100">
+                    <div className="h-2 rounded-full bg-gradient-to-r from-blue-600 to-cyan-500" style={{ width: `${row.occupancy}%` }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      </section>
+
+      <section className="grid gap-6 xl:grid-cols-[1fr_1fr]">
+        <Card className="hover-lift">
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-slate-900">ค่าน้ำค่าไฟ 6 เดือนล่าสุด</h2>
+              <span className="text-xs text-slate-400">หน่วยใช้งาน</span>
+            </div>
+            <div className="grid h-72 grid-cols-6 items-end gap-4">
+              {dashboard.utilityTrend.map((row) => (
+                <div key={row.month} className="flex h-full flex-col justify-end gap-2">
+                  <div className="flex h-56 items-end justify-center gap-2">
+                    <div
+                      className="w-5 rounded-t-full bg-yellow-500"
+                      style={{ height: `${Math.max((row.electricity / maxUtilityValue) * 100, row.electricity > 0 ? 6 : 0)}%` }}
+                      title={`ไฟ ${row.electricity.toLocaleString("th-TH")} หน่วย`}
+                    />
+                    <div
+                      className="w-5 rounded-t-full bg-sky-500"
+                      style={{ height: `${Math.max((row.water / maxUtilityValue) * 100, row.water > 0 ? 6 : 0)}%` }}
+                      title={`น้ำ ${row.water.toLocaleString("th-TH")} หน่วย`}
+                    />
+                  </div>
+                  <div className="text-center">
+                    <p className="text-xs font-medium text-slate-700">{row.month.slice(5)}</p>
+                    <p className="text-[11px] text-slate-500">ไฟ {row.electricity.toLocaleString("th-TH")}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-4 text-xs text-slate-500">
+              <span className="inline-flex items-center gap-2"><span className="h-3 w-3 rounded-full bg-yellow-500" />ไฟฟ้า</span>
+              <span className="inline-flex items-center gap-2"><span className="h-3 w-3 rounded-full bg-sky-500" />น้ำ</span>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="hover-lift">
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-slate-900">รายการผิดปกติที่ควรแก้</h2>
+              <span className="text-xs text-slate-400">{dashboard.latestMeterMonth ? `เช็กเดือน ${dashboard.latestMeterMonth}` : "เช็กภาพรวม"}</span>
+            </div>
+            <div className="space-y-3">
+              {dashboard.anomalies.length > 0 ? (
+                dashboard.anomalies.slice(0, 10).map((item) => (
+                  <div
+                    key={item.id}
+                    className={`rounded-xl border px-4 py-3 text-sm ${
+                      item.severity === "high"
+                        ? "border-red-200 bg-red-50 text-red-700"
+                        : "border-amber-200 bg-amber-50 text-amber-800"
+                    }`}
+                  >
+                    {item.text}
+                  </div>
+                ))
+              ) : (
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+                  ไม่พบความผิดปกติหลักของข้อมูลในตอนนี้
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      </section>
+
+      <section className="grid gap-6 xl:grid-cols-[1fr_1fr]">
+        <Card className="hover-lift">
           <CardContent className="space-y-4">
             <h2 className="text-lg font-semibold text-slate-900">กิจกรรมล่าสุด</h2>
             <ul className="space-y-3 text-sm text-slate-600">
-              {activities.length > 0 ? (
-                activities.map((activity) => (
+              {dashboard.recentActivities.length > 0 ? (
+                dashboard.recentActivities.map((activity) => (
                   <li key={activity.id} className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2">
                     {activity.text}
                   </li>
@@ -406,7 +539,61 @@ export default function DashboardPage() {
             </ul>
           </CardContent>
         </Card>
+
+        <Card className="hover-lift">
+          <CardContent className="space-y-4">
+            <h2 className="text-lg font-semibold text-slate-900">ห้องว่างล่าสุด</h2>
+            <div className="space-y-3">
+              {rooms
+                .filter((room) => ["available", "vacant"].includes(String(room.status)))
+                .sort((a, b) => {
+                  const aBuilding = relationItem(a.buildings)?.name ?? "";
+                  const bBuilding = relationItem(b.buildings)?.name ?? "";
+                  const buildingOrder = aBuilding.localeCompare(bBuilding, undefined, { numeric: true, sensitivity: "base" });
+                  if (buildingOrder !== 0) return buildingOrder;
+                  return roomCompare(String(a.room_number ?? ""), String(b.room_number ?? ""));
+                })
+                .slice(0, 10)
+                .map((room) => (
+                  <div key={room.id} className="flex items-center justify-between rounded-xl border border-slate-100 bg-slate-50 px-4 py-3 text-sm">
+                    <div>
+                      <p className="font-medium text-slate-900">ห้อง {room.room_number}</p>
+                      <p className="text-slate-500">{relationItem(room.buildings)?.name ?? "ไม่ระบุอาคาร"}</p>
+                    </div>
+                    <span className="rounded-full bg-slate-200 px-3 py-1 text-xs font-medium text-slate-700">ว่าง</span>
+                  </div>
+                ))}
+            </div>
+          </CardContent>
+        </Card>
       </section>
+    </div>
+  );
+}
+
+function MiniList({
+  title,
+  items,
+  emptyText,
+}: {
+  title: string;
+  items: string[];
+  emptyText: string;
+}) {
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+      <p className="text-sm font-semibold text-slate-900">{title}</p>
+      <div className="mt-3 space-y-2 text-sm text-slate-600">
+        {items.length > 0 ? (
+          items.map((item, index) => (
+            <div key={`${title}-${index}`} className="rounded-xl bg-white px-3 py-2">
+              {item}
+            </div>
+          ))
+        ) : (
+          <div className="rounded-xl bg-white px-3 py-2 text-slate-400">{emptyText}</div>
+        )}
+      </div>
     </div>
   );
 }
