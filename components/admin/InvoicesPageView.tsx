@@ -83,6 +83,11 @@ type FeeLineItem = {
   total_amount: number;
 };
 
+type TransferBreakdownItem = {
+  label: string;
+  value: string;
+};
+
 type PrintSettings = {
   dorm_name: string | null;
   dorm_address: string | null;
@@ -158,6 +163,37 @@ const toFeeItems = (rows: any[]): FeeLineItem[] => {
     return { detail, unit, price_per_unit, total_amount };
   });
 };
+
+const isTransferBreakdownRow = (row: any) =>
+  String(row?.item_type ?? row?.type ?? "").toLowerCase() === "transfer_detail";
+
+const toTransferBreakdownItems = (rows: any[]): TransferBreakdownItem[] => {
+  if (!Array.isArray(rows) || rows.length === 0) return [];
+  return rows
+    .filter((row) => isTransferBreakdownRow(row))
+    .map((row) => ({
+      label: String(row?.label ?? row?.detail ?? "").trim(),
+      value: String(row?.value ?? "").trim(),
+    }))
+    .filter((row) => row.label.length > 0 && row.value.length > 0);
+};
+
+const toChargeFeeRows = (rows: any[]) => {
+  if (!Array.isArray(rows) || rows.length === 0) return [];
+  return rows.filter((row) => !isTransferBreakdownRow(row));
+};
+
+const serializeTransferBreakdownRows = (items: TransferBreakdownItem[]) =>
+  items.map((item) => ({
+    item_type: "transfer_detail",
+    label: item.label,
+    detail: item.label,
+    value: item.value,
+    unit: 0,
+    price_per_unit: 0,
+    total_amount: 0,
+    amount: 0,
+  }));
 
 const emptyFeeItem = (): FeeLineItem => ({
   detail: "",
@@ -410,6 +446,9 @@ export default function InvoicesPage() {
   const [defaultPaymentMethod, setDefaultPaymentMethod] = useState<PaymentMethodRow | null>(null);
   const [editableFeeItems, setEditableFeeItems] = useState<FeeLineItem[]>([]);
   const [editableDiscountItems, setEditableDiscountItems] = useState<FeeLineItem[]>([]);
+  const [transferBreakdownItems, setTransferBreakdownItems] = useState<TransferBreakdownItem[]>(
+    []
+  );
   const [showPaymentForm, setShowPaymentForm] = useState(false);
   const [paymentMode, setPaymentMode] = useState<"full" | "partial">("full");
   const [paymentAmountInput, setPaymentAmountInput] = useState<string>("");
@@ -1055,8 +1094,10 @@ export default function InvoicesPage() {
   };
 
   const openInvoice = async (invoice: InvoiceRecord) => {
-    const feeItems = toFeeItems(invoice.additional_fees_breakdown ?? []);
+    const chargeFeeRows = toChargeFeeRows(invoice.additional_fees_breakdown ?? []);
+    const feeItems = toFeeItems(chargeFeeRows);
     const discountItems = toFeeItems(invoice.discount_breakdown ?? []);
+    const transferItems = toTransferBreakdownItems(invoice.additional_fees_breakdown ?? []);
     const todayLocal = toLocalDateString(new Date());
     const periodBaseDate = invoice.end_date || invoice.start_date || invoice.issue_date || todayLocal;
     const dueDateFromSetting = computeDateByDayNextMonth(periodBaseDate, printSettings?.due_day);
@@ -1075,6 +1116,7 @@ export default function InvoicesPage() {
     setActiveInvoice(invoice);
     setUseProrateInModal(useProrateDefault);
     setEditableFeeItems(feeItems.length > 0 ? feeItems : []);
+    setTransferBreakdownItems(transferItems);
     setEditableDiscountItems(
       discountItems.length > 0
         ? discountItems
@@ -1368,14 +1410,17 @@ export default function InvoicesPage() {
       late_fee_per_day: toNumber(form.late_fee_per_day),
       late_fee_start_date: form.late_fee_start_date || null,
       additional_fees_total: feeItemsTotal(editableFeeItems),
-      additional_fees_breakdown: editableFeeItems.map((item) => ({
-        detail: item.detail,
-        unit: toNumber(item.unit),
-        price_per_unit: toNumber(item.price_per_unit),
-        total_amount: toNumber(item.total_amount),
-        amount: toNumber(item.total_amount),
-        label: item.detail,
-      })),
+      additional_fees_breakdown: [
+        ...editableFeeItems.map((item) => ({
+          detail: item.detail,
+          unit: toNumber(item.unit),
+          price_per_unit: toNumber(item.price_per_unit),
+          total_amount: toNumber(item.total_amount),
+          amount: toNumber(item.total_amount),
+          label: item.detail,
+        })),
+        ...serializeTransferBreakdownRows(transferBreakdownItems),
+      ],
       total_amount: toNumber(form.total_amount),
       paid_amount: Math.min(toNumber(form.paid_amount), toNumber(form.total_amount)),
       status: form.status,
@@ -1571,7 +1616,8 @@ export default function InvoicesPage() {
     );
     const showProrateFormula =
       !!prorateSummary && Math.abs(toNumber(invoice.rent_amount) - prorateSummary.rentAmount) < 0.01;
-    const additionalRows = (invoice.additional_fees_breakdown ?? [])
+    const transferRows = toTransferBreakdownItems(invoice.additional_fees_breakdown ?? []);
+    const additionalRows = toChargeFeeRows(invoice.additional_fees_breakdown ?? [])
       .map(
         (fee: any) => `
           <tr>
@@ -1581,6 +1627,15 @@ export default function InvoicesPage() {
               toNumber(fee.price_per_unit ?? fee.rate ?? fee.value ?? fee.amount)
             )}</td>
             <td class="text-right">${formatMoney(toNumber(fee.total_amount ?? fee.amount))}</td>
+          </tr>`
+      )
+      .join("");
+    const transferBreakdownRows = transferRows
+      .map(
+        (row) => `
+          <tr>
+            <td>${row.label}</td>
+            <td class="text-right" colspan="3">${row.value}</td>
           </tr>`
       )
       .join("");
@@ -1690,6 +1745,11 @@ export default function InvoicesPage() {
                 <td class="text-right">-</td>
                 <td class="text-right">${formatMoney(invoice.common_fee)}</td>
               </tr>
+              ${
+                transferBreakdownRows
+                  ? `<tr><td colspan="4" style="background:#eff6ff;color:#1d4ed8;font-weight:600">สรุปย้ายห้องกลางเดือน</td></tr>${transferBreakdownRows}`
+                  : ""
+              }
               <tr>
                 <td>ส่วนลด</td>
                 <td class="text-right">-</td>
@@ -1829,6 +1889,29 @@ export default function InvoicesPage() {
       })
       .filter(Boolean) as any[];
 
+    const transferByTenant = new Map<string, any>();
+    if (billingTenants.length > 0) {
+      const tenantIds = billingTenants.map((tenant: any) => String(tenant.id));
+      const { data: transfers } = await supabase
+        .from("tenant_room_transfers")
+        .select(
+          "tenant_id,from_room_id,to_room_id,transfer_date,billing_month,old_electric_usage,old_water_usage,old_rent_amount,new_rent_amount"
+        )
+        .eq("billing_month", toLocalDateString(startDate))
+        .in("tenant_id", tenantIds);
+      for (const row of transfers ?? []) {
+        const key = String((row as any).tenant_id);
+        const previous = transferByTenant.get(key);
+        if (!previous) {
+          transferByTenant.set(key, row);
+          continue;
+        }
+        const prevDate = String((previous as any).transfer_date ?? "");
+        const currDate = String((row as any).transfer_date ?? "");
+        if (currDate > prevDate) transferByTenant.set(key, row);
+      }
+    }
+
     const { data: existingInvoices, error: existingError } = await supabase
       .from("invoices")
       .select("room_id")
@@ -1867,11 +1950,20 @@ export default function InvoicesPage() {
       .map((tenant: any) => {
       const roomRel = Array.isArray(tenant.rooms) ? tenant.rooms[0] : tenant.rooms;
       const reading = readingMap.get(tenant.room_id) ?? {};
+      const transfer = transferByTenant.get(String(tenant.id));
+      const hasTransferToThisRoom =
+        !!transfer && String((transfer as any).to_room_id ?? "") === String(tenant.room_id);
 
-      const elecUnits = toNumber(reading.electricity_usage);
-      const waterUnits = toNumber(reading.water_usage ?? reading.usage);
+      const newRoomElecUnits = toNumber(reading.electricity_usage);
+      const newRoomWaterUnits = toNumber(reading.water_usage ?? reading.usage);
+      const oldRoomElecUnits = hasTransferToThisRoom ? toNumber((transfer as any).old_electric_usage) : 0;
+      const oldRoomWaterUnits = hasTransferToThisRoom ? toNumber((transfer as any).old_water_usage) : 0;
+      const elecUnits = oldRoomElecUnits + newRoomElecUnits;
+      const waterUnits = oldRoomWaterUnits + newRoomWaterUnits;
 
-      const rentAmount = toNumber(roomRel?.price_month);
+      const rentAmount = hasTransferToThisRoom
+        ? toNumber((transfer as any).old_rent_amount) + toNumber((transfer as any).new_rent_amount)
+        : toNumber(roomRel?.price_month);
 
       const elecBill = elecUnits * toNumber(settings.electricity_rate);
       const waterBill = calculateWaterBillWithMinimum(
@@ -1941,6 +2033,30 @@ export default function InvoicesPage() {
       const lateFeeAmount = 0;
       const totalAmount =
         rentAmount + waterBill + elecBill + commonFee + additionalTotal + lateFeeAmount - discountAmount;
+      const transferBreakdownRows = hasTransferToThisRoom
+        ? serializeTransferBreakdownRows([
+            {
+              label: "วันที่ย้ายห้อง",
+              value: String((transfer as any).transfer_date ?? "-"),
+            },
+            {
+              label: "ค่าเช่าห้องเดิม",
+              value: formatMoney(toNumber((transfer as any).old_rent_amount)),
+            },
+            {
+              label: "ค่าเช่าห้องใหม่",
+              value: formatMoney(toNumber((transfer as any).new_rent_amount)),
+            },
+            {
+              label: "หน่วยไฟฟ้า",
+              value: `ห้องเดิม ${oldRoomElecUnits} + ห้องใหม่ ${newRoomElecUnits} = ${elecUnits} หน่วย`,
+            },
+            {
+              label: "หน่วยน้ำ",
+              value: `ห้องเดิม ${oldRoomWaterUnits} + ห้องใหม่ ${newRoomWaterUnits} = ${waterUnits} หน่วย`,
+            },
+          ])
+        : [];
 
       return {
         tenant_id: tenant.id,
@@ -1959,8 +2075,9 @@ export default function InvoicesPage() {
         late_fee_per_day: lateFeePerDay,
         late_fee_start_date: generatedLateFeeStartDateText,
         additional_fees_total: additionalTotal,
-        additional_fees_breakdown: additionalBreakdown,
+        additional_fees_breakdown: [...additionalBreakdown, ...transferBreakdownRows],
         total_amount: totalAmount,
+        notes: null,
         status: "draft",
       };
     }) as any[];
@@ -2752,6 +2869,30 @@ export default function InvoicesPage() {
               </div>
             </div>
 
+            {transferBreakdownItems.length > 0 && (
+              <div className="space-y-3 rounded-xl border border-blue-200 bg-blue-50/40 p-4">
+                <p className="text-sm font-semibold text-blue-900">สรุปย้ายห้องกลางเดือน</p>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[640px] text-sm">
+                    <thead className="bg-blue-100/70 text-blue-900">
+                      <tr>
+                        <th className="px-2 py-2 text-left">รายการ</th>
+                        <th className="px-2 py-2 text-left">รายละเอียด</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {transferBreakdownItems.map((item, index) => (
+                        <tr key={`${item.label}-${index}`} className="border-t border-blue-100">
+                          <td className="px-2 py-2 font-medium">{item.label}</td>
+                          <td className="px-2 py-2">{item.value}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
             <div className="space-y-3 rounded-xl border border-slate-200 p-4">
               <div className="flex items-center justify-between">
                 <p className="text-sm font-semibold text-slate-700">รายละเอียดค่าธรรมเนียมเพิ่มเติม</p>
@@ -3229,6 +3370,23 @@ export default function InvoicesPage() {
                         <td className="px-3 py-2 text-right">-</td>
                         <td className="px-3 py-2 text-right">{formatMoney(previewInvoice.common_fee)}</td>
                       </tr>
+                      {toTransferBreakdownItems(previewInvoice.additional_fees_breakdown ?? []).length > 0 && (
+                        <tr className="border-t border-blue-200 bg-blue-50">
+                          <td className="px-3 py-2 font-semibold text-blue-900" colSpan={4}>
+                            สรุปย้ายห้องกลางเดือน
+                          </td>
+                        </tr>
+                      )}
+                      {toTransferBreakdownItems(previewInvoice.additional_fees_breakdown ?? []).map(
+                        (row, idx) => (
+                          <tr key={`transfer-${idx}`} className="border-t border-slate-100">
+                            <td className="px-3 py-2">{row.label}</td>
+                            <td className="px-3 py-2 text-right" colSpan={3}>
+                              {row.value}
+                            </td>
+                          </tr>
+                        )
+                      )}
                       {(
                         Array.isArray(previewInvoice.discount_breakdown) && previewInvoice.discount_breakdown.length > 0
                           ? previewInvoice.discount_breakdown
@@ -3257,7 +3415,7 @@ export default function InvoicesPage() {
                         <td className="px-3 py-2 text-right">-</td>
                         <td className="px-3 py-2 text-right">{formatMoney(previewInvoice.late_fee_amount)}</td>
                       </tr>
-                      {(previewInvoice.additional_fees_breakdown ?? []).map((fee: any, idx: number) => (
+                      {toChargeFeeRows(previewInvoice.additional_fees_breakdown ?? []).map((fee: any, idx: number) => (
                         <tr key={`${fee.label}-${idx}`} className="border-t border-slate-100">
                           <td className="px-3 py-2">
                             ค่าธรรมเนียมเพิ่มเติม - {fee.detail ?? fee.label ?? "-"}

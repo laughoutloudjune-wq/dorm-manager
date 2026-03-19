@@ -71,6 +71,16 @@ type MoveOutFeeLine = {
   amount: number;
 };
 
+type TransferCalcForm = {
+  transfer_date: string;
+  old_prev_electricity: number;
+  old_curr_electricity: number;
+  old_prev_water: number;
+  old_curr_water: number;
+  new_curr_electricity: number;
+  new_curr_water: number;
+};
+
 const toNumber = (value: string | number | null | undefined) => {
   const parsed = typeof value === "number" ? value : Number(value ?? 0);
   return Number.isNaN(parsed) ? 0 : parsed;
@@ -92,6 +102,27 @@ const createMoveOutFeeLine = (): MoveOutFeeLine => ({
   label: "",
   amount: 0,
 });
+
+const parseDepositSlipUrls = (value: string | null | undefined): string[] => {
+  if (!value) return [];
+  const trimmed = value.trim();
+  if (!trimmed) return [];
+  if (trimmed.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) return parsed.filter((item) => typeof item === "string");
+    } catch {
+      return [trimmed];
+    }
+  }
+  return [trimmed];
+};
+
+const serializeDepositSlipUrls = (urls: string[]) => {
+  if (urls.length === 0) return null;
+  if (urls.length === 1) return urls[0];
+  return JSON.stringify(urls);
+};
 
 const roomNumberCompare = (a: string, b: string) =>
   a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
@@ -169,6 +200,16 @@ export default function TenantsPage() {
   const [isUnlinkingLine, setIsUnlinkingLine] = useState(false);
   const [isMovingOut, setIsMovingOut] = useState(false);
   const [isUploadingDepositSlip, setIsUploadingDepositSlip] = useState(false);
+  const [depositSlipUrls, setDepositSlipUrls] = useState<string[]>([]);
+  const [transferCalc, setTransferCalc] = useState<TransferCalcForm>({
+    transfer_date: new Date().toISOString().slice(0, 10),
+    old_prev_electricity: 0,
+    old_curr_electricity: 0,
+    old_prev_water: 0,
+    old_curr_water: 0,
+    new_curr_electricity: 0,
+    new_curr_water: 0,
+  });
   const canViewTenants = can("tenant.view");
   const canEditTenant = can("tenant.edit");
   const canManageTenantLine = can("tenant.line.manage");
@@ -230,7 +271,17 @@ export default function TenantsPage() {
       .from("rooms")
       .select("id,room_number,price_month,buildings(name)")
       .order("room_number");
-    setRooms((data ?? []) as RoomRow[]);
+    const sorted = ((data ?? []) as RoomRow[]).sort((a, b) => {
+      const aBuilding = Array.isArray(a.buildings) ? a.buildings[0]?.name ?? "" : a.buildings?.name ?? "";
+      const bBuilding = Array.isArray(b.buildings) ? b.buildings[0]?.name ?? "" : b.buildings?.name ?? "";
+      const byBuilding = aBuilding.localeCompare(bBuilding, undefined, {
+        numeric: true,
+        sensitivity: "base",
+      });
+      if (byBuilding !== 0) return byBuilding;
+      return roomNumberCompare(a.room_number, b.room_number);
+    });
+    setRooms(sorted);
   };
 
   const loadMethods = async () => {
@@ -295,6 +346,43 @@ export default function TenantsPage() {
     setLatestPrevWater(toNumber((data as any)?.current_water ?? fallbackWater));
   };
 
+  const loadLatestRoomReadings = async (roomId: string) => {
+    if (!roomId) return { electricity: 0, water: 0 };
+    const { data } = await supabase
+      .from("meter_readings")
+      .select("current_electricity,current_water")
+      .eq("room_id", roomId)
+      .order("reading_month", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    return {
+      electricity: toNumber((data as any)?.current_electricity ?? 0),
+      water: toNumber((data as any)?.current_water ?? 0),
+    };
+  };
+
+  useEffect(() => {
+    if (!activeTenant || !form.room_id || form.room_id === activeTenant.room_id) return;
+    let mounted = true;
+    const fillTransferBaselines = async () => {
+      const nextRoomReadings = await loadLatestRoomReadings(form.room_id);
+      if (!mounted) return;
+      setTransferCalc((prev) => ({
+        ...prev,
+        old_prev_electricity:
+          prev.old_prev_electricity > 0 ? prev.old_prev_electricity : latestPrevElectricity,
+        old_prev_water: prev.old_prev_water > 0 ? prev.old_prev_water : latestPrevWater,
+        new_curr_electricity:
+          prev.new_curr_electricity > 0 ? prev.new_curr_electricity : nextRoomReadings.electricity,
+        new_curr_water: prev.new_curr_water > 0 ? prev.new_curr_water : nextRoomReadings.water,
+      }));
+    };
+    void fillTransferBaselines();
+    return () => {
+      mounted = false;
+    };
+  }, [activeTenant, form.room_id, latestPrevElectricity, latestPrevWater]);
+
   const openModal = async (tenant?: TenantRow) => {
     setActiveTab("info");
     if (tenant) {
@@ -317,8 +405,18 @@ export default function TenantsPage() {
         move_out_date: tenant.move_out_date ?? new Date().toISOString().slice(0, 10),
         final_move_out_date: tenant.move_out_date ?? new Date().toISOString().slice(0, 10),
       });
+      setDepositSlipUrls(parseDepositSlipUrls(tenant.deposit_slip_url));
       setMoveOutFeeLines([]);
       setUseProrate(true);
+      setTransferCalc({
+        transfer_date: new Date().toISOString().slice(0, 10),
+        old_prev_electricity: 0,
+        old_curr_electricity: 0,
+        old_prev_water: 0,
+        old_curr_water: 0,
+        new_curr_electricity: 0,
+        new_curr_water: 0,
+      });
       const custom = tenant.custom_payment_method;
       if (custom?.methodId) {
         setUseCustomPayment(true);
@@ -361,8 +459,18 @@ export default function TenantsPage() {
         move_out_date: new Date().toISOString().slice(0, 10),
         final_move_out_date: new Date().toISOString().slice(0, 10),
       });
+      setDepositSlipUrls([]);
       setMoveOutFeeLines([]);
       setUseProrate(true);
+      setTransferCalc({
+        transfer_date: new Date().toISOString().slice(0, 10),
+        old_prev_electricity: 0,
+        old_curr_electricity: 0,
+        old_prev_water: 0,
+        old_curr_water: 0,
+        new_curr_electricity: 0,
+        new_curr_water: 0,
+      });
       setUseCustomPayment(false);
       setSelectedMethodId("");
       setUseCustomReceipt(false);
@@ -388,9 +496,16 @@ export default function TenantsPage() {
     }
 
     const { data } = supabase.storage.from("tenant-docs").getPublicUrl(path);
-    setForm((prev) => ({ ...prev, deposit_slip_url: data.publicUrl }));
+    setDepositSlipUrls((prev) => {
+      if (prev.includes(data.publicUrl)) return prev;
+      return [...prev, data.publicUrl];
+    });
     setStatus("อัปโหลดสลิปมัดจำเรียบร้อย");
     setIsUploadingDepositSlip(false);
+  };
+
+  const removeDepositSlip = (url: string) => {
+    setDepositSlipUrls((prev) => prev.filter((item) => item !== url));
   };
 
   const logRoomEvent = async (roomId: string, eventType: "move_in" | "move_out") => {
@@ -446,12 +561,35 @@ export default function TenantsPage() {
       initial_water_reading: toNumber(form.initial_water_reading),
       advance_rent_amount: toNumber(form.advance_rent_amount),
       security_deposit_amount: toNumber(form.security_deposit_amount),
-      deposit_slip_url: form.deposit_slip_url || null,
+      deposit_slip_url: serializeDepositSlipUrls(depositSlipUrls),
       final_electricity_reading: toNumber(form.final_electricity_reading),
       final_water_reading: toNumber(form.final_water_reading),
       custom_payment_method: customPayment,
       custom_receipt_profile: customReceipt,
     };
+
+    const transferPayload =
+      isRoomTransfer && activeTenant
+        ? {
+            tenant_id: activeTenant.id,
+            from_room_id: activeTenant.room_id,
+            to_room_id: form.room_id,
+            transfer_date: transferCalc.transfer_date || new Date().toISOString().slice(0, 10),
+            billing_month: `${(transferCalc.transfer_date || new Date().toISOString().slice(0, 10)).slice(0, 7)}-01`,
+            old_prev_electricity: toNumber(transferCalc.old_prev_electricity),
+            old_curr_electricity: toNumber(transferCalc.old_curr_electricity),
+            old_prev_water: toNumber(transferCalc.old_prev_water),
+            old_curr_water: toNumber(transferCalc.old_curr_water),
+            new_prev_electricity: toNumber(transferCalc.new_curr_electricity),
+            new_curr_electricity: toNumber(transferCalc.new_curr_electricity),
+            new_prev_water: toNumber(transferCalc.new_curr_water),
+            new_curr_water: toNumber(transferCalc.new_curr_water),
+            old_electric_usage: transferOldElectricUsage,
+            old_water_usage: transferOldWaterUsage,
+            old_rent_amount: transferOldRent,
+            new_rent_amount: transferNewRent,
+          }
+        : null;
 
     if (activeTenant?.id) payload.id = activeTenant.id;
 
@@ -459,6 +597,7 @@ export default function TenantsPage() {
       await callTenantsAction("save_tenant", {
         payload,
         roomId: form.room_id || null,
+        transferPayload,
       });
     } catch (error: any) {
       setStatus(error?.message ?? "บันทึกข้อมูลผู้เช่าไม่สำเร็จ");
@@ -620,6 +759,37 @@ export default function TenantsPage() {
   };
 
   const roomsById = useMemo(() => new Map(rooms.map((room) => [room.id, room])), [rooms]);
+  const oldRoom = activeTenant ? roomsById.get(activeTenant.room_id) : null;
+  const newRoom = form.room_id ? roomsById.get(form.room_id) : null;
+  const oldRoomRate = toNumber(
+    activeTenant
+      ? (Array.isArray(activeTenant.rooms) ? activeTenant.rooms[0]?.price_month : activeTenant.rooms?.price_month) ??
+          oldRoom?.price_month
+      : 0
+  );
+  const newRoomRate = toNumber(newRoom?.price_month ?? 0);
+  const isRoomTransfer = !!activeTenant?.id && !!form.room_id && form.room_id !== activeTenant.room_id;
+
+  const transferDateObj = transferCalc.transfer_date ? new Date(transferCalc.transfer_date) : null;
+  const transferDay = transferDateObj ? Number(transferCalc.transfer_date.slice(8, 10)) : 1;
+  const daysInTransferMonth = transferDateObj
+    ? new Date(transferDateObj.getFullYear(), transferDateObj.getMonth() + 1, 0).getDate()
+    : 30;
+  const oldRoomDays = Math.min(Math.max(transferDay - 1, 0), daysInTransferMonth);
+  const newRoomDays = Math.max(daysInTransferMonth - oldRoomDays, 0);
+  const transferOldRent = daysInTransferMonth > 0 ? (oldRoomRate * oldRoomDays) / daysInTransferMonth : 0;
+  const transferNewRent = daysInTransferMonth > 0 ? (newRoomRate * newRoomDays) / daysInTransferMonth : 0;
+  const transferOldElectricUsage = Math.max(
+    toNumber(transferCalc.old_curr_electricity) - toNumber(transferCalc.old_prev_electricity),
+    0
+  );
+  const transferOldWaterUsage = Math.max(
+    toNumber(transferCalc.old_curr_water) - toNumber(transferCalc.old_prev_water),
+    0
+  );
+  const transferOldUtility =
+    transferOldElectricUsage * rates.electricity_rate + transferOldWaterUsage * rates.water_rate;
+  const transferGrandTotal = transferOldRent + transferNewRent + transferOldUtility;
 
   const filtered = tenants.filter((tenant) => {
     const room = tenantRoomNumber(tenant, roomsById);
@@ -817,6 +987,124 @@ export default function TenantsPage() {
               </select>
             </label>
 
+            {isRoomTransfer && (
+              <div className="space-y-3 md:col-span-2 rounded-xl border border-blue-200 bg-blue-50 p-4">
+                <p className="text-base font-semibold text-slate-800">คำนวณย้ายห้องกลางเดือน</p>
+                <p className="text-sm text-slate-600">
+                  ห้องใหม่บันทึกเฉพาะค่าอ่านมิเตอร์ ณ วันย้ายเข้าเป็นค่าเริ่มต้น (baseline) เพื่อใช้คำนวณตอนจบเดือน
+                </p>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <Input
+                    label="วันที่ย้ายห้อง"
+                    type="date"
+                    value={transferCalc.transfer_date}
+                    onChange={(event) =>
+                      setTransferCalc((prev) => ({ ...prev, transfer_date: event.target.value }))
+                    }
+                    className="text-base"
+                  />
+                  <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
+                    ห้องเดิม: {tenantRoomNumber(activeTenant!, roomsById)} ({formatMoney(oldRoomRate)} / เดือน)
+                    <br />
+                    ห้องใหม่: {newRoom?.room_number ?? "-"} ({formatMoney(newRoomRate)} / เดือน)
+                  </div>
+                </div>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2 rounded-lg border border-slate-200 bg-white p-3">
+                    <p className="font-medium text-slate-800">ห้องเดิม</p>
+                    <div className="grid gap-2 md:grid-cols-2">
+                      <Input
+                        label="ไฟก่อนหน้า"
+                        type="number"
+                        value={transferCalc.old_prev_electricity}
+                        onChange={(event) =>
+                          setTransferCalc((prev) => ({
+                            ...prev,
+                            old_prev_electricity: toNumber(event.target.value),
+                          }))
+                        }
+                      />
+                      <Input
+                        label="ไฟล่าสุด"
+                        type="number"
+                        value={transferCalc.old_curr_electricity}
+                        onChange={(event) =>
+                          setTransferCalc((prev) => ({
+                            ...prev,
+                            old_curr_electricity: toNumber(event.target.value),
+                          }))
+                        }
+                      />
+                      <Input
+                        label="น้ำก่อนหน้า"
+                        type="number"
+                        value={transferCalc.old_prev_water}
+                        onChange={(event) =>
+                          setTransferCalc((prev) => ({
+                            ...prev,
+                            old_prev_water: toNumber(event.target.value),
+                          }))
+                        }
+                      />
+                      <Input
+                        label="น้ำล่าสุด"
+                        type="number"
+                        value={transferCalc.old_curr_water}
+                        onChange={(event) =>
+                          setTransferCalc((prev) => ({
+                            ...prev,
+                            old_curr_water: toNumber(event.target.value),
+                          }))
+                        }
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-2 rounded-lg border border-slate-200 bg-white p-3">
+                    <p className="font-medium text-slate-800">ห้องใหม่</p>
+                    <div className="grid gap-2 md:grid-cols-2">
+                      <Input
+                        label="ไฟฟ้า ณ วันย้ายเข้า (Baseline)"
+                        type="number"
+                        value={transferCalc.new_curr_electricity}
+                        onChange={(event) =>
+                          setTransferCalc((prev) => ({
+                            ...prev,
+                            new_curr_electricity: toNumber(event.target.value),
+                          }))
+                        }
+                      />
+                      <Input
+                        label="น้ำ ณ วันย้ายเข้า (Baseline)"
+                        type="number"
+                        value={transferCalc.new_curr_water}
+                        onChange={(event) =>
+                          setTransferCalc((prev) => ({
+                            ...prev,
+                            new_curr_water: toNumber(event.target.value),
+                          }))
+                        }
+                      />
+                    </div>
+                  </div>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-white p-3 text-sm text-slate-700">
+                  <p>
+                    ค่าเช่าห้องเดิม ({oldRoomDays}/{daysInTransferMonth} วัน): ฿{formatMoney(transferOldRent)}
+                  </p>
+                  <p>
+                    ค่าเช่าห้องใหม่ ({newRoomDays}/{daysInTransferMonth} วัน): ฿{formatMoney(transferNewRent)}
+                  </p>
+                  <p>ค่าน้ำไฟห้องเดิม: ฿{formatMoney(transferOldUtility)}</p>
+                  <p className="text-xs text-slate-500">
+                    ห้องใหม่จะเริ่มคิดจากเลข baseline นี้เมื่อบันทึกมิเตอร์ปลายเดือน
+                  </p>
+                  <p className="mt-1 font-semibold text-slate-900">
+                    รวมประมาณการย้ายห้องกลางเดือน: ฿{formatMoney(transferGrandTotal)}
+                  </p>
+                </div>
+              </div>
+            )}
+
             <div className="space-y-2 md:col-span-2">
               <p className="text-base font-medium text-slate-700">ช่องทางรับชำระ</p>
               <div className="flex items-center gap-3 text-base text-slate-700">
@@ -970,10 +1258,23 @@ export default function TenantsPage() {
                 />
               </label>
               {isUploadingDepositSlip && <Loader2 size={16} className="animate-spin text-blue-600" />}
-              {form.deposit_slip_url && (
-                <a href={form.deposit_slip_url} target="_blank" rel="noreferrer" className="text-sm text-blue-600 underline">
-                  ดูสลิป
-                </a>
+              {depositSlipUrls.length > 0 && (
+                <div className="flex flex-wrap items-center gap-2">
+                  {depositSlipUrls.map((url, index) => (
+                    <div key={url} className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2 py-1">
+                      <a href={url} target="_blank" rel="noreferrer" className="text-sm text-blue-600 underline">
+                        สลิป {index + 1}
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() => removeDepositSlip(url)}
+                        className="rounded border border-red-200 px-1.5 py-0.5 text-xs text-red-600"
+                      >
+                        ลบ
+                      </button>
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
           </fieldset>

@@ -301,7 +301,11 @@ export default function RegisterPage() {
                 เบอร์โทรศัพท์
                 <input
                   value={phoneNumber}
-                  onChange={(event) => setPhoneNumber(event.target.value)}
+                  onChange={(event) =>
+                    setPhoneNumber(event.target.value.replace(/\D/g, "").slice(0, 15))
+                  }
+                  inputMode="numeric"
+                  pattern="[0-9]*"
                   className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm"
                   required
                   placeholder="เช่น 08xxxxxxxx"

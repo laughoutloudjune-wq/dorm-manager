@@ -10,6 +10,7 @@ export async function POST(req: Request) {
       const auth = await requireAdminPermission(req, "tenant.edit");
       if ("error" in auth) return auth.error;
       const payload = { ...(body?.payload ?? {}) } as any;
+      const transferPayload = (body?.transferPayload ?? null) as any;
       const roomId = body?.roomId ? String(body.roomId) : "";
       if (!payload.id) payload.id = crypto.randomUUID();
       const tenantId = String(payload.id);
@@ -52,6 +53,35 @@ export async function POST(req: Request) {
           .eq("room_id", String(previousTenant.room_id))
           .eq("tenant_id", tenantId)
           .is("move_out_date", null);
+
+        if (transferPayload?.transfer_date) {
+          const transferInsert = {
+            id: crypto.randomUUID(),
+            tenant_id: tenantId,
+            from_room_id: String(previousTenant.room_id),
+            to_room_id: roomId,
+            transfer_date: String(transferPayload.transfer_date),
+            billing_month: String(
+              transferPayload.billing_month ??
+                `${String(transferPayload.transfer_date).slice(0, 7)}-01`
+            ),
+            old_prev_electricity: Number(transferPayload.old_prev_electricity ?? 0),
+            old_curr_electricity: Number(transferPayload.old_curr_electricity ?? 0),
+            old_prev_water: Number(transferPayload.old_prev_water ?? 0),
+            old_curr_water: Number(transferPayload.old_curr_water ?? 0),
+            new_prev_electricity: Number(transferPayload.new_prev_electricity ?? 0),
+            new_curr_electricity: Number(transferPayload.new_curr_electricity ?? 0),
+            new_prev_water: Number(transferPayload.new_prev_water ?? 0),
+            new_curr_water: Number(transferPayload.new_curr_water ?? 0),
+            old_electric_usage: Number(transferPayload.old_electric_usage ?? 0),
+            old_water_usage: Number(transferPayload.old_water_usage ?? 0),
+            old_rent_amount: Number(transferPayload.old_rent_amount ?? 0),
+            new_rent_amount: Number(transferPayload.new_rent_amount ?? 0),
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          };
+          await auth.supabase.from("tenant_room_transfers").insert(transferInsert);
+        }
       }
 
       if (shouldLogMoveIn) {
