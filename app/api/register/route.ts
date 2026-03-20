@@ -73,6 +73,10 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "กรุณายอมรับกฎระเบียบหอพักก่อนลงทะเบียน" }, { status: 400 });
     }
 
+    if (shouldMarkAsNewTenant && tenant?.id) {
+      return NextResponse.json({ error: "ห้องนี้มีผู้เช่าอยู่แล้ว ไม่สามารถเพิ่มผู้เช่าใหม่ซ้ำได้" }, { status: 400 });
+    }
+
     const depositAmount = Number.isFinite(Number(securityDepositAmount))
       ? Number(securityDepositAmount)
       : 0;

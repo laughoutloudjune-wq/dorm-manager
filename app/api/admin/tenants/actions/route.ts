@@ -25,6 +25,30 @@ export async function POST(req: Request) {
         previousTenant = data ?? null;
       }
 
+      if (roomId) {
+        const { data: existingTenant, error: existingTenantError } = await auth.supabase
+          .from("tenants")
+          .select("id,full_name")
+          .eq("room_id", roomId)
+          .eq("status", "active")
+          .neq("id", tenantId)
+          .limit(1)
+          .maybeSingle();
+
+        if (existingTenantError) {
+          return NextResponse.json({ error: existingTenantError.message }, { status: 500 });
+        }
+
+        if (existingTenant?.id) {
+          return NextResponse.json(
+            {
+              error: `ห้องนี้มีผู้เช่าอยู่แล้ว (${existingTenant.full_name ?? "ไม่ทราบชื่อ"}) กรุณาย้ายออกหรือเปลี่ยนห้องก่อนเพิ่มผู้เช่าใหม่`,
+            },
+            { status: 400 }
+          );
+        }
+      }
+
       const { error } = await auth.supabase.from("tenants").upsert(payload, { onConflict: "id" });
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 

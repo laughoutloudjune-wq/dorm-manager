@@ -190,6 +190,18 @@ const tenantPaymentMethodLabel = (tenant: TenantRow) => {
   return method.label ?? method.type ?? "-";
 };
 
+const findExistingActiveTenantInRoom = (
+  tenants: TenantRow[],
+  roomId: string,
+  currentTenantId?: string | null
+) =>
+  tenants.find(
+    (tenant) =>
+      tenant.room_id === roomId &&
+      tenant.status === "active" &&
+      tenant.id !== (currentTenantId ?? "")
+  ) ?? null;
+
 export default function TenantsPage() {
   const supabase = useMemo(() => createClient(), []);
   const { can } = usePermissions();
@@ -543,6 +555,10 @@ export default function TenantsPage() {
   };
 
   const saveTenant = async () => {
+    if (existingTenantInSelectedRoom) {
+      setStatus(`ห้องนี้มีผู้เช่าอยู่แล้ว: ${existingTenantInSelectedRoom.full_name}`);
+      return;
+    }
     setIsSavingTenant(true);
     const selectedMethod = methods.find((method) => method.id === selectedMethodId);
     const customPayment =
@@ -784,6 +800,10 @@ export default function TenantsPage() {
   const roomsById = useMemo(() => new Map(rooms.map((room) => [room.id, room])), [rooms]);
   const oldRoom = activeTenant ? roomsById.get(activeTenant.room_id) : null;
   const newRoom = form.room_id ? roomsById.get(form.room_id) : null;
+  const existingTenantInSelectedRoom = useMemo(
+    () => findExistingActiveTenantInRoom(tenants, form.room_id, activeTenant?.id ?? null),
+    [activeTenant?.id, form.room_id, tenants]
+  );
   const oldRoomRate = toNumber(
     activeTenant
       ? (Array.isArray(activeTenant.rooms) ? activeTenant.rooms[0]?.price_month : activeTenant.rooms?.price_month) ??
@@ -1012,6 +1032,14 @@ export default function TenantsPage() {
                 ))}
               </select>
             </label>
+            {existingTenantInSelectedRoom && (
+              <div className="md:col-span-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                ห้องนี้มีผู้เช่าอยู่แล้ว: {existingTenantInSelectedRoom.full_name}
+                {existingTenantInSelectedRoom.phone_number
+                  ? ` | เบอร์โทร ${existingTenantInSelectedRoom.phone_number}`
+                  : ""}
+              </div>
+            )}
 
             {isRoomTransfer && (
               <div className="space-y-3 md:col-span-2 rounded-xl border border-blue-200 bg-blue-50 p-4">
