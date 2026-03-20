@@ -58,7 +58,10 @@ ADD COLUMN IF NOT EXISTS security_deposit_amount NUMERIC(10, 2) DEFAULT 0,
 ADD COLUMN IF NOT EXISTS deposit_slip_url TEXT,
 ADD COLUMN IF NOT EXISTS advance_rent_slip_url TEXT,
 ADD COLUMN IF NOT EXISTS final_electricity_reading NUMERIC(10, 2),
-ADD COLUMN IF NOT EXISTS final_water_reading NUMERIC(10, 2);
+ADD COLUMN IF NOT EXISTS final_water_reading NUMERIC(10, 2),
+ADD COLUMN IF NOT EXISTS policy_accepted BOOLEAN DEFAULT FALSE,
+ADD COLUMN IF NOT EXISTS policy_accepted_at TIMESTAMPTZ,
+ADD COLUMN IF NOT EXISTS policy_version TEXT;
 
 COMMENT ON COLUMN public.tenants.custom_payment_method IS 'Overrides default payment method. {"type": "bank", "details": {...}} or {"type": "qr", "url": "..."}';
 COMMENT ON COLUMN public.tenants.custom_receipt_profile IS 'Optional corporate receipt profile override for this tenant/room.';

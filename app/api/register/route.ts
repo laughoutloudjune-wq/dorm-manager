@@ -16,6 +16,9 @@ export async function POST(req: Request) {
       advanceRentSlipUrl,
       isNewTenant,
       moveInDate,
+      policyAccepted,
+      policyAcceptedAt,
+      policyVersion,
     } = body ?? {};
 
     if (!roomNumber || !fullName || !phoneNumber || !userId) {
@@ -58,6 +61,17 @@ export async function POST(req: Request) {
       shouldMarkAsNewTenant && /^\d{4}-\d{2}-\d{2}$/.test(String(moveInDate ?? ""))
         ? String(moveInDate)
         : null;
+    const normalizedPolicyAccepted = shouldMarkAsNewTenant ? Boolean(policyAccepted) : false;
+    const normalizedPolicyAcceptedAt =
+      normalizedPolicyAccepted && typeof policyAcceptedAt === "string" ? policyAcceptedAt : null;
+    const normalizedPolicyVersion =
+      normalizedPolicyAccepted && typeof policyVersion === "string" && policyVersion.trim()
+        ? policyVersion.trim()
+        : null;
+
+    if (shouldMarkAsNewTenant && !normalizedPolicyAccepted) {
+      return NextResponse.json({ error: "กรุณายอมรับกฎระเบียบหอพักก่อนลงทะเบียน" }, { status: 400 });
+    }
 
     const depositAmount = Number.isFinite(Number(securityDepositAmount))
       ? Number(securityDepositAmount)
@@ -81,6 +95,9 @@ export async function POST(req: Request) {
           deposit_slip_url: shouldMarkAsNewTenant ? depositSlipUrl ?? null : null,
           advance_rent_slip_url: shouldMarkAsNewTenant ? advanceRentSlipUrl ?? null : null,
           move_in_date: normalizedMoveInDate,
+          policy_accepted: normalizedPolicyAccepted,
+          policy_accepted_at: normalizedPolicyAcceptedAt,
+          policy_version: normalizedPolicyVersion,
         })
         .eq("id", tenant.id);
 
@@ -99,6 +116,9 @@ export async function POST(req: Request) {
         advance_rent_amount: advanceAmount,
         deposit_slip_url: shouldMarkAsNewTenant ? depositSlipUrl ?? null : null,
         advance_rent_slip_url: shouldMarkAsNewTenant ? advanceRentSlipUrl ?? null : null,
+        policy_accepted: normalizedPolicyAccepted,
+        policy_accepted_at: normalizedPolicyAcceptedAt,
+        policy_version: normalizedPolicyVersion,
       });
 
       if (insertError) {

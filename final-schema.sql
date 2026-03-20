@@ -74,6 +74,9 @@ CREATE TABLE public.tenants (
   advance_rent_slip_url TEXT,
   final_electricity_reading NUMERIC(10,2),
   final_water_reading NUMERIC(10,2),
+  policy_accepted BOOLEAN DEFAULT FALSE,
+  policy_accepted_at TIMESTAMPTZ,
+  policy_version TEXT,
   custom_payment_method JSONB,
   custom_receipt_profile JSONB,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()

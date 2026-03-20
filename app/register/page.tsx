@@ -16,6 +16,55 @@ type RoomSuggestion = {
 };
 
 const NGROK_SKIP_QUERY = "ngrok-skip-browser-warning=true";
+const POLICY_VERSION = "v1.0";
+const APARTMENT_POLICY = [
+  {
+    title: "คำนำ",
+    items: [
+      "ผู้เช่าตกลงที่จะปฏิบัติตามกฎระเบียบของหอพักดังต่อไปนี้อย่างเคร่งครัด หากฝ่าฝืนยินยอมให้ผู้ให้เช่าดำเนินการปรับหรือบอกเลิกสัญญาเช่าได้ทันที",
+    ],
+  },
+  {
+    title: "1. การชำระเงินและการสิ้นสุดสัญญา",
+    items: [
+      "1.1 หากผู้เช่าชำระค่าเช่าช้ากว่ากำหนด ผู้เช่าจะต้องเสียค่าปรับในความล่าช้าให้แก่ผู้ให้เช่าในอัตรา 100 บาทต่อวัน หากชำระเกินกำหนด ผู้ให้เช่ามีสิทธิตัดน้ำ ตัดไฟ หรือยกเลิกสัญญาโดยทันที",
+      "1.2 หากประสงค์จะยกเลิกสัญญาหรือย้ายออก จะต้องแจ้งเป็นลายลักษณ์อักษร หรือแจ้งผ่านระบบ/ไลน์ (LINE) ของหอพัก ล่วงหน้าไม่น้อยกว่า 30 วัน ก่อนวันย้ายออก และต้องย้ายออกภายในสิ้นเดือนนั้นๆ หากอยู่เกิน ผู้ให้เช่ามีสิทธิ์คิดค่าเช่าเต็มเดือนเป็นค่าขาดผลประโยชน์",
+      "1.3 กรณีอยู่ไม่ครบสัญญา (แต่อยู่เกินกึ่งหนึ่งของสัญญาและต้องคืนเงินประกัน) ผู้ให้เช่าสามารถเรียกร้องค่าขาดผลประโยชน์ในเดือนที่เหลือได้ เป็นจำนวนเงินเดือนละ 3,000 บาท หรือไม่เกินจำนวนของเงินประกัน",
+      "1.4 ในวันย้ายออก ถ้าหากผู้เช่าอยู่ไม่ครบตามระยะสัญญา ผู้เช่าจะไม่สามารถนำเงินประกันห้องพักมาหักค่าน้ำและค่าไฟฟ้าได้ ผู้เช่าจะต้องทำการชำระค่าน้ำและค่าไฟฟ้าให้ครบถ้วนก่อนจึงจะสามารถย้ายออกได้",
+    ],
+  },
+  {
+    title: "2. การปรับแต่งและรักษาสภาพห้องพัก",
+    items: [
+      "2.1 ผู้เช่าจะไม่ทำการดัดแปลง ต่อเติม รื้อถอน หรือเคลื่อนย้ายทรัพย์สินในห้องเช่าออกนอกห้องเช่า หากฝ่าฝืนต้องรับผิดชอบชดใช้ความเสียหายที่เกิดขึ้น",
+      "2.2 ห้ามติดสติ๊กเกอร์ / ตัวแขวน / ราวผ้า / รูปภาพ ตามผนัง ฝ้า และห้ามเจาะผนังโดยเด็ดขาด หากฝ่าฝืนปรับจุดละ 50 บาท",
+    ],
+  },
+  {
+    title: "3. การรักษาความสะอาดและระบบท่อน้ำ",
+    items: [
+      "3.1 ห้ามวางขยะหรือกวาดขยะออกมานอกห้องเช่าโดยเด็ดขาด",
+      "3.2 ห้ามทิ้งผ้าอนามัย / ขยะ / เศษอาหาร ลงในชักโครก / ท่อน้ำ / และซิงค์ล้างจาน หากท่อตันคิดค่าบริการครั้งละ 800 บาท หรือตามที่ช่างประเมินหน้างาน",
+    ],
+  },
+  {
+    title: "4. ความสงบเรียบร้อยและข้อห้ามเด็ดขาด",
+    items: [
+      "4.1 ห้ามส่งเสียงดังยามวิกาล / ห้ามตำน้ำพริกยามวิกาล (22.00 น. - 06.00 น.)",
+      "4.2 ห้ามผู้เช่าสูบบุหรี่ภายในห้องเช่า ฝ่าฝืนปรับ 2,000 บาท",
+      "4.3 ผู้เช่าจะไม่เลี้ยงสัตว์ทุกชนิดในห้องเช่า และจะไม่นำสิ่งเสพติดหรือสิ่งผิดกฎหมายใดๆ เข้ามาในห้องเช่า หากฝ่าฝืน ผู้เช่ายอมให้ผู้ให้เช่าบอกเลิกสัญญาได้ทันที",
+    ],
+  },
+  {
+    title: "5. การจัดการทั่วไปและความปลอดภัย",
+    items: [
+      "5.1 การยืมกุญแจ: กรณีผู้เช่าลืมกุญแจห้องเช่า คิดค่ายืมกุญแจครั้งละ 50 บาท มัดจำ 100 บาท (หากกุญแจหายคิดค่าเปลี่ยนลูกบิดใหม่ 400 บาท) ยืมได้ในเวลา 09.00 - 18.00 น. เท่านั้น และจะต้องได้รับอนุญาตจากเจ้าของสัญญาก่อนทุกครั้ง",
+      "5.2 เวลาขนย้าย: การขนย้ายสิ่งของเข้า/ออก ห้องเช่า ต้องทำในเวลา 09.00 - 18.00 น. เท่านั้น หากจำเป็นต้องขนย้ายนอกเวลา จะต้องแจ้งและได้รับอนุญาตจากหอพักก่อนทุกครั้ง",
+      "5.3 ผู้เช่ายินยอมให้ผู้ให้เช่าหรือผู้ที่ได้รับมอบหมายเข้ามาในห้องเช่า เพื่อตรวจดูสภาพห้องได้ทุกเวลา หากผู้เช่ากระทำการใดๆ อันผิดต่อสัญญาเช่า ผู้ให้เช่ามีสิทธิบอกเลิกสัญญาเช่าได้ทันที โดยไม่ต้องบอกกล่าวก่อน",
+      "5.4 ถ้าหากเกิดอัคคีภัย สัญญาฉบับนี้จะสิ้นสุดทันที โดยผู้เช่าจะไม่เรียกร้องค่าเสียหายใดๆ ทั้งสิ้น",
+    ],
+  },
+] as const;
 
 const roomNumberCompare = (a: string, b: string) =>
   a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
@@ -37,6 +86,8 @@ export default function RegisterPage() {
   const [suggestLoading, setSuggestLoading] = useState(false);
   const [uploadingNewTenantSlip, setUploadingNewTenantSlip] = useState(false);
   const [showSuccessOverlay, setShowSuccessOverlay] = useState(false);
+  const [policyAccepted, setPolicyAccepted] = useState(false);
+  const [policyModalOpen, setPolicyModalOpen] = useState(false);
 
   useEffect(() => {
     const init = async () => {
@@ -165,6 +216,16 @@ export default function RegisterPage() {
     event.preventDefault();
     if (!profile) return;
 
+    if (isNewTenant && !newTenantSlipUrl) {
+      setStatus("กรุณาอัปโหลดสลิปเงินประกันหรือค่าเช่าล่วงหน้าก่อนลงทะเบียน");
+      return;
+    }
+
+    if (isNewTenant && !policyAccepted) {
+      setStatus("กรุณาอ่านและยอมรับกฎระเบียบหอพักก่อนลงทะเบียน");
+      return;
+    }
+
     setSubmitting(true);
     setStatus(null);
     const { default: liff } = await import("@line/liff");
@@ -186,6 +247,9 @@ export default function RegisterPage() {
         moveInDate: isNewTenant ? moveInDate : null,
         depositSlipUrl: isNewTenant ? newTenantSlipUrl || null : null,
         advanceRentSlipUrl: isNewTenant ? newTenantSlipUrl || null : null,
+        policyAccepted: isNewTenant ? policyAccepted : false,
+        policyAcceptedAt: isNewTenant && policyAccepted ? new Date().toISOString() : null,
+        policyVersion: isNewTenant ? POLICY_VERSION : null,
       }),
     });
 
@@ -203,6 +267,7 @@ export default function RegisterPage() {
       setIsNewTenant(false);
       setMoveInDate(new Date().toISOString().slice(0, 10));
       setNewTenantSlipUrl("");
+      setPolicyAccepted(false);
     }
     setSubmitting(false);
   };
@@ -321,6 +386,8 @@ export default function RegisterPage() {
                     setIsNewTenant(checked);
                     if (!checked) {
                       setNewTenantSlipUrl("");
+                      setPolicyAccepted(false);
+                      setPolicyModalOpen(false);
                     }
                   }}
                   className="h-4 w-4 rounded border-slate-300"
@@ -356,6 +423,48 @@ export default function RegisterPage() {
                         ดูสลิป
                       </a>
                     )}
+                  </div>
+                  <div className="space-y-3 rounded-2xl border border-slate-300 bg-white p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-slate-900">ข้อตกลงและกฎระเบียบหอพัก</p>
+                        <p className="text-xs text-slate-500">กดเพื่ออ่านฉบับเต็มก่อนยอมรับข้อตกลง</p>
+                      </div>
+                      <span className="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-medium text-slate-600">
+                        {POLICY_VERSION}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setPolicyModalOpen(true)}
+                      className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-left text-sm text-slate-700 transition hover:border-blue-200 hover:bg-blue-50"
+                    >
+                      <span className="block font-medium text-slate-900">
+                        เปิดอ่านกฎระเบียบหอพักฉบับเต็ม
+                      </span>
+                      <span className="mt-1 block text-xs text-slate-500">
+                        กรุณาอ่านรายละเอียดทั้งหมดก่อนกดยอมรับ
+                      </span>
+                    </button>
+                    <label
+                      className={`flex items-start gap-3 rounded-xl border px-3 py-3 text-sm ${
+                        policyAccepted
+                          ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                          : "border-slate-200 bg-slate-50 text-slate-700"
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={policyAccepted}
+                        readOnly
+                        className="mt-0.5 h-4 w-4 rounded border-slate-300"
+                      />
+                      <span>
+                        {policyAccepted
+                          ? "ข้าพเจ้าได้อ่าน เข้าใจ และยอมรับกฎระเบียบหอพักแล้ว"
+                          : "ยังไม่ได้ยอมรับกฎระเบียบหอพัก กรุณาเปิดอ่านฉบับเต็มก่อน"}
+                      </span>
+                    </label>
                   </div>
                 </div>
               )}
@@ -395,6 +504,63 @@ export default function RegisterPage() {
             >
               รับทราบ
             </button>
+          </div>
+        </div>
+      )}
+      {policyModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80">
+          <div className="flex h-full flex-col bg-white">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-4 py-4 md:px-6">
+              <div>
+                <p className="text-lg font-semibold text-slate-900">
+                  เอกสารแนบท้ายสัญญาเช่า: กฎระเบียบและข้อตกลงการอยู่ร่วมพักอาศัย
+                </p>
+                <p className="mt-1 text-sm text-slate-500">กรุณาอ่านรายละเอียดทั้งหมดก่อนกดยอมรับ</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPolicyModalOpen(false)}
+                className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600"
+              >
+                ปิด
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto px-4 py-5 md:px-6">
+              <div className="mx-auto max-w-3xl space-y-5 text-sm leading-7 text-slate-700">
+                {APARTMENT_POLICY.map((section) => (
+                  <div key={section.title} className="space-y-2 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                    <p className="font-semibold text-slate-900">{section.title}</p>
+                    <div className="space-y-2">
+                      {section.items.map((item) => (
+                        <p key={item}>{item}</p>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="border-t border-slate-200 bg-white px-4 py-4 md:px-6">
+              <div className="mx-auto flex max-w-3xl flex-col gap-3 sm:flex-row sm:justify-end">
+                <button
+                  type="button"
+                  onClick={() => setPolicyModalOpen(false)}
+                  className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm text-slate-700"
+                >
+                  ยังไม่ยอมรับ
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPolicyAccepted(true);
+                    setPolicyModalOpen(false);
+                    setStatus(null);
+                  }}
+                  className="rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white"
+                >
+                  อ่านแล้วและยอมรับ
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
