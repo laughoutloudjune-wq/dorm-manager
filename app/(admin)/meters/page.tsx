@@ -34,11 +34,18 @@ type MeterRow = {
 };
 
 type MoveInTenantRow = {
+  tenant_id: string;
   room_id: string;
   full_name: string | null;
   move_in_date: string;
   initial_electricity_reading: number | null;
   initial_water_reading: number | null;
+};
+
+type TenantInvoiceRow = {
+  tenant_id: string;
+  start_date: string;
+  status: string | null;
 };
 
 type MeterReadingDb = {
@@ -66,6 +73,11 @@ const toLocalDateString = (date: Date) =>
   `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
     date.getDate()
   ).padStart(2, "0")}`;
+
+const monthStartFromDateString = (value: string) => {
+  const date = new Date(value);
+  return toLocalDateString(new Date(date.getFullYear(), date.getMonth(), 1));
+};
 
 export default function MetersPage() {
   const supabase = useMemo(() => createClient(), []);
@@ -162,14 +174,28 @@ export default function MetersPage() {
       .order("reading_month", { ascending: false })
       .order("created_at", { ascending: false });
 
-    const { data: moveInTenants } = await supabase
+    const { data: activeTenants } = await supabase
       .from("tenants")
       .select(
-        "room_id,full_name,move_in_date,initial_electricity_reading,initial_water_reading,status"
+        "id,room_id,full_name,move_in_date,initial_electricity_reading,initial_water_reading,status"
       )
-      .gte("move_in_date", currentMonthKey)
       .lt("move_in_date", nextMonthKey)
+      .eq("status", "active")
       .order("move_in_date", { ascending: false });
+
+    const activeTenantIds = ((activeTenants ?? []) as any[])
+      .map((item) => String(item?.id ?? ""))
+      .filter(Boolean);
+
+    const { data: tenantInvoices } =
+      activeTenantIds.length > 0
+        ? await supabase
+            .from("invoices")
+            .select("tenant_id,start_date,status")
+            .in("tenant_id", activeTenantIds)
+            .lt("start_date", currentMonthKey)
+            .neq("status", "cancelled")
+        : { data: [] as TenantInvoiceRow[] };
 
     const previousMap = new Map<string, any>();
     for (const item of previousReadings ?? []) {
@@ -180,13 +206,24 @@ export default function MetersPage() {
       if (!currentMap.has(item.room_id)) currentMap.set(item.room_id, item);
     }
     const moveInMap = new Map<string, MoveInTenantRow>();
-    for (const item of ((moveInTenants ?? []) as any[])) {
+    const billedTenantIds = new Set<string>();
+    for (const item of ((tenantInvoices ?? []) as TenantInvoiceRow[])) {
+      if (!item?.tenant_id) continue;
+      billedTenantIds.add(String(item.tenant_id));
+    }
+
+    for (const item of ((activeTenants ?? []) as any[])) {
       if (!item?.room_id) continue;
+      const tenantId = String(item.id ?? "");
+      const moveInDate = String(item.move_in_date ?? "");
+      if (!tenantId || !moveInDate) continue;
+      if (billedTenantIds.has(tenantId)) continue;
       if (!moveInMap.has(item.room_id)) {
         moveInMap.set(item.room_id, {
+          tenant_id: tenantId,
           room_id: item.room_id,
           full_name: item.full_name ?? null,
-          move_in_date: item.move_in_date,
+          move_in_date: moveInDate,
           initial_electricity_reading: item.initial_electricity_reading ?? null,
           initial_water_reading: item.initial_water_reading ?? null,
         });
@@ -209,6 +246,9 @@ export default function MetersPage() {
       const hasMoveInReading =
         moveInTenant &&
         (moveInTenant.initial_electricity_reading != null || moveInTenant.initial_water_reading != null);
+      const isFirstBillingCycle =
+        !!moveInTenant &&
+        monthStartFromDateString(moveInTenant.move_in_date) <= currentMonthKey;
       const previousSource: MeterRow["previous_source"] = hasMoveInReading ? "move_in" : "prev_month";
       const previousElec =
         previousSource === "move_in"
@@ -247,7 +287,7 @@ export default function MetersPage() {
         room_number: room.room_number,
         reading_month: currentMonthKey,
         rollover: inferredRollover,
-        previous_source: previousSource,
+        previous_source: isFirstBillingCycle ? previousSource : "prev_month",
         previous_month_electricity: toNumber(previousMonthElec),
         previous_month_water: toNumber(previousMonthWater),
         move_in_electricity: moveInTenant?.initial_electricity_reading ?? null,
@@ -508,8 +548,8 @@ export default function MetersPage() {
                           {row.move_in_date && (
                             <div className="space-y-1">
                               <div className="rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] text-emerald-700">
-                                ผู้เช่าเข้าใหม่ {row.move_in_tenant_name ? `(${row.move_in_tenant_name})` : ""}{" "}
-                                วันที่ {row.move_in_date}
+                                รอบบิลแรกของผู้เช่า {row.move_in_tenant_name ? `(${row.move_in_tenant_name})` : ""}
+                                {" "}วันที่เข้าอยู่ {row.move_in_date}
                               </div>
                               <select
                                 value={row.previous_source}
@@ -522,7 +562,7 @@ export default function MetersPage() {
                                 }
                                 className="w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-[11px] text-slate-700"
                               >
-                                <option value="move_in">ใช้ค่าเริ่มต้นตอนเข้าอยู่</option>
+                                <option value="move_in">ใช้ค่าเริ่มต้นตอนเข้าอยู่ (ยังไม่มีบิลก่อนหน้า)</option>
                                 <option value="prev_month">ใช้ค่าจากเดือนก่อน</option>
                               </select>
                             </div>
