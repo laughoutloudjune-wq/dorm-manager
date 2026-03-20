@@ -69,6 +69,21 @@ const APARTMENT_POLICY = [
 const roomNumberCompare = (a: string, b: string) =>
   a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
 
+const sanitizeStorageFileName = (fileName: string) => {
+  const extensionIndex = fileName.lastIndexOf(".");
+  const rawBase = extensionIndex >= 0 ? fileName.slice(0, extensionIndex) : fileName;
+  const rawExtension = extensionIndex >= 0 ? fileName.slice(extensionIndex).toLowerCase() : "";
+  const safeBase = rawBase
+    .normalize("NFKD")
+    .replace(/[^\x00-\x7F]/g, "")
+    .replace(/[^a-zA-Z0-9-_]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .toLowerCase();
+  const safeExtension = rawExtension.replace(/[^.a-z0-9]/g, "");
+  return `${safeBase || "upload"}${safeExtension}`;
+};
+
 export default function RegisterPage() {
   const supabase = useMemo(() => createClient(), []);
   const [profile, setProfile] = useState<LiffProfile | null>(null);
@@ -189,7 +204,8 @@ export default function RegisterPage() {
   const uploadSlip = async (file: File | null | undefined) => {
     if (!file) return;
     const safeRoom = roomNumber.trim() || "unknown-room";
-    const filename = `${Date.now()}-${file.name}`;
+    const safeFileName = sanitizeStorageFileName(file.name);
+    const filename = `${Date.now()}-${safeFileName}`;
     const path = `tenant-docs/register/${safeRoom}/new-tenant-${filename}`;
 
     setUploadingNewTenantSlip(true);

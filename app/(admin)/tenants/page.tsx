@@ -168,6 +168,21 @@ const tenantStatusLabel = (status: string) => {
   return status;
 };
 
+const sanitizeStorageFileName = (fileName: string) => {
+  const extensionIndex = fileName.lastIndexOf(".");
+  const rawBase = extensionIndex >= 0 ? fileName.slice(0, extensionIndex) : fileName;
+  const rawExtension = extensionIndex >= 0 ? fileName.slice(extensionIndex).toLowerCase() : "";
+  const safeBase = rawBase
+    .normalize("NFKD")
+    .replace(/[^\x00-\x7F]/g, "")
+    .replace(/[^a-zA-Z0-9-_]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .toLowerCase();
+  const safeExtension = rawExtension.replace(/[^.a-z0-9]/g, "");
+  return `${safeBase || "upload"}${safeExtension}`;
+};
+
 const tenantPaymentMethodLabel = (tenant: TenantRow) => {
   const method = tenant.custom_payment_method;
   if (!method) return "-";
@@ -493,7 +508,8 @@ export default function TenantsPage() {
     if (!file) return;
     setIsUploadingDepositSlip(true);
     const tenantId = activeTenant?.id ?? crypto.randomUUID();
-    const path = `tenant-docs/${tenantId}/${Date.now()}-${file.name}`;
+    const safeFileName = sanitizeStorageFileName(file.name);
+    const path = `tenant-docs/${tenantId}/${Date.now()}-${safeFileName}`;
 
     const { error } = await supabase.storage.from("tenant-docs").upload(path, file, { upsert: true });
     if (error) {
