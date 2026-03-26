@@ -296,7 +296,7 @@ export default function ReportsPageView() {
 
   const moveInRows = useMemo(() => {
     const direct = tenants
-      .filter((row) => String(row.move_in_date ?? "").startsWith(String(selectedYear)))
+      .filter((row) => monthKey(String(row.move_in_date ?? "")) === selectedMonth)
       .map((row) => {
         const room = relationItem(row.rooms);
         return {
@@ -311,7 +311,7 @@ export default function ReportsPageView() {
 
     const seen = new Set(direct.map((row) => `${row.tenant}:${row.room}:${row.date}`));
     const history = logs
-      .filter((row) => String(row.move_in_date ?? "").startsWith(String(selectedYear)))
+      .filter((row) => monthKey(String(row.move_in_date ?? "")) === selectedMonth)
       .map((row) => {
         const room = relationItem(row.rooms);
         return {
@@ -326,7 +326,7 @@ export default function ReportsPageView() {
       .filter((row) => !seen.has(`${row.tenant}:${row.room}:${row.date}`));
 
     return [...direct, ...history].sort(byBuildingAndRoom);
-  }, [logs, roomNumberById, selectedYear, tenants]);
+  }, [logs, roomNumberById, selectedMonth, tenants]);
 
   const moveInSummary = useMemo(
     () => ({
@@ -339,7 +339,7 @@ export default function ReportsPageView() {
 
   const moveOutRows = useMemo(() => {
     const direct = tenants
-      .filter((row) => String(row.move_out_date ?? "").startsWith(String(selectedYear)))
+      .filter((row) => monthKey(String(row.move_out_date ?? "")) === selectedMonth)
       .map((row) => {
         const room = relationItem(row.rooms);
         const prepaid = toNumber(row.security_deposit_amount) + toNumber(row.advance_rent_amount);
@@ -356,7 +356,7 @@ export default function ReportsPageView() {
 
     const seen = new Set(direct.map((row) => `${row.tenant}:${row.room}:${row.date}`));
     const history = logs
-      .filter((row) => String(row.move_out_date ?? "").startsWith(String(selectedYear)))
+      .filter((row) => monthKey(String(row.move_out_date ?? "")) === selectedMonth)
       .map((row) => {
         const room = relationItem(row.rooms);
         return {
@@ -372,7 +372,7 @@ export default function ReportsPageView() {
       .filter((row) => !seen.has(`${row.tenant}:${row.room}:${row.date}`));
 
     return [...direct, ...history].sort(byBuildingAndRoom);
-  }, [logs, roomNumberById, selectedYear, tenants]);
+  }, [logs, roomNumberById, selectedMonth, tenants]);
 
   const moveOutSummary = useMemo(
     () => ({
@@ -523,14 +523,14 @@ export default function ReportsPageView() {
 
   const exportMoveIn = () =>
     downloadCsv(
-      `move-in-report-${selectedYear}.csv`,
+      `move-in-report-${selectedMonth}.csv`,
       ["วันที่", "เลขห้อง", "ชื่อผู้เช่า", "อาคาร", "เงินประกัน", "ค่าเช่าล่วงหน้า"],
       moveInRows.map((row) => [row.date, row.room, row.tenant, row.building, row.deposit, row.advance])
     );
 
   const exportMoveOut = () =>
     downloadCsv(
-      `move-out-report-${selectedYear}.csv`,
+      `move-out-report-${selectedMonth}.csv`,
       ["วันที่", "เลขห้อง", "ชื่อผู้เช่า", "อาคาร", "ยอดล่วงหน้า", "ยอดคืน", "หมายเหตุ"],
       moveOutRows.map((row) => [row.date ?? "-", row.room, row.tenant, row.building, row.prepaid, row.refunded, row.note])
     );
@@ -701,6 +701,25 @@ export default function ReportsPageView() {
 
       {activeTab === "move_in" && (
         <>
+          <Card>
+            <CardContent className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+              <div>
+                <h3 className="text-lg font-semibold text-slate-900">รายงานย้ายเข้า</h3>
+                <p className="text-sm text-slate-500">เลือกเดือนที่ต้องการดูรายการย้ายเข้า</p>
+              </div>
+              <div className="flex flex-wrap items-end gap-3">
+                <label className="space-y-1 text-sm text-slate-600">
+                  <span className="block font-medium">เดือน</span>
+                  <input
+                    type="month"
+                    value={selectedMonth}
+                    onChange={(event) => setSelectedMonth(event.target.value)}
+                    className="rounded-xl border border-slate-200 px-3 py-2 text-slate-900"
+                  />
+                </label>
+              </div>
+            </CardContent>
+          </Card>
           <SummaryCards
             items={[
               { label: "จำนวนรายการย้ายเข้า", value: moveInSummary.count.toLocaleString("th-TH") },
@@ -727,7 +746,7 @@ export default function ReportsPageView() {
                   formatMoney(row.deposit),
                   formatMoney(row.advance),
                 ])}
-                emptyText="ไม่มีข้อมูลย้ายเข้าในปีนี้"
+                emptyText={`ไม่มีข้อมูลย้ายเข้าในเดือน ${selectedMonth}`}
                 embedded
               />
             </CardContent>
@@ -737,6 +756,25 @@ export default function ReportsPageView() {
 
       {activeTab === "move_out" && (
         <>
+          <Card>
+            <CardContent className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+              <div>
+                <h3 className="text-lg font-semibold text-slate-900">รายงานย้ายออก</h3>
+                <p className="text-sm text-slate-500">เลือกเดือนที่ต้องการดูรายการย้ายออก</p>
+              </div>
+              <div className="flex flex-wrap items-end gap-3">
+                <label className="space-y-1 text-sm text-slate-600">
+                  <span className="block font-medium">เดือน</span>
+                  <input
+                    type="month"
+                    value={selectedMonth}
+                    onChange={(event) => setSelectedMonth(event.target.value)}
+                    className="rounded-xl border border-slate-200 px-3 py-2 text-slate-900"
+                  />
+                </label>
+              </div>
+            </CardContent>
+          </Card>
           <SummaryCards
             items={[
               { label: "จำนวนรายการย้ายออก", value: moveOutSummary.count.toLocaleString("th-TH") },
@@ -764,7 +802,7 @@ export default function ReportsPageView() {
                   formatMoney(row.refunded),
                   row.note,
                 ])}
-                emptyText="ไม่มีข้อมูลย้ายออกในปีนี้"
+                emptyText={`ไม่มีข้อมูลย้ายออกในเดือน ${selectedMonth}`}
                 embedded
               />
             </CardContent>
