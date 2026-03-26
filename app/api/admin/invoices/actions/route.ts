@@ -48,13 +48,6 @@ export async function POST(req: Request) {
         if (deleteCarryError) {
           return NextResponse.json({ error: deleteCarryError.message }, { status: 500 });
         }
-        const { error: deleteSnapshotError } = await authEdit.supabase
-          .from("invoice_arrears_snapshots")
-          .delete()
-          .eq("target_invoice_id", invoiceId);
-        if (deleteSnapshotError) {
-          return NextResponse.json({ error: deleteSnapshotError.message }, { status: 500 });
-        }
         const carryMap = new Map<string, number>();
         for (const row of carryRows) {
           const sourceInvoiceId = row?.source_invoice_id ? String(row.source_invoice_id) : "";
