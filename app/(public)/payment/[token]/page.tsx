@@ -20,6 +20,7 @@ type InvoiceData = {
   start_date: string;
   total_amount: number;
   paid_amount: number;
+  late_fee_amount: number;
   payment_history: any[];
   rent_amount: number;
   water_bill: number;
@@ -34,6 +35,14 @@ type InvoiceData = {
   custom_payment_method: any;
   room_number: string;
   room_price_month: number;
+  late_fee_breakdown: Array<{
+    id: string;
+    source_invoice_id: string;
+    snapshot_as_of: string;
+    late_fee_amount: number;
+    days_overdue: number;
+    daily_rate: number;
+  }>;
 };
 
 type MeterReadingRow = {
@@ -79,6 +88,7 @@ function normalizeInvoice(row: any): InvoiceData {
     start_date: row.start_date,
     total_amount: Number(row.total_amount ?? 0),
     paid_amount: Number(row.paid_amount ?? 0),
+    late_fee_amount: Number(row.late_fee_amount ?? 0),
     payment_history: Array.isArray(row.payment_history) ? row.payment_history : [],
     rent_amount: Number(row.rent_amount ?? 0),
     water_bill: Number(row.water_bill ?? 0),
@@ -95,6 +105,7 @@ function normalizeInvoice(row: any): InvoiceData {
     custom_payment_method: tenant?.custom_payment_method ?? null,
     room_number: room?.room_number ?? "-",
     room_price_month: Number(room?.price_month ?? 0),
+    late_fee_breakdown: Array.isArray(row.late_fee_breakdown) ? row.late_fee_breakdown : [],
   };
 }
 
@@ -245,7 +256,7 @@ export default function PaymentTokenPage() {
       const { data, error: fetchError } = await supabase
         .from("invoices")
         .select(
-          "id,room_id,start_date,total_amount,paid_amount,payment_history,rent_amount,water_bill,electricity_bill,common_fee,additional_fees_total,additional_fees_breakdown,status,slip_url,tenants(full_name,custom_payment_method,move_in_date),rooms(room_number,price_month)"
+          "id,room_id,start_date,total_amount,paid_amount,late_fee_amount,payment_history,rent_amount,water_bill,electricity_bill,common_fee,additional_fees_total,additional_fees_breakdown,status,slip_url,tenants(full_name,custom_payment_method,move_in_date),rooms(room_number,price_month)"
         )
         .eq("public_token", token)
         .single();
@@ -256,6 +267,23 @@ export default function PaymentTokenPage() {
       }
 
       const normalized = normalizeInvoice(data);
+      const { data: arrearsRows } = await supabase
+        .from("invoice_arrears_snapshots")
+        .select(
+          "id,source_invoice_id,snapshot_as_of,late_fee_amount,days_overdue,daily_rate"
+        )
+        .eq("target_invoice_id", normalized.id)
+        .order("created_at", { ascending: true });
+      normalized.late_fee_breakdown = Array.isArray(arrearsRows)
+        ? arrearsRows.map((row: any) => ({
+            id: String(row.id),
+            source_invoice_id: String(row.source_invoice_id),
+            snapshot_as_of: String(row.snapshot_as_of),
+            late_fee_amount: toNumber(row.late_fee_amount),
+            days_overdue: Math.round(toNumber(row.days_overdue)),
+            daily_rate: toNumber(row.daily_rate),
+          }))
+        : [];
       setInvoice(normalized);
       setPreview(normalized.slip_url ?? null);
 
@@ -477,6 +505,28 @@ export default function PaymentTokenPage() {
                 <span>฿{formatBaht(Number(fee.total_amount ?? fee.amount ?? 0))}</span>
               </div>
             ))}
+            {invoice.late_fee_breakdown.length > 0 ? (
+              invoice.late_fee_breakdown.map((row) => (
+                <div
+                  key={row.id}
+                  className="flex items-center justify-between rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900"
+                >
+                  <span>
+                    ค่าปรับล่าช้า - บิล {row.source_invoice_id.slice(0, 8).toUpperCase()}
+                    <span className="block text-[11px] font-normal text-amber-800">
+                      {row.days_overdue.toLocaleString("th-TH")} วัน x ฿{formatBaht(row.daily_rate)}
+                      /วัน
+                    </span>
+                  </span>
+                  <span className="font-semibold">฿{formatBaht(row.late_fee_amount)}</span>
+                </div>
+              ))
+            ) : invoice.late_fee_amount > 0 ? (
+              <div className="flex items-center justify-between">
+                <span>ค่าปรับล่าช้า</span>
+                <span className="font-semibold text-slate-900">฿{formatBaht(invoice.late_fee_amount)}</span>
+              </div>
+            ) : null}
           </div>
         </section>
 
