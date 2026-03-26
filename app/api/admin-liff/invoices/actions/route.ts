@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase-admin";
 import { Client, FlexMessage } from "@line/bot-sdk";
 import { requireLineAdminAccess } from "@/lib/line-admin-auth";
+import { applyInvoicePaymentAllocation } from "@/lib/invoice-ledger";
 
 const channelAccessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN || "";
 const lineClient = new Client({ channelAccessToken });
@@ -51,40 +52,18 @@ export async function POST(req: Request) {
       if (fetchError || !current) {
         return NextResponse.json({ error: fetchError?.message ?? "Invoice not found" }, { status: 404 });
       }
-      const total = Number((current as any).total_amount ?? 0);
-      const currentPaid = Number((current as any).paid_amount ?? 0);
-      const addAmount = Math.max(0, total - currentPaid);
       const nowIso = selectedDate
         ? new Date(`${selectedDate}T12:00:00`).toISOString()
         : new Date().toISOString();
-      const existingHistory = Array.isArray((current as any).payment_history)
-        ? ((current as any).payment_history as any[])
-        : [];
-      const nextHistory =
-        addAmount > 0
-          ? [
-              ...existingHistory,
-              {
-                amount: addAmount,
-                mode: "full",
-                paid_at: nowIso,
-                slip_url: (current as any).slip_url ?? null,
-                created_at: nowIso,
-                source: "admin_liff_approve",
-              },
-            ]
-          : existingHistory;
-      const { error } = await supabase
-        .from("invoices")
-        .update({
-          status: "paid",
-          paid_amount: total,
-          payment_history: nextHistory,
-          slip_uploaded_at: nowIso,
-        })
-        .eq("id", invoiceId);
-      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-      return NextResponse.json({ success: true });
+      const result = await applyInvoicePaymentAllocation(supabase, {
+        invoiceId,
+        amount: Number.MAX_SAFE_INTEGER,
+        paidAt: nowIso,
+        slipUrl: ((current as any).slip_url as string | null | undefined) ?? null,
+        mode: "full",
+        source: "admin_liff_approve",
+      });
+      return NextResponse.json({ success: true, ...result });
     }
 
     if (action === "edit_invoice") {

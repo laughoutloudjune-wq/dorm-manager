@@ -418,6 +418,11 @@ export default function PaymentTokenPage() {
               </a>
             </div>
           )}
+          {invoice.status !== "paid" && (
+            <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              ชำระได้ไม่เกินวันที่ 10 ของเดือนถัดไป ถ้าหากเกินกำหนดชำระ มีค่าปรับ 100 บาท/วัน
+            </div>
+          )}
         </header>
 
         <section className="rounded-3xl border border-white/60 bg-white/90 p-6 shadow-xl">

@@ -108,6 +108,8 @@ WHERE NOT EXISTS (SELECT 1 FROM public.settings);
 -- 7. Create indexes for better performance
 CREATE INDEX IF NOT EXISTS idx_invoices_tenant_id ON public.invoices(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_invoices_public_token ON public.invoices(public_token);
+CREATE INDEX IF NOT EXISTS idx_invoice_carry_forwards_target ON public.invoice_carry_forwards(target_invoice_id);
+CREATE INDEX IF NOT EXISTS idx_invoice_payment_allocations_batch ON public.invoice_payment_allocations(payment_batch_id);
 CREATE INDEX IF NOT EXISTS idx_tenants_line_user_id ON public.tenants(line_user_id);
 
 -- 8. Meter readings table for utility tracking
@@ -153,11 +155,33 @@ ADD COLUMN IF NOT EXISTS discount_breakdown JSONB DEFAULT '[]'::jsonb,
 ADD COLUMN IF NOT EXISTS late_fee_amount NUMERIC(10, 2) DEFAULT 0,
 ADD COLUMN IF NOT EXISTS late_fee_per_day NUMERIC(10, 2) DEFAULT 0,
 ADD COLUMN IF NOT EXISTS late_fee_start_date DATE,
+ADD COLUMN IF NOT EXISTS carry_forward_amount NUMERIC(10, 2) DEFAULT 0,
 ADD COLUMN IF NOT EXISTS paid_amount NUMERIC(10, 2) DEFAULT 0,
 ADD COLUMN IF NOT EXISTS payment_history JSONB DEFAULT '[]'::jsonb,
 ADD COLUMN IF NOT EXISTS opened_count INT NOT NULL DEFAULT 0,
 ADD COLUMN IF NOT EXISTS first_opened_at TIMESTAMPTZ,
 ADD COLUMN IF NOT EXISTS last_opened_at TIMESTAMPTZ;
+
+CREATE TABLE IF NOT EXISTS public.invoice_carry_forwards (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    source_invoice_id UUID NOT NULL REFERENCES public.invoices(id) ON DELETE CASCADE,
+    target_invoice_id UUID NOT NULL REFERENCES public.invoices(id) ON DELETE CASCADE,
+    amount NUMERIC(10, 2) NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT invoice_carry_forwards_source_unique UNIQUE (source_invoice_id)
+);
+
+CREATE TABLE IF NOT EXISTS public.invoice_payment_allocations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    payment_batch_id UUID NOT NULL,
+    trigger_invoice_id UUID REFERENCES public.invoices(id) ON DELETE SET NULL,
+    invoice_id UUID NOT NULL REFERENCES public.invoices(id) ON DELETE CASCADE,
+    amount NUMERIC(10, 2) NOT NULL DEFAULT 0,
+    paid_at TIMESTAMPTZ NOT NULL,
+    slip_url TEXT,
+    source TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 
 -- Ensure payment_methods table exists before adding qr_url
 CREATE TABLE IF NOT EXISTS public.payment_methods (

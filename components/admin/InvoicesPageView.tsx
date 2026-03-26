@@ -50,6 +50,7 @@ type InvoiceRecord = {
   late_fee_amount: number;
   late_fee_per_day: number;
   late_fee_start_date: string | null;
+  carry_forward_amount: number;
   additional_fees_total: number;
   additional_fees_breakdown: any[];
   paid_amount: number;
@@ -129,6 +130,10 @@ const toNumber = (value: string | number | null | undefined) => {
 const formatMoney = (value: number) =>
   `฿${value.toLocaleString("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+const invoiceDisplayOutstanding = (invoice: Pick<InvoiceRecord, "total_amount" | "paid_amount" | "carry_forward_amount">) =>
+  Math.max(0, toNumber(invoice.total_amount) - toNumber(invoice.paid_amount)) +
+  Math.max(0, toNumber(invoice.carry_forward_amount));
+
 const formatDateThai = (dateString: string) =>
   new Date(dateString).toLocaleDateString("th-TH", {
     day: "2-digit",
@@ -167,6 +172,9 @@ const toFeeItems = (rows: any[]): FeeLineItem[] => {
 const isTransferBreakdownRow = (row: any) =>
   String(row?.item_type ?? row?.type ?? "").toLowerCase() === "transfer_detail";
 
+const isCarryForwardBreakdownRow = (row: any) =>
+  String(row?.item_type ?? row?.type ?? "").toLowerCase() === "carry_forward";
+
 const toTransferBreakdownItems = (rows: any[]): TransferBreakdownItem[] => {
   if (!Array.isArray(rows) || rows.length === 0) return [];
   return rows
@@ -180,7 +188,12 @@ const toTransferBreakdownItems = (rows: any[]): TransferBreakdownItem[] => {
 
 const toChargeFeeRows = (rows: any[]) => {
   if (!Array.isArray(rows) || rows.length === 0) return [];
-  return rows.filter((row) => !isTransferBreakdownRow(row));
+  return rows.filter((row) => !isTransferBreakdownRow(row) && !isCarryForwardBreakdownRow(row));
+};
+
+const toCarryForwardRows = (rows: any[]) => {
+  if (!Array.isArray(rows) || rows.length === 0) return [];
+  return rows.filter((row) => isCarryForwardBreakdownRow(row));
 };
 
 const serializeTransferBreakdownRows = (items: TransferBreakdownItem[]) =>
@@ -393,6 +406,7 @@ function normalizeInvoice(row: any): InvoiceRecord {
     late_fee_amount: toNumber(row.late_fee_amount),
     late_fee_per_day: toNumber(row.late_fee_per_day),
     late_fee_start_date: row.late_fee_start_date ?? null,
+    carry_forward_amount: toNumber(row.carry_forward_amount),
     additional_fees_total: toNumber(row.additional_fees_total),
     additional_fees_breakdown: Array.isArray(row.additional_fees_breakdown)
       ? row.additional_fees_breakdown
@@ -636,14 +650,20 @@ export default function InvoicesPage() {
     const periodStart = toLocalDateString(new Date(year, month - 1, 1));
     const periodEnd = toLocalDateString(new Date(year, month, 0));
 
-    // Do not auto-mutate invoice statuses on page load.
-    // Automatic writes here can override manual status changes and feel random on refresh.
+    if (can("invoice.edit")) {
+      try {
+        await callInvoiceAdminAction("sync_overdue", {});
+      } catch {
+        // Ledger sync should not block invoice viewing.
+      }
+    }
+
     await syncMonthInvoicesWithSettings(year, month);
 
     const { data, error: fetchError } = await supabase
       .from("invoices")
       .select(
-        "id,room_id,status,total_amount,paid_amount,payment_history,issue_date,due_date,start_date,end_date,rent_amount,water_bill,electricity_bill,common_fee,discount_amount,discount_breakdown,late_fee_amount,late_fee_per_day,late_fee_start_date,additional_fees_total,additional_fees_breakdown,notes,public_token,slip_url,opened_count,first_opened_at,last_opened_at,tenants(full_name,phone_number,line_user_id,custom_payment_method,move_in_date),rooms(room_number,price_month,buildings(name))"
+        "id,room_id,status,total_amount,paid_amount,payment_history,issue_date,due_date,start_date,end_date,rent_amount,water_bill,electricity_bill,common_fee,discount_amount,discount_breakdown,late_fee_amount,late_fee_per_day,late_fee_start_date,carry_forward_amount,additional_fees_total,additional_fees_breakdown,notes,public_token,slip_url,opened_count,first_opened_at,last_opened_at,tenants(full_name,phone_number,line_user_id,custom_payment_method,move_in_date),rooms(room_number,price_month,buildings(name))"
       )
       .eq("start_date", periodStart)
       .eq("end_date", periodEnd)
@@ -901,7 +921,11 @@ export default function InvoicesPage() {
     if (!activeInvoice) return;
     const currentPaid = toNumber(form.paid_amount || activeInvoice.paid_amount);
     const total = toNumber(form.total_amount || activeInvoice.total_amount);
-    const remaining = Math.max(0, total - currentPaid);
+    const remaining = invoiceDisplayOutstanding({
+      total_amount: total,
+      paid_amount: currentPaid,
+      carry_forward_amount: activeInvoice.carry_forward_amount,
+    });
     if (remaining <= 0) {
       setError("This invoice is already fully paid.");
       return;
@@ -925,32 +949,19 @@ export default function InvoicesPage() {
       if (paymentSlipFile) {
         publicUrl = await uploadSlipFile(activeInvoice.id, paymentSlipFile);
       }
-      const nextPaidAmount = Math.min(total, currentPaid + amountToPay);
       const paidAtIso = new Date(`${paymentDate}T12:00:00`).toISOString();
-      const nextStatus: keyof typeof statusVariant =
-        paymentMode === "full" ? "paid" : "partial";
-      const existingHistory = Array.isArray(activeInvoice.payment_history)
-        ? activeInvoice.payment_history
-        : [];
-      const paymentEntry = {
-        amount: amountToPay,
-        mode: paymentMode,
-        paid_at: paidAtIso,
-        slip_url: publicUrl ?? null,
-        created_at: new Date().toISOString(),
-      };
-      const nextHistory = [...existingHistory, paymentEntry];
-
-      await callInvoiceAdminAction("record_payment", {
+      const result = await callInvoiceAdminAction("record_payment", {
         invoiceId: activeInvoice.id,
-        payload: {
-          paid_amount: nextPaidAmount,
-          payment_history: nextHistory,
+        payment: {
+          amount: amountToPay,
+          mode: paymentMode,
+          paid_at: paidAtIso,
           slip_url: publicUrl ?? null,
-          slip_uploaded_at: publicUrl ? paidAtIso : null,
-          status: nextStatus,
+          source: "admin_webapp",
         },
       });
+      const updatedInvoices = Array.isArray(result?.updatedInvoices) ? result.updatedInvoices : [];
+      const activeUpdated = updatedInvoices.find((row: any) => row.id === activeInvoice.id);
 
       setError(null);
       setSlipPreview(publicUrl ?? null);
@@ -958,30 +969,44 @@ export default function InvoicesPage() {
       setPaymentMode("full");
       setPaymentAmountInput("");
       setPaymentSlipFile(null);
-      setForm((prev) => ({ ...prev, paid_amount: nextPaidAmount, status: nextStatus }));
+      if (activeUpdated) {
+        setForm((prev) => ({
+          ...prev,
+          paid_amount: toNumber(activeUpdated.paid_amount),
+          status: (activeUpdated.status as keyof typeof statusVariant) ?? prev.status,
+        }));
+      }
       const activeNext = {
         ...activeInvoice,
-        paid_amount: nextPaidAmount,
-        payment_history: nextHistory,
-        status: nextStatus,
+        paid_amount: toNumber(activeUpdated?.paid_amount ?? activeInvoice.paid_amount),
+        payment_history: Array.isArray(activeUpdated?.payment_history)
+          ? activeUpdated.payment_history
+          : activeInvoice.payment_history,
+        status: (activeUpdated?.status as keyof typeof statusVariant) ?? activeInvoice.status,
         slip_url: publicUrl ?? null,
       } as InvoiceRecord;
       setActiveInvoice((prev) =>
         prev
           ? {
               ...prev,
-              paid_amount: nextPaidAmount,
-              payment_history: nextHistory,
-              status: nextStatus,
+              paid_amount: toNumber(activeUpdated?.paid_amount ?? prev.paid_amount),
+              payment_history: Array.isArray(activeUpdated?.payment_history)
+                ? activeUpdated.payment_history
+                : prev.payment_history,
+              status: (activeUpdated?.status as keyof typeof statusVariant) ?? prev.status,
               slip_url: publicUrl ?? null,
             }
           : prev
       );
-      patchInvoiceInState(activeInvoice.id, {
-        paid_amount: nextPaidAmount,
-        payment_history: nextHistory,
-        status: nextStatus,
-        slip_url: publicUrl ?? null,
+      updatedInvoices.forEach((invoiceUpdate: any) => {
+        patchInvoiceInState(String(invoiceUpdate.id), {
+          paid_amount: toNumber(invoiceUpdate.paid_amount),
+          payment_history: Array.isArray(invoiceUpdate.payment_history)
+            ? invoiceUpdate.payment_history
+            : undefined,
+          status: (invoiceUpdate.status as keyof typeof statusVariant) ?? undefined,
+          slip_url: publicUrl ?? null,
+        });
       });
       // Keep local modal state in sync without reloading the full page list.
       setActiveInvoice(activeNext);
@@ -1931,6 +1956,70 @@ export default function InvoicesPage() {
       (tenant: any) => !existingRoomIds.has(tenant.room_id)
     );
 
+    try {
+      await callInvoiceAdminAction("sync_overdue", {
+        beforeStartDate: toLocalDateString(startDate),
+      });
+    } catch (syncError: any) {
+      setError(syncError?.message ?? "Sync overdue invoices failed.");
+      setSaving(false);
+      setConfirmGenerateOpen(false);
+      return;
+    }
+
+    const tenantIdsToGenerate = tenantsToGenerate.map((tenant: any) => String(tenant.id));
+    const { data: previousUnpaidInvoices, error: previousUnpaidError } =
+      tenantIdsToGenerate.length > 0
+        ? await supabase
+            .from("invoices")
+            .select("id,tenant_id,start_date,total_amount,paid_amount,status")
+            .in("tenant_id", tenantIdsToGenerate)
+            .lt("start_date", toLocalDateString(startDate))
+            .in("status", ["pending", "partial", "overdue", "verifying"])
+            .order("start_date", { ascending: true })
+        : { data: [], error: null };
+
+    if (previousUnpaidError) {
+      setSaving(false);
+      setConfirmGenerateOpen(false);
+      setError(previousUnpaidError.message);
+      return;
+    }
+
+    const sourceInvoiceIds = ((previousUnpaidInvoices ?? []) as any[]).map((row) => String(row.id));
+    const { data: existingCarryForwards, error: carryError } =
+      sourceInvoiceIds.length > 0
+        ? await supabase
+            .from("invoice_carry_forwards")
+            .select("source_invoice_id")
+            .in("source_invoice_id", sourceInvoiceIds)
+        : { data: [], error: null };
+
+    if (carryError) {
+      setSaving(false);
+      setConfirmGenerateOpen(false);
+      setError(carryError.message);
+      return;
+    }
+
+    const carriedInvoiceIds = new Set(
+      ((existingCarryForwards ?? []) as any[]).map((row) => String(row.source_invoice_id))
+    );
+    const carryForwardByTenant = new Map<string, any[]>();
+    for (const row of (previousUnpaidInvoices ?? []) as any[]) {
+      if (carriedInvoiceIds.has(String(row.id))) continue;
+      const outstanding = Math.max(
+        0,
+        toNumber(row.total_amount) - toNumber(row.paid_amount)
+      );
+      if (outstanding <= 0) continue;
+      const tenantId = String(row.tenant_id ?? "");
+      if (!tenantId) continue;
+      const currentRows = carryForwardByTenant.get(tenantId) ?? [];
+      currentRows.push({ ...row, outstanding_amount: outstanding });
+      carryForwardByTenant.set(tenantId, currentRows);
+    }
+
     const { data: readings } = await supabase
       .from("meter_readings")
       .select("room_id,electricity_usage,water_usage,usage")
@@ -2028,6 +2117,21 @@ export default function InvoicesPage() {
         (sum, fee) => sum + toNumber(fee.amount),
         0
       );
+      const carryForwardRows = carryForwardByTenant.get(String(tenant.id)) ?? [];
+      const carryForwardAmount = carryForwardRows.reduce(
+        (sum, row) => sum + toNumber(row.outstanding_amount),
+        0
+      );
+      const carryForwardBreakdown = carryForwardRows.map((row) => ({
+        item_type: "carry_forward",
+        source_invoice_id: row.id,
+        label: `ยอดค้างชำระงวด ${String(row.start_date ?? "").slice(0, 7)}`,
+        detail: `ยอดค้างชำระงวด ${String(row.start_date ?? "").slice(0, 7)}`,
+        unit: 1,
+        price_per_unit: toNumber(row.outstanding_amount),
+        total_amount: toNumber(row.outstanding_amount),
+        amount: toNumber(row.outstanding_amount),
+      }));
 
       const commonFee = toNumber(settings.common_fee);
       const lateFeeAmount = 0;
@@ -2074,8 +2178,13 @@ export default function InvoicesPage() {
         late_fee_amount: lateFeeAmount,
         late_fee_per_day: lateFeePerDay,
         late_fee_start_date: generatedLateFeeStartDateText,
+        carry_forward_amount: carryForwardAmount,
         additional_fees_total: additionalTotal,
-        additional_fees_breakdown: [...additionalBreakdown, ...transferBreakdownRows],
+        additional_fees_breakdown: [
+          ...carryForwardBreakdown,
+          ...additionalBreakdown,
+          ...transferBreakdownRows,
+        ],
         total_amount: totalAmount,
         notes: null,
         status: "draft",
@@ -2084,9 +2193,29 @@ export default function InvoicesPage() {
 
     const generatedRoomIds = new Set(insertPayload.map((row: any) => row.room_id));
     if (insertPayload.length > 0) {
-      const { error: insertError } = await supabase.from("invoices").insert(insertPayload);
+      const { data: insertedInvoices, error: insertError } = await supabase
+        .from("invoices")
+        .insert(insertPayload)
+        .select("id,tenant_id");
       if (insertError) {
         setError(insertError.message);
+      } else if ((insertedInvoices ?? []).length > 0) {
+        const carryForwardInsertPayload = (insertedInvoices ?? []).flatMap((row: any) => {
+          const carryRows = carryForwardByTenant.get(String(row.tenant_id ?? "")) ?? [];
+          return carryRows.map((carryRow) => ({
+            source_invoice_id: carryRow.id,
+            target_invoice_id: row.id,
+            amount: toNumber(carryRow.outstanding_amount),
+          }));
+        });
+        if (carryForwardInsertPayload.length > 0) {
+          const { error: carryInsertError } = await supabase
+            .from("invoice_carry_forwards")
+            .insert(carryForwardInsertPayload);
+          if (carryInsertError) {
+            setError(carryInsertError.message);
+          }
+        }
       }
     } else {
       setError("No new invoices generated. All rooms already have invoices for this period.");
@@ -2201,10 +2330,7 @@ export default function InvoicesPage() {
                 </thead>
                 <tbody>
                   {buildingInvoices.map((invoice) => {
-                    const remaining = Math.max(
-                      0,
-                      toNumber(invoice.total_amount) - toNumber(invoice.paid_amount)
-                    );
+                    const remaining = invoiceDisplayOutstanding(invoice);
                     return (
                     <tr
                       key={invoice.id}
@@ -2275,6 +2401,11 @@ export default function InvoicesPage() {
                       </td>
                       <td className="px-4 py-3 font-semibold text-slate-900">
                         {formatMoney(invoice.total_amount)}
+                        {invoice.carry_forward_amount > 0 && (
+                          <p className="mt-1 text-[11px] font-medium text-amber-700">
+                            มียอดค้างยกมา {formatMoney(invoice.carry_forward_amount)}
+                          </p>
+                        )}
                       </td>
                       <td className="px-4 py-3 font-semibold text-emerald-700">
                         {formatMoney(toNumber(invoice.paid_amount))}
@@ -2444,11 +2575,20 @@ export default function InvoicesPage() {
                 <div className="text-right">
                   <p className="text-xs text-slate-400">ยอดรวม</p>
                   <p className="text-xl font-semibold text-blue-700">{formatMoney(form.total_amount)}</p>
+                  {activeInvoice.carry_forward_amount > 0 && (
+                    <p className="mt-1 text-xs text-amber-700">
+                      ยอดค้างยกมา: {formatMoney(activeInvoice.carry_forward_amount)}
+                    </p>
+                  )}
                   <p className="mt-1 text-xs text-slate-400">ชำระแล้ว: {formatMoney(toNumber(form.paid_amount))}</p>
                   <p className="text-xs text-rose-600">
                     คงเหลือ:{" "}
                     {formatMoney(
-                      Math.max(0, toNumber(form.total_amount) - toNumber(form.paid_amount))
+                      invoiceDisplayOutstanding({
+                        total_amount: form.total_amount,
+                        paid_amount: toNumber(form.paid_amount),
+                        carry_forward_amount: activeInvoice.carry_forward_amount,
+                      })
                     )}
                   </p>
                 </div>
