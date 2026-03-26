@@ -1,6 +1,11 @@
 ﻿import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase-admin";
 
+const toNumber = (value: unknown) => {
+  const parsed = Number(value ?? 0);
+  return Number.isNaN(parsed) ? 0 : parsed;
+};
+
 export async function POST(req: Request) {
   try {
     const body = await req.json();
@@ -66,6 +71,29 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: paidError.message }, { status: 500 });
     }
 
+    const pendingInvoiceIds = (pendingInvoices ?? []).map((row: any) => String(row.id));
+    const { data: arrearsSnapshots, error: arrearsError } =
+      pendingInvoiceIds.length > 0
+        ? await supabase
+            .from("invoice_arrears_snapshots")
+            .select(
+              "id,target_invoice_id,source_invoice_id,snapshot_as_of,late_fee_amount,days_overdue,daily_rate"
+            )
+            .in("target_invoice_id", pendingInvoiceIds)
+            .order("created_at", { ascending: true })
+        : { data: [], error: null as any };
+
+    if (arrearsError) {
+      return NextResponse.json({ error: arrearsError.message }, { status: 500 });
+    }
+
+    const arrearsByInvoice = new Map<string, any[]>();
+    for (const row of arrearsSnapshots ?? []) {
+      const key = String((row as any).target_invoice_id ?? "");
+      if (!arrearsByInvoice.has(key)) arrearsByInvoice.set(key, []);
+      arrearsByInvoice.get(key)!.push(row as any);
+    }
+
     const roomRel = Array.isArray((tenant as any).rooms) ? (tenant as any).rooms[0] : (tenant as any).rooms;
 
     return NextResponse.json({
@@ -75,8 +103,28 @@ export async function POST(req: Request) {
         room_number: roomRel?.room_number ?? "-",
         has_corporate_receipt: !!(tenant as any)?.custom_receipt_profile,
       },
-      invoices: pendingInvoices ?? [],
-      pending_invoices: pendingInvoices ?? [],
+      invoices: (pendingInvoices ?? []).map((invoice: any) => ({
+        ...invoice,
+        late_fee_breakdown: (arrearsByInvoice.get(String(invoice.id)) ?? []).map((row: any) => ({
+          id: String(row.id),
+          source_invoice_id: String(row.source_invoice_id),
+          snapshot_as_of: String(row.snapshot_as_of),
+          late_fee_amount: toNumber(row.late_fee_amount),
+          days_overdue: Math.round(toNumber(row.days_overdue)),
+          daily_rate: toNumber(row.daily_rate),
+        })),
+      })),
+      pending_invoices: (pendingInvoices ?? []).map((invoice: any) => ({
+        ...invoice,
+        late_fee_breakdown: (arrearsByInvoice.get(String(invoice.id)) ?? []).map((row: any) => ({
+          id: String(row.id),
+          source_invoice_id: String(row.source_invoice_id),
+          snapshot_as_of: String(row.snapshot_as_of),
+          late_fee_amount: toNumber(row.late_fee_amount),
+          days_overdue: Math.round(toNumber(row.days_overdue)),
+          daily_rate: toNumber(row.daily_rate),
+        })),
+      })),
       paid_invoices: paidInvoices ?? [],
       message: null,
     });

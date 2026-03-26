@@ -1843,39 +1843,28 @@ export default function InvoicesPage() {
           </tr>`
       )
       .join("");
-    const arrearsSnapshotHtml =
+    const lateFeeRowsHtml =
       arrearsSnapshotRows.length > 0
-        ? `
-          <div class="section">
-            <table>
-              <thead>
+        ? arrearsSnapshotRows
+            .map(
+              (row) => `
                 <tr>
-                  <th>บิลต้นทาง</th>
-                  <th>คำนวณถึงวันที่</th>
-                  <th class="text-right">ยอดค้างต้นทาง</th>
-                  <th class="text-right">วันเกินกำหนด</th>
-                  <th class="text-right">อัตรา/วัน</th>
-                  <th class="text-right">ค่าปรับที่คิดในบิลนี้</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${arrearsSnapshotRows
-                  .map(
-                    (row) => `
-                    <tr>
-                      <td>${shortInvoiceId(row.source_invoice_id)}</td>
-                      <td>${row.snapshot_as_of}</td>
-                      <td class="text-right">${formatMoney(row.principal_amount)}</td>
-                      <td class="text-right">${row.days_overdue.toLocaleString("th-TH")}</td>
-                      <td class="text-right">${formatMoney(row.daily_rate)}</td>
-                      <td class="text-right">${formatMoney(row.late_fee_amount)}</td>
-                    </tr>`
-                  )
-                  .join("")}
-              </tbody>
-            </table>
-          </div>`
-        : "";
+                  <td>ค่าปรับล่าช้า - บิล ${shortInvoiceId(row.source_invoice_id)} (คำนวณถึง ${formatDateThai(row.snapshot_as_of)})</td>
+                  <td class="text-right">${row.days_overdue.toLocaleString("th-TH")} วัน</td>
+                  <td class="text-right">${formatMoney(row.daily_rate)}</td>
+                  <td class="text-right">${formatMoney(row.late_fee_amount)}</td>
+                </tr>`
+            )
+            .join("")
+        : invoice.late_fee_amount > 0
+          ? `
+              <tr>
+                <td>ค่าปรับล่าช้า</td>
+                <td class="text-right">-</td>
+                <td class="text-right">-</td>
+                <td class="text-right">${formatMoney(invoice.late_fee_amount)}</td>
+              </tr>`
+          : "";
 
     const documentTitle = docType === "receipt" ? "ใบเสร็จรับเงิน" : "ใบแจ้งหนี้";
 
@@ -1975,12 +1964,7 @@ export default function InvoicesPage() {
                 <td class="text-right">-</td>
                 <td class="text-right">-${formatMoney(invoice.discount_amount)}</td>
               </tr>
-              <tr>
-                <td>ค่าปรับล่าช้า</td>
-                <td class="text-right">-</td>
-                <td class="text-right">-</td>
-                <td class="text-right">${formatMoney(invoice.late_fee_amount)}</td>
-              </tr>
+              ${lateFeeRowsHtml}
               ${additionalRows}
               ${discountRows}
               <tr class="total">
@@ -1995,7 +1979,6 @@ export default function InvoicesPage() {
           <p class="sub"><b>ช่องทางชำระเงิน:</b> ${paymentText}</p>
           <p class="sub"><b>หมายเหตุ:</b> ${invoice.notes || "-"}</p>
         </div>
-        ${arrearsSnapshotHtml}
       </body>
       </html>
     `;
@@ -4046,12 +4029,34 @@ export default function InvoicesPage() {
                           </td>
                         </tr>
                       ))}
-                      <tr className="border-t border-slate-100">
-                        <td className="px-3 py-2">ค่าปรับล่าช้า</td>
-                        <td className="px-3 py-2 text-right">-</td>
-                        <td className="px-3 py-2 text-right">-</td>
-                        <td className="px-3 py-2 text-right">{formatMoney(previewInvoice.late_fee_amount)}</td>
-                      </tr>
+                      {previewArrearsSnapshots.length > 0 ? (
+                        previewArrearsSnapshots.map((row) => (
+                          <tr key={`preview-late-fee-${row.id}`} className="border-t border-amber-100 bg-amber-50/40">
+                            <td className="px-3 py-2">
+                              ค่าปรับล่าช้า - บิล {shortInvoiceId(row.source_invoice_id)} (คำนวณถึง{" "}
+                              {formatDateThai(row.snapshot_as_of)})
+                            </td>
+                            <td className="px-3 py-2 text-right">
+                              {row.days_overdue.toLocaleString("th-TH")} วัน
+                            </td>
+                            <td className="px-3 py-2 text-right">
+                              {formatMoney(row.daily_rate)}
+                            </td>
+                            <td className="px-3 py-2 text-right font-semibold text-amber-900">
+                              {formatMoney(row.late_fee_amount)}
+                            </td>
+                          </tr>
+                        ))
+                      ) : previewInvoice.late_fee_amount > 0 ? (
+                        <tr className="border-t border-slate-100">
+                          <td className="px-3 py-2">ค่าปรับล่าช้า</td>
+                          <td className="px-3 py-2 text-right">-</td>
+                          <td className="px-3 py-2 text-right">-</td>
+                          <td className="px-3 py-2 text-right">
+                            {formatMoney(previewInvoice.late_fee_amount)}
+                          </td>
+                        </tr>
+                      ) : null}
                       {toChargeFeeRows(previewInvoice.additional_fees_breakdown ?? []).map((fee: any, idx: number) => (
                         <tr key={`${fee.label}-${idx}`} className="border-t border-slate-100">
                           <td className="px-3 py-2">
@@ -4089,48 +4094,6 @@ export default function InvoicesPage() {
                     <span className="font-semibold">หมายเหตุ:</span> {previewInvoice.notes || "-"}
                   </p>
                 </div>
-                {previewArrearsSnapshots.length > 0 && (
-                  <div className="overflow-hidden rounded-xl border border-amber-200 bg-white">
-                    <div className="border-b border-amber-200 bg-amber-50 px-4 py-3">
-                      <p className="font-semibold text-amber-900">รายละเอียดค่าปรับล่าช้า</p>
-                      <p className="text-xs text-amber-800">
-                        ค่าปรับนี้ถูกคำนวณในบิลปัจจุบันจากยอดค้างของบิลก่อนหน้า
-                      </p>
-                    </div>
-                    <table className="w-full text-sm">
-                      <thead className="bg-amber-50/70 text-amber-900">
-                        <tr>
-                          <th className="px-3 py-2 text-left">บิลต้นทาง</th>
-                          <th className="px-3 py-2 text-left">คำนวณถึงวันที่</th>
-                          <th className="px-3 py-2 text-right">ยอดค้างต้นทาง</th>
-                          <th className="px-3 py-2 text-right">วันเกินกำหนด</th>
-                          <th className="px-3 py-2 text-right">อัตรา/วัน</th>
-                          <th className="px-3 py-2 text-right">ค่าปรับที่คิดในบิลนี้</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {previewArrearsSnapshots.map((row) => (
-                          <tr key={row.id} className="border-t border-amber-100">
-                            <td className="px-3 py-2">{shortInvoiceId(row.source_invoice_id)}</td>
-                            <td className="px-3 py-2">{row.snapshot_as_of}</td>
-                            <td className="px-3 py-2 text-right">
-                              {formatMoney(row.principal_amount)}
-                            </td>
-                            <td className="px-3 py-2 text-right">
-                              {row.days_overdue.toLocaleString("th-TH")}
-                            </td>
-                            <td className="px-3 py-2 text-right">
-                              {formatMoney(row.daily_rate)}
-                            </td>
-                            <td className="px-3 py-2 text-right font-semibold text-amber-900">
-                              {formatMoney(row.late_fee_amount)}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
               </>
             )}
 

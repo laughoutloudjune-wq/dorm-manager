@@ -170,6 +170,21 @@ export async function GET(req: Request) {
     );
     const hasNormalAdditionalFeeBreakdown = normalAdditionalFees.length > 0;
     const arrearsSnapshotRows = Array.isArray(arrearsSnapshots) ? arrearsSnapshots : [];
+    const lateFeeRowsHtml =
+      arrearsSnapshotRows.length > 0
+        ? arrearsSnapshotRows
+            .map(
+              (row: any) =>
+                `<tr><td>ค่าปรับล่าช้า - บิล ${escapeHtml(shortInvoiceId(String(row?.source_invoice_id ?? "")))} (${escapeHtml(
+                  `${Math.round(toNumber(row?.days_overdue)).toLocaleString("th-TH")} วัน x ${formatMoney(
+                    toNumber(row?.daily_rate)
+                  )}/วัน`
+                )})</td><td>${escapeHtml(formatMoney(toNumber(row?.late_fee_amount)))}</td></tr>`
+            )
+            .join("")
+        : toNumber((data as any).late_fee_amount) > 0
+          ? `<tr><td>ค่าปรับล่าช้า</td><td>${escapeHtml(formatMoney(toNumber((data as any).late_fee_amount)))}</td></tr>`
+          : "";
 
     const html = `
 <!doctype html>
@@ -261,7 +276,7 @@ export async function GET(req: Request) {
                 : ""
           }
           <tr><td>ส่วนลด</td><td>-${escapeHtml(formatMoney(toNumber((data as any).discount_amount)))}</td></tr>
-          <tr><td>ค่าปรับล่าช้า</td><td>${escapeHtml(formatMoney(toNumber((data as any).late_fee_amount)))}</td></tr>
+          ${lateFeeRowsHtml}
         </tbody>
       </table>
       <div class="total row">
@@ -273,41 +288,6 @@ export async function GET(req: Request) {
         )}</span>
       </div>
     </div>
-    ${
-      arrearsSnapshotRows.length > 0
-        ? `
-    <div class="card">
-      <h2>รายละเอียดค่าปรับล่าช้า</h2>
-      <table class="charges-table">
-        <thead>
-          <tr>
-            <th>บิลต้นทาง</th>
-            <th>คำนวณถึงวันที่</th>
-            <th>ยอดค้างต้นทาง</th>
-            <th>วันเกินกำหนด</th>
-            <th>อัตรา/วัน</th>
-            <th>ค่าปรับที่คิดในบิลนี้</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${arrearsSnapshotRows
-            .map(
-              (row: any) => `
-            <tr>
-              <td>${escapeHtml(shortInvoiceId(String(row?.source_invoice_id ?? "")))}</td>
-              <td>${escapeHtml(formatDate(String(row?.snapshot_as_of ?? "")))}</td>
-              <td>${escapeHtml(formatMoney(toNumber(row?.principal_amount)))}</td>
-              <td>${escapeHtml(Math.round(toNumber(row?.days_overdue)).toLocaleString("th-TH"))}</td>
-              <td>${escapeHtml(formatMoney(toNumber(row?.daily_rate)))}</td>
-              <td>${escapeHtml(formatMoney(toNumber(row?.late_fee_amount)))}</td>
-            </tr>`
-            )
-            .join("")}
-        </tbody>
-      </table>
-    </div>`
-        : ""
-    }
   </body>
 </html>`;
 

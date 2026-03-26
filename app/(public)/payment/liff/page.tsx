@@ -17,6 +17,14 @@ type InvoiceRow = {
   paid_amount?: number;
   status?: string;
   carry_forward_amount?: number;
+  late_fee_breakdown?: Array<{
+    id: string;
+    source_invoice_id: string;
+    snapshot_as_of: string;
+    late_fee_amount: number;
+    days_overdue: number;
+    daily_rate: number;
+  }>;
 };
 
 type TenantInfo = {
@@ -382,6 +390,25 @@ export default function PaymentLiffPage() {
                               <p className="mt-2 text-sm font-semibold text-rose-700">
                                 คงเหลือ ฿{formatMoney(outstanding)}
                               </p>
+                              {Array.isArray(invoice.late_fee_breakdown) &&
+                                invoice.late_fee_breakdown.length > 0 && (
+                                  <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+                                    <p className="text-[11px] font-semibold text-amber-900">
+                                      รายละเอียดค่าปรับล่าช้า
+                                    </p>
+                                    <div className="mt-1 space-y-1 text-[11px] text-amber-900">
+                                      {invoice.late_fee_breakdown.map((row) => (
+                                        <p key={row.id}>
+                                          บิล {row.source_invoice_id.slice(0, 8).toUpperCase()}:
+                                          {" "}
+                                          {row.days_overdue.toLocaleString("th-TH")} วัน x ฿
+                                          {formatMoney(row.daily_rate)}/วัน = ฿
+                                          {formatMoney(row.late_fee_amount)}
+                                        </p>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
                               <a
                                 href={`/payment/${invoice.public_token}`}
                                 className="mt-2 inline-block text-xs font-semibold text-blue-600"
