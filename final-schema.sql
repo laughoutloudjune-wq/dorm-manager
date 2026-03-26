@@ -5,6 +5,7 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 -- Drop dependent tables first
 DROP TABLE IF EXISTS public.meter_readings;
+DROP TABLE IF EXISTS public.invoice_arrears_snapshots;
 DROP TABLE IF EXISTS public.invoice_payment_allocations;
 DROP TABLE IF EXISTS public.invoice_carry_forwards;
 DROP TABLE IF EXISTS public.invoices;
@@ -203,6 +204,18 @@ CREATE TABLE public.invoice_payment_allocations (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE public.invoice_arrears_snapshots (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  source_invoice_id UUID NOT NULL REFERENCES public.invoices(id) ON DELETE CASCADE,
+  target_invoice_id UUID NOT NULL REFERENCES public.invoices(id) ON DELETE CASCADE,
+  snapshot_as_of DATE NOT NULL,
+  principal_amount NUMERIC(10,2) NOT NULL DEFAULT 0.00,
+  late_fee_amount NUMERIC(10,2) NOT NULL DEFAULT 0.00,
+  days_overdue INT NOT NULL DEFAULT 0,
+  daily_rate NUMERIC(10,2) NOT NULL DEFAULT 0.00,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Meter Readings (supports legacy and dual meters)
 CREATE TABLE public.meter_readings (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -250,6 +263,7 @@ CREATE INDEX IF NOT EXISTS idx_invoices_public_token ON public.invoices(public_t
 CREATE INDEX IF NOT EXISTS idx_invoices_status ON public.invoices(status);
 CREATE INDEX IF NOT EXISTS idx_invoice_carry_forwards_target ON public.invoice_carry_forwards(target_invoice_id);
 CREATE INDEX IF NOT EXISTS idx_invoice_payment_allocations_batch ON public.invoice_payment_allocations(payment_batch_id);
+CREATE INDEX IF NOT EXISTS idx_invoice_arrears_snapshots_target ON public.invoice_arrears_snapshots(target_invoice_id);
 CREATE INDEX IF NOT EXISTS idx_meter_readings_room_month ON public.meter_readings(room_id, reading_month);
 
 -- LINE meter webhook user registry

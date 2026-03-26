@@ -71,6 +71,15 @@ const rowHtml = (label: string, value: string) => `
   </div>
 `;
 
+const isCarryForwardBreakdownRow = (row: any) =>
+  String(row?.item_type ?? row?.type ?? "").toLowerCase() === "carry_forward";
+
+const isTransferBreakdownRow = (row: any) =>
+  String(row?.item_type ?? row?.type ?? "").toLowerCase() === "transfer_detail";
+
+const shortInvoiceId = (value: string | null | undefined) =>
+  String(value ?? "").slice(0, 8).toUpperCase() || "-";
+
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
@@ -121,6 +130,13 @@ export async function GET(req: Request) {
       .eq("room_id", String((data as any).room_id))
       .eq("reading_month", readingMonth)
       .maybeSingle();
+    const { data: arrearsSnapshots } = await supabase
+      .from("invoice_arrears_snapshots")
+      .select(
+        "id,source_invoice_id,snapshot_as_of,principal_amount,late_fee_amount,days_overdue,daily_rate"
+      )
+      .eq("target_invoice_id", String((data as any).id))
+      .order("created_at", { ascending: true });
 
     const waterUsage = resolveWaterUsage(reading);
     const electricityUsage = resolveElectricityUsage(reading);
@@ -148,7 +164,12 @@ export async function GET(req: Request) {
     const additionalFees = Array.isArray((data as any).additional_fees_breakdown)
       ? (data as any).additional_fees_breakdown
       : [];
-    const hasAdditionalFeeBreakdown = additionalFees.length > 0;
+    const carryForwardFees = additionalFees.filter((row: any) => isCarryForwardBreakdownRow(row));
+    const normalAdditionalFees = additionalFees.filter(
+      (row: any) => !isCarryForwardBreakdownRow(row) && !isTransferBreakdownRow(row)
+    );
+    const hasNormalAdditionalFeeBreakdown = normalAdditionalFees.length > 0;
+    const arrearsSnapshotRows = Array.isArray(arrearsSnapshots) ? arrearsSnapshots : [];
 
     const html = `
 <!doctype html>
@@ -214,7 +235,15 @@ export async function GET(req: Request) {
             <td>${escapeHtml(formatMoney(toNumber((data as any).electricity_bill)))}</td>
           </tr>
           <tr><td>ค่าส่วนกลาง</td><td>${escapeHtml(formatMoney(toNumber((data as any).common_fee)))}</td></tr>
-          ${additionalFees
+          ${carryForwardFees
+            .map(
+              (fee: any) =>
+                `<tr><td>ยอดค้างยกมา - ${escapeHtml(String(fee?.detail ?? fee?.label ?? "-"))}</td><td>${escapeHtml(
+                  formatMoney(toNumber(fee?.total_amount ?? fee?.amount ?? 0))
+                )}</td></tr>`
+            )
+            .join("")}
+          ${normalAdditionalFees
             .map(
               (fee: any) =>
                 `<tr><td>${escapeHtml(String(fee?.detail ?? fee?.label ?? "ค่าธรรมเนียมเพิ่มเติม"))}</td><td>${escapeHtml(
@@ -223,7 +252,7 @@ export async function GET(req: Request) {
             )
             .join("")}
           ${
-            hasAdditionalFeeBreakdown
+            hasNormalAdditionalFeeBreakdown
               ? ""
               : toNumber((data as any).additional_fees_total) > 0
                 ? `<tr><td>ค่าธรรมเนียมเพิ่มเติม</td><td>${escapeHtml(
@@ -244,6 +273,41 @@ export async function GET(req: Request) {
         )}</span>
       </div>
     </div>
+    ${
+      arrearsSnapshotRows.length > 0
+        ? `
+    <div class="card">
+      <h2>รายละเอียดค่าปรับล่าช้า</h2>
+      <table class="charges-table">
+        <thead>
+          <tr>
+            <th>บิลต้นทาง</th>
+            <th>คำนวณถึงวันที่</th>
+            <th>ยอดค้างต้นทาง</th>
+            <th>วันเกินกำหนด</th>
+            <th>อัตรา/วัน</th>
+            <th>ค่าปรับที่คิดในบิลนี้</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${arrearsSnapshotRows
+            .map(
+              (row: any) => `
+            <tr>
+              <td>${escapeHtml(shortInvoiceId(String(row?.source_invoice_id ?? "")))}</td>
+              <td>${escapeHtml(formatDate(String(row?.snapshot_as_of ?? "")))}</td>
+              <td>${escapeHtml(formatMoney(toNumber(row?.principal_amount)))}</td>
+              <td>${escapeHtml(Math.round(toNumber(row?.days_overdue)).toLocaleString("th-TH"))}</td>
+              <td>${escapeHtml(formatMoney(toNumber(row?.daily_rate)))}</td>
+              <td>${escapeHtml(formatMoney(toNumber(row?.late_fee_amount)))}</td>
+            </tr>`
+            )
+            .join("")}
+        </tbody>
+      </table>
+    </div>`
+        : ""
+    }
   </body>
 </html>`;
 

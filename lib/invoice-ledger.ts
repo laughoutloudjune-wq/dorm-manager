@@ -106,34 +106,22 @@ export async function syncInvoiceLedger(
   const updatedIds: string[] = [];
 
   for (const invoice of rows) {
-    const nextLateFee = calculateLateFeeAmount(invoice, todayText);
-    const currentLateFee = toNumber(invoice.late_fee_amount);
-    const baseTotal = Math.max(0, toNumber(invoice.total_amount) - currentLateFee);
-    const nextTotal = baseTotal + nextLateFee;
     const nextStatus = resolveInvoiceStatus(
       {
-        total_amount: nextTotal,
+        total_amount: toNumber(invoice.total_amount),
         paid_amount: invoice.paid_amount,
         due_date: invoice.due_date ?? null,
       },
       todayText
     );
 
-    if (
-      Math.abs(nextLateFee - currentLateFee) < 0.0001 &&
-      Math.abs(nextTotal - toNumber(invoice.total_amount)) < 0.0001 &&
-      nextStatus === String(invoice.status ?? "")
-    ) {
+    if (nextStatus === String(invoice.status ?? "")) {
       continue;
     }
 
     const { error: updateError } = await supabase
       .from("invoices")
-      .update({
-        late_fee_amount: nextLateFee,
-        total_amount: nextTotal,
-        status: nextStatus,
-      })
+      .update({ status: nextStatus })
       .eq("id", invoice.id);
     if (updateError) throw new Error(updateError.message);
     updatedIds.push(invoice.id);
@@ -175,6 +163,7 @@ export async function getCarryForwardCandidates(
     .map((row: any) => ({
       ...row,
       outstanding_amount: getInvoiceOutstanding(row),
+      late_fee_snapshot_amount: calculateLateFeeAmount(row, beforeStartDate),
     }))
     .filter((row: any) => row.outstanding_amount > 0);
 }

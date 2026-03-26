@@ -84,6 +84,20 @@ type FeeLineItem = {
   total_amount: number;
 };
 
+type CarryForwardItem = FeeLineItem & {
+  source_invoice_id?: string | null;
+};
+
+type ArrearsSnapshotItem = {
+  id: string;
+  source_invoice_id: string;
+  snapshot_as_of: string;
+  principal_amount: number;
+  late_fee_amount: number;
+  days_overdue: number;
+  daily_rate: number;
+};
+
 type TransferBreakdownItem = {
   label: string;
   value: string;
@@ -129,6 +143,12 @@ const toNumber = (value: string | number | null | undefined) => {
 
 const formatMoney = (value: number) =>
   `฿${value.toLocaleString("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+const shortInvoiceId = (value: string | null | undefined) => {
+  const text = String(value ?? "").trim();
+  if (!text) return "-";
+  return text.slice(0, 8).toUpperCase();
+};
 
 const invoiceDisplayOutstanding = (invoice: Pick<InvoiceRecord, "total_amount" | "paid_amount" | "carry_forward_amount">) =>
   Math.max(0, toNumber(invoice.total_amount) - toNumber(invoice.paid_amount)) +
@@ -188,12 +208,34 @@ const toTransferBreakdownItems = (rows: any[]): TransferBreakdownItem[] => {
 
 const toChargeFeeRows = (rows: any[]) => {
   if (!Array.isArray(rows) || rows.length === 0) return [];
-  return rows.filter((row) => !isTransferBreakdownRow(row) && !isCarryForwardBreakdownRow(row));
+  return rows.filter(
+    (row) =>
+      !isTransferBreakdownRow(row) &&
+      !isCarryForwardBreakdownRow(row)
+  );
 };
 
 const toCarryForwardRows = (rows: any[]) => {
   if (!Array.isArray(rows) || rows.length === 0) return [];
   return rows.filter((row) => isCarryForwardBreakdownRow(row));
+};
+
+const toCarryForwardItems = (rows: any[]): CarryForwardItem[] => {
+  if (!Array.isArray(rows) || rows.length === 0) return [];
+  return rows.map((row) => {
+    const detail = String(row.detail ?? row.label ?? "");
+    const unit = toNumber(row.unit ?? 1);
+    const price_per_unit = toNumber(row.price_per_unit ?? row.rate ?? row.value ?? row.amount ?? 0);
+    const total_amount =
+      row.total_amount != null ? toNumber(row.total_amount) : unit * price_per_unit;
+    return {
+      detail,
+      unit,
+      price_per_unit,
+      total_amount,
+      source_invoice_id: row.source_invoice_id ?? null,
+    };
+  });
 };
 
 const serializeTransferBreakdownRows = (items: TransferBreakdownItem[]) =>
@@ -213,6 +255,14 @@ const emptyFeeItem = (): FeeLineItem => ({
   unit: 1,
   price_per_unit: 0,
   total_amount: 0,
+});
+
+const emptyCarryForwardItem = (): CarryForwardItem => ({
+  detail: "",
+  unit: 1,
+  price_per_unit: 0,
+  total_amount: 0,
+  source_invoice_id: null,
 });
 
 const feeItemsTotal = (items: FeeLineItem[]) =>
@@ -276,6 +326,23 @@ const computeDateByDayNextMonth = (baseDate: string, day: number | null | undefi
   const date = new Date(baseDate);
   const normalized = clampDay(day ?? 1);
   return toLocalDateString(new Date(date.getFullYear(), date.getMonth() + 1, normalized));
+};
+
+const calculateLateFeePreview = (
+  lateFeeStartDate: string | null | undefined,
+  lateFeePerDay: number | null | undefined,
+  asOfDateText: string
+) => {
+  if (!lateFeeStartDate) return { days: 0, amount: 0 };
+  const rate = Math.max(0, toNumber(lateFeePerDay));
+  if (rate <= 0) return { days: 0, amount: 0 };
+  const startDate = fromDateText(lateFeeStartDate);
+  const asOfDate = fromDateText(asOfDateText);
+  if (asOfDate < startDate) return { days: 0, amount: 0 };
+  const startUtc = Date.UTC(startDate.getFullYear(), startDate.getMonth(), startDate.getDate());
+  const asOfUtc = Date.UTC(asOfDate.getFullYear(), asOfDate.getMonth(), asOfDate.getDate());
+  const days = Math.floor((asOfUtc - startUtc) / 86400000) + 1;
+  return { days, amount: days * rate };
 };
 
 const isSameMonthAndYear = (left: Date, right: Date) =>
@@ -455,10 +522,13 @@ export default function InvoicesPage() {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewInvoice, setPreviewInvoice] = useState<InvoiceRecord | null>(null);
   const [previewReading, setPreviewReading] = useState<MeterReadingRow | null>(null);
+  const [previewArrearsSnapshots, setPreviewArrearsSnapshots] = useState<ArrearsSnapshotItem[]>([]);
   const [previewDocType, setPreviewDocType] = useState<"invoice" | "receipt">("invoice");
   const [printSettings, setPrintSettings] = useState<PrintSettings | null>(null);
   const [defaultPaymentMethod, setDefaultPaymentMethod] = useState<PaymentMethodRow | null>(null);
   const [editableFeeItems, setEditableFeeItems] = useState<FeeLineItem[]>([]);
+  const [editableCarryForwardItems, setEditableCarryForwardItems] = useState<CarryForwardItem[]>([]);
+  const [arrearsSnapshots, setArrearsSnapshots] = useState<ArrearsSnapshotItem[]>([]);
   const [editableDiscountItems, setEditableDiscountItems] = useState<FeeLineItem[]>([]);
   const [transferBreakdownItems, setTransferBreakdownItems] = useState<TransferBreakdownItem[]>(
     []
@@ -1121,6 +1191,8 @@ export default function InvoicesPage() {
   const openInvoice = async (invoice: InvoiceRecord) => {
     const chargeFeeRows = toChargeFeeRows(invoice.additional_fees_breakdown ?? []);
     const feeItems = toFeeItems(chargeFeeRows);
+    const carryForwardRows = toCarryForwardRows(invoice.additional_fees_breakdown ?? []);
+    const carryForwardItems = toCarryForwardItems(carryForwardRows);
     const discountItems = toFeeItems(invoice.discount_breakdown ?? []);
     const transferItems = toTransferBreakdownItems(invoice.additional_fees_breakdown ?? []);
     const todayLocal = toLocalDateString(new Date());
@@ -1141,6 +1213,8 @@ export default function InvoicesPage() {
     setActiveInvoice(invoice);
     setUseProrateInModal(useProrateDefault);
     setEditableFeeItems(feeItems.length > 0 ? feeItems : []);
+    setEditableCarryForwardItems(carryForwardItems.length > 0 ? carryForwardItems : []);
+    setArrearsSnapshots([]);
     setTransferBreakdownItems(transferItems);
     setEditableDiscountItems(
       discountItems.length > 0
@@ -1192,6 +1266,25 @@ export default function InvoicesPage() {
     // This is important when water billing uses a minimum charge, where
     // water_bill / water_rate does not equal actual usage.
     try {
+      const { data: snapshotRows } = await supabase
+        .from("invoice_arrears_snapshots")
+        .select(
+          "id,source_invoice_id,snapshot_as_of,principal_amount,late_fee_amount,days_overdue,daily_rate"
+        )
+        .eq("target_invoice_id", invoice.id)
+        .order("created_at", { ascending: true });
+      setArrearsSnapshots(
+        ((snapshotRows ?? []) as any[]).map((row) => ({
+          id: String(row.id),
+          source_invoice_id: String(row.source_invoice_id),
+          snapshot_as_of: String(row.snapshot_as_of),
+          principal_amount: toNumber(row.principal_amount),
+          late_fee_amount: toNumber(row.late_fee_amount),
+          days_overdue: Math.round(toNumber(row.days_overdue)),
+          daily_rate: toNumber(row.daily_rate),
+        }))
+      );
+
       const readingMonth = monthStartFromDate(invoice.start_date || invoice.issue_date);
       const { data } = await supabase
         .from("meter_readings")
@@ -1290,6 +1383,29 @@ export default function InvoicesPage() {
         total_amount: total,
       };
     });
+  };
+
+  const updateCarryForwardItem = (
+    index: number,
+    field: keyof CarryForwardItem,
+    value: string | number
+  ) => {
+    if (activeInvoice && !isInvoiceDetailEditable(activeInvoice.status)) return;
+    setEditableCarryForwardItems((prev) =>
+      prev.map((item, idx) => {
+        if (idx !== index) return item;
+        const next = { ...item, [field]: value } as CarryForwardItem;
+        const unit = toNumber(next.unit);
+        const price_per_unit = toNumber(next.price_per_unit);
+        const nextTotalAmount = unit * price_per_unit;
+        return {
+          ...next,
+          unit,
+          price_per_unit,
+          total_amount: nextTotalAmount,
+        };
+      })
+    );
   };
 
   const toggleProrateInModal = (enabled: boolean) => {
@@ -1434,8 +1550,19 @@ export default function InvoicesPage() {
       late_fee_amount: toNumber(form.late_fee_amount),
       late_fee_per_day: toNumber(form.late_fee_per_day),
       late_fee_start_date: form.late_fee_start_date || null,
+      carry_forward_amount: feeItemsTotal(editableCarryForwardItems),
       additional_fees_total: feeItemsTotal(editableFeeItems),
       additional_fees_breakdown: [
+        ...editableCarryForwardItems.map((item) => ({
+          item_type: "carry_forward",
+          source_invoice_id: item.source_invoice_id ?? null,
+          detail: item.detail,
+          unit: toNumber(item.unit),
+          price_per_unit: toNumber(item.price_per_unit),
+          total_amount: toNumber(item.total_amount),
+          amount: toNumber(item.total_amount),
+          label: item.detail,
+        })),
         ...editableFeeItems.map((item) => ({
           detail: item.detail,
           unit: toNumber(item.unit),
@@ -1603,7 +1730,25 @@ export default function InvoicesPage() {
       .eq("room_id", invoice.room_id)
       .eq("reading_month", readingMonth)
       .maybeSingle();
+    const { data: snapshotRows } = await supabase
+      .from("invoice_arrears_snapshots")
+      .select(
+        "id,source_invoice_id,snapshot_as_of,principal_amount,late_fee_amount,days_overdue,daily_rate"
+      )
+      .eq("target_invoice_id", invoice.id)
+      .order("created_at", { ascending: true });
     setPreviewReading((data as MeterReadingRow) ?? null);
+    setPreviewArrearsSnapshots(
+      ((snapshotRows ?? []) as any[]).map((row) => ({
+        id: String(row.id),
+        source_invoice_id: String(row.source_invoice_id),
+        snapshot_as_of: String(row.snapshot_as_of),
+        principal_amount: toNumber(row.principal_amount),
+        late_fee_amount: toNumber(row.late_fee_amount),
+        days_overdue: Math.round(toNumber(row.days_overdue)),
+        daily_rate: toNumber(row.daily_rate),
+      }))
+    );
     setPreviewLoading(false);
     setPreviewOpen(true);
   };
@@ -1625,7 +1770,8 @@ export default function InvoicesPage() {
   const buildPrintHtml = (
     invoice: InvoiceRecord,
     reading: MeterReadingRow | null,
-    docType: "invoice" | "receipt" = "invoice"
+    docType: "invoice" | "receipt" = "invoice",
+    arrearsSnapshotRows: ArrearsSnapshotItem[] = []
   ) => {
     const dormName = printSettings?.dorm_name || "หอพัก";
     const dormAddress = printSettings?.dorm_address || "-";
@@ -1642,11 +1788,25 @@ export default function InvoicesPage() {
     const showProrateFormula =
       !!prorateSummary && Math.abs(toNumber(invoice.rent_amount) - prorateSummary.rentAmount) < 0.01;
     const transferRows = toTransferBreakdownItems(invoice.additional_fees_breakdown ?? []);
+    const carryForwardRows = toCarryForwardRows(invoice.additional_fees_breakdown ?? []);
     const additionalRows = toChargeFeeRows(invoice.additional_fees_breakdown ?? [])
       .map(
         (fee: any) => `
           <tr>
             <td>ค่าธรรมเนียมเพิ่มเติม - ${fee.detail ?? fee.label ?? "-"}</td>
+            <td class="text-right">${toNumber(fee.unit).toLocaleString("th-TH") || "-"}</td>
+            <td class="text-right">${formatMoney(
+              toNumber(fee.price_per_unit ?? fee.rate ?? fee.value ?? fee.amount)
+            )}</td>
+            <td class="text-right">${formatMoney(toNumber(fee.total_amount ?? fee.amount))}</td>
+          </tr>`
+      )
+      .join("");
+    const carryForwardHtml = carryForwardRows
+      .map(
+        (fee: any) => `
+          <tr>
+            <td>ยอดค้างยกมา - ${fee.detail ?? fee.label ?? "-"}</td>
             <td class="text-right">${toNumber(fee.unit).toLocaleString("th-TH") || "-"}</td>
             <td class="text-right">${formatMoney(
               toNumber(fee.price_per_unit ?? fee.rate ?? fee.value ?? fee.amount)
@@ -1683,6 +1843,39 @@ export default function InvoicesPage() {
           </tr>`
       )
       .join("");
+    const arrearsSnapshotHtml =
+      arrearsSnapshotRows.length > 0
+        ? `
+          <div class="section">
+            <table>
+              <thead>
+                <tr>
+                  <th>บิลต้นทาง</th>
+                  <th>คำนวณถึงวันที่</th>
+                  <th class="text-right">ยอดค้างต้นทาง</th>
+                  <th class="text-right">วันเกินกำหนด</th>
+                  <th class="text-right">อัตรา/วัน</th>
+                  <th class="text-right">ค่าปรับที่คิดในบิลนี้</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${arrearsSnapshotRows
+                  .map(
+                    (row) => `
+                    <tr>
+                      <td>${shortInvoiceId(row.source_invoice_id)}</td>
+                      <td>${row.snapshot_as_of}</td>
+                      <td class="text-right">${formatMoney(row.principal_amount)}</td>
+                      <td class="text-right">${row.days_overdue.toLocaleString("th-TH")}</td>
+                      <td class="text-right">${formatMoney(row.daily_rate)}</td>
+                      <td class="text-right">${formatMoney(row.late_fee_amount)}</td>
+                    </tr>`
+                  )
+                  .join("")}
+              </tbody>
+            </table>
+          </div>`
+        : "";
 
     const documentTitle = docType === "receipt" ? "ใบเสร็จรับเงิน" : "ใบแจ้งหนี้";
 
@@ -1775,6 +1968,7 @@ export default function InvoicesPage() {
                   ? `<tr><td colspan="4" style="background:#eff6ff;color:#1d4ed8;font-weight:600">สรุปย้ายห้องกลางเดือน</td></tr>${transferBreakdownRows}`
                   : ""
               }
+              ${carryForwardHtml}
               <tr>
                 <td>ส่วนลด</td>
                 <td class="text-right">-</td>
@@ -1801,6 +1995,7 @@ export default function InvoicesPage() {
           <p class="sub"><b>ช่องทางชำระเงิน:</b> ${paymentText}</p>
           <p class="sub"><b>หมายเหตุ:</b> ${invoice.notes || "-"}</p>
         </div>
+        ${arrearsSnapshotHtml}
       </body>
       </html>
     `;
@@ -1809,11 +2004,12 @@ export default function InvoicesPage() {
   const printInvoice = (
     invoice: InvoiceRecord,
     reading: MeterReadingRow | null,
-    docType: "invoice" | "receipt" = "invoice"
+    docType: "invoice" | "receipt" = "invoice",
+    arrearsSnapshotRows: ArrearsSnapshotItem[] = []
   ) => {
     const win = window.open("", "_blank");
     if (!win) return;
-    win.document.write(buildPrintHtml(invoice, reading, docType));
+    win.document.write(buildPrintHtml(invoice, reading, docType, arrearsSnapshotRows));
 
     win.document.close();
     win.focus();
@@ -1972,7 +2168,7 @@ export default function InvoicesPage() {
       tenantIdsToGenerate.length > 0
         ? await supabase
             .from("invoices")
-            .select("id,tenant_id,start_date,total_amount,paid_amount,status")
+            .select("id,tenant_id,start_date,total_amount,paid_amount,status,late_fee_amount")
             .in("tenant_id", tenantIdsToGenerate)
             .lt("start_date", toLocalDateString(startDate))
             .in("status", ["pending", "partial", "overdue", "verifying"])
@@ -2013,10 +2209,36 @@ export default function InvoicesPage() {
         toNumber(row.total_amount) - toNumber(row.paid_amount)
       );
       if (outstanding <= 0) continue;
+      const generationDateText = issueDateText;
+      const dailyRate = Math.max(0, lateFeePerDay);
+      let snapshotLateFee = 0;
+      let daysOverdue = 0;
+      if (dailyRate > 0 && row.start_date) {
+        const baseDate = new Date(`${String(row.start_date).slice(0, 7)}-01T00:00:00`);
+        const start = new Date(baseDate.getFullYear(), baseDate.getMonth() + 1, lateFeeStartDay);
+        const asOf = new Date(`${generationDateText}T00:00:00`);
+        if (asOf >= start) {
+          daysOverdue =
+            Math.floor(
+              (Date.UTC(asOf.getFullYear(), asOf.getMonth(), asOf.getDate()) -
+                Date.UTC(start.getFullYear(), start.getMonth(), start.getDate())) /
+                86400000
+            ) + 1;
+          snapshotLateFee = daysOverdue * dailyRate;
+        }
+      }
       const tenantId = String(row.tenant_id ?? "");
       if (!tenantId) continue;
       const currentRows = carryForwardByTenant.get(tenantId) ?? [];
-      currentRows.push({ ...row, outstanding_amount: outstanding });
+      currentRows.push({
+        ...row,
+        outstanding_amount: outstanding,
+        base_outstanding_amount: outstanding,
+        snapshot_late_fee_amount: snapshotLateFee,
+        snapshot_days_overdue: daysOverdue,
+        snapshot_daily_rate: dailyRate,
+        snapshot_as_of: generationDateText,
+      });
       carryForwardByTenant.set(tenantId, currentRows);
     }
 
@@ -2119,7 +2341,11 @@ export default function InvoicesPage() {
       );
       const carryForwardRows = carryForwardByTenant.get(String(tenant.id)) ?? [];
       const carryForwardAmount = carryForwardRows.reduce(
-        (sum, row) => sum + toNumber(row.outstanding_amount),
+        (sum, row) => sum + toNumber(row.base_outstanding_amount),
+        0
+      );
+      const carryForwardLateFeeAmount = carryForwardRows.reduce(
+        (sum, row) => sum + toNumber(row.snapshot_late_fee_amount),
         0
       );
       const carryForwardBreakdown = carryForwardRows.map((row) => ({
@@ -2128,13 +2354,13 @@ export default function InvoicesPage() {
         label: `ยอดค้างชำระงวด ${String(row.start_date ?? "").slice(0, 7)}`,
         detail: `ยอดค้างชำระงวด ${String(row.start_date ?? "").slice(0, 7)}`,
         unit: 1,
-        price_per_unit: toNumber(row.outstanding_amount),
-        total_amount: toNumber(row.outstanding_amount),
-        amount: toNumber(row.outstanding_amount),
-      }));
+        price_per_unit: toNumber(row.base_outstanding_amount),
+        total_amount: toNumber(row.base_outstanding_amount),
+          amount: toNumber(row.base_outstanding_amount),
+        }));
 
       const commonFee = toNumber(settings.common_fee);
-      const lateFeeAmount = 0;
+      const lateFeeAmount = carryForwardLateFeeAmount;
       const totalAmount =
         rentAmount + waterBill + elecBill + commonFee + additionalTotal + lateFeeAmount - discountAmount;
       const transferBreakdownRows = hasTransferToThisRoom
@@ -2208,12 +2434,32 @@ export default function InvoicesPage() {
             amount: toNumber(carryRow.outstanding_amount),
           }));
         });
+        const arrearsSnapshotPayload = (insertedInvoices ?? []).flatMap((row: any) => {
+          const carryRows = carryForwardByTenant.get(String(row.tenant_id ?? "")) ?? [];
+          return carryRows.map((carryRow) => ({
+            source_invoice_id: carryRow.id,
+            target_invoice_id: row.id,
+            snapshot_as_of: carryRow.snapshot_as_of,
+            principal_amount: toNumber(carryRow.base_outstanding_amount),
+            late_fee_amount: toNumber(carryRow.snapshot_late_fee_amount),
+            days_overdue: Math.round(toNumber(carryRow.snapshot_days_overdue)),
+            daily_rate: toNumber(carryRow.snapshot_daily_rate),
+          }));
+        });
         if (carryForwardInsertPayload.length > 0) {
           const { error: carryInsertError } = await supabase
             .from("invoice_carry_forwards")
             .insert(carryForwardInsertPayload);
           if (carryInsertError) {
             setError(carryInsertError.message);
+          }
+        }
+        if (arrearsSnapshotPayload.length > 0) {
+          const { error: snapshotInsertError } = await supabase
+            .from("invoice_arrears_snapshots")
+            .insert(arrearsSnapshotPayload);
+          if (snapshotInsertError) {
+            setError(snapshotInsertError.message);
           }
         }
       }
@@ -2267,6 +2513,33 @@ export default function InvoicesPage() {
   const canDeleteInvoice = can("invoice.delete");
   const canUpdateInvoiceStatus = can("invoice.status.update");
   const canRecordInvoicePayment = can("invoice.payment.record");
+  const lateFeePreview = calculateLateFeePreview(
+    form.late_fee_start_date || null,
+    form.late_fee_per_day,
+    toLocalDateString(new Date())
+  );
+
+  useEffect(() => {
+    setForm((prev) => {
+      const nextAdditional = feeItemsTotal(editableFeeItems);
+      const nextDiscount = feeItemsTotal(editableDiscountItems);
+      const total =
+        toNumber(prev.rent_amount) +
+        toNumber(prev.water_bill) +
+        toNumber(prev.electricity_bill) +
+        toNumber(prev.common_fee) +
+        toNumber(prev.late_fee_amount) +
+        nextAdditional -
+        nextDiscount;
+      return {
+        ...prev,
+        additional_fees_total: nextAdditional,
+        discount_amount: nextDiscount,
+        total_amount: total,
+        paid_amount: Math.min(toNumber(prev.paid_amount), total),
+      };
+    });
+  }, [editableFeeItems, editableDiscountItems, editableCarryForwardItems]);
 
   return (
     <div className="space-y-6">
@@ -2550,7 +2823,7 @@ export default function InvoicesPage() {
       <Modal
         isOpen={detailOpen}
         onClose={() => setDetailOpen(false)}
-        title={activeInvoice ? `ใบแจ้งหนี้ ${activeInvoice.id}` : "รายละเอียดใบแจ้งหนี้"}
+        title={activeInvoice ? `ใบแจ้งหนี้ ${shortInvoiceId(activeInvoice.id)}` : "รายละเอียดใบแจ้งหนี้"}
         size="xl"
       >
         {activeInvoice && (
@@ -2575,9 +2848,9 @@ export default function InvoicesPage() {
                 <div className="text-right">
                   <p className="text-xs text-slate-400">ยอดรวม</p>
                   <p className="text-xl font-semibold text-blue-700">{formatMoney(form.total_amount)}</p>
-                  {activeInvoice.carry_forward_amount > 0 && (
+                  {feeItemsTotal(editableCarryForwardItems) > 0 && (
                     <p className="mt-1 text-xs text-amber-700">
-                      ยอดค้างยกมา: {formatMoney(activeInvoice.carry_forward_amount)}
+                      ยอดค้างยกมา: {formatMoney(feeItemsTotal(editableCarryForwardItems))}
                     </p>
                   )}
                   <p className="mt-1 text-xs text-slate-400">ชำระแล้ว: {formatMoney(toNumber(form.paid_amount))}</p>
@@ -2587,7 +2860,7 @@ export default function InvoicesPage() {
                       invoiceDisplayOutstanding({
                         total_amount: form.total_amount,
                         paid_amount: toNumber(form.paid_amount),
-                        carry_forward_amount: activeInvoice.carry_forward_amount,
+                        carry_forward_amount: feeItemsTotal(editableCarryForwardItems),
                       })
                     )}
                   </p>
@@ -2657,7 +2930,13 @@ export default function InvoicesPage() {
                       <p>ชำระแล้ว: {formatMoney(toNumber(form.paid_amount))}</p>
                       <p>
                         คงเหลือ:{" "}
-                        {formatMoney(Math.max(0, toNumber(form.total_amount) - toNumber(form.paid_amount)))}
+                        {formatMoney(
+                          invoiceDisplayOutstanding({
+                            total_amount: form.total_amount,
+                            paid_amount: toNumber(form.paid_amount),
+                            carry_forward_amount: feeItemsTotal(editableCarryForwardItems),
+                          })
+                        )}
                       </p>
                     </div>
                     <div className="rounded-lg border border-slate-200 p-3">
@@ -2982,6 +3261,93 @@ export default function InvoicesPage() {
                         />
                       </td>
                     </tr>
+                    <tr className="border-t border-amber-200 bg-amber-50/60">
+                      <td className="px-3 py-2 font-medium text-amber-900">
+                        ส่วนคำนวณค่าปรับล่าช้า
+                        <p className="text-xs font-normal text-amber-800">
+                          ใช้วันเริ่มค่าปรับและอัตรารายวันเพื่อช่วยคำนวณยอด ณ วันนี้
+                        </p>
+                      </td>
+                      <td className="px-3 py-2">
+                        <div className="grid gap-2 md:grid-cols-3">
+                          <div>
+                            <p className="mb-1 text-xs text-amber-800">วันเริ่มคิดค่าปรับ</p>
+                            <input
+                              type="date"
+                              value={form.late_fee_start_date}
+                              onChange={(event) => updateForm("late_fee_start_date", event.target.value)}
+                              className="w-full rounded-lg border border-amber-200 bg-white px-3 py-1.5"
+                            />
+                          </div>
+                          <div>
+                            <p className="mb-1 text-xs text-amber-800">อัตราค่าปรับ/วัน</p>
+                            <input
+                              type="number"
+                              value={form.late_fee_per_day}
+                              onChange={(event) => updateForm("late_fee_per_day", event.target.value)}
+                              className="w-full rounded-lg border border-amber-200 bg-white px-3 py-1.5 text-right"
+                            />
+                          </div>
+                          <div>
+                            <p className="mb-1 text-xs text-amber-800">ยอดคำนวณ ณ วันนี้</p>
+                            <div className="rounded-lg border border-amber-200 bg-white px-3 py-2 text-right text-sm font-semibold text-amber-900">
+                              {formatMoney(lateFeePreview.amount)}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                          <p className="text-xs text-amber-900">
+                            เกินกำหนด {lateFeePreview.days.toLocaleString("th-TH")} วัน x{" "}
+                            {formatMoney(toNumber(form.late_fee_per_day))}/วัน
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => updateForm("late_fee_amount", lateFeePreview.amount)}
+                            className="rounded-lg border border-amber-300 bg-white px-3 py-1 text-xs font-semibold text-amber-800"
+                          >
+                            ใช้ยอดคำนวณนี้
+                          </button>
+                        </div>
+                        {arrearsSnapshots.length > 0 && (
+                          <div className="mt-3 overflow-x-auto rounded-xl border border-amber-200 bg-white">
+                            <table className="w-full min-w-[760px] text-sm">
+                              <thead className="bg-amber-100/70 text-amber-900">
+                                <tr>
+                                  <th className="px-3 py-2 text-left">บิลต้นทาง</th>
+                                  <th className="px-3 py-2 text-left">คำนวณถึงวันที่</th>
+                                  <th className="px-3 py-2 text-right">ยอดค้างต้นทาง</th>
+                                  <th className="px-3 py-2 text-right">วันเกินกำหนด</th>
+                                  <th className="px-3 py-2 text-right">อัตรา/วัน</th>
+                                  <th className="px-3 py-2 text-right">ค่าปรับที่คิดในบิลนี้</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {arrearsSnapshots.map((row) => (
+                                  <tr key={row.id} className="border-t border-amber-100">
+                                    <td className="px-3 py-2 font-medium">
+                                      {shortInvoiceId(row.source_invoice_id)}
+                                    </td>
+                                    <td className="px-3 py-2">{row.snapshot_as_of}</td>
+                                    <td className="px-3 py-2 text-right">
+                                      {formatMoney(row.principal_amount)}
+                                    </td>
+                                    <td className="px-3 py-2 text-right">
+                                      {row.days_overdue.toLocaleString("th-TH")}
+                                    </td>
+                                    <td className="px-3 py-2 text-right">
+                                      {formatMoney(row.daily_rate)}
+                                    </td>
+                                    <td className="px-3 py-2 text-right font-semibold text-amber-900">
+                                      {formatMoney(row.late_fee_amount)}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
                     <tr className="border-t border-slate-100">
                       <td className="px-3 py-2 font-medium">รวมค่าธรรมเนียมเพิ่มเติม</td>
                       <td className="px-3 py-2">
@@ -3032,6 +3398,114 @@ export default function InvoicesPage() {
                 </div>
               </div>
             )}
+
+            <div className="space-y-3 rounded-xl border border-amber-200 bg-amber-50/40 p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-semibold text-amber-900">ยอดค้างยกมา</p>
+                  <p className="text-xs text-amber-800">
+                    แก้ไขหรือลบได้ในกรณีที่ต้องการปรับยอดค้างที่นำมาทบในบิลนี้
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setEditableCarryForwardItems((prev) => [...prev, emptyCarryForwardItem()])}
+                  className="rounded-lg border border-amber-300 bg-white px-3 py-1 text-xs font-semibold text-amber-800"
+                >
+                  เพิ่มแถวยอดค้าง
+                </button>
+              </div>
+
+              {editableCarryForwardItems.length === 0 ? (
+                <p className="text-xs text-amber-800">ยังไม่มียอดค้างยกมาในบิลนี้</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[720px] text-sm">
+                    <thead className="bg-amber-100/80 text-amber-900">
+                      <tr>
+                        <th className="px-2 py-2 text-left">รายละเอียด</th>
+                        <th className="px-2 py-2 text-left">อ้างอิงบิลเดิม</th>
+                        <th className="px-2 py-2 text-right">หน่วย</th>
+                        <th className="px-2 py-2 text-right">ราคา/หน่วย</th>
+                        <th className="px-2 py-2 text-right">ยอดรวม</th>
+                        <th className="px-2 py-2 text-right">จัดการ</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {editableCarryForwardItems.map((item, index) => (
+                        <tr key={`carry-${index}`} className="border-t border-amber-100">
+                          <td className="px-2 py-2">
+                            <input
+                              type="text"
+                              value={item.detail}
+                              onChange={(event) =>
+                                updateCarryForwardItem(index, "detail", event.target.value)
+                              }
+                              className="w-full rounded-lg border border-amber-200 bg-white px-2 py-1"
+                              placeholder="เช่น ยอดค้างชำระงวด 2026-02"
+                            />
+                          </td>
+                          <td className="px-2 py-2">
+                            <div className="space-y-1">
+                              <input
+                                type="text"
+                                value={item.source_invoice_id ?? ""}
+                                onChange={(event) =>
+                                  updateCarryForwardItem(
+                                    index,
+                                    "source_invoice_id",
+                                    event.target.value
+                                  )
+                                }
+                                className="w-full rounded-lg border border-amber-200 bg-white px-2 py-1"
+                                placeholder="invoice id เดิม (ถ้ามี)"
+                              />
+                              <p className="text-[11px] text-amber-800">
+                                เลขย่อ: {shortInvoiceId(item.source_invoice_id)}
+                              </p>
+                            </div>
+                          </td>
+                          <td className="px-2 py-2">
+                            <input
+                              type="number"
+                              value={item.unit}
+                              onChange={(event) => updateCarryForwardItem(index, "unit", event.target.value)}
+                              className="w-full rounded-lg border border-amber-200 bg-white px-2 py-1 text-right"
+                            />
+                          </td>
+                          <td className="px-2 py-2">
+                            <input
+                              type="number"
+                              value={item.price_per_unit}
+                              onChange={(event) =>
+                                updateCarryForwardItem(index, "price_per_unit", event.target.value)
+                              }
+                              className="w-full rounded-lg border border-amber-200 bg-white px-2 py-1 text-right"
+                            />
+                          </td>
+                          <td className="px-2 py-2 text-right font-semibold text-amber-950">
+                            {formatMoney(toNumber(item.total_amount))}
+                          </td>
+                          <td className="px-2 py-2 text-right">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setEditableCarryForwardItems((prev) =>
+                                  prev.filter((_, idx) => idx !== index)
+                                )
+                              }
+                              className="rounded-lg border border-red-200 bg-white px-2 py-1 text-xs text-red-600"
+                            >
+                              ลบ
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
 
             <div className="space-y-3 rounded-xl border border-slate-200 p-4">
               <div className="flex items-center justify-between">
@@ -3527,6 +4001,29 @@ export default function InvoicesPage() {
                           </tr>
                         )
                       )}
+                      {toCarryForwardRows(previewInvoice.additional_fees_breakdown ?? []).map(
+                        (fee: any, idx: number) => (
+                          <tr
+                            key={`carry-forward-${fee.label ?? fee.detail ?? ""}-${idx}`}
+                            className="border-t border-amber-100 bg-amber-50/60"
+                          >
+                            <td className="px-3 py-2">
+                              ยอดค้างยกมา - {fee.detail ?? fee.label ?? "-"}
+                            </td>
+                            <td className="px-3 py-2 text-right">
+                              {toNumber(fee.unit).toLocaleString("th-TH") || "-"}
+                            </td>
+                            <td className="px-3 py-2 text-right">
+                              {formatMoney(
+                                toNumber(fee.price_per_unit ?? fee.rate ?? fee.value ?? fee.amount)
+                              )}
+                            </td>
+                            <td className="px-3 py-2 text-right font-semibold text-amber-900">
+                              {formatMoney(toNumber(fee.total_amount ?? fee.amount))}
+                            </td>
+                          </tr>
+                        )
+                      )}
                       {(
                         Array.isArray(previewInvoice.discount_breakdown) && previewInvoice.discount_breakdown.length > 0
                           ? previewInvoice.discount_breakdown
@@ -3592,6 +4089,48 @@ export default function InvoicesPage() {
                     <span className="font-semibold">หมายเหตุ:</span> {previewInvoice.notes || "-"}
                   </p>
                 </div>
+                {previewArrearsSnapshots.length > 0 && (
+                  <div className="overflow-hidden rounded-xl border border-amber-200 bg-white">
+                    <div className="border-b border-amber-200 bg-amber-50 px-4 py-3">
+                      <p className="font-semibold text-amber-900">รายละเอียดค่าปรับล่าช้า</p>
+                      <p className="text-xs text-amber-800">
+                        ค่าปรับนี้ถูกคำนวณในบิลปัจจุบันจากยอดค้างของบิลก่อนหน้า
+                      </p>
+                    </div>
+                    <table className="w-full text-sm">
+                      <thead className="bg-amber-50/70 text-amber-900">
+                        <tr>
+                          <th className="px-3 py-2 text-left">บิลต้นทาง</th>
+                          <th className="px-3 py-2 text-left">คำนวณถึงวันที่</th>
+                          <th className="px-3 py-2 text-right">ยอดค้างต้นทาง</th>
+                          <th className="px-3 py-2 text-right">วันเกินกำหนด</th>
+                          <th className="px-3 py-2 text-right">อัตรา/วัน</th>
+                          <th className="px-3 py-2 text-right">ค่าปรับที่คิดในบิลนี้</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {previewArrearsSnapshots.map((row) => (
+                          <tr key={row.id} className="border-t border-amber-100">
+                            <td className="px-3 py-2">{shortInvoiceId(row.source_invoice_id)}</td>
+                            <td className="px-3 py-2">{row.snapshot_as_of}</td>
+                            <td className="px-3 py-2 text-right">
+                              {formatMoney(row.principal_amount)}
+                            </td>
+                            <td className="px-3 py-2 text-right">
+                              {row.days_overdue.toLocaleString("th-TH")}
+                            </td>
+                            <td className="px-3 py-2 text-right">
+                              {formatMoney(row.daily_rate)}
+                            </td>
+                            <td className="px-3 py-2 text-right font-semibold text-amber-900">
+                              {formatMoney(row.late_fee_amount)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </>
             )}
 
@@ -3604,7 +4143,13 @@ export default function InvoicesPage() {
               </button>
               <button
                 onClick={() =>
-                  previewInvoice && printInvoice(previewInvoice, previewReading, previewDocType)
+                  previewInvoice &&
+                  printInvoice(
+                    previewInvoice,
+                    previewReading,
+                    previewDocType,
+                    previewArrearsSnapshots
+                  )
                 }
                 className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
               >

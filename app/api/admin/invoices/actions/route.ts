@@ -34,6 +34,50 @@ export async function POST(req: Request) {
       }
       const { error } = await authEdit.supabase.from("invoices").update(payload).eq("id", invoiceId);
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      if ("additional_fees_breakdown" in payload) {
+        const rows = Array.isArray((payload as any).additional_fees_breakdown)
+          ? ((payload as any).additional_fees_breakdown as any[])
+          : [];
+        const carryRows = rows.filter(
+          (row) => String(row?.item_type ?? row?.type ?? "").toLowerCase() === "carry_forward"
+        );
+        const { error: deleteCarryError } = await authEdit.supabase
+          .from("invoice_carry_forwards")
+          .delete()
+          .eq("target_invoice_id", invoiceId);
+        if (deleteCarryError) {
+          return NextResponse.json({ error: deleteCarryError.message }, { status: 500 });
+        }
+        const { error: deleteSnapshotError } = await authEdit.supabase
+          .from("invoice_arrears_snapshots")
+          .delete()
+          .eq("target_invoice_id", invoiceId);
+        if (deleteSnapshotError) {
+          return NextResponse.json({ error: deleteSnapshotError.message }, { status: 500 });
+        }
+        const carryMap = new Map<string, number>();
+        for (const row of carryRows) {
+          const sourceInvoiceId = row?.source_invoice_id ? String(row.source_invoice_id) : "";
+          if (!sourceInvoiceId) continue;
+          carryMap.set(
+            sourceInvoiceId,
+            (carryMap.get(sourceInvoiceId) ?? 0) + Number(row?.total_amount ?? row?.amount ?? 0)
+          );
+        }
+        const insertRows = [...carryMap.entries()].map(([source_invoice_id, amount]) => ({
+          source_invoice_id,
+          target_invoice_id: invoiceId,
+          amount,
+        }));
+        if (insertRows.length > 0) {
+          const { error: insertCarryError } = await authEdit.supabase
+            .from("invoice_carry_forwards")
+            .insert(insertRows);
+          if (insertCarryError) {
+            return NextResponse.json({ error: insertCarryError.message }, { status: 500 });
+          }
+        }
+      }
       return NextResponse.json({ success: true });
     }
 
