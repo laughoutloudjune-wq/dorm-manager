@@ -60,6 +60,18 @@ type ReceiptProfile = {
   address: string;
 };
 
+type MoveOutRequestRow = {
+  id: string;
+  tenant_id: string;
+  requested_move_out_date: string;
+  approved_move_out_date: string | null;
+  actual_move_out_date: string | null;
+  status: string;
+  request_note: string | null;
+  admin_note: string | null;
+  created_at: string | null;
+};
+
 type SettingsRates = {
   water_rate: number;
   electricity_rate: number;
@@ -281,6 +293,8 @@ export default function TenantsPage() {
   const [latestPrevElectricity, setLatestPrevElectricity] = useState(0);
   const [latestPrevWater, setLatestPrevWater] = useState(0);
   const [moveOutFeeLines, setMoveOutFeeLines] = useState<MoveOutFeeLine[]>([]);
+  const [moveOutRequests, setMoveOutRequests] = useState<MoveOutRequestRow[]>([]);
+  const [activeMoveOutRequest, setActiveMoveOutRequest] = useState<MoveOutRequestRow | null>(null);
 
   const [confirmSaveOpen, setConfirmSaveOpen] = useState(false);
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
@@ -407,11 +421,35 @@ export default function TenantsPage() {
     }
   };
 
+  const loadMoveOutRequests = async () => {
+    const { data, error } = await supabase
+      .from("move_out_requests")
+      .select(
+        "id,tenant_id,requested_move_out_date,approved_move_out_date,actual_move_out_date,status,request_note,admin_note,created_at"
+      )
+      .in("status", ["requested", "approved"])
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      setStatus(error.message);
+      return;
+    }
+
+    setMoveOutRequests((data ?? []) as MoveOutRequestRow[]);
+  };
+
   useEffect(() => {
     let mounted = true;
     const loadAll = async () => {
       setIsPageLoading(true);
-      await Promise.all([loadTenants(), loadRooms(), loadMethods(), loadReceiptProfiles(), loadRates()]);
+      await Promise.all([
+        loadTenants(),
+        loadRooms(),
+        loadMethods(),
+        loadReceiptProfiles(),
+        loadRates(),
+        loadMoveOutRequests(),
+      ]);
       if (mounted) setIsPageLoading(false);
     };
     void loadAll();
@@ -476,9 +514,19 @@ export default function TenantsPage() {
     };
   }, [activeTenant, form.room_id, latestPrevElectricity, latestPrevWater]);
 
-  const openModal = async (tenant?: TenantRow) => {
-    setActiveTab("info");
+  const openModal = async (
+    tenant?: TenantRow,
+    initialTab: "info" | "move_in" | "move_out" = "info"
+  ) => {
+    setActiveTab(initialTab);
     if (tenant) {
+      const request = activeMoveOutRequestByTenantId.get(String(tenant.id)) ?? null;
+      const requestedMoveOutDate =
+        request?.approved_move_out_date ??
+        request?.requested_move_out_date ??
+        tenant.move_out_date ??
+        null;
+      setActiveMoveOutRequest(request);
       setActiveTenant(tenant);
       setForm({
         full_name: tenant.full_name,
@@ -495,8 +543,8 @@ export default function TenantsPage() {
         deposit_slip_url: tenant.deposit_slip_url ?? "",
         final_electricity_reading: toNumber(tenant.final_electricity_reading ?? 0),
         final_water_reading: toNumber(tenant.final_water_reading ?? 0),
-        move_out_date: tenant.move_out_date ?? new Date().toISOString().slice(0, 10),
-        final_move_out_date: tenant.move_out_date ?? new Date().toISOString().slice(0, 10),
+        move_out_date: requestedMoveOutDate ?? new Date().toISOString().slice(0, 10),
+        final_move_out_date: tenant.move_out_date ?? requestedMoveOutDate ?? new Date().toISOString().slice(0, 10),
       });
       setDepositSlipUrls(parseDepositSlipUrls(tenant.deposit_slip_url));
       setMoveOutFeeLines([]);
@@ -534,6 +582,7 @@ export default function TenantsPage() {
       );
     } else {
       setActiveTenant(null);
+      setActiveMoveOutRequest(null);
       setForm({
         full_name: "",
         address: "",
@@ -718,6 +767,32 @@ export default function TenantsPage() {
       }
     }
     setIsSavingTenant(false);
+  };
+
+  const manageMoveOutRequest = async (requestStatus: "approved" | "rejected") => {
+    if (!activeMoveOutRequest) return;
+    try {
+      await callTenantsAction("manage_move_out_request", {
+        requestId: activeMoveOutRequest.id,
+        requestStatus,
+        approvedMoveOutDate: requestStatus === "approved" ? form.move_out_date : null,
+        adminNote: activeMoveOutRequest.admin_note ?? null,
+      });
+      await Promise.all([loadTenants(), loadMoveOutRequests()]);
+      setActiveMoveOutRequest((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: requestStatus,
+              approved_move_out_date:
+                requestStatus === "approved" ? form.move_out_date : prev.approved_move_out_date,
+            }
+          : prev
+      );
+      setStatus(requestStatus === "approved" ? "อนุมัติคำขอย้ายออกเรียบร้อย" : "ปฏิเสธคำขอย้ายออกเรียบร้อย");
+    } catch (error: any) {
+      setStatus(error?.message ?? "จัดการคำขอย้ายออกไม่สำเร็จ");
+    }
   };
 
   const deleteTenant = async () => {
@@ -917,6 +992,16 @@ export default function TenantsPage() {
     return grouped;
   }, [filtered, roomsById]);
 
+  const activeMoveOutRequestByTenantId = useMemo(() => {
+    const map = new Map<string, MoveOutRequestRow>();
+    for (const row of moveOutRequests) {
+      const tenantId = String(row.tenant_id ?? "");
+      if (!tenantId || map.has(tenantId)) continue;
+      map.set(tenantId, row);
+    }
+    return map;
+  }, [moveOutRequests]);
+
   const leaseEnd = form.move_in_date ? leaseEndDateText(form.move_in_date, toNumber(form.lease_months)) : "-";
   const leaseActive = form.move_in_date ? new Date() <= new Date(leaseEnd) : false;
 
@@ -1013,7 +1098,16 @@ export default function TenantsPage() {
                 <tbody>
                   {buildingTenants.map((tenant) => (
                     <tr key={tenant.id} className="border-t border-slate-100">
-                      <td className="px-4 py-3 font-medium text-slate-900">{tenant.full_name}</td>
+                      <td className="px-4 py-3 font-medium text-slate-900">
+                        <div className="flex items-center gap-2">
+                          <span>{tenant.full_name}</span>
+                          {activeMoveOutRequestByTenantId.has(String(tenant.id)) && (
+                            <span className="rounded-full border border-orange-200 bg-orange-50 px-2 py-0.5 text-xs font-medium text-orange-700">
+                              รอจัดการย้ายออก
+                            </span>
+                          )}
+                        </div>
+                      </td>
                       <td className="px-4 py-3">{tenantRoomNumber(tenant, roomsById)}</td>
                       <td className="px-4 py-3">{tenant.phone_number ?? "-"}</td>
                       <td className="px-4 py-3 text-sm text-slate-600">{tenantPaymentMethodLabel(tenant)}</td>
@@ -1023,14 +1117,26 @@ export default function TenantsPage() {
                         </Badge>
                       </td>
                       <td className="px-4 py-3">
-                        <button
-                          disabled={!canEditTenant}
-                          title={!canEditTenant ? "ไม่มีสิทธิ์แก้ไขข้อมูลผู้เช่า" : undefined}
-                          className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 disabled:cursor-not-allowed disabled:border-red-200 disabled:text-red-400"
-                          onClick={() => void openModal(tenant)}
-                        >
-                          แก้ไข
-                        </button>
+                        <div className="flex items-center gap-2">
+                          {activeMoveOutRequestByTenantId.has(String(tenant.id)) && (
+                            <button
+                              type="button"
+                              disabled={!canEditTenant}
+                              onClick={() => void openModal(tenant, "move_out")}
+                              className="rounded-lg border border-orange-200 px-3 py-1.5 text-sm text-orange-700 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              ดูคำขอ
+                            </button>
+                          )}
+                          <button
+                            disabled={!canEditTenant}
+                            title={!canEditTenant ? "ไม่มีสิทธิ์แก้ไขข้อมูลผู้เช่า" : undefined}
+                            className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 disabled:cursor-not-allowed disabled:border-red-200 disabled:text-red-400"
+                            onClick={() => void openModal(tenant)}
+                          >
+                            แก้ไข
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -1400,6 +1506,42 @@ export default function TenantsPage() {
 
         {activeTab === "move_out" && (
           <fieldset disabled={!canEditTenant} className="space-y-4 disabled:cursor-not-allowed disabled:opacity-70">
+            {activeMoveOutRequest && (
+              <div className="rounded-2xl border border-orange-200 bg-orange-50 p-4 text-sm text-orange-900">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="font-semibold">คำขอย้ายออกจากผู้เช่า</p>
+                    <p className="mt-1 text-xs">
+                      วันที่ขอ: {activeMoveOutRequest.requested_move_out_date} | สถานะ: {activeMoveOutRequest.status}
+                    </p>
+                    {activeMoveOutRequest.request_note && (
+                      <p className="mt-1 text-xs">หมายเหตุผู้เช่า: {activeMoveOutRequest.request_note}</p>
+                    )}
+                  </div>
+                  <div className="flex gap-2">
+                    {activeMoveOutRequest.status !== "approved" && (
+                      <button
+                        type="button"
+                        onClick={() => void manageMoveOutRequest("approved")}
+                        className="rounded-lg bg-green-600 px-3 py-1.5 text-sm font-medium text-white"
+                      >
+                        อนุมัติ
+                      </button>
+                    )}
+                    {activeMoveOutRequest.status !== "rejected" && (
+                      <button
+                        type="button"
+                        onClick={() => void manageMoveOutRequest("rejected")}
+                        className="rounded-lg border border-red-200 bg-white px-3 py-1.5 text-sm font-medium text-red-600"
+                      >
+                        ปฏิเสธ
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
             <div className="grid gap-4 md:grid-cols-2">
               <Input
                 label="วันที่แจ้งย้ายออก"

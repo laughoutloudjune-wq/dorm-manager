@@ -255,6 +255,72 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: true });
     }
 
+    if (action === "manage_move_out_request") {
+      const auth = await requireAdminPermission(req, "tenant.edit");
+      if ("error" in auth) return auth.error;
+
+      const requestId = String(body?.requestId ?? "");
+      const requestStatus = String(body?.requestStatus ?? "");
+      const approvedMoveOutDate = body?.approvedMoveOutDate
+        ? String(body.approvedMoveOutDate)
+        : null;
+      const adminNote = body?.adminNote != null ? String(body.adminNote) : null;
+
+      if (!requestId || !requestStatus) {
+        return NextResponse.json({ error: "Missing requestId or requestStatus." }, { status: 400 });
+      }
+
+      const allowedStatuses = new Set(["requested", "approved", "rejected", "completed", "cancelled"]);
+      if (!allowedStatuses.has(requestStatus)) {
+        return NextResponse.json({ error: "Invalid request status." }, { status: 400 });
+      }
+
+      const { data: requestRow, error: requestFetchError } = await auth.supabase
+        .from("move_out_requests")
+        .select("id,tenant_id")
+        .eq("id", requestId)
+        .maybeSingle();
+
+      if (requestFetchError) {
+        return NextResponse.json({ error: requestFetchError.message }, { status: 500 });
+      }
+      if (!requestRow?.id) {
+        return NextResponse.json({ error: "Move-out request not found." }, { status: 404 });
+      }
+
+      const nowIso = new Date().toISOString();
+      const updatePayload: Record<string, unknown> = {
+        status: requestStatus,
+        admin_note: adminNote,
+        updated_at: nowIso,
+      };
+      if (requestStatus === "approved") {
+        updatePayload.approved_move_out_date = approvedMoveOutDate;
+      }
+
+      const { error: updateRequestError } = await auth.supabase
+        .from("move_out_requests")
+        .update(updatePayload)
+        .eq("id", requestId);
+
+      if (updateRequestError) {
+        return NextResponse.json({ error: updateRequestError.message }, { status: 500 });
+      }
+
+      if (requestStatus === "approved" && approvedMoveOutDate) {
+        const { error: updateTenantError } = await auth.supabase
+          .from("tenants")
+          .update({ move_out_date: approvedMoveOutDate })
+          .eq("id", String(requestRow.tenant_id));
+
+        if (updateTenantError) {
+          return NextResponse.json({ error: updateTenantError.message }, { status: 500 });
+        }
+      }
+
+      return NextResponse.json({ success: true });
+    }
+
     if (action === "final_move_out") {
       const auth = await requireAdminPermission(req, "tenant.edit");
       if ("error" in auth) return auth.error;

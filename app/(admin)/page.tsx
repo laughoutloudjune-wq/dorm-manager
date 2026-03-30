@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, ArrowRight, CheckCircle2, FileClock, Home, ReceiptText, Users, Zap } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/Card";
+import { Modal } from "@/components/ui/Modal";
 import { createClient } from "@/lib/supabase-client";
 
 type Kpi = {
@@ -45,6 +46,8 @@ export default function DashboardPage() {
   const [invoices, setInvoices] = useState<any[]>([]);
   const [meters, setMeters] = useState<any[]>([]);
   const [moveOutRequests, setMoveOutRequests] = useState<any[]>([]);
+  const [requestModalOpen, setRequestModalOpen] = useState(false);
+  const [selectedMoveOutRequest, setSelectedMoveOutRequest] = useState<any | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -317,6 +320,77 @@ export default function DashboardPage() {
     ...dashboard.utilityTrend.flatMap((row) => [row.electricity, row.water])
   );
 
+  const openMoveOutRequestModal = (request: any) => {
+    setSelectedMoveOutRequest(request);
+    setRequestModalOpen(true);
+  };
+
+  const manageMoveOutRequest = async (requestStatus: "approved" | "rejected") => {
+    if (!selectedMoveOutRequest) return;
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
+    if (!token) {
+      setError("เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่");
+      return;
+    }
+
+    const approvedMoveOutDate =
+      requestStatus === "approved"
+        ? String(selectedMoveOutRequest.requested_move_out_date ?? "")
+        : null;
+
+    const response = await fetch("/api/admin/tenants/actions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        action: "manage_move_out_request",
+        requestId: selectedMoveOutRequest.id,
+        requestStatus,
+        approvedMoveOutDate,
+      }),
+    });
+
+    const dataJson = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setError(dataJson?.error ?? "จัดการคำขอย้ายออกไม่สำเร็จ");
+      return;
+    }
+
+    setMoveOutRequests((prev) =>
+      prev.map((row) =>
+        String(row.id) === String(selectedMoveOutRequest.id)
+          ? {
+              ...row,
+              status: requestStatus,
+              approved_move_out_date: approvedMoveOutDate,
+            }
+          : row
+      )
+    );
+    if (requestStatus === "approved" && approvedMoveOutDate) {
+      setTenants((prev) =>
+        prev.map((tenant) =>
+          String(tenant.id) === String(selectedMoveOutRequest.tenant_id)
+            ? { ...tenant, move_out_date: approvedMoveOutDate }
+            : tenant
+        )
+      );
+    }
+    setSelectedMoveOutRequest((prev: any) =>
+      prev
+        ? {
+            ...prev,
+            status: requestStatus,
+            approved_move_out_date: approvedMoveOutDate,
+          }
+        : prev
+    );
+    setRequestModalOpen(false);
+  };
+
   return (
     <div className="space-y-8">
       {error && (
@@ -393,6 +467,21 @@ export default function DashboardPage() {
               <span className="text-xs text-slate-400">30 วัน</span>
             </div>
             <div className="space-y-3">
+              <MiniListAction
+                title="คำขอย้ายออกรอตรวจสอบ"
+                emptyText="ยังไม่มีคำขอย้ายออกใหม่จากผู้เช่า"
+                items={dashboard.requestedMoveOuts.map((request: any) => {
+                  const tenant = relationItem(request.tenants);
+                  const room = relationItem(tenant?.rooms);
+                  return {
+                    id: String(request.id),
+                    text: `${tenant?.full_name ?? "-"} | ห้อง ${room?.room_number ?? "-"} | ${formatDate(
+                      request.requested_move_out_date
+                    )}`,
+                    onClick: () => openMoveOutRequestModal(request),
+                  };
+                })}
+              />
               <MiniList
                 title="กำลังจะย้ายเข้า"
                 emptyText="ไม่มีรายการย้ายเข้าใน 30 วัน"
@@ -588,6 +677,44 @@ export default function DashboardPage() {
           </CardContent>
         </Card>
       </section>
+
+      <Modal
+        isOpen={requestModalOpen}
+        onClose={() => setRequestModalOpen(false)}
+        title="จัดการคำขอย้ายออก"
+        size="lg"
+      >
+        {selectedMoveOutRequest && (
+          <div className="space-y-4">
+            <div className="rounded-xl border border-orange-200 bg-orange-50 p-4 text-sm text-orange-900">
+              <p className="font-semibold">
+                {(relationItem(selectedMoveOutRequest.tenants) as any)?.full_name ?? "-"}
+              </p>
+              <p className="mt-1">
+                ห้อง {(relationItem((relationItem(selectedMoveOutRequest.tenants) as any)?.rooms) as any)?.room_number ?? "-"}
+              </p>
+              <p className="mt-1">วันที่แจ้งย้ายออก: {formatDate(selectedMoveOutRequest.requested_move_out_date)}</p>
+              <p className="mt-1">สถานะ: {selectedMoveOutRequest.status}</p>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => void manageMoveOutRequest("rejected")}
+                className="rounded-lg border border-red-200 bg-white px-4 py-2 text-sm font-medium text-red-600"
+              >
+                ปฏิเสธ
+              </button>
+              <button
+                type="button"
+                onClick={() => void manageMoveOutRequest("approved")}
+                className="rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white"
+              >
+                อนุมัติ
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }
@@ -610,6 +737,38 @@ function MiniList({
             <div key={`${title}-${index}`} className="rounded-xl bg-white px-3 py-2">
               {item}
             </div>
+          ))
+        ) : (
+          <div className="rounded-xl bg-white px-3 py-2 text-slate-400">{emptyText}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MiniListAction({
+  title,
+  items,
+  emptyText,
+}: {
+  title: string;
+  items: { id: string; text: string; onClick: () => void }[];
+  emptyText: string;
+}) {
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+      <p className="text-sm font-semibold text-slate-900">{title}</p>
+      <div className="mt-3 space-y-2 text-sm text-slate-600">
+        {items.length > 0 ? (
+          items.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              onClick={item.onClick}
+              className="block w-full rounded-xl bg-white px-3 py-2 text-left transition hover:border-blue-200 hover:bg-blue-50"
+            >
+              {item.text}
+            </button>
           ))
         ) : (
           <div className="rounded-xl bg-white px-3 py-2 text-slate-400">{emptyText}</div>
