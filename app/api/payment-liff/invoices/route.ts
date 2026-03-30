@@ -71,6 +71,20 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: paidError.message }, { status: 500 });
     }
 
+    const { data: moveOutRequest, error: moveOutError } = await supabase
+      .from("move_out_requests")
+      .select(
+        "id,requested_move_out_date,approved_move_out_date,actual_move_out_date,status,request_note,admin_note,created_at,updated_at"
+      )
+      .eq("tenant_id", tenant.id)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (moveOutError) {
+      return NextResponse.json({ error: moveOutError.message }, { status: 500 });
+    }
+
     const pendingInvoiceIds = (pendingInvoices ?? []).map((row: any) => String(row.id));
     const { data: arrearsSnapshots, error: arrearsError } =
       pendingInvoiceIds.length > 0
@@ -126,6 +140,7 @@ export async function POST(req: Request) {
         })),
       })),
       paid_invoices: paidInvoices ?? [],
+      move_out_request: moveOutRequest ?? null,
       message: null,
     });
   } catch (error: any) {

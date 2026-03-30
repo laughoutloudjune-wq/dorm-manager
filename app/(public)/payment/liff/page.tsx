@@ -34,6 +34,18 @@ type TenantInfo = {
   has_corporate_receipt?: boolean;
 };
 
+type MoveOutRequest = {
+  id: string;
+  requested_move_out_date: string;
+  approved_move_out_date?: string | null;
+  actual_move_out_date?: string | null;
+  status: string;
+  request_note?: string | null;
+  admin_note?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
 const NGROK_SKIP_QUERY = "ngrok-skip-browser-warning=true";
 
 const formatMoney = (value: number) =>
@@ -44,6 +56,9 @@ const formatMoney = (value: number) =>
 
 const outstandingAmount = (invoice: InvoiceRow) =>
   Math.max(0, Number(invoice.total_amount ?? 0) - Number(invoice.paid_amount ?? 0));
+
+const formatDateThai = (value?: string | null) =>
+  value ? new Date(value).toLocaleDateString("th-TH") : "-";
 
 const statusLabel = (status?: string) => {
   if (status === "pending") return "รอชำระ";
@@ -134,6 +149,11 @@ export default function PaymentLiffPage() {
   const [submitted, setSubmitted] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [slipFile, setSlipFile] = useState<File | null>(null);
+  const [moveOutRequest, setMoveOutRequest] = useState<MoveOutRequest | null>(null);
+  const [moveOutFormOpen, setMoveOutFormOpen] = useState(false);
+  const [moveOutDate, setMoveOutDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [moveOutNote, setMoveOutNote] = useState("");
+  const [moveOutSubmitting, setMoveOutSubmitting] = useState(false);
 
   useEffect(() => {
     const boot = async () => {
@@ -204,6 +224,11 @@ export default function PaymentLiffPage() {
         setUnpaidInvoices(invoices);
         setSelectedIds(invoices.map((invoice) => invoice.id));
         setPaidInvoices(paid);
+        setMoveOutRequest((data?.move_out_request ?? null) as MoveOutRequest | null);
+        if (data?.move_out_request?.requested_move_out_date) {
+          setMoveOutDate(String(data.move_out_request.requested_move_out_date));
+          setMoveOutNote(String(data.move_out_request.request_note ?? ""));
+        }
         setLoading(false);
       } catch (error: any) {
         setMessage(error?.message ?? "เกิดข้อผิดพลาดในการเชื่อมต่อ LIFF");
@@ -292,6 +317,49 @@ export default function PaymentLiffPage() {
     }
   };
 
+  const handleSubmitMoveOutRequest = async () => {
+    if (!accessToken) {
+      setMessage("Session หมดอายุ กรุณาเข้าใหม่อีกครั้ง");
+      return;
+    }
+    if (!moveOutDate) {
+      setMessage("กรุณาเลือกวันที่ย้ายออก");
+      return;
+    }
+
+    setMoveOutSubmitting(true);
+    setMessage(null);
+
+    try {
+      const response = await fetch("/api/payment-liff/move-out", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "ngrok-skip-browser-warning": "true",
+        },
+        body: JSON.stringify({
+          action: "create_request",
+          accessToken,
+          requestedMoveOutDate: moveOutDate,
+          requestNote: moveOutNote,
+        }),
+      });
+
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data?.error ?? "ส่งคำขอย้ายออกไม่สำเร็จ");
+      }
+
+      setMoveOutRequest((data?.move_out_request ?? null) as MoveOutRequest | null);
+      setMoveOutFormOpen(false);
+      setMessage("ส่งคำขอย้ายออกเรียบร้อยแล้ว");
+    } catch (error: any) {
+      setMessage(error?.message ?? "ส่งคำขอย้ายออกไม่สำเร็จ");
+    } finally {
+      setMoveOutSubmitting(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-slate-50 px-4 py-8">
       <div className="mx-auto w-full max-w-md space-y-4">
@@ -326,6 +394,74 @@ export default function PaymentLiffPage() {
             {submitted && (
               <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
                 ส่งข้อมูลชำระเงินเรียบร้อยแล้ว ระบบกำลังรอตรวจสอบสลิปของคุณ
+              </div>
+            )}
+
+            {tenant && (
+              <div className="rounded-2xl border border-orange-200 bg-white p-4 shadow-sm">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-900">แจ้งย้ายออก</p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      ส่งวันที่ต้องการย้ายออกให้หอพักเพื่อตรวจสอบและสรุปยอดย้ายออก
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setMoveOutFormOpen((prev) => !prev)}
+                    className="rounded-lg border border-orange-200 bg-orange-50 px-3 py-1 text-xs font-semibold text-orange-700"
+                  >
+                    {moveOutFormOpen ? "ซ่อนฟอร์ม" : moveOutRequest ? "แก้ไขคำขอ" : "แจ้งย้ายออก"}
+                  </button>
+                </div>
+
+                {moveOutRequest && (
+                  <div className="mt-3 rounded-xl border border-orange-200 bg-orange-50 px-3 py-3 text-sm text-orange-900">
+                    <p className="font-semibold">สถานะคำขอย้ายออก: {statusLabel(moveOutRequest.status)}</p>
+                    <p className="mt-1 text-xs">วันที่แจ้งย้ายออก: {formatDateThai(moveOutRequest.requested_move_out_date)}</p>
+                    {moveOutRequest.approved_move_out_date && (
+                      <p className="mt-1 text-xs">วันที่อนุมัติ: {formatDateThai(moveOutRequest.approved_move_out_date)}</p>
+                    )}
+                    {moveOutRequest.admin_note && (
+                      <p className="mt-1 text-xs">หมายเหตุจากหอพัก: {moveOutRequest.admin_note}</p>
+                    )}
+                  </div>
+                )}
+
+                {moveOutFormOpen && (
+                  <div className="mt-3 space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    <div>
+                      <label className="text-sm font-medium text-slate-700">วันที่ต้องการย้ายออก</label>
+                      <input
+                        type="date"
+                        value={moveOutDate}
+                        onChange={(event) => setMoveOutDate(event.target.value)}
+                        className="mt-2 block w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium text-slate-700">หมายเหตุเพิ่มเติม</label>
+                      <textarea
+                        value={moveOutNote}
+                        onChange={(event) => setMoveOutNote(event.target.value)}
+                        rows={3}
+                        className="mt-2 block w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+                        placeholder="เช่น ต้องการย้ายออกช่วงเช้า / ติดต่อกลับเบอร์..."
+                      />
+                    </div>
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                      กรุณาแจ้งย้ายออกล่วงหน้า และรอการยืนยันจากหอพักก่อนวันย้ายออกจริง
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void handleSubmitMoveOutRequest()}
+                      disabled={moveOutSubmitting}
+                      className="w-full rounded-xl bg-orange-600 px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+                    >
+                      {moveOutSubmitting ? "กำลังส่งคำขอ..." : "ส่งคำขอย้ายออก"}
+                    </button>
+                  </div>
+                )}
               </div>
             )}
 

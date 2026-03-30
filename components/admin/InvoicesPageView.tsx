@@ -704,6 +704,7 @@ export default function InvoicesPage() {
   const [lineSendTitle, setLineSendTitle] = useState("กำลังส่งใบแจ้งหนี้ไป LINE");
   const [lineSendMessage, setLineSendMessage] = useState("กำลังดำเนินการ...");
   const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
+  const [moveOutWarnings, setMoveOutWarnings] = useState<any[]>([]);
 
   const [form, setForm] = useState({
     issue_date: "",
@@ -1012,6 +1013,31 @@ export default function InvoicesPage() {
   useEffect(() => {
     void loadPrintConfig();
   }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    const loadMoveOutWarnings = async () => {
+      const monthStart = `${selectedMonth}-01`;
+      const monthEnd = toLocalDateString(new Date(Number(selectedMonth.slice(0, 4)), Number(selectedMonth.slice(5, 7)), 0));
+      const { data, error: requestError } = await supabase
+        .from("move_out_requests")
+        .select("id,tenant_id,requested_move_out_date,status,tenants(full_name,rooms(room_number))")
+        .in("status", ["requested", "approved"])
+        .gte("requested_move_out_date", monthStart)
+        .lte("requested_move_out_date", monthEnd)
+        .order("requested_move_out_date", { ascending: true });
+      if (!mounted) return;
+      if (requestError) {
+        setMoveOutWarnings([]);
+        return;
+      }
+      setMoveOutWarnings(data ?? []);
+    };
+    void loadMoveOutWarnings();
+    return () => {
+      mounted = false;
+    };
+  }, [selectedMonth, supabase]);
 
   const loadPrintConfig = async () => {
     const { data: settingData } = await supabase
@@ -3193,6 +3219,23 @@ export default function InvoicesPage() {
           </button>
         </div>
       </div>
+
+      {moveOutWarnings.length > 0 && (
+        <div className="rounded-2xl border border-orange-200 bg-orange-50 px-4 py-3 text-sm text-orange-900">
+          <p className="font-semibold">มีคำขอย้ายออกในงวดนี้ {moveOutWarnings.length} รายการ</p>
+          <div className="mt-1 space-y-1 text-xs">
+            {moveOutWarnings.slice(0, 5).map((row: any) => {
+              const tenant = Array.isArray(row.tenants) ? row.tenants[0] : row.tenants;
+              const room = Array.isArray(tenant?.rooms) ? tenant.rooms[0] : tenant?.rooms;
+              return (
+                <p key={row.id}>
+                  {tenant?.full_name ?? "-"} | ห้อง {room?.room_number ?? "-"} | วันที่แจ้ง {row.requested_move_out_date}
+                </p>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {error && <span className="text-sm text-red-600">{error}</span>}
 

@@ -10,6 +10,7 @@ DROP TABLE IF EXISTS public.invoice_payment_allocations;
 DROP TABLE IF EXISTS public.invoice_carry_forwards;
 DROP TABLE IF EXISTS public.invoices;
 DROP TABLE IF EXISTS public.room_tenant_logs;
+DROP TABLE IF EXISTS public.move_out_requests;
 DROP TABLE IF EXISTS public.receipt_profiles;
 DROP TABLE IF EXISTS public.payment_methods;
 DROP TABLE IF EXISTS public.tenants;
@@ -120,6 +121,19 @@ CREATE TABLE public.room_tenant_logs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT room_tenant_logs_room_tenant_movein_unique UNIQUE (room_id, tenant_id, move_in_date)
+);
+
+CREATE TABLE public.move_out_requests (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES public.tenants(id) ON DELETE CASCADE,
+  requested_move_out_date DATE NOT NULL,
+  approved_move_out_date DATE,
+  actual_move_out_date DATE,
+  status TEXT NOT NULL DEFAULT 'requested',
+  request_note TEXT,
+  admin_note TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- Settings (single row)
@@ -257,6 +271,9 @@ ON CONFLICT (id) DO NOTHING;
 CREATE INDEX IF NOT EXISTS idx_rooms_building_id ON public.rooms(building_id);
 CREATE INDEX IF NOT EXISTS idx_tenants_room_id ON public.tenants(room_id);
 CREATE INDEX IF NOT EXISTS idx_tenants_line_user_id ON public.tenants(line_user_id);
+CREATE INDEX IF NOT EXISTS idx_move_out_requests_tenant_id ON public.move_out_requests(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_move_out_requests_status ON public.move_out_requests(status);
+CREATE INDEX IF NOT EXISTS idx_move_out_requests_requested_date ON public.move_out_requests(requested_move_out_date);
 CREATE INDEX IF NOT EXISTS idx_invoices_tenant_id ON public.invoices(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_invoices_room_id ON public.invoices(room_id);
 CREATE INDEX IF NOT EXISTS idx_invoices_public_token ON public.invoices(public_token);

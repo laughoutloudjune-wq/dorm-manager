@@ -44,13 +44,14 @@ export default function DashboardPage() {
   const [tenants, setTenants] = useState<any[]>([]);
   const [invoices, setInvoices] = useState<any[]>([]);
   const [meters, setMeters] = useState<any[]>([]);
+  const [moveOutRequests, setMoveOutRequests] = useState<any[]>([]);
 
   useEffect(() => {
     let mounted = true;
     const load = async () => {
       setLoading(true);
       setError(null);
-      const [roomsRes, tenantsRes, invoicesRes, metersRes] = await Promise.all([
+      const [roomsRes, tenantsRes, invoicesRes, metersRes, moveOutRequestsRes] = await Promise.all([
         supabase.from("rooms").select("id,room_number,status,buildings(name)").order("room_number"),
         supabase
           .from("tenants")
@@ -64,10 +65,19 @@ export default function DashboardPage() {
           .from("meter_readings")
           .select("id,room_id,reading_month,electricity_usage,water_usage,rooms(room_number,buildings(name))")
           .order("reading_month", { ascending: false }),
+        supabase
+          .from("move_out_requests")
+          .select("id,tenant_id,requested_move_out_date,approved_move_out_date,actual_move_out_date,status,created_at,tenants(full_name,rooms(room_number,buildings(name)))")
+          .order("created_at", { ascending: false }),
       ]);
 
       if (!mounted) return;
-      const firstError = roomsRes.error || tenantsRes.error || invoicesRes.error || metersRes.error;
+      const firstError =
+        roomsRes.error ||
+        tenantsRes.error ||
+        invoicesRes.error ||
+        metersRes.error ||
+        moveOutRequestsRes.error;
       if (firstError) {
         setError(firstError.message);
         setLoading(false);
@@ -78,6 +88,7 @@ export default function DashboardPage() {
       setTenants(tenantsRes.data ?? []);
       setInvoices((invoicesRes.data ?? []).filter((row: any) => String(row.status) !== "draft"));
       setMeters(metersRes.data ?? []);
+      setMoveOutRequests(moveOutRequestsRes.data ?? []);
       setLoading(false);
     };
 
@@ -99,6 +110,7 @@ export default function DashboardPage() {
     const in30DaysText = in30Days.toISOString().slice(0, 10);
 
     const activeTenants = tenants.filter((tenant) => tenant.status === "active");
+    const requestedMoveOuts = moveOutRequests.filter((row) => String(row.status) === "requested");
     const activeTenantRoomIds = new Set(activeTenants.map((tenant) => String(tenant.room_id)));
 
     const pendingInvoices = invoices.filter((invoice) => ["pending", "partial", "overdue"].includes(String(invoice.status)));
@@ -272,6 +284,14 @@ export default function DashboardPage() {
       },
     ];
 
+    kpis.splice(4, 0, {
+      label: "คำขอย้ายออก",
+      value: String(requestedMoveOuts.length),
+      hint: "รอตรวจสอบคำขอจากผู้เช่าฝั่ง LIFF",
+      tone: "from-orange-50 to-white",
+      icon: ArrowRight,
+    });
+
     return {
       kpis,
       quickActions,
@@ -282,10 +302,11 @@ export default function DashboardPage() {
       utilityTrend,
       upcomingMoveIns,
       upcomingMoveOuts,
+      requestedMoveOuts,
       overdueAmount,
       latestMeterMonth,
     };
-  }, [invoices, meters, rooms, tenants, today]);
+  }, [invoices, meters, moveOutRequests, rooms, tenants, today]);
 
   const maxTrendValue = Math.max(
     1,
