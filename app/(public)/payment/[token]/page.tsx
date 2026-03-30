@@ -78,6 +78,9 @@ const formatUnitInteger = (value: number | null | undefined) => {
   return Math.round(Number(value)).toString();
 };
 
+const isTransferBreakdownRow = (row: any) =>
+  String(row?.item_type ?? row?.type ?? "").toLowerCase() === "transfer_detail";
+
 function normalizeInvoice(row: any): InvoiceData {
   const tenant = Array.isArray(row.tenants) ? row.tenants[0] : row.tenants;
   const room = Array.isArray(row.rooms) ? row.rooms[0] : row.rooms;
@@ -329,6 +332,12 @@ export default function PaymentTokenPage() {
   }, [token, invoice?.id]);
 
   const method: PaymentMethod | null = invoice?.custom_payment_method ?? defaultMethod ?? null;
+  const transferBreakdownItems = (invoice?.additional_fees_breakdown ?? []).filter((row: any) =>
+    isTransferBreakdownRow(row)
+  );
+  const chargeBreakdownItems = (invoice?.additional_fees_breakdown ?? []).filter(
+    (row: any) => !isTransferBreakdownRow(row)
+  );
   const electricityPrevious =
     meterReading?.previous_electricity ?? meterReading?.previous_reading ?? null;
   const electricityCurrent =
@@ -499,12 +508,25 @@ export default function PaymentTokenPage() {
                 ฿{formatBaht(invoice.additional_fees_total)}
               </span>
             </div>
-            {invoice.additional_fees_breakdown.map((fee: any, idx: number) => (
+            {chargeBreakdownItems.map((fee: any, idx: number) => (
               <div key={`${fee.label ?? fee.detail}-${idx}`} className="flex items-center justify-between text-xs">
                 <span>{fee.detail ?? fee.label}</span>
                 <span>฿{formatBaht(Number(fee.total_amount ?? fee.amount ?? 0))}</span>
               </div>
             ))}
+            {transferBreakdownItems.length > 0 && (
+              <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-3 text-xs text-blue-900">
+                <p className="font-semibold">สรุปย้ายห้องกลางเดือน</p>
+                <div className="mt-2 space-y-1">
+                  {transferBreakdownItems.map((item: any, idx: number) => (
+                    <div key={`${item.label ?? item.detail}-${idx}`} className="flex items-start justify-between gap-3">
+                      <span>{item.label ?? item.detail}</span>
+                      <span className="text-right font-medium">{item.value ?? "-"}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             {invoice.late_fee_breakdown.length > 0 ? (
               invoice.late_fee_breakdown.map((row) => (
                 <div
