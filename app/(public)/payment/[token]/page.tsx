@@ -391,6 +391,15 @@ export default function PaymentTokenPage() {
         body: JSON.stringify({ invoiceId: invoice.id, slipUrl: publicUrl }),
       });
 
+      setInvoice((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: "verifying",
+              slip_url: publicUrl,
+            }
+          : prev
+      );
       setPreview(publicUrl);
       setSubmitted(true);
       setUploading(false);
@@ -435,6 +444,11 @@ export default function PaymentTokenPage() {
                 {invoice.status === "paid" ? "ใบเสร็จรับเงิน" : "ใบแจ้งหนี้"}
               </p>
               <h1 className="text-2xl font-semibold text-slate-900">ห้อง {invoice.room_number}</h1>
+              <div className="mt-2">
+                <Badge variant={invoice.status === "verifying" ? "info" : invoice.status === "paid" ? "success" : "warning"}>
+                  สถานะ: {invoice.status === "verifying" ? "รอตรวจสอบ" : invoice.status === "paid" ? "ชำระแล้ว" : "รอชำระ"}
+                </Badge>
+              </div>
             </div>
             <div className="text-right">
               <p className="text-xs uppercase tracking-[0.2em] text-slate-400">TOTAL</p>
