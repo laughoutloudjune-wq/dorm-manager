@@ -708,7 +708,7 @@ export default function InvoicesPage() {
     const { error: verifyingError } = await supabase
       .from("invoices")
       .update({ status: "verifying" })
-      .in("status", ["pending", "overdue"])
+      .in("status", ["pending", "partial", "overdue"])
       .eq("start_date", periodStart)
       .eq("end_date", periodEnd)
       .not("slip_url", "is", null);
@@ -807,6 +807,9 @@ export default function InvoicesPage() {
     const [year, month] = selectedMonth.split("-").map(Number);
     const periodStart = toLocalDateString(new Date(year, month - 1, 1));
     const periodEnd = toLocalDateString(new Date(year, month, 0));
+
+    await applyPendingToOverdue(periodStart, periodEnd);
+    await applySlipToVerifying(periodStart, periodEnd);
 
     if (can("invoice.edit")) {
       try {
