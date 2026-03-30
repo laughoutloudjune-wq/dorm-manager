@@ -110,6 +110,9 @@ type ArrearsSnapshotItem = {
 type TransferBreakdownItem = {
   label: string;
   value: string;
+  amount?: number | null;
+  editable?: boolean;
+  kind?: "old_rent" | "new_rent" | null;
 };
 
 type PrintSettings = {
@@ -150,6 +153,8 @@ const toNumber = (value: string | number | null | undefined) => {
   return Number.isNaN(parsed) ? 0 : parsed;
 };
 
+const roundTo2 = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
+
 const formatMoney = (value: number) =>
   `฿${value.toLocaleString("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
@@ -176,9 +181,54 @@ const formatPeriodLabel = (dateString: string | null | undefined) => {
   return `${month}/${year}`;
 };
 
+const parseMoneyString = (value: string | null | undefined) => {
+  const cleaned = String(value ?? "")
+    .replace(/[^\d.-]/g, "")
+    .trim();
+  if (!cleaned) return 0;
+  const parsed = Number(cleaned);
+  return Number.isNaN(parsed) ? 0 : parsed;
+};
+
 const monthStartFromDate = (dateString: string) => {
   const date = new Date(dateString);
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-01`;
+};
+
+const calculateTransferRentProration = (
+  periodStartText: string,
+  periodEndText: string,
+  transferDate: string,
+  moveInDate: string | null | undefined,
+  oldRoomRate: number,
+  newRoomRate: number
+) => {
+  const periodStart = parseDateOnly(periodStartText);
+  const periodEnd = parseDateOnly(periodEndText);
+  const transferDateObj = parseDateOnly(transferDate);
+  const moveInDateObj = moveInDate ? parseDateOnly(moveInDate) : null;
+  const billingStart =
+    moveInDateObj && moveInDateObj > periodStart ? moveInDateObj : periodStart;
+  const billingEnd = periodEnd;
+  const transferStart = transferDateObj < billingStart ? billingStart : transferDateObj;
+  const dailyOldRate = oldRoomRate / 30;
+  const dailyNewRate = newRoomRate / 30;
+
+  let oldRoomDays = 0;
+  if (transferStart > billingStart) {
+    oldRoomDays = diffDaysInclusive(billingStart, addDays(transferStart, -1));
+  }
+
+  const newRoomDays =
+    billingEnd >= transferStart ? diffDaysInclusive(transferStart, billingEnd) : 0;
+
+  return {
+    billingStart,
+    oldRoomDays,
+    newRoomDays,
+    oldRentAmount: roundTo2(dailyOldRate * oldRoomDays),
+    newRentAmount: roundTo2(dailyNewRate * newRoomDays),
+  };
 };
 
 const parsePaymentMethodText = (method: any): string => {
@@ -217,10 +267,28 @@ const toTransferBreakdownItems = (rows: any[]): TransferBreakdownItem[] => {
   if (!Array.isArray(rows) || rows.length === 0) return [];
   return rows
     .filter((row) => isTransferBreakdownRow(row))
-    .map((row) => ({
-      label: String(row?.label ?? row?.detail ?? "").trim(),
-      value: String(row?.value ?? "").trim(),
-    }))
+    .map((row) => {
+      const label = String(row?.label ?? row?.detail ?? "").trim();
+      const transferKindRaw = String(row?.transfer_kind ?? "").toLowerCase();
+      const inferredKind: TransferBreakdownItem["kind"] =
+        transferKindRaw === "old_rent" || label.includes("ค่าเช่าห้องเดิม")
+          ? "old_rent"
+          : transferKindRaw === "new_rent" || label.includes("ค่าเช่าห้องใหม่")
+            ? "new_rent"
+            : null;
+      return {
+        label,
+        value: String(row?.value ?? "").trim(),
+        amount:
+          row?.amount_value != null
+            ? toNumber(row.amount_value)
+            : inferredKind
+              ? parseMoneyString(String(row?.value ?? ""))
+              : null,
+        editable: inferredKind === "old_rent" || inferredKind === "new_rent",
+        kind: inferredKind,
+      };
+    })
     .filter((row) => row.label.length > 0 && row.value.length > 0);
 };
 
@@ -300,7 +368,9 @@ const serializeTransferBreakdownRows = (items: TransferBreakdownItem[]) =>
     item_type: "transfer_detail",
     label: item.label,
     detail: item.label,
-    value: item.value,
+    value: item.editable ? formatMoney(toNumber(item.amount)) : item.value,
+    transfer_kind: item.kind ?? null,
+    amount_value: item.editable ? toNumber(item.amount) : null,
     unit: 0,
     price_per_unit: 0,
     total_amount: 0,
@@ -337,6 +407,8 @@ const emptyLateFeeItem = (): LateFeeLineItem => ({
 
 const feeItemsTotal = (items: FeeLineItem[]) =>
   items.reduce((sum, item) => sum + toNumber(item.total_amount), 0);
+
+const ROUND_DOWN_DISCOUNT_LABEL = "ปัดเศษลง";
 
 const roomNumberCompare = (a: string, b: string) =>
   a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
@@ -1551,6 +1623,148 @@ export default function InvoicesPage() {
     );
   };
 
+  const updateTransferBreakdownAmount = (
+    index: number,
+    value: string | number
+  ) => {
+    if (activeInvoice && !isInvoiceDetailEditable(activeInvoice.status)) return;
+    setTransferBreakdownItems((prev) =>
+      prev.map((item, idx) =>
+        idx === index
+          ? {
+              ...item,
+              amount: toNumber(value),
+              value: formatMoney(toNumber(value)),
+            }
+          : item
+      )
+    );
+  };
+
+  const applyRoundDownTotal = () => {
+    if (activeInvoice && !isInvoiceDetailEditable(activeInvoice.status)) return;
+    const currentTotal =
+      toNumber(form.rent_amount) +
+      toNumber(form.water_bill) +
+      toNumber(form.electricity_bill) +
+      toNumber(form.common_fee) +
+      feeItemsTotal(editableCarryForwardItems) +
+      feeItemsTotal(editableLateFeeItems) +
+      feeItemsTotal(editableFeeItems) -
+      feeItemsTotal(editableDiscountItems);
+    const roundedTotal = Math.floor(currentTotal);
+    const roundDownAmount = Number((currentTotal - roundedTotal).toFixed(2));
+    if (roundDownAmount <= 0) return;
+
+    setEditableDiscountItems((prev) => {
+      const existingIndex = prev.findIndex(
+        (item) => String(item.detail ?? "").trim() === ROUND_DOWN_DISCOUNT_LABEL
+      );
+      if (existingIndex >= 0) {
+        return prev.map((item, index) =>
+          index === existingIndex
+            ? {
+                ...item,
+                unit: 1,
+                price_per_unit: roundDownAmount,
+                total_amount: roundDownAmount,
+              }
+            : item
+        );
+      }
+      return [
+        ...prev,
+        {
+          detail: ROUND_DOWN_DISCOUNT_LABEL,
+          unit: 1,
+          price_per_unit: roundDownAmount,
+          total_amount: roundDownAmount,
+        },
+      ];
+    });
+  };
+
+  const recalculateTransferBreakdown = async () => {
+    if (!activeInvoice) return;
+    const transferDateRow = transferBreakdownItems.find((item) => item.label.includes("วันที่ย้ายห้อง"));
+    const transferDate = String(transferDateRow?.value ?? "").trim();
+    if (!transferDate) {
+      setError("ไม่พบวันที่ย้ายห้องในใบแจ้งหนี้นี้");
+      return;
+    }
+
+    const billingMonth = monthStartFromDate(activeInvoice.start_date || activeInvoice.issue_date);
+    const { data: transferRows, error: transferError } = await supabase
+      .from("tenant_room_transfers")
+      .select("from_room_id,to_room_id,transfer_date,billing_month")
+      .eq("to_room_id", activeInvoice.room_id)
+      .eq("billing_month", billingMonth)
+      .eq("transfer_date", transferDate)
+      .order("transfer_date", { ascending: false })
+      .limit(1);
+
+    if (transferError) {
+      setError(transferError.message);
+      return;
+    }
+
+    const transferRow = (transferRows ?? [])[0] as
+      | { from_room_id: string; to_room_id: string; transfer_date: string }
+      | undefined;
+    if (!transferRow) {
+      setError("ไม่พบข้อมูลย้ายห้องของงวดนี้สำหรับคำนวณใหม่");
+      return;
+    }
+
+    const roomIds = [transferRow.from_room_id, transferRow.to_room_id];
+    const { data: roomRows, error: roomError } = await supabase
+      .from("rooms")
+      .select("id,price_month")
+      .in("id", roomIds);
+
+    if (roomError) {
+      setError(roomError.message);
+      return;
+    }
+
+    const oldRoomRate = toNumber(
+      roomRows?.find((room: any) => String(room.id) === String(transferRow.from_room_id))
+        ?.price_month
+    );
+    const newRoomRate = toNumber(
+      roomRows?.find((room: any) => String(room.id) === String(transferRow.to_room_id))?.price_month
+    );
+    const recalculated = calculateTransferRentProration(
+      activeInvoice.start_date || billingMonth,
+      activeInvoice.end_date || toLocalDateString(new Date(parseDateOnly(billingMonth).getFullYear(), parseDateOnly(billingMonth).getMonth() + 1, 0)),
+      transferRow.transfer_date,
+      activeInvoice.tenant_move_in_date,
+      oldRoomRate,
+      newRoomRate
+    );
+
+    setTransferBreakdownItems((prev) =>
+      prev.map((item) => {
+        if (item.kind === "old_rent") {
+          return {
+            ...item,
+            amount: recalculated.oldRentAmount,
+            value: formatMoney(recalculated.oldRentAmount),
+          };
+        }
+        if (item.kind === "new_rent") {
+          return {
+            ...item,
+            amount: recalculated.newRentAmount,
+            value: formatMoney(recalculated.newRentAmount),
+          };
+        }
+        return item;
+      })
+    );
+    setError(null);
+  };
+
   const recalculateCurrentInvoiceArrears = async () => {
     if (!activeInvoice) return;
     const sourceIds = new Set<string>();
@@ -2406,6 +2620,34 @@ export default function InvoicesPage() {
       }
     }
 
+    const transferRoomRateMap = new Map<string, number>();
+    for (const room of occupiedRooms ?? []) {
+      transferRoomRateMap.set(String((room as any).id), toNumber((room as any).price_month));
+    }
+    const missingTransferRoomIds = Array.from(
+      new Set(
+        Array.from(transferByTenant.values()).flatMap((row: any) => [
+          String(row?.from_room_id ?? ""),
+          String(row?.to_room_id ?? ""),
+        ])
+      )
+    ).filter((roomId) => roomId && !transferRoomRateMap.has(roomId));
+    if (missingTransferRoomIds.length > 0) {
+      const { data: extraTransferRooms, error: extraTransferRoomsError } = await supabase
+        .from("rooms")
+        .select("id,price_month")
+        .in("id", missingTransferRoomIds);
+      if (extraTransferRoomsError) {
+        setSaving(false);
+        setConfirmGenerateOpen(false);
+        setError(extraTransferRoomsError.message);
+        return;
+      }
+      for (const room of extraTransferRooms ?? []) {
+        transferRoomRateMap.set(String((room as any).id), toNumber((room as any).price_month));
+      }
+    }
+
     const { data: existingInvoices, error: existingError } = await supabase
       .from("invoices")
       .select("room_id")
@@ -2579,8 +2821,18 @@ export default function InvoicesPage() {
       const elecUnits = oldRoomElecUnits + newRoomElecUnits;
       const waterUnits = oldRoomWaterUnits + newRoomWaterUnits;
 
-      const rentAmount = hasTransferToThisRoom
-        ? toNumber((transfer as any).old_rent_amount) + toNumber((transfer as any).new_rent_amount)
+      const transferRentBreakdown = hasTransferToThisRoom
+        ? calculateTransferRentProration(
+            toLocalDateString(startDate),
+            toLocalDateString(endDate),
+            String((transfer as any).transfer_date ?? issueDateText),
+            tenant.move_in_date,
+            toNumber(transferRoomRateMap.get(String((transfer as any).from_room_id ?? ""))),
+            toNumber(transferRoomRateMap.get(String((transfer as any).to_room_id ?? "")))
+          )
+        : null;
+      const rentAmount = transferRentBreakdown
+        ? transferRentBreakdown.oldRentAmount + transferRentBreakdown.newRentAmount
         : toNumber(roomRel?.price_month);
 
       const elecBill = elecUnits * toNumber(settings.electricity_rate);
@@ -2702,11 +2954,17 @@ export default function InvoicesPage() {
             },
             {
               label: "ค่าเช่าห้องเดิม",
-              value: formatMoney(toNumber((transfer as any).old_rent_amount)),
+              value: formatMoney(toNumber(transferRentBreakdown?.oldRentAmount)),
+              amount: toNumber(transferRentBreakdown?.oldRentAmount),
+              editable: true,
+              kind: "old_rent",
             },
             {
               label: "ค่าเช่าห้องใหม่",
-              value: formatMoney(toNumber((transfer as any).new_rent_amount)),
+              value: formatMoney(toNumber(transferRentBreakdown?.newRentAmount)),
+              amount: toNumber(transferRentBreakdown?.newRentAmount),
+              editable: true,
+              kind: "new_rent",
             },
             {
               label: "หน่วยไฟฟ้า",
@@ -2840,6 +3098,7 @@ export default function InvoicesPage() {
         )
       : null;
   const canEditDetails = activeInvoice ? isInvoiceDetailEditable(activeInvoice.status) : false;
+  const hasEditableTransferRent = transferBreakdownItems.some((item) => item.editable);
   const canCreateInvoice = can("invoice.create");
   const canEditInvoice = can("invoice.edit");
   const canDeleteInvoice = can("invoice.delete");
@@ -2871,6 +3130,45 @@ export default function InvoicesPage() {
       };
     });
   }, [editableFeeItems, editableDiscountItems, editableCarryForwardItems, editableLateFeeItems]);
+
+  useEffect(() => {
+    const transferRentItems = transferBreakdownItems.filter((item) => item.editable);
+    if (transferRentItems.length === 0) return;
+    const transferRentTotal = transferRentItems.reduce(
+      (sum, item) => sum + toNumber(item.amount),
+      0
+    );
+    const nextCarry = feeItemsTotal(editableCarryForwardItems);
+    const nextLateFee = feeItemsTotal(editableLateFeeItems);
+    const nextAdditional = feeItemsTotal(editableFeeItems);
+    const nextDiscount = feeItemsTotal(editableDiscountItems);
+    setForm((prev) => {
+      const total =
+        transferRentTotal +
+        toNumber(prev.water_bill) +
+        toNumber(prev.electricity_bill) +
+        toNumber(prev.common_fee) +
+        nextLateFee +
+        nextAdditional +
+        nextCarry -
+        nextDiscount;
+      return {
+        ...prev,
+        rent_amount: transferRentTotal,
+        additional_fees_total: nextAdditional,
+        discount_amount: nextDiscount,
+        late_fee_amount: nextLateFee,
+        total_amount: total,
+        paid_amount: Math.min(toNumber(prev.paid_amount), total),
+      };
+    });
+  }, [
+    editableCarryForwardItems,
+    editableDiscountItems,
+    editableFeeItems,
+    editableLateFeeItems,
+    transferBreakdownItems,
+  ]);
 
   return (
     <div className="space-y-6">
@@ -3474,8 +3772,16 @@ export default function InvoicesPage() {
                           type="number"
                           value={form.rent_amount}
                           onChange={(event) => updateForm("rent_amount", event.target.value)}
-                          className="w-full rounded-lg border border-slate-200 px-3 py-1.5 text-right"
+                          readOnly={hasEditableTransferRent}
+                          className={`w-full rounded-lg border border-slate-200 px-3 py-1.5 text-right ${
+                            hasEditableTransferRent ? "bg-slate-50" : ""
+                          }`}
                         />
+                        {hasEditableTransferRent && (
+                          <p className="mt-1 text-xs text-slate-500">
+                            บิลนี้มีย้ายห้องกลางเดือน กรุณาแก้ยอดในส่วนสรุปย้ายห้องด้านล่าง
+                          </p>
+                        )}
                       </td>
                     </tr>
                     <tr className="border-t border-slate-100 bg-amber-50">
@@ -3699,12 +4005,24 @@ export default function InvoicesPage() {
                     <tr className="border-t border-slate-100 bg-slate-50">
                       <td className="px-3 py-2 font-semibold">ยอดรวมสุทธิ</td>
                       <td className="px-3 py-2">
-                        <input
-                          type="number"
-                          value={form.total_amount}
-                          readOnly
-                          className="w-full rounded-lg border border-slate-200 bg-slate-100 px-3 py-1.5 text-right font-semibold"
-                        />
+                        <div className="space-y-2">
+                          <input
+                            type="number"
+                            value={form.total_amount}
+                            readOnly
+                            className="w-full rounded-lg border border-slate-200 bg-slate-100 px-3 py-1.5 text-right font-semibold"
+                          />
+                          <div className="flex justify-end">
+                            <button
+                              type="button"
+                              onClick={applyRoundDownTotal}
+                              disabled={!canEditDetails || saving}
+                              className="rounded-lg border border-slate-300 bg-white px-3 py-1 text-xs font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              ปัดยอดลง
+                            </button>
+                          </div>
+                        </div>
                       </td>
                     </tr>
                   </tbody>
@@ -3714,7 +4032,22 @@ export default function InvoicesPage() {
 
             {transferBreakdownItems.length > 0 && (
               <div className="space-y-3 rounded-xl border border-blue-200 bg-blue-50/40 p-4">
-                <p className="text-sm font-semibold text-blue-900">สรุปย้ายห้องกลางเดือน</p>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                  <p className="text-sm font-semibold text-blue-900">สรุปย้ายห้องกลางเดือน</p>
+                  <p className="text-xs text-blue-800">
+                    แก้ยอดค่าเช่าห้องเดิมและห้องใหม่ได้โดยตรง หากการคำนวณอัตโนมัติไม่ตรงหน้างาน
+                  </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void recalculateTransferBreakdown()}
+                    disabled={!canEditDetails || saving}
+                    className="rounded-lg border border-blue-200 bg-white px-3 py-1 text-xs font-semibold text-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    คำนวณย้ายห้องใหม่
+                  </button>
+                </div>
                 <div className="overflow-x-auto">
                   <table className="w-full min-w-[640px] text-sm">
                     <thead className="bg-blue-100/70 text-blue-900">
@@ -3727,7 +4060,21 @@ export default function InvoicesPage() {
                       {transferBreakdownItems.map((item, index) => (
                         <tr key={`${item.label}-${index}`} className="border-t border-blue-100">
                           <td className="px-2 py-2 font-medium">{item.label}</td>
-                          <td className="px-2 py-2">{item.value}</td>
+                          <td className="px-2 py-2">
+                            {item.editable ? (
+                              <input
+                                type="number"
+                                value={toNumber(item.amount)}
+                                onChange={(event) =>
+                                  updateTransferBreakdownAmount(index, event.target.value)
+                                }
+                                className="w-full rounded-lg border border-blue-200 bg-white px-2 py-1 text-right"
+                                disabled={!canEditDetails || saving}
+                              />
+                            ) : (
+                              item.value
+                            )}
+                          </td>
                         </tr>
                       ))}
                     </tbody>

@@ -86,6 +86,8 @@ const toNumber = (value: string | number | null | undefined) => {
   return Number.isNaN(parsed) ? 0 : parsed;
 };
 
+const roundTo2 = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
+
 const formatMoney = (value: number) =>
   value.toLocaleString("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -160,6 +162,63 @@ const leaseEndDateText = (moveInDate: string, leaseMonths: number) => {
   const end = new Date(start);
   end.setMonth(end.getMonth() + leaseMonths);
   return end.toISOString().slice(0, 10);
+};
+
+const calculateTransferRentProration = (
+  transferDate: string,
+  moveInDate: string | null | undefined,
+  oldRoomRate: number,
+  newRoomRate: number
+) => {
+  if (!transferDate) {
+    return {
+      billingStartDay: 1,
+      transferDay: 1,
+      daysInMonth: 30,
+      oldRoomDays: 0,
+      newRoomDays: 30,
+      oldRentAmount: 0,
+      newRentAmount: newRoomRate,
+    };
+  }
+
+  const transferDateObj = new Date(transferDate);
+  const transferYear = transferDateObj.getFullYear();
+  const transferMonth = transferDateObj.getMonth();
+  const periodStart = new Date(transferYear, transferMonth, 1);
+  const periodEnd = new Date(transferYear, transferMonth + 1, 0);
+  const daysInMonth = periodEnd.getDate();
+  const billingStart = moveInDate ? new Date(moveInDate) : periodStart;
+  const effectiveBillingStart = billingStart > periodStart ? billingStart : periodStart;
+  const effectiveTransferDate = transferDateObj > effectiveBillingStart ? transferDateObj : effectiveBillingStart;
+  const oldRoomDays =
+    effectiveTransferDate > effectiveBillingStart
+      ? Math.floor(
+          (new Date(
+            effectiveTransferDate.getFullYear(),
+            effectiveTransferDate.getMonth(),
+            effectiveTransferDate.getDate() - 1
+          ).getTime() -
+            effectiveBillingStart.getTime()) /
+            86400000
+        ) + 1
+      : 0;
+  const newRoomDays =
+    periodEnd >= effectiveTransferDate
+      ? Math.floor((periodEnd.getTime() - effectiveTransferDate.getTime()) / 86400000) + 1
+      : 0;
+  const dailyOldRate = oldRoomRate / 30;
+  const dailyNewRate = newRoomRate / 30;
+
+  return {
+    billingStartDay: effectiveBillingStart.getDate(),
+    transferDay: effectiveTransferDate.getDate(),
+    daysInMonth,
+    oldRoomDays,
+    newRoomDays,
+    oldRentAmount: roundTo2(dailyOldRate * oldRoomDays),
+    newRentAmount: roundTo2(dailyNewRate * newRoomDays),
+  };
 };
 
 const tenantStatusLabel = (status: string) => {
@@ -812,16 +871,17 @@ export default function TenantsPage() {
   );
   const newRoomRate = toNumber(newRoom?.price_month ?? 0);
   const isRoomTransfer = !!activeTenant?.id && !!form.room_id && form.room_id !== activeTenant.room_id;
-
-  const transferDateObj = transferCalc.transfer_date ? new Date(transferCalc.transfer_date) : null;
-  const transferDay = transferDateObj ? Number(transferCalc.transfer_date.slice(8, 10)) : 1;
-  const daysInTransferMonth = transferDateObj
-    ? new Date(transferDateObj.getFullYear(), transferDateObj.getMonth() + 1, 0).getDate()
-    : 30;
-  const oldRoomDays = Math.min(Math.max(transferDay - 1, 0), daysInTransferMonth);
-  const newRoomDays = Math.max(daysInTransferMonth - oldRoomDays, 0);
-  const transferOldRent = daysInTransferMonth > 0 ? (oldRoomRate * oldRoomDays) / daysInTransferMonth : 0;
-  const transferNewRent = daysInTransferMonth > 0 ? (newRoomRate * newRoomDays) / daysInTransferMonth : 0;
+  const transferProration = calculateTransferRentProration(
+    transferCalc.transfer_date,
+    activeTenant?.move_in_date,
+    oldRoomRate,
+    newRoomRate
+  );
+  const oldRoomDays = transferProration.oldRoomDays;
+  const newRoomDays = transferProration.newRoomDays;
+  const daysInTransferMonth = transferProration.daysInMonth;
+  const transferOldRent = transferProration.oldRentAmount;
+  const transferNewRent = transferProration.newRentAmount;
   const transferOldElectricUsage = Math.max(
     toNumber(transferCalc.old_curr_electricity) - toNumber(transferCalc.old_prev_electricity),
     0
@@ -1143,7 +1203,11 @@ export default function TenantsPage() {
                 </div>
                 <div className="rounded-lg border border-slate-200 bg-white p-3 text-sm text-slate-700">
                   <p>
-                    ค่าเช่าห้องเดิม ({oldRoomDays}/{daysInTransferMonth} วัน): ฿{formatMoney(transferOldRent)}
+                    ค่าเช่าห้องเดิม ({oldRoomDays}/{daysInTransferMonth} วัน
+                    {transferProration.billingStartDay > 1
+                      ? ` เริ่มนับจากวันเข้าพัก ${transferProration.billingStartDay}`
+                      : ""}
+                    ): ฿{formatMoney(transferOldRent)}
                   </p>
                   <p>
                     ค่าเช่าห้องใหม่ ({newRoomDays}/{daysInTransferMonth} วัน): ฿{formatMoney(transferNewRent)}

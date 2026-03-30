@@ -1,6 +1,50 @@
 import { NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/admin-api-auth";
 
+const toNumber = (value: unknown) => {
+  const parsed = typeof value === "number" ? value : Number(value ?? 0);
+  return Number.isNaN(parsed) ? 0 : parsed;
+};
+
+const roundTo2 = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
+
+const calculateTransferRentProration = (
+  transferDate: string,
+  moveInDate: string | null | undefined,
+  oldRoomRate: number,
+  newRoomRate: number
+) => {
+  const transferDateObj = new Date(transferDate);
+  const transferYear = transferDateObj.getFullYear();
+  const transferMonth = transferDateObj.getMonth();
+  const periodStart = new Date(transferYear, transferMonth, 1);
+  const periodEnd = new Date(transferYear, transferMonth + 1, 0);
+  const daysInMonth = periodEnd.getDate();
+  const billingStart = moveInDate ? new Date(moveInDate) : periodStart;
+  const effectiveBillingStart = billingStart > periodStart ? billingStart : periodStart;
+  const effectiveTransferDate = transferDateObj > effectiveBillingStart ? transferDateObj : effectiveBillingStart;
+  const oldSegmentEnd = new Date(
+    effectiveTransferDate.getFullYear(),
+    effectiveTransferDate.getMonth(),
+    effectiveTransferDate.getDate() - 1
+  );
+  const oldRoomDays =
+    effectiveTransferDate > effectiveBillingStart
+      ? Math.floor((oldSegmentEnd.getTime() - effectiveBillingStart.getTime()) / 86400000) + 1
+      : 0;
+  const newRoomDays =
+    periodEnd >= effectiveTransferDate
+      ? Math.floor((periodEnd.getTime() - effectiveTransferDate.getTime()) / 86400000) + 1
+      : 0;
+  const dailyOldRate = oldRoomRate / 30;
+  const dailyNewRate = newRoomRate / 30;
+
+  return {
+    oldRoomAmount: roundTo2(dailyOldRate * oldRoomDays),
+    newRoomAmount: roundTo2(dailyNewRate * newRoomDays),
+  };
+};
+
 export async function POST(req: Request) {
   try {
     const body = await req.json();
@@ -79,6 +123,27 @@ export async function POST(req: Request) {
           .is("move_out_date", null);
 
         if (transferPayload?.transfer_date) {
+          const roomIds = [String(previousTenant.room_id), roomId];
+          const { data: roomRates, error: roomRatesError } = await auth.supabase
+            .from("rooms")
+            .select("id,price_month")
+            .in("id", roomIds);
+
+          if (roomRatesError) {
+            return NextResponse.json({ error: roomRatesError.message }, { status: 500 });
+          }
+
+          const oldRoomRate =
+            roomRates?.find((room) => String(room.id) === String(previousTenant.room_id))?.price_month ?? 0;
+          const newRoomRate =
+            roomRates?.find((room) => String(room.id) === roomId)?.price_month ?? 0;
+          const transferRent = calculateTransferRentProration(
+            String(transferPayload.transfer_date),
+            previousTenant?.move_in_date ? String(previousTenant.move_in_date) : null,
+            toNumber(oldRoomRate),
+            toNumber(newRoomRate)
+          );
+
           const transferInsert = {
             id: crypto.randomUUID(),
             tenant_id: tenantId,
@@ -99,8 +164,8 @@ export async function POST(req: Request) {
             new_curr_water: Number(transferPayload.new_curr_water ?? 0),
             old_electric_usage: Number(transferPayload.old_electric_usage ?? 0),
             old_water_usage: Number(transferPayload.old_water_usage ?? 0),
-            old_rent_amount: Number(transferPayload.old_rent_amount ?? 0),
-            new_rent_amount: Number(transferPayload.new_rent_amount ?? 0),
+            old_rent_amount: transferRent.oldRoomAmount,
+            new_rent_amount: transferRent.newRoomAmount,
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
           };
