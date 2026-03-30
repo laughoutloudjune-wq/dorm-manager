@@ -62,9 +62,9 @@ export default function PaymentLiffMoveOutPage() {
         }
 
         const { default: liff } = await import("@line/liff");
-        const liffId = process.env.NEXT_PUBLIC_PAYMENT_LIFF_ID;
+        const liffId = process.env.NEXT_PUBLIC_MOVE_OUT_LIFF_ID;
         if (!liffId) {
-          setMessage("ไม่พบ NEXT_PUBLIC_PAYMENT_LIFF_ID");
+          setMessage("ไม่พบ NEXT_PUBLIC_MOVE_OUT_LIFF_ID");
           setLoading(false);
           return;
         }
