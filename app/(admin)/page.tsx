@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
@@ -13,8 +13,8 @@ type Kpi = {
   hint: string;
   tone: string;
   icon: any;
+  href: string;
 };
-
 type ActivityItem = {
   id: string;
   text: string;
@@ -36,6 +36,24 @@ const relationItem = <T,>(value: T | T[] | null | undefined): T | null =>
   Array.isArray(value) ? (value[0] ?? null) : (value ?? null);
 const roomCompare = (left: string, right: string) =>
   left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" });
+const translateInvoiceStatus = (status: string) => {
+  switch (status) {
+    case "paid":
+      return "ชำระแล้ว";
+    case "verifying":
+      return "รอตรวจสอบ";
+    case "overdue":
+      return "เกินกำหนด";
+    case "partial":
+      return "ชำระบางส่วน";
+    case "pending":
+      return "รอชำระ";
+    case "draft":
+      return "ฉบับร่าง";
+    default:
+      return status;
+  }
+};
 
 export default function DashboardPage() {
   const supabase = useMemo(() => createClient(), []);
@@ -176,7 +194,7 @@ export default function DashboardPage() {
       const roomNo = String(room.room_number ?? "-");
       const status = String(room.status ?? "");
       if (status === "occupied" && !activeTenantRoomIds.has(roomId)) {
-        anomalies.push({ id: `occupied-no-tenant-${roomId}`, text: `ห้อง ${roomNo} สถานะ occupied แต่ไม่พบผู้เช่า active`, severity: "high" });
+        anomalies.push({ id: `occupied-no-tenant-${roomId}`, text: `ห้อง ${roomNo} สถานะเป็นมีผู้เช่า แต่ไม่พบผู้เช่า active`, severity: "high" });
       }
       if (status !== "occupied" && activeTenantRoomIds.has(roomId)) {
         anomalies.push({ id: `tenant-room-mismatch-${roomId}`, text: `ห้อง ${roomNo} มีผู้เช่า active แต่สถานะห้องไม่ใช่ occupied`, severity: "high" });
@@ -194,7 +212,7 @@ export default function DashboardPage() {
         const room = relationItem(invoice.rooms);
         return {
           id: `invoice-${invoice.id}`,
-          text: `บิลห้อง ${room?.room_number ?? "-"} สถานะ ${invoice.status} ยอด ${formatMoney(toNumber(invoice.total_amount))}`,
+          text: `บิลห้อง ${room?.room_number ?? "-"} สถานะ ${translateInvoiceStatus(String(invoice.status ?? ""))} ยอด ${formatMoney(toNumber(invoice.total_amount))}`,
           created_at: invoice.created_at,
         };
       }),
@@ -236,64 +254,54 @@ export default function DashboardPage() {
     });
 
     const quickActions = [
-      { href: "/invoices", label: "ไปตรวจบิล", hint: "บิลค้าง / ตรวจสลิป", icon: ReceiptText },
-      { href: "/meters", label: "ไปบันทึกมิเตอร์", hint: "อัปเดตค่าน้ำค่าไฟ", icon: Zap },
-      { href: "/tenants", label: "ไปจัดการผู้เช่า", hint: "ดูย้ายเข้า / ย้ายออก", icon: Users },
-      { href: "/reports", label: "ไปหน้ารายงาน", hint: "ส่งข้อมูลให้บัญชี", icon: FileClock },
+      { href: "/invoices", label: "ไปตรวจบิล", hint: "บิลค้างและสลิปรอตรวจสอบ", icon: ReceiptText },
+      { href: "/meters", label: "ไปบันทึกมิเตอร์", hint: "อัปเดตค่าน้ำและค่าไฟ", icon: Zap },
+      { href: "/tenants", label: "ไปจัดการผู้เช่า", hint: "ดูย้ายเข้า ย้ายออก และคำขอ", icon: Users },
+      { href: "/reports", label: "ไปหน้ารายงาน", hint: "สรุปข้อมูลสำหรับส่งบัญชี", icon: FileClock },
     ];
 
     const kpis: Kpi[] = [
       {
         label: "ยอดค้างชำระ",
         value: formatMoney(totalOutstanding),
-        hint: `overdue ${overdueInvoices.length} | pending/partial ${pendingInvoices.length}`,
+        hint: `เกินกำหนด ${overdueInvoices.length} | รอชำระ/ชำระบางส่วน ${pendingInvoices.length}`,
         tone: "from-rose-50 to-white",
         icon: AlertTriangle,
+        href: "/invoices",
       },
       {
         label: "บิลรอตรวจสอบ",
         value: String(verifyingInvoices.length),
-        hint: "มีสลิปหรือสถานะ verifying",
+        hint: "มีสลิปอัปโหลดแล้วและรอแอดมินตรวจสอบ",
         tone: "from-amber-50 to-white",
         icon: FileClock,
+        href: "/invoices",
       },
       {
-        label: "ย้ายเข้า 30 วัน",
-        value: String(upcomingMoveIns.length),
-        hint: "รายการที่กำลังจะเข้าพัก",
-        tone: "from-emerald-50 to-white",
-        icon: Users,
-      },
-      {
-        label: "ย้ายออก 30 วัน",
-        value: String(upcomingMoveOuts.length),
-        hint: "ติดตามคืนห้องและสรุปยอด",
+        label: "คำขอย้ายออก",
+        value: String(requestedMoveOuts.length),
+        hint: "คำขอจากผู้เช่าที่รอแอดมินตรวจสอบ",
         tone: "from-orange-50 to-white",
         icon: ArrowRight,
+        href: "/tenants",
+      },
+      {
+        label: "อัตราเข้าพัก",
+        value: `${occupancyRate}%`,
+        hint: `ห้องใช้งาน ${activeTenants.length} จาก ${rooms.length} ห้อง`,
+        tone: "from-sky-50 to-white",
+        icon: Home,
+        href: "/rooms",
       },
       {
         label: "ห้องว่าง",
         value: String(vacantRooms.length),
-        hint: `อัตราเข้าพัก ${occupancyRate}%`,
-        tone: "from-sky-50 to-white",
-        icon: Home,
-      },
-      {
-        label: "รายการผิดปกติ",
-        value: String(anomalies.length),
-        hint: latestMeterMonth ? `เช็ก room / meter / invoice เดือน ${latestMeterMonth}` : "ยังไม่มีข้อมูลมิเตอร์ล่าสุด",
-        tone: "from-violet-50 to-white",
-        icon: CheckCircle2,
+        hint: "จำนวนห้องที่พร้อมปล่อยเช่า",
+        tone: "from-emerald-50 to-white",
+        icon: Users,
+        href: "/rooms",
       },
     ];
-
-    kpis.splice(4, 0, {
-      label: "คำขอย้ายออก",
-      value: String(requestedMoveOuts.length),
-      hint: "รอตรวจสอบคำขอจากผู้เช่าฝั่ง LIFF",
-      tone: "from-orange-50 to-white",
-      icon: ArrowRight,
-    });
 
     return {
       kpis,
@@ -399,22 +407,24 @@ export default function DashboardPage() {
         </div>
       )}
 
-      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         {dashboard.kpis.map((item) => {
           const Icon = item.icon;
           return (
-            <Card key={item.label} className={`bg-gradient-to-br ${item.tone} shadow-md hover-lift`}>
-              <CardContent className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <p className="text-sm font-medium text-slate-600">{item.label}</p>
-                  <span className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-white text-slate-700 shadow-sm">
-                    <Icon size={18} />
-                  </span>
-                </div>
-                <p className="text-3xl font-semibold text-slate-900">{loading ? "-" : item.value}</p>
-                <p className="text-xs text-slate-500">{item.hint}</p>
-              </CardContent>
-            </Card>
+            <Link key={item.label} href={item.href} className="block">
+              <Card className={`bg-gradient-to-br ${item.tone} shadow-md transition hover:-translate-y-0.5 hover:shadow-lg`}>
+                <CardContent className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-medium text-slate-600">{item.label}</p>
+                    <span className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-white text-slate-700 shadow-sm">
+                      <Icon size={18} />
+                    </span>
+                  </div>
+                  <p className="text-3xl font-semibold text-slate-900">{loading ? "-" : item.value}</p>
+                  <p className="text-xs text-slate-500">{item.hint}</p>
+                </CardContent>
+              </Card>
+            </Link>
           );
         })}
       </section>
@@ -424,23 +434,8 @@ export default function DashboardPage() {
           <CardContent className="space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold text-slate-900">สิ่งที่ต้องทำวันนี้</h2>
-              <span className="text-xs text-slate-400">งานเร่งด่วน</span>
             </div>
-            <div className="grid gap-3 md:grid-cols-2">
-              <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4">
-                <p className="text-sm font-medium text-rose-800">ยอด overdue</p>
-                <p className="mt-2 text-2xl font-semibold text-rose-900">{formatMoney(dashboard.overdueAmount)}</p>
-                <p className="mt-1 text-xs text-rose-700">ติดตามลูกหนี้เกินกำหนดก่อนเป็นอันดับแรก</p>
-              </div>
-              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
-                <p className="text-sm font-medium text-amber-800">บิลรอตรวจสอบ</p>
-                <p className="mt-2 text-2xl font-semibold text-amber-900">
-                  {dashboard.kpis.find((item) => item.label === "บิลรอตรวจสอบ")?.value ?? "0"}
-                </p>
-                <p className="mt-1 text-xs text-amber-700">เหมาะกับการเปิดหน้าใบแจ้งหนี้เพื่อตรวจสลิปต่อทันที</p>
-              </div>
-            </div>
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <div className="grid gap-4 sm:grid-cols-2">
               {dashboard.quickActions.map((action) => {
                 const Icon = action.icon;
                 return (
@@ -508,7 +503,7 @@ export default function DashboardPage() {
           <CardContent className="space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold text-slate-900">แนวโน้มรายรับ 6 เดือนล่าสุด</h2>
-              <span className="text-xs text-slate-400">เก็บจริง vs ค้างชำระ</span>
+              <span className="text-xs text-slate-400">เก็บเงินจริง เทียบกับยอดค้าง</span>
             </div>
             <div className="grid h-72 grid-cols-6 items-end gap-4">
               {dashboard.monthlyTrend.map((row) => (
@@ -517,12 +512,12 @@ export default function DashboardPage() {
                     <div
                       className="w-5 rounded-t-full bg-emerald-500"
                       style={{ height: `${Math.max((row.collected / maxTrendValue) * 100, row.collected > 0 ? 6 : 0)}%` }}
-                      title={`เก็บจริง ${formatMoney(row.collected)}`}
+                      title={`เก็บเงินจริง ${formatMoney(row.collected)}`}
                     />
                     <div
                       className="w-5 rounded-t-full bg-amber-400"
                       style={{ height: `${Math.max((row.outstanding / maxTrendValue) * 100, row.outstanding > 0 ? 6 : 0)}%` }}
-                      title={`ค้างชำระ ${formatMoney(row.outstanding)}`}
+                      title={`ยอดค้าง ${formatMoney(row.outstanding)}`}
                     />
                   </div>
                   <div className="text-center">
@@ -569,7 +564,7 @@ export default function DashboardPage() {
           <CardContent className="space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold text-slate-900">ค่าน้ำค่าไฟ 6 เดือนล่าสุด</h2>
-              <span className="text-xs text-slate-400">หน่วยใช้งาน</span>
+              <span className="text-xs text-slate-400">หน่วยการใช้งาน</span>
             </div>
             <div className="grid h-72 grid-cols-6 items-end gap-4">
               {dashboard.utilityTrend.map((row) => (
@@ -777,3 +772,4 @@ function MiniListAction({
     </div>
   );
 }
+

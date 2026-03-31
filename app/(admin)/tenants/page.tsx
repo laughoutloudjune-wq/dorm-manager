@@ -27,6 +27,7 @@ type TenantRow = {
   deposit_slip_url: string | null;
   final_electricity_reading: number | null;
   final_water_reading: number | null;
+  forfeit_security_deposit: boolean | null;
   custom_payment_method: any;
   custom_receipt_profile: any;
   rooms:
@@ -81,6 +82,19 @@ type MoveOutFeeLine = {
   id: string;
   label: string;
   amount: number;
+};
+
+type TenantInvoiceHistoryRow = {
+  id: string;
+  start_date: string;
+  end_date: string;
+  total_amount: number | null;
+  paid_amount: number | null;
+  status: string;
+  slip_url: string | null;
+  slip_uploaded_at: string | null;
+  payment_history: any[];
+  created_at: string | null;
 };
 
 type TransferCalcForm = {
@@ -282,9 +296,10 @@ export default function TenantsPage() {
   const [receiptProfiles, setReceiptProfiles] = useState<ReceiptProfile[]>([]);
   const [rates, setRates] = useState<SettingsRates>({ water_rate: 0, electricity_rate: 0 });
   const [search, setSearch] = useState("");
+  const [buildingFilter, setBuildingFilter] = useState("all");
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [activeTenant, setActiveTenant] = useState<TenantRow | null>(null);
-  const [activeTab, setActiveTab] = useState<"info" | "move_in" | "move_out">("info");
+  const [activeTab, setActiveTab] = useState<"info" | "move_in" | "move_out" | "payments">("info");
   const [useCustomPayment, setUseCustomPayment] = useState(false);
   const [selectedMethodId, setSelectedMethodId] = useState<string>("");
   const [useCustomReceipt, setUseCustomReceipt] = useState(false);
@@ -295,6 +310,9 @@ export default function TenantsPage() {
   const [moveOutFeeLines, setMoveOutFeeLines] = useState<MoveOutFeeLine[]>([]);
   const [moveOutRequests, setMoveOutRequests] = useState<MoveOutRequestRow[]>([]);
   const [activeMoveOutRequest, setActiveMoveOutRequest] = useState<MoveOutRequestRow | null>(null);
+  const [forfeitDeposit, setForfeitDeposit] = useState(false);
+  const [tenantInvoiceHistory, setTenantInvoiceHistory] = useState<TenantInvoiceHistoryRow[]>([]);
+  const [paymentHistoryMonth, setPaymentHistoryMonth] = useState("all");
 
   const [confirmSaveOpen, setConfirmSaveOpen] = useState(false);
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
@@ -361,7 +379,7 @@ export default function TenantsPage() {
     const { data, error } = await supabase
       .from("tenants")
       .select(
-        "id,full_name,address,phone_number,line_user_id,move_in_date,move_out_date,status,room_id,lease_months,initial_electricity_reading,initial_water_reading,advance_rent_amount,security_deposit_amount,deposit_slip_url,final_electricity_reading,final_water_reading,custom_payment_method,custom_receipt_profile,rooms(room_number,price_month,buildings(name))"
+        "id,full_name,address,phone_number,line_user_id,move_in_date,move_out_date,status,room_id,lease_months,initial_electricity_reading,initial_water_reading,advance_rent_amount,security_deposit_amount,deposit_slip_url,final_electricity_reading,final_water_reading,forfeit_security_deposit,custom_payment_method,custom_receipt_profile,rooms(room_number,price_month,buildings(name))"
       )
       .order("move_in_date", { ascending: false });
 
@@ -477,6 +495,22 @@ export default function TenantsPage() {
     setLatestPrevWater(toNumber((data as any)?.current_water ?? fallbackWater));
   };
 
+  const loadTenantInvoiceHistory = async (tenantId: string) => {
+    const { data, error } = await supabase
+      .from("invoices")
+      .select("id,start_date,end_date,total_amount,paid_amount,status,slip_url,slip_uploaded_at,payment_history,created_at")
+      .eq("tenant_id", tenantId)
+      .order("start_date", { ascending: false });
+
+    if (error) {
+      setStatus(error.message);
+      setTenantInvoiceHistory([]);
+      return;
+    }
+
+    setTenantInvoiceHistory((data ?? []) as TenantInvoiceHistoryRow[]);
+  };
+
   const loadLatestRoomReadings = async (roomId: string) => {
     if (!roomId) return { electricity: 0, water: 0 };
     const { data } = await supabase
@@ -516,7 +550,7 @@ export default function TenantsPage() {
 
   const openModal = async (
     tenant?: TenantRow,
-    initialTab: "info" | "move_in" | "move_out" = "info"
+    initialTab: "info" | "move_in" | "move_out" | "payments" = "info"
   ) => {
     setActiveTab(initialTab);
     if (tenant) {
@@ -528,6 +562,7 @@ export default function TenantsPage() {
         null;
       setActiveMoveOutRequest(request);
       setActiveTenant(tenant);
+      setForfeitDeposit(Boolean(tenant.forfeit_security_deposit));
       setForm({
         full_name: tenant.full_name,
         address: tenant.address ?? "",
@@ -580,9 +615,12 @@ export default function TenantsPage() {
         toNumber(tenant.initial_electricity_reading ?? 0),
         toNumber(tenant.initial_water_reading ?? 0)
       );
+      await loadTenantInvoiceHistory(tenant.id);
+      setPaymentHistoryMonth("all");
     } else {
       setActiveTenant(null);
       setActiveMoveOutRequest(null);
+      setForfeitDeposit(false);
       setForm({
         full_name: "",
         address: "",
@@ -619,6 +657,8 @@ export default function TenantsPage() {
       setSelectedReceiptProfileId("");
       setLatestPrevElectricity(0);
       setLatestPrevWater(0);
+      setTenantInvoiceHistory([]);
+      setPaymentHistoryMonth("all");
     }
 
     setIsModalOpen(true);
@@ -711,6 +751,7 @@ export default function TenantsPage() {
       deposit_slip_url: serializeDepositSlipUrls(depositSlipUrls),
       final_electricity_reading: toNumber(form.final_electricity_reading),
       final_water_reading: toNumber(form.final_water_reading),
+      forfeit_security_deposit: forfeitDeposit,
       custom_payment_method: customPayment,
       custom_receipt_profile: customReceipt,
     };
@@ -758,7 +799,7 @@ export default function TenantsPage() {
       const { data: refreshed } = await supabase
         .from("tenants")
         .select(
-          "id,full_name,address,phone_number,line_user_id,move_in_date,move_out_date,status,room_id,lease_months,initial_electricity_reading,initial_water_reading,advance_rent_amount,security_deposit_amount,deposit_slip_url,final_electricity_reading,final_water_reading,custom_payment_method,custom_receipt_profile,rooms(room_number,price_month,buildings(name))"
+          "id,full_name,address,phone_number,line_user_id,move_in_date,move_out_date,status,room_id,lease_months,initial_electricity_reading,initial_water_reading,advance_rent_amount,security_deposit_amount,deposit_slip_url,final_electricity_reading,final_water_reading,forfeit_security_deposit,custom_payment_method,custom_receipt_profile,rooms(room_number,price_month,buildings(name))"
         )
         .eq("id", activeTenant.id)
         .maybeSingle();
@@ -841,6 +882,7 @@ export default function TenantsPage() {
         move_out_date: moveOutDate,
         final_electricity_reading: toNumber(form.final_electricity_reading),
         final_water_reading: toNumber(form.final_water_reading),
+        forfeit_security_deposit: forfeitDeposit,
         },
       });
     } catch (error: any) {
@@ -861,6 +903,8 @@ export default function TenantsPage() {
     const todayText = new Date().toLocaleDateString("th-TH");
     const netLabel = net >= 0 ? "คืนเงินผู้เช่า" : "ผู้เช่าค้างชำระ";
     const netAmount = formatMoney(Math.abs(net));
+    const receiptRefundableDeposit = forfeitDeposit ? 0 : toNumber(form.security_deposit_amount);
+    const receiptForfeitedDeposit = forfeitDeposit ? toNumber(form.security_deposit_amount) : 0;
     const feeRows = moveOutFeeLines
       .filter((line) => line.label.trim() && toNumber(line.amount) > 0)
       .map(
@@ -909,7 +953,20 @@ export default function TenantsPage() {
       <div class="row"><span class="label">ค่าน้ำ (${waterUsage} หน่วย)</span><span class="value">฿${formatMoney(waterUsage * rates.water_rate)}</span></div>
       ${feeRows}
       <div class="row"><span class="label">รวมค่าใช้จ่าย</span><span class="value">฿${formatMoney(totalCost)}</span></div>
-      <div class="row"><span class="label">ชำระล่วงหน้า (ประกัน + ค่าเช่าล่วงหน้า)</span><span class="value">฿${formatMoney(prepaid)}</span></div>
+      <div class="row"><span class="label">ค่าเช่าล่วงหน้าที่นำมาหักได้</span><span class="value">฿${formatMoney(
+        toNumber(form.advance_rent_amount)
+      )}</span></div>
+      <div class="row"><span class="label">เงินประกันที่นำมาหักได้</span><span class="value">฿${formatMoney(
+        receiptRefundableDeposit
+      )}</span></div>
+      ${
+        receiptForfeitedDeposit > 0
+          ? `<div class="row"><span class="label">เงินประกันที่ไม่คืน</span><span class="value">฿${formatMoney(
+              receiptForfeitedDeposit
+            )}</span></div>`
+          : ""
+      }
+      <div class="row"><span class="label">รวมยอดที่หักคืนได้</span><span class="value">฿${formatMoney(prepaid)}</span></div>
       <div class="total">${netLabel}: ฿${netAmount}</div>
     </div>
   </body>
@@ -971,11 +1028,20 @@ export default function TenantsPage() {
 
   const filtered = tenants.filter((tenant) => {
     const room = tenantRoomNumber(tenant, roomsById);
+    const building = tenantBuildingName(tenant, roomsById);
+    const matchesBuilding = buildingFilter === "all" || building === buildingFilter;
     return (
-      tenant.full_name.toLowerCase().includes(search.toLowerCase()) ||
-      room.toLowerCase().includes(search.toLowerCase())
+      matchesBuilding &&
+      (tenant.full_name.toLowerCase().includes(search.toLowerCase()) ||
+        room.toLowerCase().includes(search.toLowerCase()))
     );
   });
+  const buildingOptions = useMemo(
+    () =>
+      [...new Set(tenants.map((tenant) => tenantBuildingName(tenant, roomsById)))]
+        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" })),
+    [roomsById, tenants]
+  );
   const groupedTenants = useMemo(() => {
     const grouped = filtered.reduce<Record<string, TenantRow[]>>((acc, tenant) => {
       const building = tenantBuildingName(tenant, roomsById);
@@ -1031,20 +1097,52 @@ export default function TenantsPage() {
   const overstayRentCharge = overstayDays * dailyRent;
   const additionalFeesTotal = moveOutFeeLines.reduce((sum, line) => sum + toNumber(line.amount), 0);
   const totalCost = roomPrice + utilityTotal + overstayRentCharge + additionalFeesTotal;
-  const prepaid = toNumber(form.security_deposit_amount) + toNumber(form.advance_rent_amount);
+  const refundableDeposit = forfeitDeposit ? 0 : toNumber(form.security_deposit_amount);
+  const forfeitedDepositAmount = forfeitDeposit ? toNumber(form.security_deposit_amount) : 0;
+  const prepaid = refundableDeposit + toNumber(form.advance_rent_amount);
   const net = prepaid - totalCost;
+  const totalTenants = filtered.length;
+  const paymentHistoryMonthOptions = useMemo(
+    () =>
+      [...new Set(tenantInvoiceHistory.map((invoice) => String(invoice.start_date ?? "").slice(0, 7)).filter(Boolean))]
+        .sort((a, b) => b.localeCompare(a, undefined, { numeric: true, sensitivity: "base" })),
+    [tenantInvoiceHistory]
+  );
+  const filteredTenantInvoiceHistory = useMemo(
+    () =>
+      tenantInvoiceHistory.filter((invoice) =>
+        paymentHistoryMonth === "all" ? true : String(invoice.start_date ?? "").slice(0, 7) === paymentHistoryMonth
+      ),
+    [paymentHistoryMonth, tenantInvoiceHistory]
+  );
 
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="relative w-full md:w-80">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-          <input
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder="ค้นหาชื่อผู้เช่าหรือเลขห้อง"
-            className="w-full rounded-xl border border-slate-200 bg-white py-3 pl-10 pr-4 text-base shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-600/40"
-          />
+        <div className="flex w-full flex-col gap-3 md:w-auto md:flex-row">
+          <div className="relative w-full md:w-80">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+            <input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="ค้นหาชื่อผู้เช่าหรือเลขห้อง"
+              className="w-full rounded-xl border border-slate-200 bg-white py-3 pl-10 pr-4 text-base shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-600/40"
+            />
+          </div>
+          {buildingOptions.length > 1 && (
+            <select
+              value={buildingFilter}
+              onChange={(event) => setBuildingFilter(event.target.value)}
+              className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-base shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-600/40 md:w-56"
+            >
+              <option value="all">ทุกอาคาร</option>
+              {buildingOptions.map((building) => (
+                <option key={building} value={building}>
+                  {building}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
         <button
           onClick={() => void openModal()}
@@ -1074,77 +1172,80 @@ export default function TenantsPage() {
         .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }))
         .map(([building, buildingTenants]) => (
           <div key={building} className="space-y-3">
-            <h2 className="text-lg font-semibold text-slate-900">{building}</h2>
-            <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-              <table className="w-full table-fixed text-left text-base">
-                <colgroup>
-                  <col className="w-[22%]" />
-                  <col className="w-[12%]" />
-                  <col className="w-[18%]" />
-                  <col className="w-[24%]" />
-                  <col className="w-[12%]" />
-                  <col className="w-[12%]" />
-                </colgroup>
-                <thead className="bg-slate-100 text-sm tracking-wide text-slate-600">
-                  <tr>
-                    <th className="px-4 py-3">ผู้เช่า</th>
-                    <th className="px-4 py-3">ห้อง</th>
-                    <th className="px-4 py-3">เบอร์โทร</th>
-                    <th className="px-4 py-3">วิธีชำระ</th>
-                    <th className="px-4 py-3">สถานะ</th>
-                    <th className="px-4 py-3" />
-                  </tr>
-                </thead>
-                <tbody>
-                  {buildingTenants.map((tenant) => (
-                    <tr key={tenant.id} className="border-t border-slate-100">
-                      <td className="px-4 py-3 font-medium text-slate-900">
-                        <div className="flex items-center gap-2">
-                          <span>{tenant.full_name}</span>
-                          {activeMoveOutRequestByTenantId.has(String(tenant.id)) && (
-                            <span className="rounded-full border border-orange-200 bg-orange-50 px-2 py-0.5 text-xs font-medium text-orange-700">
-                              รอจัดการย้ายออก
-                            </span>
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-4 py-3">{tenantRoomNumber(tenant, roomsById)}</td>
-                      <td className="px-4 py-3">{tenant.phone_number ?? "-"}</td>
-                      <td className="px-4 py-3 text-sm text-slate-600">{tenantPaymentMethodLabel(tenant)}</td>
-                      <td className="px-4 py-3">
-                        <Badge variant={tenant.status === "active" ? "success" : "warning"}>
-                          {tenantStatusLabel(tenant.status)}
-                        </Badge>
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-2">
-                          {activeMoveOutRequestByTenantId.has(String(tenant.id)) && (
-                            <button
-                              type="button"
-                              disabled={!canEditTenant}
-                              onClick={() => void openModal(tenant, "move_out")}
-                              className="rounded-lg border border-orange-200 px-3 py-1.5 text-sm text-orange-700 disabled:cursor-not-allowed disabled:opacity-60"
-                            >
-                              ดูคำขอ
-                            </button>
-                          )}
-                          <button
-                            disabled={!canEditTenant}
-                            title={!canEditTenant ? "ไม่มีสิทธิ์แก้ไขข้อมูลผู้เช่า" : undefined}
-                            className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 disabled:cursor-not-allowed disabled:border-red-200 disabled:text-red-400"
-                            onClick={() => void openModal(tenant)}
-                          >
-                            แก้ไข
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h2 className="text-lg font-semibold text-slate-900">{building}</h2>
+              <Badge variant="info" className="text-sm">
+                {buildingTenants.length} รายการ
+              </Badge>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+              {buildingTenants.map((tenant) => (
+                <div
+                  key={tenant.id}
+                  className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition-shadow hover:shadow-md"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-medium uppercase tracking-wide text-slate-400">ห้อง</p>
+                      <h2 className="mt-1 text-base font-semibold text-slate-900">{tenantRoomNumber(tenant, roomsById)}</h2>
+                      <p className="mt-1 text-sm text-slate-600">{tenant.full_name}</p>
+                    </div>
+                    <Badge variant={tenant.status === "active" ? "success" : "warning"}>
+                      {tenantStatusLabel(tenant.status)}
+                    </Badge>
+                  </div>
+
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {activeMoveOutRequestByTenantId.has(String(tenant.id)) && (
+                      <Badge variant="warning">รอจัดการย้ายออก</Badge>
+                    )}
+                    {tenant.forfeit_security_deposit ? <Badge variant="danger">ไม่คืนเงินประกัน</Badge> : null}
+                  </div>
+
+                  <div className="mt-3 space-y-2 text-sm text-slate-600">
+                    <div className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2">
+                      <span>เบอร์โทร</span>
+                      <span className="font-medium text-slate-800">{tenant.phone_number ?? "-"}</span>
+                    </div>
+                    <div className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2">
+                      <span>LINE</span>
+                      <span className={`font-medium ${tenant.line_user_id ? "text-emerald-700" : "text-slate-500"}`}>
+                        {tenant.line_user_id ? "เชื่อมแล้ว" : "ยังไม่เชื่อม"}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {activeMoveOutRequestByTenantId.has(String(tenant.id)) && (
+                      <button
+                        type="button"
+                        disabled={!canEditTenant}
+                        onClick={() => void openModal(tenant, "move_out")}
+                        className="rounded-xl border border-orange-200 bg-orange-50 px-3 py-2 text-sm font-medium text-orange-700 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        ดูคำขอย้ายออก
+                      </button>
+                    )}
+                    <button
+                      disabled={!canEditTenant}
+                      title={!canEditTenant ? "ไม่มีสิทธิ์แก้ไขข้อมูลผู้เช่า" : undefined}
+                      className="rounded-xl border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:border-red-200 disabled:text-red-400"
+                      onClick={() => void openModal(tenant)}
+                    >
+                      แก้ไขข้อมูล
+                    </button>
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         ))}
+
+      {!isPageLoading && totalTenants === 0 && canViewTenants && (
+        <div className="rounded-3xl border border-dashed border-slate-300 bg-slate-50 px-6 py-12 text-center text-slate-500">
+          ไม่พบข้อมูลผู้เช่าตามคำค้นหา
+        </div>
+      )}
 
       <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title="รายละเอียดผู้เช่า" size="xl">
         {!canEditTenant && (
@@ -1171,6 +1272,12 @@ export default function TenantsPage() {
             onClick={() => setActiveTab("move_out")}
           >
             ย้ายออก
+          </button>
+          <button
+            className={`rounded-full px-3 py-2 text-base ${activeTab === "payments" ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-700"}`}
+            onClick={() => setActiveTab("payments")}
+          >
+            ประวัติการชำระ
           </button>
         </div>
 
@@ -1584,6 +1691,23 @@ export default function TenantsPage() {
               ใช้การคำนวณ Pro-rate สำหรับวันที่เกินจากค่าเช่าล่วงหน้า
             </label>
 
+            <label className="block rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+              <span className="flex items-start gap-3">
+                <input
+                  type="checkbox"
+                  checked={forfeitDeposit}
+                  onChange={(event) => setForfeitDeposit(event.target.checked)}
+                  className="mt-1"
+                />
+                <span>
+                  <span className="block font-semibold">ไม่คืนเงินประกัน</span>
+                  <span className="mt-1 block text-xs text-red-700">
+                    ใช้ในกรณีผู้เช่าไม่แจ้งย้ายออกล่วงหน้า หรือย้ายออกก่อนครบสัญญา ระบบจะไม่นำเงินประกันมาหักคืนในสรุปย้ายออก
+                  </span>
+                </span>
+              </span>
+            </label>
+
             <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
               <div className="flex items-center justify-between">
                 <p className="text-sm font-semibold text-slate-800">ค่าใช้จ่ายเพิ่มเติม (ย้ายออก)</p>
@@ -1674,7 +1798,15 @@ export default function TenantsPage() {
               <div className="my-3 border-t border-dashed border-slate-300" />
               <div className="space-y-1">
                 <p className="flex justify-between font-medium"><span>รวมค่าใช้จ่าย</span><span>฿{formatMoney(totalCost)}</span></p>
-                <p className="flex justify-between"><span>ชำระล่วงหน้า (ประกัน + ค่าเช่าล่วงหน้า)</span><span>฿{formatMoney(prepaid)}</span></p>
+                <p className="flex justify-between"><span>ค่าเช่าล่วงหน้าที่นำมาหักได้</span><span>฿{formatMoney(toNumber(form.advance_rent_amount))}</span></p>
+                <p className="flex justify-between"><span>เงินประกันที่นำมาหักได้</span><span>฿{formatMoney(refundableDeposit)}</span></p>
+                {forfeitedDepositAmount > 0 && (
+                  <p className="flex justify-between text-red-700">
+                    <span>เงินประกันที่ไม่คืน</span>
+                    <span>฿{formatMoney(forfeitedDepositAmount)}</span>
+                  </p>
+                )}
+                <p className="flex justify-between"><span>รวมยอดที่หักคืนได้</span><span>฿{formatMoney(prepaid)}</span></p>
               </div>
               <div className="my-3 border-t border-dashed border-slate-300" />
               <p className="text-base font-semibold text-slate-900">
@@ -1711,6 +1843,102 @@ export default function TenantsPage() {
               {isMovingOut ? "กำลังย้ายออก..." : "ยืนยันการย้ายออก"}
             </button>
           </fieldset>
+        )}
+
+        {activeTab === "payments" && (
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+              <p>แสดงใบแจ้งหนี้ของผู้เช่ารายนี้ พร้อมสถานะการชำระ วันที่ชำระล่าสุด และสลิปที่อัปโหลด</p>
+              {paymentHistoryMonthOptions.length > 1 && (
+                <select
+                  value={paymentHistoryMonth}
+                  onChange={(event) => setPaymentHistoryMonth(event.target.value)}
+                  className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm text-slate-700"
+                >
+                  <option value="all">ทุกเดือน</option>
+                  {paymentHistoryMonthOptions.map((month) => (
+                    <option key={month} value={month}>
+                      {month}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+
+            {filteredTenantInvoiceHistory.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-6 py-10 text-center text-slate-500">
+                ไม่พบประวัติใบแจ้งหนี้ในช่วงที่เลือก
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {filteredTenantInvoiceHistory.map((invoice) => {
+                  const latestPayment =
+                    Array.isArray(invoice.payment_history) && invoice.payment_history.length > 0
+                      ? invoice.payment_history[invoice.payment_history.length - 1]
+                      : null;
+                  const paymentDate =
+                    latestPayment?.paid_at ??
+                    latestPayment?.created_at ??
+                    invoice.slip_uploaded_at ??
+                    null;
+                  return (
+                    <div
+                      key={invoice.id}
+                      className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-slate-900">
+                            รอบบิล {invoice.start_date} ถึง {invoice.end_date}
+                          </p>
+                          <p className="mt-1 text-xs text-slate-500">
+                            เลขที่บิล {invoice.id.slice(0, 8).toUpperCase()}
+                          </p>
+                        </div>
+                        <Badge variant={invoice.status === "paid" ? "success" : invoice.status === "verifying" ? "info" : "warning"}>
+                          {invoice.status}
+                        </Badge>
+                      </div>
+
+                      <div className="mt-3 grid gap-3 md:grid-cols-3">
+                        <div className="rounded-xl bg-slate-50 px-3 py-3">
+                          <p className="text-xs uppercase tracking-wide text-slate-400">ยอดรวม</p>
+                          <p className="mt-1 text-sm font-semibold text-slate-900">฿{formatMoney(toNumber(invoice.total_amount))}</p>
+                        </div>
+                        <div className="rounded-xl bg-slate-50 px-3 py-3">
+                          <p className="text-xs uppercase tracking-wide text-slate-400">ชำระแล้ว</p>
+                          <p className="mt-1 text-sm font-semibold text-emerald-700">฿{formatMoney(toNumber(invoice.paid_amount))}</p>
+                        </div>
+                        <div className="rounded-xl bg-slate-50 px-3 py-3">
+                          <p className="text-xs uppercase tracking-wide text-slate-400">วันที่ชำระล่าสุด</p>
+                          <p className="mt-1 text-sm font-semibold text-slate-900">
+                            {paymentDate ? new Date(paymentDate).toLocaleString("th-TH") : "-"}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        {invoice.slip_url ? (
+                          <a
+                            href={invoice.slip_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-medium text-blue-700"
+                          >
+                            เปิดดูสลิป
+                          </a>
+                        ) : (
+                          <span className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-500">
+                            ไม่มีสลิป
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         )}
 
         <div className="mt-6 flex items-center justify-between gap-3">

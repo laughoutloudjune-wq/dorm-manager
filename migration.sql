@@ -59,6 +59,7 @@ ADD COLUMN IF NOT EXISTS deposit_slip_url TEXT,
 ADD COLUMN IF NOT EXISTS advance_rent_slip_url TEXT,
 ADD COLUMN IF NOT EXISTS final_electricity_reading NUMERIC(10, 2),
 ADD COLUMN IF NOT EXISTS final_water_reading NUMERIC(10, 2),
+ADD COLUMN IF NOT EXISTS forfeit_security_deposit BOOLEAN DEFAULT FALSE,
 ADD COLUMN IF NOT EXISTS policy_accepted BOOLEAN DEFAULT FALSE,
 ADD COLUMN IF NOT EXISTS policy_accepted_at TIMESTAMPTZ,
 ADD COLUMN IF NOT EXISTS policy_version TEXT;

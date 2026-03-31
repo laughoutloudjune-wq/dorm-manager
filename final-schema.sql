@@ -78,6 +78,7 @@ CREATE TABLE public.tenants (
   advance_rent_slip_url TEXT,
   final_electricity_reading NUMERIC(10,2),
   final_water_reading NUMERIC(10,2),
+  forfeit_security_deposit BOOLEAN DEFAULT FALSE,
   policy_accepted BOOLEAN DEFAULT FALSE,
   policy_accepted_at TIMESTAMPTZ,
   policy_version TEXT,

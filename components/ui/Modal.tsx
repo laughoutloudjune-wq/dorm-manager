@@ -8,6 +8,9 @@ const sizeClasses: Record<string, string> = {
   md: "max-w-xl",
   lg: "max-w-3xl",
   xl: "max-w-5xl",
+  "2xl": "max-w-7xl",
+  "3xl": "max-w-[96rem]",
+  "4xl": "max-w-[112rem]",
 };
 
 export function Modal({
@@ -20,7 +23,7 @@ export function Modal({
   isOpen: boolean;
   onClose: () => void;
   title?: string;
-  size?: "md" | "lg" | "xl";
+  size?: "md" | "lg" | "xl" | "2xl" | "3xl" | "4xl";
   children: ReactNode;
 }) {
   const [mounted, setMounted] = useState(false);
@@ -62,7 +65,7 @@ export function Modal({
             <X size={18} />
           </button>
         </div>
-        <div className="max-h-[75vh] overflow-y-auto px-6 py-5">{children}</div>
+        <div className="max-h-[85vh] overflow-y-auto px-6 py-5">{children}</div>
       </div>
     </div>
   );

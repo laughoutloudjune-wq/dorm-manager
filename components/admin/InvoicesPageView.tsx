@@ -3123,6 +3123,129 @@ export default function InvoicesPage() {
           printSettings?.billing_day
         )
       : null;
+  const livePreviewRows = useMemo(() => {
+    const rows: Array<{
+      detail: string;
+      unitLabel: string;
+      pricePerUnit: number;
+      total: number;
+      tone?: string;
+    }> = [];
+
+    const transferRentItems = transferBreakdownItems.filter(
+      (item) => item.editable && toNumber(item.amount) > 0
+    );
+
+    if (transferRentItems.length > 0) {
+      transferRentItems.forEach((item) => {
+        rows.push({
+          detail: item.label,
+          unitLabel: "1 รายการ",
+          pricePerUnit: toNumber(item.amount),
+          total: toNumber(item.amount),
+          tone: "sky",
+        });
+      });
+    } else if (toNumber(form.rent_amount) > 0) {
+      rows.push({
+        detail: "ค่าเช่าห้อง",
+        unitLabel: "1 เดือน",
+        pricePerUnit: toNumber(form.rent_amount),
+        total: toNumber(form.rent_amount),
+      });
+    }
+
+    if (toNumber(form.water_bill) > 0) {
+      const units = toNumber(form.water_units);
+      rows.push({
+        detail: "ค่าน้ำ",
+        unitLabel: units > 0 ? `${units.toLocaleString("th-TH")} หน่วย` : "1 รายการ",
+        pricePerUnit: units > 0 ? roundTo2(toNumber(form.water_bill) / units) : toNumber(form.water_bill),
+        total: toNumber(form.water_bill),
+      });
+    }
+
+    if (toNumber(form.electricity_bill) > 0) {
+      const units = toNumber(form.electricity_units);
+      rows.push({
+        detail: "ค่าไฟฟ้า",
+        unitLabel: units > 0 ? `${units.toLocaleString("th-TH")} หน่วย` : "1 รายการ",
+        pricePerUnit:
+          units > 0 ? roundTo2(toNumber(form.electricity_bill) / units) : toNumber(form.electricity_bill),
+        total: toNumber(form.electricity_bill),
+      });
+    }
+
+    if (toNumber(form.common_fee) > 0) {
+      rows.push({
+        detail: "ค่าส่วนกลาง",
+        unitLabel: "1 รายการ",
+        pricePerUnit: toNumber(form.common_fee),
+        total: toNumber(form.common_fee),
+      });
+    }
+
+    editableCarryForwardItems
+      .filter((item) => toNumber(item.total_amount) > 0)
+      .forEach((item) => {
+        rows.push({
+          detail: item.detail || "ยอดค้างยกมา",
+          unitLabel: `${toNumber(item.unit).toLocaleString("th-TH")} รายการ`,
+          pricePerUnit: toNumber(item.price_per_unit),
+          total: toNumber(item.total_amount),
+          tone: "amber",
+        });
+      });
+
+    editableLateFeeItems
+      .filter((item) => toNumber(item.total_amount) > 0)
+      .forEach((item) => {
+        rows.push({
+          detail: item.detail || "ค่าปรับล่าช้า",
+          unitLabel: `${toNumber(item.days_overdue ?? item.unit).toLocaleString("th-TH")} วัน`,
+          pricePerUnit: toNumber(item.daily_rate ?? item.price_per_unit),
+          total: toNumber(item.total_amount),
+          tone: "amber",
+        });
+      });
+
+    editableFeeItems
+      .filter((item) => toNumber(item.total_amount) > 0)
+      .forEach((item) => {
+        rows.push({
+          detail: item.detail || "ค่าธรรมเนียมเพิ่มเติม",
+          unitLabel: `${toNumber(item.unit).toLocaleString("th-TH")} รายการ`,
+          pricePerUnit: toNumber(item.price_per_unit),
+          total: toNumber(item.total_amount),
+        });
+      });
+
+    editableDiscountItems
+      .filter((item) => toNumber(item.total_amount) > 0)
+      .forEach((item) => {
+        rows.push({
+          detail: item.detail || "ส่วนลด",
+          unitLabel: `${toNumber(item.unit).toLocaleString("th-TH")} รายการ`,
+          pricePerUnit: toNumber(item.price_per_unit),
+          total: -toNumber(item.total_amount),
+          tone: "emerald",
+        });
+      });
+
+    return rows;
+  }, [
+    editableCarryForwardItems,
+    editableDiscountItems,
+    editableFeeItems,
+    editableLateFeeItems,
+    form.common_fee,
+    form.electricity_bill,
+    form.electricity_units,
+    form.rent_amount,
+    form.water_bill,
+    form.water_units,
+    transferBreakdownItems,
+  ]);
   const canEditDetails = activeInvoice ? isInvoiceDetailEditable(activeInvoice.status) : false;
   const hasEditableTransferRent = transferBreakdownItems.some((item) => item.editable);
   const canCreateInvoice = can("invoice.create");
@@ -3496,7 +3619,7 @@ export default function InvoicesPage() {
         isOpen={detailOpen}
         onClose={() => setDetailOpen(false)}
         title={activeInvoice ? `ใบแจ้งหนี้ ${shortInvoiceId(activeInvoice.id)}` : "รายละเอียดใบแจ้งหนี้"}
-        size="xl"
+        size="4xl"
       >
         {activeInvoice && (
           <div className="space-y-6">
@@ -3771,9 +3894,10 @@ export default function InvoicesPage() {
               </div>
             </div>
 
+            <div className="grid items-start gap-6 min-[1750px]:grid-cols-[minmax(0,1.05fr)_minmax(700px,0.95fr)]">
             <fieldset
               disabled={!(canEditDetails && canEditInvoice)}
-              className={!(canEditDetails && canEditInvoice) ? "cursor-not-allowed opacity-70" : ""}
+              className={`min-w-0 ${!(canEditDetails && canEditInvoice) ? "cursor-not-allowed opacity-70" : ""}`}
             >
             <div className="space-y-3 rounded-xl border border-slate-200 p-4">
               <p className="text-sm font-semibold text-slate-700">รายละเอียดหลักใบแจ้งหนี้</p>
@@ -4418,6 +4542,116 @@ export default function InvoicesPage() {
               />
             </label>
             </fieldset>
+
+            <div className="min-w-0 min-[1750px]:sticky min-[1750px]:top-4">
+              <div className="overflow-hidden rounded-[30px] border border-slate-200 bg-gradient-to-b from-slate-50 to-white shadow-sm">
+                <div className="border-b border-slate-200 bg-white/80 px-5 py-4 backdrop-blur">
+                  <p className="text-xs uppercase tracking-[0.22em] text-slate-400">Live Preview</p>
+                  <h3 className="mt-1 text-lg font-semibold text-slate-900">ตัวอย่างหน้าใบแจ้งหนี้</h3>
+                  <p className="mt-1 text-xs text-slate-500">ใช้หน้าตาเดียวกับฝั่ง LIFF และอัปเดตตามค่าที่กำลังแก้</p>
+                </div>
+
+                <div className="space-y-4 overflow-x-auto p-5">
+                  <div className="rounded-[28px] border border-white/70 bg-white/90 p-5 shadow-lg shadow-slate-200/70">
+                    <header className="rounded-3xl border border-white/60 bg-white/90 p-6 shadow-xl">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm text-slate-500">
+                            {form.status === "paid" ? "ใบเสร็จรับเงิน" : "ใบแจ้งหนี้"}
+                          </p>
+                          <h1 className="text-2xl font-semibold text-slate-900">ห้อง {activeInvoice.room_number}</h1>
+                          <div className="mt-2">
+                            <Badge variant={form.status === "verifying" ? "info" : form.status === "paid" ? "success" : "warning"}>
+                              สถานะ: {form.status === "verifying" ? "รอตรวจสอบ" : form.status === "paid" ? "ชำระแล้ว" : "รอชำระ"}
+                            </Badge>
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-xs uppercase tracking-[0.2em] text-slate-400">TOTAL</p>
+                          <p className="text-3xl font-semibold text-green-600">{formatMoney(toNumber(form.total_amount))}</p>
+                          <p className="mt-1 text-xs text-slate-500">ชำระแล้ว: {formatMoney(toNumber(form.paid_amount))}</p>
+                          <p className="text-xs text-rose-600">
+                            คงเหลือ:{" "}
+                            {formatMoney(
+                              invoiceDisplayOutstanding({
+                                total_amount: form.total_amount,
+                                paid_amount: toNumber(form.paid_amount),
+                              })
+                            )}
+                          </p>
+                        </div>
+                      </div>
+
+                      {form.status !== "paid" && (
+                        <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                          ชำระได้ไม่เกินวันที่ 10 ของเดือนถัดไป ถ้าหากเกินกำหนดชำระ มีค่าปรับ 100 บาท/วัน
+                        </div>
+                      )}
+                    </header>
+
+                    <section className="mt-6 rounded-3xl border border-white/60 bg-white/90 p-6 shadow-xl">
+                      <h2 className="text-lg font-semibold text-slate-900">รายละเอียดค่าใช้จ่าย</h2>
+                      <div className="mt-4 space-y-3 text-sm text-slate-600">
+                        {livePreviewRows.length === 0 ? (
+                          <p className="text-sm text-slate-400">ยังไม่มีรายการแสดงในใบแจ้งหนี้</p>
+                        ) : (
+                          livePreviewRows.map((row, index) => (
+                            <div
+                              key={`${row.detail}-${index}`}
+                              className={`flex items-center justify-between ${
+                                row.tone === "amber"
+                                  ? "rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900"
+                                  : row.tone === "sky"
+                                    ? "rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-900"
+                                    : ""
+                              }`}
+                            >
+                              <span>
+                                <span className="block">{row.detail}</span>
+                                <span className="block text-[11px] font-normal text-slate-500">
+                                  {row.unitLabel} x {formatMoney(Math.abs(row.pricePerUnit))}
+                                </span>
+                              </span>
+                              <span className={`font-semibold ${row.total < 0 ? "text-emerald-700" : "text-slate-900"}`}>
+                                {row.total < 0 ? "-" : ""}
+                                {formatMoney(Math.abs(row.total))}
+                              </span>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </section>
+
+                    <section className="mt-4 rounded-3xl border border-white/60 bg-white/90 p-6 shadow-xl">
+                      <h2 className="text-lg font-semibold text-slate-900">ข้อมูลประกอบ</h2>
+                      <div className="mt-4 grid gap-3 sm:grid-cols-2 text-sm text-slate-600">
+                        <div className="rounded-2xl bg-slate-50 px-4 py-3">
+                          <p className="text-xs uppercase tracking-wide text-slate-400">ผู้เช่า</p>
+                          <p className="mt-1 font-medium text-slate-800">{activeInvoice.tenant_name}</p>
+                        </div>
+                        <div className="rounded-2xl bg-slate-50 px-4 py-3">
+                          <p className="text-xs uppercase tracking-wide text-slate-400">เลขที่บิล</p>
+                          <p className="mt-1 font-medium text-slate-800">{shortInvoiceId(activeInvoice.id)}</p>
+                        </div>
+                        <div className="rounded-2xl bg-slate-50 px-4 py-3">
+                          <p className="text-xs uppercase tracking-wide text-slate-400">รอบบิล</p>
+                          <p className="mt-1 font-medium text-slate-800">{form.start_date || "-"} ถึง {form.end_date || "-"}</p>
+                        </div>
+                        <div className="rounded-2xl bg-slate-50 px-4 py-3">
+                          <p className="text-xs uppercase tracking-wide text-slate-400">ช่องทางชำระ</p>
+                          <p className="mt-1 font-medium text-slate-800">{getPaymentMethodLabel(activeInvoice)}</p>
+                        </div>
+                        <div className="rounded-2xl bg-slate-50 px-4 py-3 sm:col-span-2">
+                          <p className="text-xs uppercase tracking-wide text-slate-400">หมายเหตุ</p>
+                          <p className="mt-1 font-medium text-slate-800">{form.notes || "-"}</p>
+                        </div>
+                      </div>
+                    </section>
+                  </div>
+                </div>
+              </div>
+            </div>
+            </div>
 
             <div className="space-y-3">
               <p className="text-sm font-semibold text-slate-700">เมนูด่วน</p>
