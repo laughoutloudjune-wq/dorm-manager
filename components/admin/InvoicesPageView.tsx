@@ -1,12 +1,13 @@
-﻿"use client";
+"use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/Badge";
 import { Modal } from "@/components/ui/Modal";
 import { Input } from "@/components/ui/Input";
 import { ConfirmActionModal } from "@/components/ui/ConfirmActionModal";
 import { createClient } from "@/lib/supabase-client";
 import { usePermissions } from "@/lib/use-permissions";
+import { getCarryForwardCandidatesForTarget } from "@/lib/invoice-ledger";
 import {
   CheckCircle2,
   Loader2,
@@ -34,6 +35,7 @@ const statusVariant = {
 
 type InvoiceRecord = {
   id: string;
+  tenant_id: string;
   room_id: string;
   status: keyof typeof statusVariant;
   total_amount: number;
@@ -616,6 +618,7 @@ function normalizeInvoice(row: any): InvoiceRecord {
 
   return {
     id: row.id,
+    tenant_id: String(row.tenant_id ?? ""),
     room_id: row.room_id,
     status: row.status,
     total_amount: toNumber(row.total_amount),
@@ -689,6 +692,14 @@ export default function InvoicesPage() {
   const [editableCarryForwardItems, setEditableCarryForwardItems] = useState<CarryForwardItem[]>([]);
   const [editableLateFeeItems, setEditableLateFeeItems] = useState<LateFeeLineItem[]>([]);
   const [arrearsSnapshots, setArrearsSnapshots] = useState<ArrearsSnapshotItem[]>([]);
+  const [carryOverCandidates, setCarryOverCandidates] = useState<any[]>([]);
+  const [carryOverCandidatesLoading, setCarryOverCandidatesLoading] = useState(false);
+  const paymentIdempotencyKeyRef = useRef<string | null>(null);
+  const [allocationResultNotice, setAllocationResultNotice] = useState<{
+    batchId: string;
+    lines: { invoiceId: string; label: string; amount: number }[];
+    idempotentReplay?: boolean;
+  } | null>(null);
   const [editableDiscountItems, setEditableDiscountItems] = useState<FeeLineItem[]>([]);
   const [transferBreakdownItems, setTransferBreakdownItems] = useState<TransferBreakdownItem[]>(
     []
@@ -898,7 +909,7 @@ export default function InvoicesPage() {
     const { data, error: fetchError } = await supabase
       .from("invoices")
       .select(
-        "id,room_id,status,total_amount,paid_amount,payment_history,issue_date,due_date,start_date,end_date,rent_amount,water_bill,electricity_bill,common_fee,discount_amount,discount_breakdown,late_fee_amount,late_fee_per_day,late_fee_start_date,carry_forward_amount,additional_fees_total,additional_fees_breakdown,notes,public_token,slip_url,opened_count,first_opened_at,last_opened_at,tenants(full_name,phone_number,line_user_id,custom_payment_method,move_in_date),rooms(room_number,price_month,buildings(name))"
+        "id,tenant_id,room_id,status,total_amount,paid_amount,payment_history,issue_date,due_date,start_date,end_date,rent_amount,water_bill,electricity_bill,common_fee,discount_amount,discount_breakdown,late_fee_amount,late_fee_per_day,late_fee_start_date,carry_forward_amount,additional_fees_total,additional_fees_breakdown,notes,public_token,slip_url,opened_count,first_opened_at,last_opened_at,tenants(full_name,phone_number,line_user_id,custom_payment_method,move_in_date),rooms(room_number,price_month,buildings(name))"
       )
       .eq("start_date", periodStart)
       .eq("end_date", periodEnd)
@@ -1225,6 +1236,13 @@ export default function InvoicesPage() {
 
     setPaymentSubmitting(true);
     try {
+      if (!paymentIdempotencyKeyRef.current) {
+        paymentIdempotencyKeyRef.current =
+          typeof crypto !== "undefined" && crypto.randomUUID
+            ? crypto.randomUUID()
+            : `idem-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      }
+      const idempotencyKey = paymentIdempotencyKeyRef.current;
       let publicUrl: string | null = activeInvoice.slip_url ?? null;
       if (paymentSlipFile) {
         publicUrl = await uploadSlipFile(activeInvoice.id, paymentSlipFile);
@@ -1238,10 +1256,25 @@ export default function InvoicesPage() {
           paid_at: paidAtIso,
           slip_url: publicUrl ?? null,
           source: "admin_webapp",
+          idempotency_key: idempotencyKey,
         },
       });
       const updatedInvoices = Array.isArray(result?.updatedInvoices) ? result.updatedInvoices : [];
       const activeUpdated = updatedInvoices.find((row: any) => row.id === activeInvoice.id);
+      const breakdown = Array.isArray(result?.allocationBreakdown) ? result.allocationBreakdown : [];
+      const roomLabel = (invoiceId: string) =>
+        invoices.find((inv) => inv.id === invoiceId)?.room_number ?? shortInvoiceId(invoiceId);
+      if (breakdown.length > 0) {
+        setAllocationResultNotice({
+          batchId: String(result?.paymentBatchId ?? ""),
+          lines: breakdown.map((row: any) => ({
+            invoiceId: String(row.invoiceId),
+            label: `ห้อง ${roomLabel(String(row.invoiceId))}`,
+            amount: toNumber(row.allocatedAmount),
+          })),
+          idempotentReplay: !!result?.idempotentReplay,
+        });
+      }
 
       setError(null);
       setSlipPreview(publicUrl ?? null);
@@ -1290,6 +1323,7 @@ export default function InvoicesPage() {
       });
       // Keep local modal state in sync without reloading the full page list.
       setActiveInvoice(activeNext);
+      paymentIdempotencyKeyRef.current = null;
     } catch (paymentError: any) {
       setError(paymentError?.message ?? "Failed to process payment.");
     } finally {
@@ -1474,6 +1508,22 @@ export default function InvoicesPage() {
     setPaymentSlipFile(null);
     setSlipPreview(invoice.slip_url);
     setDetailOpen(true);
+    setAllocationResultNotice(null);
+    paymentIdempotencyKeyRef.current = null;
+    setCarryOverCandidates([]);
+    if (invoice.status === "draft" && invoice.tenant_id) {
+      setCarryOverCandidatesLoading(true);
+      void getCarryForwardCandidatesForTarget(
+        supabase,
+        invoice.tenant_id,
+        invoice.start_date,
+        invoice.id,
+        invoice.issue_date || invoice.start_date
+      )
+        .then((rows) => setCarryOverCandidates(rows))
+        .catch(() => setCarryOverCandidates([]))
+        .finally(() => setCarryOverCandidatesLoading(false));
+    }
 
     // Replace inferred units with real meter usage for the invoice month.
     // This is important when water billing uses a minimum charge, where
@@ -1813,18 +1863,26 @@ export default function InvoicesPage() {
     setError(null);
   };
 
-  const recalculateCurrentInvoiceArrears = async () => {
+  const recalculateCurrentInvoiceArrears = async (
+    carryOverride?: CarryForwardItem[],
+    lateOverride?: LateFeeLineItem[]
+  ) => {
     if (!activeInvoice) return;
+    const carry = carryOverride ?? editableCarryForwardItems;
+    const late = lateOverride ?? editableLateFeeItems;
     const sourceIds = new Set<string>();
-    editableCarryForwardItems.forEach((item) => {
+    carry.forEach((item) => {
       if (item.source_invoice_id) sourceIds.add(String(item.source_invoice_id));
     });
-    editableLateFeeItems.forEach((item) => {
+    late.forEach((item) => {
       if (item.source_invoice_id) sourceIds.add(String(item.source_invoice_id));
     });
-    arrearsSnapshots.forEach((item) => {
-      if (item.source_invoice_id) sourceIds.add(String(item.source_invoice_id));
-    });
+    const useSnapshotIds = carryOverride === undefined && lateOverride === undefined;
+    if (useSnapshotIds) {
+      arrearsSnapshots.forEach((item) => {
+        if (item.source_invoice_id) sourceIds.add(String(item.source_invoice_id));
+      });
+    }
 
     const sourceInvoiceIds = [...sourceIds];
     if (sourceInvoiceIds.length === 0) {
@@ -1908,6 +1966,33 @@ export default function InvoicesPage() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const toggleCarryOverFromCandidate = async (candidate: any, checked: boolean) => {
+    if (!activeInvoice || !isInvoiceDetailEditable(activeInvoice.status)) return;
+    const cid = String(candidate?.id ?? "");
+    if (!cid) return;
+
+    if (checked) {
+      if (editableCarryForwardItems.some((x) => String(x.source_invoice_id) === cid)) return;
+      const outstanding = Math.max(0, toNumber(candidate.outstanding_amount));
+      const newRow: CarryForwardItem = {
+        detail: `ยอดค้างชำระงวด ${formatPeriodLabel(String(candidate.start_date ?? ""))}`,
+        unit: 1,
+        price_per_unit: outstanding,
+        total_amount: outstanding,
+        source_invoice_id: cid,
+      };
+      await recalculateCurrentInvoiceArrears(
+        [...editableCarryForwardItems, newRow],
+        editableLateFeeItems
+      );
+      return;
+    }
+
+    const nextCarry = editableCarryForwardItems.filter((x) => String(x.source_invoice_id) !== cid);
+    const nextLate = editableLateFeeItems.filter((x) => String(x.source_invoice_id) !== cid);
+    await recalculateCurrentInvoiceArrears(nextCarry, nextLate);
   };
 
   const toggleProrateInModal = (enabled: boolean) => {
@@ -2145,9 +2230,10 @@ export default function InvoicesPage() {
     if (invoiceIds.length === 0) return;
 
     const targetInvoices = invoices.filter((invoice) => invoiceIds.includes(invoice.id));
-    const blocked = targetInvoices.filter(
-      (invoice) => !!invoice.slip_url || invoice.status === "verifying" || invoice.status === "paid"
-    );
+    const blocked = targetInvoices.filter((invoice) => {
+      if (invoice.status === "draft") return false;
+      return !!invoice.slip_url || invoice.status === "verifying" || invoice.status === "paid";
+    });
 
     if (blocked.length > 0) {
       const details = blocked
@@ -3656,6 +3742,32 @@ export default function InvoicesPage() {
                 บางส่วนถูกล็อกตามสิทธิ์ของผู้ใช้ (ปุ่มที่ล็อกจะแสดงเคอร์เซอร์ห้ามใช้งาน)
               </div>
             )}
+            {allocationResultNotice && allocationResultNotice.lines.length > 0 && (
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+                <p className="font-semibold">
+                  {allocationResultNotice.idempotentReplay
+                    ? "ผลการจัดสรรเงิน (ซ้ำ — ใช้คีย์ idempotency เดิม)"
+                    : "จัดสรรเงินสำเร็จ"}
+                </p>
+                <p className="mt-1 text-xs text-emerald-800">
+                  Batch: {allocationResultNotice.batchId.slice(0, 8).toUpperCase()}…
+                </p>
+                <ul className="mt-2 list-inside list-disc space-y-1 text-xs">
+                  {allocationResultNotice.lines.map((line) => (
+                    <li key={line.invoiceId}>
+                      {line.label}: {formatMoney(line.amount)}
+                    </li>
+                  ))}
+                </ul>
+                <button
+                  type="button"
+                  onClick={() => setAllocationResultNotice(null)}
+                  className="mt-2 text-xs font-semibold text-emerald-800 underline"
+                >
+                  ปิดข้อความนี้
+                </button>
+              </div>
+            )}
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
               <div className="flex items-center justify-between">
                 <div>
@@ -3916,7 +4028,7 @@ export default function InvoicesPage() {
               </div>
             </div>
 
-            <div className="grid items-start gap-6 min-[1750px]:grid-cols-[minmax(0,1.05fr)_minmax(700px,0.95fr)]">
+            <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(300px,440px)] xl:grid-cols-[minmax(0,1.05fr)_minmax(420px,0.95fr)]">
             <fieldset
               disabled={!(canEditDetails && canEditInvoice)}
               className={`min-w-0 ${!(canEditDetails && canEditInvoice) ? "cursor-not-allowed opacity-70" : ""}`}
@@ -4272,6 +4384,54 @@ export default function InvoicesPage() {
               </div>
             )}
 
+            {canEditDetails && activeInvoice.status === "draft" && (
+              <div className="space-y-2 rounded-xl border border-emerald-200 bg-emerald-50/60 p-4">
+                <div>
+                  <p className="text-sm font-semibold text-emerald-900">บิลค้างจากเดือนก่อน (เลือกเพื่อยกมา)</p>
+                  <p className="text-xs text-emerald-800">
+                    แสดงบิลที่ค้างชำระและยังไม่ถูกยกไปบิลอื่น (หรือยกมาที่บิลนี้อยู่แล้ว)                     เมื่อเลือกแล้วระบบจะใส่รหัสอ้างอิงบิลต้นทางให้โดยอัตโนมัติ
+                  </p>
+                </div>
+                {carryOverCandidatesLoading ? (
+                  <p className="text-xs text-emerald-800">กำลังโหลดรายการ...</p>
+                ) : carryOverCandidates.length === 0 ? (
+                  <p className="text-xs text-emerald-800">ไม่พบบิลค้างที่นำมาทบได้</p>
+                ) : (
+                  <div className="max-h-52 space-y-2 overflow-y-auto pr-1">
+                    {carryOverCandidates.map((c: any) => {
+                      const selected = editableCarryForwardItems.some(
+                        (item) => String(item.source_invoice_id) === String(c.id)
+                      );
+                      return (
+                        <label
+                          key={String(c.id)}
+                          className="flex cursor-pointer items-start gap-3 rounded-lg border border-emerald-200 bg-white px-3 py-2 text-sm shadow-sm"
+                        >
+                          <input
+                            type="checkbox"
+                            className="mt-1"
+                            checked={selected}
+                            onChange={(event) => void toggleCarryOverFromCandidate(c, event.target.checked)}
+                          />
+                          <span className="min-w-0 flex-1">
+                            <span className="font-medium text-slate-900">
+                              งวด {formatPeriodLabel(String(c.start_date ?? ""))}
+                            </span>
+                            <span className="mt-0.5 block text-xs text-slate-600">
+                              ค้าง {formatMoney(toNumber(c.outstanding_amount))}
+                              {toNumber(c.late_fee_snapshot_amount) > 0
+                                ? ` · ค่าปรับโดยประมาณ ${formatMoney(toNumber(c.late_fee_snapshot_amount))}`
+                                : ""}
+                            </span>
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="space-y-3 rounded-xl border border-amber-200 bg-amber-50/40 p-4">
               <div className="flex items-center justify-between">
                 <div>
@@ -4565,7 +4725,7 @@ export default function InvoicesPage() {
             </label>
             </fieldset>
 
-            <div className="min-w-0 min-[1750px]:sticky min-[1750px]:top-4">
+            <div className="min-w-0 lg:sticky lg:top-4 lg:self-start">
               <div className="overflow-hidden rounded-[30px] border border-slate-200 bg-gradient-to-b from-slate-50 to-white shadow-sm">
                 <div className="border-b border-slate-200 bg-white/80 px-5 py-4 backdrop-blur">
                   <p className="text-xs uppercase tracking-[0.22em] text-slate-400">Live Preview</p>

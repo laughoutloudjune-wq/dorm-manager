@@ -110,6 +110,9 @@ export async function POST(req: Request) {
           slipUrl: ((payment as any).slip_url as string | null | undefined) ?? null,
           mode: String((payment as any).mode ?? "full"),
           source: String((payment as any).source ?? "admin_webapp"),
+          idempotencyKey: (payment as any).idempotency_key
+            ? String((payment as any).idempotency_key)
+            : null,
         });
         return NextResponse.json({ success: true, ...result });
       }
@@ -142,9 +145,10 @@ export async function POST(req: Request) {
         .in("id", invoiceIds);
       if (checkError) return NextResponse.json({ error: checkError.message }, { status: 500 });
 
-      const blocked = (rows ?? []).filter(
-        (row: any) => !!row.slip_url || row.status === "verifying" || row.status === "paid"
-      );
+      const blocked = (rows ?? []).filter((row: any) => {
+        if (String(row.status) === "draft") return false;
+        return !!row.slip_url || row.status === "verifying" || row.status === "paid";
+      });
       if (blocked.length > 0) {
         return NextResponse.json(
           { error: "Cannot delete invoices with payment slip or paid/verifying status." },
