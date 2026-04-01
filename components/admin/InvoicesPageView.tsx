@@ -808,7 +808,7 @@ export default function InvoicesPage() {
     const { data: invoicesInMonth, error: invoiceError } = await supabase
       .from("invoices")
       .select(
-        "id,room_id,status,rent_amount,water_bill,electricity_bill,common_fee,late_fee_amount,additional_fees_total,discount_amount,discount_breakdown,total_amount"
+        "id,room_id,status,rent_amount,water_bill,electricity_bill,common_fee,late_fee_amount,carry_forward_amount,additional_fees_total,discount_amount,discount_breakdown,total_amount"
       )
       .eq("start_date", periodStart)
       .eq("end_date", periodEnd);
@@ -838,6 +838,7 @@ export default function InvoicesPage() {
           toNumber(invoice.water_bill) +
           toNumber(invoice.electricity_bill) +
           toNumber(invoice.common_fee) +
+          toNumber(invoice.carry_forward_amount) +
           toNumber(invoice.additional_fees_total) +
           toNumber(invoice.late_fee_amount) -
           discountAmount;
@@ -1146,7 +1147,28 @@ export default function InvoicesPage() {
     });
 
     try {
-      await callInvoiceAdminAction("update_status", { invoiceId, status });
+      const result = await callInvoiceAdminAction("update_status", { invoiceId, status });
+      const updatedInvoices = Array.isArray(result?.updatedInvoices) ? result.updatedInvoices : [];
+      if (updatedInvoices.length > 0) {
+        updatedInvoices.forEach((invoiceUpdate: any) => {
+          patchInvoiceInState(String(invoiceUpdate.id), {
+            paid_amount: toNumber(invoiceUpdate.paid_amount),
+            payment_history: Array.isArray(invoiceUpdate.payment_history)
+              ? invoiceUpdate.payment_history
+              : undefined,
+            status: (invoiceUpdate.status as keyof typeof statusVariant) ?? undefined,
+            slip_url: invoiceUpdate.slip_url ?? undefined,
+          });
+        });
+        const activeUpdated = updatedInvoices.find((row: any) => String(row.id) === invoiceId);
+        if (activeUpdated && activeInvoice?.id === invoiceId) {
+          setForm((prev) => ({
+            ...prev,
+            paid_amount: toNumber(activeUpdated.paid_amount),
+            status: (activeUpdated.status as keyof typeof statusVariant) ?? prev.status,
+          }));
+        }
+      }
     } catch (error: any) {
       if (previousStatus) {
         patchInvoiceInState(invoiceId, { status: previousStatus });

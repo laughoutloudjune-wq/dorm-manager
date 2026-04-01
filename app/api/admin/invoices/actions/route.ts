@@ -15,6 +15,25 @@ export async function POST(req: Request) {
       if (!invoiceId || !status) {
         return NextResponse.json({ error: "Missing invoiceId or status." }, { status: 400 });
       }
+      if (status === "paid") {
+        const { data: invoice, error: invoiceError } = await auth.supabase
+          .from("invoices")
+          .select("id,total_amount,paid_amount,slip_url,slip_uploaded_at")
+          .eq("id", invoiceId)
+          .single();
+        if (invoiceError || !invoice) {
+          return NextResponse.json({ error: invoiceError?.message ?? "Invoice not found." }, { status: 404 });
+        }
+        const result = await applyInvoicePaymentAllocation(auth.supabase, {
+          invoiceId,
+          amount: Number.MAX_SAFE_INTEGER,
+          paidAt: String((invoice as any).slip_uploaded_at ?? new Date().toISOString()),
+          slipUrl: ((invoice as any).slip_url as string | null | undefined) ?? null,
+          mode: "full",
+          source: "admin_status_paid",
+        });
+        return NextResponse.json({ success: true, ...result });
+      }
       const { error } = await auth.supabase.from("invoices").update({ status }).eq("id", invoiceId);
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
       return NextResponse.json({ success: true });

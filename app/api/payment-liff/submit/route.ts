@@ -53,6 +53,38 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Some selected invoices are invalid." }, { status: 400 });
     }
 
+    const { data: carryRows, error: carryError } = await supabase
+      .from("invoice_carry_forwards")
+      .select("source_invoice_id,target_invoice_id")
+      .in("source_invoice_id", invoiceIds);
+    if (carryError) {
+      return NextResponse.json({ error: carryError.message }, { status: 500 });
+    }
+
+    const carryTargetIds = [...new Set((carryRows ?? []).map((row: any) => String(row.target_invoice_id)).filter(Boolean))];
+    const { data: carryTargets, error: carryTargetError } =
+      carryTargetIds.length > 0
+        ? await supabase.from("invoices").select("id,status").in("id", carryTargetIds)
+        : { data: [], error: null as any };
+    if (carryTargetError) {
+      return NextResponse.json({ error: carryTargetError.message }, { status: 500 });
+    }
+
+    const openTargetIds = new Set(
+      (carryTargets ?? [])
+        .filter((row: any) => ["pending", "partial", "overdue", "verifying"].includes(String(row.status)))
+        .map((row: any) => String(row.id))
+    );
+    const blockedSources = (carryRows ?? [])
+      .filter((row: any) => openTargetIds.has(String(row.target_invoice_id)))
+      .map((row: any) => String(row.source_invoice_id));
+    if (blockedSources.length > 0) {
+      return NextResponse.json(
+        { error: "Some selected invoices have already been carried forward to a newer invoice." },
+        { status: 400 }
+      );
+    }
+
     const nowIso = new Date().toISOString();
     const { error: updateError } = await supabase
       .from("invoices")

@@ -474,18 +474,6 @@ export default function PaymentTokenPage() {
               ชำระได้ไม่เกินวันที่ 10 ของเดือนถัดไป ถ้าหากเกินกำหนดชำระ มีค่าปรับ 100 บาท/วัน
             </div>
           )}
-          <div className="mt-4 rounded-2xl border border-orange-200 bg-orange-50 px-4 py-3 text-sm text-orange-900">
-            <p className="font-semibold">ต้องการแจ้งย้ายออก?</p>
-            <p className="mt-1 text-xs text-orange-800">
-              กรุณาเปิดเมนูผู้เช่าผ่าน LINE LIFF เพื่อส่งคำขอย้ายออกเข้าระบบ
-            </p>
-            <a
-              href="/payment/liff"
-              className="mt-3 inline-flex rounded-lg border border-orange-300 bg-white px-3 py-1.5 text-xs font-semibold text-orange-700"
-            >
-              ไปหน้าเมนูผู้เช่า
-            </a>
-          </div>
         </header>
 
         <section className="rounded-3xl border border-white/60 bg-white/90 p-6 shadow-xl">
