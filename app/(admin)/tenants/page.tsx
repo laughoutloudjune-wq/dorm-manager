@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useMemo, useState } from "react";
 import { Modal } from "@/components/ui/Modal";
@@ -371,7 +371,7 @@ export default function TenantsPage() {
     deposit_slip_url: "",
     final_electricity_reading: 0,
     final_water_reading: 0,
-    move_out_date: "",
+    move_out_request_date: "",
     final_move_out_date: "",
   });
 
@@ -555,11 +555,8 @@ export default function TenantsPage() {
     setActiveTab(initialTab);
     if (tenant) {
       const request = activeMoveOutRequestByTenantId.get(String(tenant.id)) ?? null;
-      const requestedMoveOutDate =
-        request?.approved_move_out_date ??
-        request?.requested_move_out_date ??
-        tenant.move_out_date ??
-        null;
+      const moveOutRequestDate = request?.requested_move_out_date ?? null;
+      const approvedMoveOutDate = request?.approved_move_out_date ?? null;
       setActiveMoveOutRequest(request);
       setActiveTenant(tenant);
       setForfeitDeposit(Boolean(tenant.forfeit_security_deposit));
@@ -578,8 +575,13 @@ export default function TenantsPage() {
         deposit_slip_url: tenant.deposit_slip_url ?? "",
         final_electricity_reading: toNumber(tenant.final_electricity_reading ?? 0),
         final_water_reading: toNumber(tenant.final_water_reading ?? 0),
-        move_out_date: requestedMoveOutDate ?? new Date().toISOString().slice(0, 10),
-        final_move_out_date: tenant.move_out_date ?? requestedMoveOutDate ?? new Date().toISOString().slice(0, 10),
+        move_out_request_date:
+          moveOutRequestDate ?? new Date().toISOString().slice(0, 10),
+        final_move_out_date:
+          tenant.move_out_date ??
+          approvedMoveOutDate ??
+          moveOutRequestDate ??
+          new Date().toISOString().slice(0, 10),
       });
       setDepositSlipUrls(parseDepositSlipUrls(tenant.deposit_slip_url));
       setMoveOutFeeLines([]);
@@ -636,7 +638,7 @@ export default function TenantsPage() {
         deposit_slip_url: "",
         final_electricity_reading: 0,
         final_water_reading: 0,
-        move_out_date: new Date().toISOString().slice(0, 10),
+        move_out_request_date: new Date().toISOString().slice(0, 10),
         final_move_out_date: new Date().toISOString().slice(0, 10),
       });
       setDepositSlipUrls([]);
@@ -742,6 +744,7 @@ export default function TenantsPage() {
       phone_number: form.phone_number || null,
       room_id: form.room_id,
       move_in_date: form.move_in_date || new Date().toISOString().slice(0, 10),
+      move_out_date: form.final_move_out_date || null,
       status: form.status,
       lease_months: toNumber(form.lease_months),
       initial_electricity_reading: toNumber(form.initial_electricity_reading),
@@ -816,7 +819,7 @@ export default function TenantsPage() {
       await callTenantsAction("manage_move_out_request", {
         requestId: activeMoveOutRequest.id,
         requestStatus,
-        approvedMoveOutDate: requestStatus === "approved" ? form.move_out_date : null,
+        approvedMoveOutDate: requestStatus === "approved" ? form.move_out_request_date : null,
         adminNote: activeMoveOutRequest.admin_note ?? null,
       });
       await Promise.all([loadTenants(), loadMoveOutRequests()]);
@@ -826,7 +829,7 @@ export default function TenantsPage() {
               ...prev,
               status: requestStatus,
               approved_move_out_date:
-                requestStatus === "approved" ? form.move_out_date : prev.approved_move_out_date,
+                requestStatus === "approved" ? form.move_out_request_date : prev.approved_move_out_date,
             }
           : prev
       );
@@ -871,8 +874,7 @@ export default function TenantsPage() {
   const confirmMoveOut = async () => {
     if (!activeTenant) return;
     setIsMovingOut(true);
-    const moveOutDate =
-      form.final_move_out_date || form.move_out_date || new Date().toISOString().slice(0, 10);
+    const moveOutDate = form.final_move_out_date || new Date().toISOString().slice(0, 10);
     try {
       await callTenantsAction("final_move_out", {
         tenantId: activeTenant.id,
@@ -1080,7 +1082,9 @@ export default function TenantsPage() {
     dailyRent > 0 && toNumber(form.advance_rent_amount) > 0
       ? Math.max(1, Math.round(toNumber(form.advance_rent_amount) / dailyRent))
       : 0;
-  const moveOutRequestDate = form.move_out_date ? new Date(form.move_out_date) : null;
+  const moveOutRequestDate = form.move_out_request_date
+    ? new Date(form.move_out_request_date)
+    : null;
   const advanceCoveredEndDate = moveOutRequestDate
     ? new Date(moveOutRequestDate.getTime() + advanceCoveredDays * 24 * 60 * 60 * 1000)
     : null;
@@ -1653,8 +1657,8 @@ export default function TenantsPage() {
               <Input
                 label="วันที่แจ้งย้ายออก"
                 type="date"
-                value={form.move_out_date}
-                onChange={(event) => setForm({ ...form, move_out_date: event.target.value })}
+                value={form.move_out_request_date}
+                onChange={(event) => setForm({ ...form, move_out_request_date: event.target.value })}
                 className="text-base"
               />
               <Input
@@ -1767,7 +1771,7 @@ export default function TenantsPage() {
                 <p className="text-lg font-semibold text-slate-900">สรุปย้ายออก</p>
                 <p>ผู้เช่า: {form.full_name || "-"}</p>
                 <p>ห้อง: {activeTenant ? tenantRoomNumber(activeTenant, roomsById) : "-"}</p>
-                <p>วันที่แจ้งย้ายออก: {form.move_out_date || "-"}</p>
+                <p>วันที่แจ้งย้ายออก: {form.move_out_request_date || "-"}</p>
                 <p>วันที่ย้ายออกจริง: {form.final_move_out_date || "-"}</p>
               </div>
               <div className="space-y-1">

@@ -20,7 +20,7 @@ export async function POST(req: Request) {
     const { data: invoices, error } = await supabase
       .from("invoices")
       .select(
-        "id,public_token,status,issue_date,due_date,total_amount,paid_amount,slip_url,payment_history,tenants(full_name,phone_number),rooms(room_number,buildings(name))"
+        "id,public_token,status,issue_date,due_date,total_amount,paid_amount,slip_url,payment_history,rent_amount,water_bill,electricity_bill,common_fee,additional_fees_total,carry_forward_amount,late_fee_amount,discount_amount,additional_fees_breakdown,discount_breakdown,tenants(full_name,phone_number),rooms(room_number,buildings(name))"
       )
       .in("status", validStatuses)
       .order("issue_date", { ascending: false })

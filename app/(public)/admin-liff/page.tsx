@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { ChevronDown, ChevronUp, Loader2 } from "lucide-react";
 
 type TabKey = "dashboard" | "invoices" | "tenants";
 
@@ -14,6 +15,16 @@ type AdminLiffInvoice = {
   due_date: string | null;
   total_amount: number | null;
   paid_amount: number | null;
+  rent_amount?: number | null;
+  water_bill?: number | null;
+  electricity_bill?: number | null;
+  common_fee?: number | null;
+  additional_fees_total?: number | null;
+  carry_forward_amount?: number | null;
+  late_fee_amount?: number | null;
+  discount_amount?: number | null;
+  additional_fees_breakdown?: any[] | null;
+  discount_breakdown?: any[] | null;
   slip_url?: string | null;
   tenants?:
     | { full_name?: string | null; line_user_id?: string | null }
@@ -85,6 +96,7 @@ export default function AdminLiffPage() {
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(null);
   const [paymentDate, setPaymentDate] = useState(new Date().toISOString().slice(0, 10));
   const [savingAction, setSavingAction] = useState<string | null>(null);
+  const [breakdownOpen, setBreakdownOpen] = useState(false);
 
   const [tenantQuery, setTenantQuery] = useState("");
   const [tenants, setTenants] = useState<TenantRow[]>([]);
@@ -221,6 +233,10 @@ export default function AdminLiffPage() {
   const building = toArray(room?.buildings as any)[0];
   const total = Number(selectedInvoice?.total_amount ?? 0);
   const paid = Number(selectedInvoice?.paid_amount ?? 0);
+  const remaining = Math.max(0, total - paid);
+  const workingResend = savingAction === (selectedInvoice ? `resend_invoice:${selectedInvoice.id}` : "");
+  const workingApprove = savingAction === (selectedInvoice ? `approve_paid:${selectedInvoice.id}` : "");
+  const workingPending = savingAction === (selectedInvoice ? `update_status:${selectedInvoice.id}` : "");
 
   return (
     <div className="min-h-screen bg-slate-100 px-3 py-4">
@@ -258,7 +274,7 @@ export default function AdminLiffPage() {
             type="month"
             value={month}
             onChange={(e) => setMonth(e.target.value)}
-            className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
+            className="box-border w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
           />
         </div>
 
@@ -309,9 +325,46 @@ export default function AdminLiffPage() {
                 </div>
                 {selectedInvoice && (
                   <div className="space-y-2 rounded-2xl border border-slate-200 bg-white p-3">
-                    <p className="text-sm font-semibold">ห้อง {room?.room_number ?? "-"} {building?.name ? `• ${building.name}` : ""}</p>
+                    <button
+                      type="button"
+                      onClick={() => setBreakdownOpen((prev) => !prev)}
+                      className="flex w-full items-center justify-between gap-3 text-left"
+                    >
+                      <span className="text-sm font-semibold">
+                        ห้อง {room?.room_number ?? "-"} {building?.name ? `• ${building.name}` : ""}
+                      </span>
+                      <span className="inline-flex items-center gap-1 text-xs font-semibold text-slate-600">
+                        {breakdownOpen ? "ซ่อนรายละเอียด" : "ดูรายละเอียด"}
+                        {breakdownOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                      </span>
+                    </button>
                     <p className="text-xs text-slate-500">{tenant?.full_name ?? "-"}</p>
-                    <p className="text-xs text-slate-500">ยอดรวม {fmtMoney(total)} | คงเหลือ {fmtMoney(total - paid)}</p>
+                    <p className="text-xs text-slate-500">
+                      ยอดรวม {fmtMoney(total)} | ชำระแล้ว {fmtMoney(paid)} | คงเหลือ {fmtMoney(remaining)}
+                    </p>
+
+                    {breakdownOpen && (
+                      <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
+                        <div className="space-y-1">
+                          <div className="flex justify-between"><span>ค่าเช่า</span><span>{fmtMoney(Number(selectedInvoice.rent_amount ?? 0))}</span></div>
+                          <div className="flex justify-between"><span>ค่าน้ำ</span><span>{fmtMoney(Number(selectedInvoice.water_bill ?? 0))}</span></div>
+                          <div className="flex justify-between"><span>ค่าไฟ</span><span>{fmtMoney(Number(selectedInvoice.electricity_bill ?? 0))}</span></div>
+                          <div className="flex justify-between"><span>ค่าส่วนกลาง</span><span>{fmtMoney(Number(selectedInvoice.common_fee ?? 0))}</span></div>
+                          {Number(selectedInvoice.carry_forward_amount ?? 0) > 0 && (
+                            <div className="flex justify-between text-amber-800"><span>ยอดค้างยกมา</span><span>{fmtMoney(Number(selectedInvoice.carry_forward_amount ?? 0))}</span></div>
+                          )}
+                          {Number(selectedInvoice.additional_fees_total ?? 0) > 0 && (
+                            <div className="flex justify-between"><span>ค่าธรรมเนียมเพิ่มเติม</span><span>{fmtMoney(Number(selectedInvoice.additional_fees_total ?? 0))}</span></div>
+                          )}
+                          {Number(selectedInvoice.late_fee_amount ?? 0) > 0 && (
+                            <div className="flex justify-between text-amber-800"><span>ค่าปรับล่าช้า</span><span>{fmtMoney(Number(selectedInvoice.late_fee_amount ?? 0))}</span></div>
+                          )}
+                          {Number(selectedInvoice.discount_amount ?? 0) > 0 && (
+                            <div className="flex justify-between text-emerald-800"><span>ส่วนลด</span><span>-{fmtMoney(Number(selectedInvoice.discount_amount ?? 0))}</span></div>
+                          )}
+                        </div>
+                      </div>
+                    )}
                     {selectedInvoice.slip_url ? (
                       <a
                         href={selectedInvoice.slip_url}
@@ -331,11 +384,40 @@ export default function AdminLiffPage() {
                         ไม่มีสลิปชำระเงิน
                       </div>
                     )}
-                    <input type="date" value={paymentDate} onChange={(e) => setPaymentDate(e.target.value)} className="w-full rounded-lg border border-slate-300 px-2 py-1.5 text-sm" />
+                    <input
+                      type="date"
+                      value={paymentDate}
+                      onChange={(e) => setPaymentDate(e.target.value)}
+                      className="box-border w-full rounded-lg border border-slate-300 px-2 py-2 text-sm"
+                    />
                     <div className="grid grid-cols-2 gap-2">
-                      <button type="button" onClick={() => void runInvoiceAction("resend_invoice")} disabled={!!savingAction} className="rounded-lg border border-blue-300 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700">ส่งใบแจ้งหนี้ใหม่</button>
-                      <button type="button" onClick={() => void runInvoiceAction("approve_paid", { paymentDate })} disabled={!!savingAction} className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white">อนุมัติชำระเต็ม</button>
-                      <button type="button" onClick={() => void runInvoiceAction("update_status", { status: "pending" })} disabled={!!savingAction} className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-700">ตั้งเป็นรอชำระ</button>
+                      <button
+                        type="button"
+                        onClick={() => void runInvoiceAction("resend_invoice")}
+                        disabled={!!savingAction}
+                        className="inline-flex items-center justify-center gap-2 rounded-lg border border-blue-300 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700 disabled:opacity-60"
+                      >
+                        {workingResend && <Loader2 size={14} className="animate-spin" />}
+                        {workingResend ? "กำลังส่ง..." : "ส่งใบแจ้งหนี้ใหม่"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void runInvoiceAction("approve_paid", { paymentDate })}
+                        disabled={!!savingAction}
+                        className="inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-60"
+                      >
+                        {workingApprove && <Loader2 size={14} className="animate-spin" />}
+                        {workingApprove ? "กำลังอนุมัติ..." : "อนุมัติชำระเต็ม"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void runInvoiceAction("update_status", { status: "pending" })}
+                        disabled={!!savingAction}
+                        className="inline-flex items-center justify-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-700 disabled:opacity-60"
+                      >
+                        {workingPending && <Loader2 size={14} className="animate-spin" />}
+                        {workingPending ? "กำลังอัปเดต..." : "ตั้งเป็นรอชำระ"}
+                      </button>
                     </div>
                   </div>
                 )}

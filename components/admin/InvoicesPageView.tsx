@@ -18,6 +18,7 @@ import {
   Pencil,
   Printer,
   AlertCircle,
+  Search,
   Mail,
   MailOpen,
   UserPlus,
@@ -665,6 +666,7 @@ export default function InvoicesPage() {
   const [invoices, setInvoices] = useState<InvoiceRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [detailOpen, setDetailOpen] = useState(false);
   const [activeInvoice, setActiveInvoice] = useState<InvoiceRecord | null>(null);
@@ -792,9 +794,10 @@ export default function InvoicesPage() {
     const { error: verifyingError } = await supabase
       .from("invoices")
       .update({ status: "verifying" })
-      .in("status", ["pending", "partial", "overdue"])
+      .in("status", ["pending", "overdue"])
       .eq("start_date", periodStart)
       .eq("end_date", periodEnd)
+      .eq("paid_amount", 0)
       .not("slip_url", "is", null);
     if (verifyingError) {
       setError(verifyingError.message);
@@ -1068,8 +1071,26 @@ export default function InvoicesPage() {
     setDefaultPaymentMethod((paymentData as PaymentMethodRow) ?? null);
   };
 
+  const filteredInvoices = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return invoices;
+    return invoices.filter((invoice) => {
+      const haystacks = [
+        invoice.room_number,
+        invoice.tenant_name,
+        invoice.building_name,
+        invoice.status,
+        invoice.public_token,
+        invoice.id,
+      ]
+        .filter(Boolean)
+        .map((value) => String(value).toLowerCase());
+      return haystacks.some((text) => text.includes(q));
+    });
+  }, [invoices, search]);
+
   const grouped = useMemo(() => {
-    const groupedMap = invoices.reduce<Record<string, InvoiceRecord[]>>((acc, invoice) => {
+    const groupedMap = filteredInvoices.reduce<Record<string, InvoiceRecord[]>>((acc, invoice) => {
       if (!acc[invoice.building_name]) acc[invoice.building_name] = [];
       acc[invoice.building_name].push(invoice);
       return acc;
@@ -1080,9 +1101,12 @@ export default function InvoicesPage() {
       );
     }
     return groupedMap;
-  }, [invoices]);
+  }, [filteredInvoices]);
 
-  const visibleInvoiceIds = useMemo(() => invoices.map((invoice) => invoice.id), [invoices]);
+  const visibleInvoiceIds = useMemo(
+    () => filteredInvoices.map((invoice) => invoice.id),
+    [filteredInvoices]
+  );
   const selectedVisibleCount = useMemo(
     () => selected.filter((id) => visibleInvoiceIds.includes(id)).length,
     [selected, visibleInvoiceIds]
@@ -3437,6 +3461,18 @@ export default function InvoicesPage() {
             value={selectedMonth}
             onChange={(event) => setSelectedMonth(event.target.value)}
           />
+          <div className="relative">
+            <Search
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+              size={18}
+            />
+            <input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="ค้นหาห้อง / ผู้เช่า / อาคาร / สถานะ / เลขบิล"
+              className="w-full rounded-xl border border-slate-200 bg-white py-3 pl-10 pr-4 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-600/40"
+            />
+          </div>
         </div>
         <div className="mt-3 flex justify-end">
           <button
@@ -3473,6 +3509,19 @@ export default function InvoicesPage() {
       {loading ? (
         <div className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-500">
           กำลังโหลดใบแจ้งหนี้...
+        </div>
+      ) : !error && filteredInvoices.length === 0 ? (
+        <div className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-600">
+          ไม่พบใบแจ้งหนี้ตามคำค้นหา
+          {invoices.length > 0 && search.trim() ? (
+            <button
+              type="button"
+              onClick={() => setSearch("")}
+              className="ml-2 text-sm font-semibold text-blue-600 underline"
+            >
+              ล้างคำค้นหา
+            </button>
+          ) : null}
         </div>
       ) : (
         Object.entries(grouped)
