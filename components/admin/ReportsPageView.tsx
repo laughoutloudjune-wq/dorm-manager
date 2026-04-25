@@ -252,10 +252,13 @@ export default function ReportsPageView() {
   const incomeSummary = useMemo(() => {
     const billed = filteredIncomeRows.reduce((sum, row) => sum + row.total_amount, 0);
     const paid = filteredIncomeRows.reduce((sum, row) => sum + row.paid_amount, 0);
+    const outstanding = filteredIncomeRows
+      .filter((row) => ["pending", "partial", "overdue", "verifying"].includes(String(row.status)))
+      .reduce((sum, row) => sum + Math.max(row.total_amount - row.paid_amount, 0), 0);
     return {
       billed,
       paid,
-      outstanding: Math.max(billed - paid, 0),
+      outstanding,
       additional: filteredIncomeRows.reduce((sum, row) => sum + row.additional_fees_total, 0),
       electricityCollected: filteredIncomeRows.reduce((sum, row) => sum + row.electricity_bill, 0),
       waterCollected: filteredIncomeRows.reduce((sum, row) => sum + row.water_bill, 0),
@@ -269,12 +272,15 @@ export default function ReportsPageView() {
         const rows = incomeRows.filter((row) => row.month === month);
         const billed = rows.reduce((sum, row) => sum + row.total_amount, 0);
         const paid = rows.reduce((sum, row) => sum + row.paid_amount, 0);
+        const outstanding = rows
+          .filter((row) => ["pending", "partial", "overdue", "verifying"].includes(String(row.status)))
+          .reduce((sum, row) => sum + Math.max(row.total_amount - row.paid_amount, 0), 0);
         return {
           month,
           invoiceCount: rows.length,
           billed,
           paid,
-          outstanding: Math.max(billed - paid, 0),
+          outstanding,
           electricity: rows.reduce((sum, row) => sum + row.electricity_bill, 0),
           water: rows.reduce((sum, row) => sum + row.water_bill, 0),
           additional: rows.reduce((sum, row) => sum + row.additional_fees_total, 0),
@@ -286,10 +292,11 @@ export default function ReportsPageView() {
   const yearlySummary = useMemo(() => {
     const billed = yearlyRows.reduce((sum, row) => sum + row.billed, 0);
     const paid = yearlyRows.reduce((sum, row) => sum + row.paid, 0);
+    const outstanding = yearlyRows.reduce((sum, row) => sum + row.outstanding, 0);
     return {
       billed,
       paid,
-      outstanding: Math.max(billed - paid, 0),
+      outstanding,
       invoiceCount: yearlyRows.reduce((sum, row) => sum + row.invoiceCount, 0),
     };
   }, [yearlyRows]);

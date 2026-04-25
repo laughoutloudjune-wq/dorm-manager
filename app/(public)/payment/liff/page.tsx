@@ -1,5 +1,6 @@
 "use client";
 
+import { addDaysBangkok, bangkokYmd, meets30DayMoveOutNotice } from "@/lib/move-out-notice";
 import { useEffect, useMemo, useState } from "react";
 
 type LiffProfile = {
@@ -36,6 +37,7 @@ type TenantInfo = {
 
 type MoveOutRequest = {
   id: string;
+  notice_date?: string | null;
   requested_move_out_date: string;
   approved_move_out_date?: string | null;
   actual_move_out_date?: string | null;
@@ -151,7 +153,7 @@ export default function PaymentLiffPage() {
   const [slipFile, setSlipFile] = useState<File | null>(null);
   const [moveOutRequest, setMoveOutRequest] = useState<MoveOutRequest | null>(null);
   const [moveOutFormOpen, setMoveOutFormOpen] = useState(false);
-  const [moveOutDate, setMoveOutDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [moveOutDate, setMoveOutDate] = useState(() => addDaysBangkok(bangkokYmd(), 30));
   const [moveOutNote, setMoveOutNote] = useState("");
   const [moveOutSubmitting, setMoveOutSubmitting] = useState(false);
 
@@ -238,6 +240,19 @@ export default function PaymentLiffPage() {
 
     void boot();
   }, []);
+
+  const moveOutNoticeYmd = useMemo(() => {
+    if (moveOutRequest?.notice_date) {
+      return String(moveOutRequest.notice_date).slice(0, 10);
+    }
+    if (moveOutRequest?.created_at) {
+      return bangkokYmd(new Date(moveOutRequest.created_at));
+    }
+    return bangkokYmd();
+  }, [moveOutRequest]);
+
+  const showMoveOutDepositWarning =
+    moveOutFormOpen && moveOutDate.length > 0 && !meets30DayMoveOutNotice(moveOutNoticeYmd, moveOutDate);
 
   const selectedInvoices = useMemo(
     () => unpaidInvoices.filter((invoice) => selectedIds.includes(invoice.id)),
@@ -418,7 +433,12 @@ export default function PaymentLiffPage() {
                 {moveOutRequest && (
                   <div className="mt-3 rounded-xl border border-orange-200 bg-orange-50 px-3 py-3 text-sm text-orange-900">
                     <p className="font-semibold">สถานะคำขอย้ายออก: {statusLabel(moveOutRequest.status)}</p>
-                    <p className="mt-1 text-xs">วันที่แจ้งย้ายออก: {formatDateThai(moveOutRequest.requested_move_out_date)}</p>
+                    <p className="mt-1 text-xs">
+                      วันที่แจ้ง (30 วัน): {formatDateThai(moveOutNoticeYmd)}
+                    </p>
+                    <p className="mt-1 text-xs">
+                      วันที่ต้องการย้ายออก: {formatDateThai(moveOutRequest.requested_move_out_date)}
+                    </p>
                     {moveOutRequest.approved_move_out_date && (
                       <p className="mt-1 text-xs">วันที่อนุมัติ: {formatDateThai(moveOutRequest.approved_move_out_date)}</p>
                     )}
@@ -430,6 +450,17 @@ export default function PaymentLiffPage() {
 
                 {moveOutFormOpen && (
                   <div className="mt-3 space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    <div>
+                      <p className="text-sm font-medium text-slate-700">วันที่แจ้ง</p>
+                      <p className="mt-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800">
+                        {formatDateThai(moveOutNoticeYmd)}
+                        <span className="mt-0.5 block text-xs text-slate-500">
+                          {moveOutRequest
+                            ? "นับเพื่อเทียบ 30 วัน (วันส่งคำขอ)"
+                            : "วันนี้ — นับเพื่อเทียบ 30 วันตามสัญญา"}
+                        </span>
+                      </p>
+                    </div>
                     <div>
                       <label className="text-sm font-medium text-slate-700">วันที่ต้องการย้ายออก</label>
                       <input
@@ -449,6 +480,14 @@ export default function PaymentLiffPage() {
                         placeholder="เช่น ต้องการย้ายออกช่วงเช้า / ติดต่อกลับเบอร์..."
                       />
                     </div>
+                    {showMoveOutDepositWarning && (
+                      <div className="rounded-xl border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-900">
+                        ตามสัญญาเช่า ต้องแจ้งล่วงหน้า <span className="font-semibold">30 วัน</span> จึงจะมีสิทธิ์ได้รับ
+                        เงินประกันคืน วันย้ายออกที่คุณเลือกอาจไม่ถือว่าแจ้งครบ 30 วัน และ{" "}
+                        <span className="font-semibold">อาจไม่ได้รับเงินประกันคืน</span> กรุณาตรวจสอบ
+                      </div>
+                    )}
+
                     <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
                       กรุณาแจ้งย้ายออกล่วงหน้า และรอการยืนยันจากหอพักก่อนวันย้ายออกจริง
                     </div>

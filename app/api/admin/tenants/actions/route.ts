@@ -363,6 +363,59 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: true });
     }
 
+    if (action === "cancel_move_out_process") {
+      const auth = await requireAdminPermission(req, "tenant.edit");
+      if ("error" in auth) return auth.error;
+
+      const tenantId = String(body?.tenantId ?? "");
+      if (!tenantId) {
+        return NextResponse.json({ error: "Missing tenantId." }, { status: 400 });
+      }
+
+      const { data: tenantRow, error: tenantFetchError } = await auth.supabase
+        .from("tenants")
+        .select("id,status")
+        .eq("id", tenantId)
+        .maybeSingle();
+
+      if (tenantFetchError) {
+        return NextResponse.json({ error: tenantFetchError.message }, { status: 500 });
+      }
+      if (!tenantRow?.id) {
+        return NextResponse.json({ error: "Tenant not found." }, { status: 404 });
+      }
+      if (String(tenantRow.status) !== "active") {
+        return NextResponse.json(
+          { error: "ยกเลิกได้เฉพาะผู้เช่าที่ยังสถานะ active" },
+          { status: 400 }
+        );
+      }
+
+      const nowIso = new Date().toISOString();
+
+      const { error: clearDateError } = await auth.supabase
+        .from("tenants")
+        .update({ move_out_date: null, updated_at: nowIso })
+        .eq("id", tenantId)
+        .eq("status", "active");
+
+      if (clearDateError) {
+        return NextResponse.json({ error: clearDateError.message }, { status: 500 });
+      }
+
+      const { error: cancelRequestsError } = await auth.supabase
+        .from("move_out_requests")
+        .update({ status: "cancelled", updated_at: nowIso })
+        .eq("tenant_id", tenantId)
+        .in("status", ["requested", "approved"]);
+
+      if (cancelRequestsError) {
+        return NextResponse.json({ error: cancelRequestsError.message }, { status: 500 });
+      }
+
+      return NextResponse.json({ success: true });
+    }
+
     return NextResponse.json({ error: "Unknown action." }, { status: 400 });
   } catch (error: any) {
     return NextResponse.json({ error: error?.message ?? "Unexpected server error." }, { status: 500 });

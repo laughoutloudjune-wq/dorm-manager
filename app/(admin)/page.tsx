@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, ArrowRight, CheckCircle2, FileClock, Home, ReceiptText, Users, Zap } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/Card";
 import { Modal } from "@/components/ui/Modal";
+import { bangkokYmd } from "@/lib/move-out-notice";
 import { createClient } from "@/lib/supabase-client";
 
 type Kpi = {
@@ -88,7 +89,7 @@ export default function DashboardPage() {
           .order("reading_month", { ascending: false }),
         supabase
           .from("move_out_requests")
-          .select("id,tenant_id,requested_move_out_date,approved_move_out_date,actual_move_out_date,status,created_at,tenants(full_name,rooms(room_number,buildings(name)))")
+          .select("id,tenant_id,notice_date,requested_move_out_date,approved_move_out_date,actual_move_out_date,status,created_at,tenants(full_name,rooms(room_number,buildings(name)))")
           .order("created_at", { ascending: false }),
       ]);
 
@@ -134,11 +135,13 @@ export default function DashboardPage() {
     const requestedMoveOuts = moveOutRequests.filter((row) => String(row.status) === "requested");
     const activeTenantRoomIds = new Set(activeTenants.map((tenant) => String(tenant.room_id)));
 
+    const outstandingStatuses = ["pending", "partial", "overdue", "verifying"];
     const pendingInvoices = invoices.filter((invoice) => ["pending", "partial", "overdue"].includes(String(invoice.status)));
     const verifyingInvoices = invoices.filter((invoice) => String(invoice.status) === "verifying" || (!!invoice.slip_url && String(invoice.status) !== "paid"));
     const overdueInvoices = invoices.filter((invoice) => String(invoice.status) === "overdue");
+    const outstandingInvoices = invoices.filter((invoice) => outstandingStatuses.includes(String(invoice.status)));
 
-    const totalOutstanding = pendingInvoices.reduce(
+    const totalOutstanding = outstandingInvoices.reduce(
       (sum, invoice) => sum + Math.max(toNumber(invoice.total_amount) - toNumber(invoice.paid_amount), 0),
       0
     );
@@ -688,7 +691,18 @@ export default function DashboardPage() {
               <p className="mt-1">
                 ห้อง {(relationItem((relationItem(selectedMoveOutRequest.tenants) as any)?.rooms) as any)?.room_number ?? "-"}
               </p>
-              <p className="mt-1">วันที่แจ้งย้ายออก: {formatDate(selectedMoveOutRequest.requested_move_out_date)}</p>
+              <p className="mt-1">
+                วันที่แจ้ง (30 วัน):{" "}
+                {formatDate(
+                  (selectedMoveOutRequest as any).notice_date ??
+                    ((selectedMoveOutRequest as any).created_at
+                      ? bangkokYmd(new Date((selectedMoveOutRequest as any).created_at))
+                      : null)
+                )}
+              </p>
+              <p className="mt-1">
+                วันที่ต้องการย้ายออก: {formatDate(selectedMoveOutRequest.requested_move_out_date)}
+              </p>
               <p className="mt-1">สถานะ: {selectedMoveOutRequest.status}</p>
             </div>
             <div className="flex justify-end gap-2">

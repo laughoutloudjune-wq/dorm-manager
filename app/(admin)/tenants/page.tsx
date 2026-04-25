@@ -1,6 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { bangkokYmd, meets30DayMoveOutNotice } from "@/lib/move-out-notice";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Modal } from "@/components/ui/Modal";
 import { Input } from "@/components/ui/Input";
 import { Badge } from "@/components/ui/Badge";
@@ -64,6 +66,7 @@ type ReceiptProfile = {
 type MoveOutRequestRow = {
   id: string;
   tenant_id: string;
+  notice_date: string | null;
   requested_move_out_date: string;
   approved_move_out_date: string | null;
   actual_move_out_date: string | null;
@@ -289,6 +292,11 @@ const findExistingActiveTenantInRoom = (
 
 export default function TenantsPage() {
   const supabase = useMemo(() => createClient(), []);
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const focusTenantId = searchParams.get("focusTenant");
+  const focusTabParam = searchParams.get("tab");
+  const focusOpenedRef = useRef<string | null>(null);
   const { can } = usePermissions();
   const [tenants, setTenants] = useState<TenantRow[]>([]);
   const [rooms, setRooms] = useState<RoomRow[]>([]);
@@ -318,6 +326,8 @@ export default function TenantsPage() {
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [confirmUnlinkOpen, setConfirmUnlinkOpen] = useState(false);
   const [confirmMoveOutOpen, setConfirmMoveOutOpen] = useState(false);
+  const [confirmCancelMoveOutOpen, setConfirmCancelMoveOutOpen] = useState(false);
+  const [isCancellingMoveOut, setIsCancellingMoveOut] = useState(false);
   const [useProrate, setUseProrate] = useState(true);
   const [isPageLoading, setIsPageLoading] = useState(true);
   const [isSavingTenant, setIsSavingTenant] = useState(false);
@@ -443,7 +453,7 @@ export default function TenantsPage() {
     const { data, error } = await supabase
       .from("move_out_requests")
       .select(
-        "id,tenant_id,requested_move_out_date,approved_move_out_date,actual_move_out_date,status,request_note,admin_note,created_at"
+        "id,tenant_id,notice_date,requested_move_out_date,approved_move_out_date,actual_move_out_date,status,request_note,admin_note,created_at"
       )
       .in("status", ["requested", "approved"])
       .order("created_at", { ascending: false });
@@ -666,6 +676,22 @@ export default function TenantsPage() {
     setIsModalOpen(true);
   };
 
+  useEffect(() => {
+    if (!focusTenantId) {
+      focusOpenedRef.current = null;
+      return;
+    }
+    if (isPageLoading || !canViewTenants) return;
+    if (focusOpenedRef.current === focusTenantId) return;
+    const tenant = tenants.find((t) => String(t.id) === String(focusTenantId));
+    if (!tenant) return;
+    focusOpenedRef.current = focusTenantId;
+    const tab = focusTabParam === "move_out" ? "move_out" : "info";
+    void openModal(tenant, tab);
+    router.replace("/tenants", { scroll: false });
+    // openModal is stable enough for this one-shot deep link; ref prevents duplicate opens.
+  }, [focusTenantId, focusTabParam, isPageLoading, canViewTenants, tenants, router]);
+
   const uploadDepositSlip = async (file?: File | null) => {
     if (!file) return;
     setIsUploadingDepositSlip(true);
@@ -811,6 +837,37 @@ export default function TenantsPage() {
       }
     }
     setIsSavingTenant(false);
+  };
+
+  const cancelMoveOutProcess = async () => {
+    if (!activeTenant) return;
+    setIsCancellingMoveOut(true);
+    try {
+      await callTenantsAction("cancel_move_out_process", { tenantId: activeTenant.id });
+      await Promise.all([loadTenants(), loadMoveOutRequests()]);
+      const { data: refreshed } = await supabase
+        .from("tenants")
+        .select(
+          "id,full_name,address,phone_number,line_user_id,move_in_date,move_out_date,status,room_id,lease_months,initial_electricity_reading,initial_water_reading,advance_rent_amount,security_deposit_amount,deposit_slip_url,final_electricity_reading,final_water_reading,forfeit_security_deposit,custom_payment_method,custom_receipt_profile,rooms(room_number,price_month,buildings(name))"
+        )
+        .eq("id", activeTenant.id)
+        .maybeSingle();
+      if (refreshed) {
+        setActiveTenant(refreshed as TenantRow);
+      }
+      setActiveMoveOutRequest(null);
+      const today = new Date().toISOString().slice(0, 10);
+      setForm((prev) => ({
+        ...prev,
+        move_out_request_date: today,
+        final_move_out_date: today,
+      }));
+      setStatus("ยกเลิกกระบวนการย้ายออกแล้ว — ผู้เช่ายังพักอยู่ตามปกติ");
+    } catch (error: any) {
+      setStatus(error?.message ?? "ยกเลิกกระบวนการย้ายออกไม่สำเร็จ");
+    } finally {
+      setIsCancellingMoveOut(false);
+    }
   };
 
   const manageMoveOutRequest = async (requestStatus: "approved" | "rejected") => {
@@ -1072,6 +1129,24 @@ export default function TenantsPage() {
 
   const leaseEnd = form.move_in_date ? leaseEndDateText(form.move_in_date, toNumber(form.lease_months)) : "-";
   const leaseActive = form.move_in_date ? new Date() <= new Date(leaseEnd) : false;
+
+  const activeMoveOutNoticeYmd = useMemo(() => {
+    if (!activeMoveOutRequest) return "";
+    if (activeMoveOutRequest.notice_date) {
+      return String(activeMoveOutRequest.notice_date).slice(0, 10);
+    }
+    if (activeMoveOutRequest.created_at) {
+      return bangkokYmd(new Date(activeMoveOutRequest.created_at));
+    }
+    return "";
+  }, [activeMoveOutRequest]);
+
+  const moveOutShorterThan30DayNotice =
+    Boolean(activeMoveOutRequest && activeMoveOutNoticeYmd && activeMoveOutRequest.requested_move_out_date) &&
+    !meets30DayMoveOutNotice(
+      activeMoveOutNoticeYmd,
+      String(activeMoveOutRequest?.requested_move_out_date ?? "").slice(0, 10)
+    );
 
   const electricityUsage = Math.max(toNumber(form.final_electricity_reading) - latestPrevElectricity, 0);
   const waterUsage = Math.max(toNumber(form.final_water_reading) - latestPrevWater, 0);
@@ -1617,14 +1692,39 @@ export default function TenantsPage() {
 
         {activeTab === "move_out" && (
           <fieldset disabled={!canEditTenant} className="space-y-4 disabled:cursor-not-allowed disabled:opacity-70">
+            {activeTenant?.status === "active" &&
+              (activeTenant.move_out_date || activeMoveOutRequest) && (
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-800">
+                  <p className="font-semibold text-slate-900">ยกเลิกการย้ายออก</p>
+                  <p className="mt-1 text-slate-600">
+                    ใช้เมื่อผู้เช่าแจ้งยกเลิก หรือตัดสินใจไม่ย้ายแล้ว ระบบจะล้างวันย้ายออกบนข้อมูลผู้เช่าและยกเลิกคำขอที่รอ/อนุมัติแล้ว
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmCancelMoveOutOpen(true)}
+                    disabled={isCancellingMoveOut}
+                    className="mt-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-950 transition hover:bg-amber-100 disabled:opacity-50"
+                  >
+                    {isCancellingMoveOut ? "กำลังดำเนินการ…" : "ยกเลิกกระบวนการย้ายออก"}
+                  </button>
+                </div>
+              )}
+
             {activeMoveOutRequest && (
               <div className="rounded-2xl border border-orange-200 bg-orange-50 p-4 text-sm text-orange-900">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <p className="font-semibold">คำขอย้ายออกจากผู้เช่า</p>
                     <p className="mt-1 text-xs">
-                      วันที่ขอ: {activeMoveOutRequest.requested_move_out_date} | สถานะ: {activeMoveOutRequest.status}
+                      วันที่แจ้ง (30 วัน): {activeMoveOutNoticeYmd || "-"} | วันที่ต้องการย้ายออก:{" "}
+                      {activeMoveOutRequest.requested_move_out_date}
                     </p>
+                    <p className="mt-1 text-xs">สถานะ: {activeMoveOutRequest.status}</p>
+                    {moveOutShorterThan30DayNotice && (
+                      <p className="mt-2 text-xs font-medium text-amber-800">
+                        วันย้ายออกตามคำขอใกล้กว่า 30 วันจากวันที่แจ้ง — ตรวจสอบเงินประกันตามสัญญา
+                      </p>
+                    )}
                     {activeMoveOutRequest.request_note && (
                       <p className="mt-1 text-xs">หมายเหตุผู้เช่า: {activeMoveOutRequest.request_note}</p>
                     )}
@@ -1655,7 +1755,7 @@ export default function TenantsPage() {
 
             <div className="grid gap-4 md:grid-cols-2">
               <Input
-                label="วันที่แจ้งย้ายออก"
+                label="วันที่ย้ายออกตามคำขอ (สำหรับคำนวณ/อ้างอิง)"
                 type="date"
                 value={form.move_out_request_date}
                 onChange={(event) => setForm({ ...form, move_out_request_date: event.target.value })}
@@ -1771,7 +1871,8 @@ export default function TenantsPage() {
                 <p className="text-lg font-semibold text-slate-900">สรุปย้ายออก</p>
                 <p>ผู้เช่า: {form.full_name || "-"}</p>
                 <p>ห้อง: {activeTenant ? tenantRoomNumber(activeTenant, roomsById) : "-"}</p>
-                <p>วันที่แจ้งย้ายออก: {form.move_out_request_date || "-"}</p>
+                <p>วันที่แจ้ง (30 วัน): {activeMoveOutNoticeYmd || "-"}</p>
+                <p>วันที่ย้ายออกตามคำขอ/คำนวณ: {form.move_out_request_date || "-"}</p>
                 <p>วันที่ย้ายออกจริง: {form.final_move_out_date || "-"}</p>
               </div>
               <div className="space-y-1">
@@ -2025,6 +2126,19 @@ export default function TenantsPage() {
         onConfirm={async () => {
           await confirmMoveOut();
           setConfirmMoveOutOpen(false);
+        }}
+      />
+
+      <ConfirmActionModal
+        isOpen={confirmCancelMoveOutOpen}
+        title="ยกเลิกกระบวนการย้ายออก"
+        message="ล้างวันย้ายออกของผู้เช่า (ถ้ามี) และยกเลิกคำขอย้ายออกที่รอดำเนินการหรืออนุมัติแล้ว ผู้เช่าจะถือว่ายังพักอยู่ตามปกติ"
+        confirmLabel="ยกเลิกการย้ายออก"
+        loading={isCancellingMoveOut}
+        onCancel={() => setConfirmCancelMoveOutOpen(false)}
+        onConfirm={async () => {
+          await cancelMoveOutProcess();
+          setConfirmCancelMoveOutOpen(false);
         }}
       />
     </div>

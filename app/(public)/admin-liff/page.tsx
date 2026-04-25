@@ -159,7 +159,7 @@ export default function AdminLiffPage() {
       invoiceFilter === "all"
         ? ["pending", "partial", "overdue", "verifying", "paid", "draft", "cancelled"]
         : [invoiceFilter];
-    const data = await postJson("/api/admin-liff/invoices", { accessToken, statuses });
+    const data = await postJson("/api/admin-liff/invoices", { accessToken, statuses, month });
     const rows = (data.invoices ?? []) as AdminLiffInvoice[];
     setInvoices(rows);
     setSelectedInvoiceId((prev) => (rows.some((r) => r.id === prev) ? prev : rows[0]?.id ?? null));

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { bangkokYmd } from "@/lib/move-out-notice";
 import { createAdminClient } from "@/lib/supabase-admin";
 
 const ACTIVE_MOVE_OUT_STATUSES = ["requested", "approved"];
@@ -50,7 +51,7 @@ export async function POST(req: Request) {
       const { data: latestRequest, error: requestError } = await supabase
         .from("move_out_requests")
         .select(
-          "id,requested_move_out_date,approved_move_out_date,actual_move_out_date,status,request_note,admin_note,created_at,updated_at"
+          "id,notice_date,requested_move_out_date,approved_move_out_date,actual_move_out_date,status,request_note,admin_note,created_at,updated_at"
         )
         .eq("tenant_id", tenant.id)
         .order("created_at", { ascending: false })
@@ -82,7 +83,7 @@ export async function POST(req: Request) {
 
       const { data: existingRequest, error: existingError } = await supabase
         .from("move_out_requests")
-        .select("id,status")
+        .select("id,status,notice_date,created_at")
         .eq("tenant_id", tenant.id)
         .in("status", ACTIVE_MOVE_OUT_STATUSES)
         .order("created_at", { ascending: false })
@@ -102,15 +103,24 @@ export async function POST(req: Request) {
 
       const nowIso = new Date().toISOString();
       if (existingRequest?.id) {
+        const existingNotice = (existingRequest as { notice_date?: string | null }).notice_date;
+        const updatePayload: Record<string, unknown> = {
+          requested_move_out_date: requestedMoveOutDate,
+          request_note: requestNote,
+          status: "requested",
+          admin_note: null,
+          updated_at: nowIso,
+        };
+        if (!existingNotice) {
+          const createdAt = (existingRequest as { created_at?: string }).created_at;
+          updatePayload.notice_date = createdAt
+            ? bangkokYmd(new Date(createdAt))
+            : bangkokYmd(new Date());
+        }
+
         const { error: updateError } = await supabase
           .from("move_out_requests")
-          .update({
-            requested_move_out_date: requestedMoveOutDate,
-            request_note: requestNote,
-            status: "requested",
-            admin_note: null,
-            updated_at: nowIso,
-          })
+          .update(updatePayload)
           .eq("id", existingRequest.id);
 
         if (updateError) {
@@ -119,6 +129,7 @@ export async function POST(req: Request) {
       } else {
         const { error: insertError } = await supabase.from("move_out_requests").insert({
           tenant_id: tenant.id,
+          notice_date: bangkokYmd(new Date()),
           requested_move_out_date: requestedMoveOutDate,
           request_note: requestNote,
           status: "requested",
@@ -134,7 +145,7 @@ export async function POST(req: Request) {
       const { data: latestRequest, error: requestError } = await supabase
         .from("move_out_requests")
         .select(
-          "id,requested_move_out_date,approved_move_out_date,actual_move_out_date,status,request_note,admin_note,created_at,updated_at"
+          "id,notice_date,requested_move_out_date,approved_move_out_date,actual_move_out_date,status,request_note,admin_note,created_at,updated_at"
         )
         .eq("tenant_id", tenant.id)
         .order("created_at", { ascending: false })

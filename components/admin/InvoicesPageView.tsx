@@ -718,6 +718,7 @@ export default function InvoicesPage() {
   const [lineSendMessage, setLineSendMessage] = useState("กำลังดำเนินการ...");
   const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
   const [moveOutWarnings, setMoveOutWarnings] = useState<any[]>([]);
+  const [pendingMoveOutCount, setPendingMoveOutCount] = useState(0);
 
   const [form, setForm] = useState({
     issue_date: "",
@@ -1053,6 +1054,46 @@ export default function InvoicesPage() {
       mounted = false;
     };
   }, [selectedMonth, supabase]);
+
+  useEffect(() => {
+    let mounted = true;
+    /** Pending move-out work: open tenant request, or active tenant with move_out_date set (manual tab). Deduped by tenant. */
+    const loadPendingMoveOutCount = async () => {
+      const [requestsRes, tenantsRes] = await Promise.all([
+        supabase.from("move_out_requests").select("tenant_id").eq("status", "requested"),
+        supabase.from("tenants").select("id").not("move_out_date", "is", null).eq("status", "active"),
+      ]);
+      if (!mounted) return;
+      if (requestsRes.error || tenantsRes.error) {
+        setPendingMoveOutCount(0);
+        return;
+      }
+      const ids = new Set<string>();
+      for (const row of requestsRes.data ?? []) {
+        const id = String((row as { tenant_id?: string }).tenant_id ?? "");
+        if (id) ids.add(id);
+      }
+      for (const row of tenantsRes.data ?? []) {
+        const id = String((row as { id?: string }).id ?? "");
+        if (id) ids.add(id);
+      }
+      setPendingMoveOutCount(ids.size);
+    };
+    void loadPendingMoveOutCount();
+    const channel = supabase
+      .channel("invoices-pending-move-out-badge")
+      .on("postgres_changes", { event: "*", schema: "public", table: "move_out_requests" }, () => {
+        void loadPendingMoveOutCount();
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "tenants" }, () => {
+        void loadPendingMoveOutCount();
+      })
+      .subscribe();
+    return () => {
+      mounted = false;
+      void supabase.removeChannel(channel);
+    };
+  }, [supabase]);
 
   const loadPrintConfig = async () => {
     const { data: settingData } = await supabase
@@ -3454,6 +3495,16 @@ export default function InvoicesPage() {
   return (
     <div className="space-y-6">
       <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        {pendingMoveOutCount > 0 && (
+          <div className="mb-3">
+            <Badge variant="warning" className="text-xs font-semibold sm:text-sm">
+              รอดำเนินการย้ายออก {pendingMoveOutCount} รายการ
+            </Badge>
+            <p className="mt-1 text-xs text-amber-900/80">
+              นับรวม: คำขอสถานะรอตรวจ หรือผู้เช่าที่ตั้ง <span className="font-medium">วันย้ายออก</span> แล้ว
+            </p>
+          </div>
+        )}
         <div className="grid gap-3 md:grid-cols-1">
           <Input
             label="เดือนใบแจ้งหนี้"

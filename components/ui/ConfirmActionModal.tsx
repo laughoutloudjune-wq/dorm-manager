@@ -33,18 +33,20 @@ export function ConfirmActionModal({
     <Modal isOpen={isOpen} onClose={onCancel} title={title} size="md">
       <div className="space-y-4">
         <p className="text-sm text-slate-600">{message}</p>
-        <div className="flex justify-end gap-2">
+        <div className="flex flex-wrap justify-end gap-2">
           <button
+            type="button"
             onClick={onCancel}
             disabled={loading}
-            className="rounded-xl border border-slate-200 px-4 py-2 text-sm text-slate-700 disabled:opacity-60"
+            className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:opacity-60"
           >
             {resolvedCancelLabel}
           </button>
           <button
+            type="button"
             onClick={onConfirm}
             disabled={loading}
-            className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+            className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-md shadow-blue-600/15 transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {loading && <Loader2 size={16} className="animate-spin" />}
             {loading ? processingLabel : resolvedConfirmLabel}

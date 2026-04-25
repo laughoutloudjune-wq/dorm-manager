@@ -36,9 +36,18 @@ export async function POST(req: Request) {
     if (invoiceError) return NextResponse.json({ error: invoiceError.message }, { status: 500 });
 
     const rows = invoices ?? [];
-    const totalAmount = rows.reduce((sum: number, row: any) => sum + Number(row.total_amount ?? 0), 0);
-    const paidAmount = rows.reduce((sum: number, row: any) => sum + Number(row.paid_amount ?? 0), 0);
-    const outstandingAmount = Math.max(0, totalAmount - paidAmount);
+    const normalizedRows = rows.map((row: any) => ({
+      status: String(row.status ?? ""),
+      total_amount: Number(row.total_amount ?? 0),
+      paid_amount: Number(row.paid_amount ?? 0),
+    }));
+
+    const accountingRows = normalizedRows.filter((row) => !["draft", "cancelled"].includes(row.status));
+    const totalAmount = accountingRows.reduce((sum, row) => sum + row.total_amount, 0);
+    const paidAmount = accountingRows.reduce((sum, row) => sum + row.paid_amount, 0);
+    const outstandingAmount = accountingRows
+      .filter((row) => ["pending", "partial", "overdue", "verifying"].includes(row.status))
+      .reduce((sum, row) => sum + Math.max(row.total_amount - row.paid_amount, 0), 0);
     const byStatus = rows.reduce<Record<string, number>>((acc, row: any) => {
       const key = String(row.status ?? "unknown");
       acc[key] = (acc[key] ?? 0) + 1;

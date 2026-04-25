@@ -18,7 +18,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className="font-sans">{children}</body>
+      <body className="min-h-screen font-sans">{children}</body>
     </html>
   );
 }

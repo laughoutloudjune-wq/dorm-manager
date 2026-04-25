@@ -114,7 +114,7 @@ export async function POST(req: Request) {
     const { data: moveOutRequest, error: moveOutError } = await supabase
       .from("move_out_requests")
       .select(
-        "id,requested_move_out_date,approved_move_out_date,actual_move_out_date,status,request_note,admin_note,created_at,updated_at"
+        "id,notice_date,requested_move_out_date,approved_move_out_date,actual_move_out_date,status,request_note,admin_note,created_at,updated_at"
       )
       .eq("tenant_id", tenant.id)
       .order("created_at", { ascending: false })

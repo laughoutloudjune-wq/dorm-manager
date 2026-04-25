@@ -46,26 +46,27 @@ export function Modal({
 
   const modalNode = (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 px-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 px-4 backdrop-blur-[2px] animate-fade-in-up"
       onClick={onClose}
     >
       <div
-        className={`w-full ${sizeClasses[size]} rounded-2xl bg-white shadow-2xl`}
+        className={`w-full ${sizeClasses[size]} max-h-[90vh] animate-soft-pop overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-2xl shadow-slate-900/10`}
         role="dialog"
         aria-modal="true"
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4">
-          <h2 className="text-lg font-semibold text-slate-900">{title}</h2>
+        <div className="flex items-center justify-between border-b border-slate-100/90 bg-slate-50/50 px-6 py-4">
+          <h2 className="text-lg font-semibold tracking-tight text-slate-900">{title}</h2>
           <button
             onClick={onClose}
-            className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+            className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
+            type="button"
             aria-label="Close"
           >
             <X size={18} />
           </button>
         </div>
-        <div className="max-h-[85vh] overflow-y-auto px-6 py-5">{children}</div>
+        <div className="max-h-[min(85vh,calc(100vh-8rem))] overflow-y-auto overscroll-contain px-6 py-5">{children}</div>
       </div>
     </div>
   );
