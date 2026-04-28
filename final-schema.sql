@@ -84,7 +84,8 @@ CREATE TABLE public.tenants (
   policy_version TEXT,
   custom_payment_method JSONB,
   custom_receipt_profile JSONB,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ
 );
 
 -- Payment Methods (global)

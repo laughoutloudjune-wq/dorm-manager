@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { Client, FlexMessage } from "@line/bot-sdk";
+import { getPublicSiteOrigin } from "@/lib/public-site-url";
 import { createAdminClient } from "@/lib/supabase-admin";
 
 const channelAccessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN || "";
@@ -79,16 +80,18 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Missing payment token." }, { status: 400 });
     }
 
-    if (!process.env.NEXT_PUBLIC_BASE_URL) {
+    const baseUrl = getPublicSiteOrigin();
+    if (!baseUrl) {
       return NextResponse.json(
-        { error: "NEXT_PUBLIC_BASE_URL is missing in environment." },
+        {
+          error:
+            "No public URL for payment links. When running on localhost, set INVOICE_PUBLIC_BASE_URL to your Vercel origin (e.g. https://your-app.vercel.app). On Vercel, set NEXT_PUBLIC_BASE_URL or rely on VERCEL_URL.",
+        },
         { status: 500 }
       );
     }
 
-    const baseUrlRaw = process.env.NEXT_PUBLIC_BASE_URL.trim();
-    const baseUrl = /^https?:\/\//i.test(baseUrlRaw) ? baseUrlRaw : `https://${baseUrlRaw}`;
-    const payUrl = `${baseUrl.replace(/\/$/, "")}/payment/${resolved.publicToken}`;
+    const payUrl = `${baseUrl}/payment/${resolved.publicToken}`;
     const dueDateText = resolved.dueDate
       ? new Date(resolved.dueDate).toLocaleDateString("th-TH")
       : "-";

@@ -1,5 +1,6 @@
 ﻿import { NextResponse } from "next/server";
 import { Client } from "@line/bot-sdk";
+import { getPublicSiteOrigin } from "@/lib/public-site-url";
 import { createAdminClient } from "@/lib/supabase-admin";
 
 const channelAccessToken =
@@ -54,7 +55,7 @@ export async function POST(req: Request) {
     const tenant = Array.isArray((invoice as any).tenants) ? (invoice as any).tenants[0] : (invoice as any).tenants;
     const room = Array.isArray((invoice as any).rooms) ? (invoice as any).rooms[0] : (invoice as any).rooms;
 
-    const baseUrl = (process.env.NEXT_PUBLIC_BASE_URL || "").trim().replace(/\/$/, "");
+    const baseUrl = (getPublicSiteOrigin() || "").replace(/\/$/, "");
     const publicToken = (invoice as any).public_token as string | null;
     const paymentUrl = baseUrl && publicToken ? `${baseUrl}/payment/${publicToken}` : null;
     const adminLiffUrl = baseUrl ? `${baseUrl}/admin-liff?invoiceId=${encodeURIComponent(String((invoice as any).id))}` : null;

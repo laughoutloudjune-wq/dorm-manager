@@ -1,7 +1,9 @@
 "use client";
 
+import { getInvoiceOutstanding } from "@/lib/invoice-ledger";
 import { bangkokYmd, meets30DayMoveOutNotice } from "@/lib/move-out-notice";
 import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Modal } from "@/components/ui/Modal";
 import { Input } from "@/components/ui/Input";
@@ -116,6 +118,15 @@ const toNumber = (value: string | number | null | undefined) => {
 };
 
 const roundTo2 = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
+
+const ymdToLocalDate = (ymd: string) => {
+  const p = String(ymd).slice(0, 10).split("-");
+  if (p.length < 3) return new Date(NaN);
+  const y = parseInt(p[0] ?? "0", 10);
+  const m = parseInt(p[1] ?? "1", 10);
+  const d = parseInt(p[2] ?? "1", 10);
+  return new Date(y, m - 1, d);
+};
 
 const formatMoney = (value: number) =>
   value.toLocaleString("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -973,6 +984,9 @@ export default function TenantsPage() {
           )}</span></div>`
       )
       .join("");
+    const rentLabel = latestBilledEndYmd
+      ? `ค่าเช่า (Pro-rate หลังรอบบิล${tailDaysAfterBilledPeriod > 0 ? ` — ${tailDaysAfterBilledPeriod} วัน` : ""})`
+      : "ค่าเช่าห้อง (งวด/สรุป)";
     const html = `<!doctype html>
 <html>
   <head>
@@ -1000,7 +1014,14 @@ export default function TenantsPage() {
       <div class="sub">ห้อง: ${roomNo}${building ? ` (${building})` : ""}</div>
     </div>
     <div class="card">
-      <div class="row"><span class="label">ค่าเช่าห้อง</span><span class="value">฿${formatMoney(roomPrice)}</span></div>
+      ${
+        unpaidInvoicesSubtotal > 0
+          ? `<div class="row"><span class="label">ยอดบิลค้างชำระ (รวม ${outstandingMoveOutInvoices.length} รายการ)</span><span class="value">฿${formatMoney(
+              unpaidInvoicesSubtotal
+            )}</span></div>`
+          : ""
+      }
+      <div class="row"><span class="label">${rentLabel}</span><span class="value">฿${formatMoney(moveOutRentBase)}</span></div>
       ${
         overstayRentCharge > 0
           ? `<div class="row"><span class="label">ค่าเช่าคิดตามจำนวนวันค้าง (${overstayDays} วัน)</span><span class="value">฿${formatMoney(
@@ -1175,7 +1196,65 @@ export default function TenantsPage() {
       : 0;
   const overstayRentCharge = overstayDays * dailyRent;
   const additionalFeesTotal = moveOutFeeLines.reduce((sum, line) => sum + toNumber(line.amount), 0);
-  const totalCost = roomPrice + utilityTotal + overstayRentCharge + additionalFeesTotal;
+
+  const latestBilledEndYmd = useMemo(() => {
+    let best: string | null = null;
+    let bestT = 0;
+    for (const inv of tenantInvoiceHistory) {
+      const raw = String(inv.end_date || "").trim().slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) continue;
+      const t = ymdToLocalDate(raw).getTime();
+      if (Number.isNaN(t) || t < bestT) continue;
+      bestT = t;
+      best = raw;
+    }
+    return best;
+  }, [tenantInvoiceHistory]);
+
+  const moveOutYmdForTail = (form.final_move_out_date || form.move_out_request_date || "").trim().slice(0, 10);
+
+  const { tailDaysAfterBilledPeriod, moveOutRentBase } = useMemo(() => {
+    if (!latestBilledEndYmd) {
+      return { tailDaysAfterBilledPeriod: 0, moveOutRentBase: roomPrice };
+    }
+    if (!moveOutYmdForTail) {
+      return { tailDaysAfterBilledPeriod: 0, moveOutRentBase: 0 };
+    }
+    const dayAfter = ymdToLocalDate(latestBilledEndYmd);
+    if (Number.isNaN(dayAfter.getTime())) {
+      return { tailDaysAfterBilledPeriod: 0, moveOutRentBase: roomPrice };
+    }
+    dayAfter.setDate(dayAfter.getDate() + 1);
+    const out = ymdToLocalDate(moveOutYmdForTail);
+    if (Number.isNaN(out.getTime())) {
+      return { tailDaysAfterBilledPeriod: 0, moveOutRentBase: 0 };
+    }
+    if (out < dayAfter) {
+      return { tailDaysAfterBilledPeriod: 0, moveOutRentBase: 0 };
+    }
+    const days =
+      Math.floor((out.getTime() - dayAfter.getTime()) / (24 * 60 * 60 * 1000)) + 1;
+    return {
+      tailDaysAfterBilledPeriod: days,
+      moveOutRentBase: (roomPrice / 30) * days,
+    };
+  }, [latestBilledEndYmd, moveOutYmdForTail, roomPrice]);
+
+  const outstandingMoveOutInvoices = useMemo(
+    () =>
+      tenantInvoiceHistory.filter(
+        (inv) => !["draft", "cancelled"].includes(String(inv.status)) && getInvoiceOutstanding(inv) > 0.001
+      ),
+    [tenantInvoiceHistory]
+  );
+
+  const unpaidInvoicesSubtotal = useMemo(
+    () => outstandingMoveOutInvoices.reduce((sum, inv) => sum + getInvoiceOutstanding(inv), 0),
+    [outstandingMoveOutInvoices]
+  );
+
+  const totalCost =
+    unpaidInvoicesSubtotal + moveOutRentBase + utilityTotal + overstayRentCharge + additionalFeesTotal;
   const refundableDeposit = forfeitDeposit ? 0 : toNumber(form.security_deposit_amount);
   const forfeitedDepositAmount = forfeitDeposit ? toNumber(form.security_deposit_amount) : 0;
   const prepaid = refundableDeposit + toNumber(form.advance_rent_amount);
@@ -1710,6 +1789,34 @@ export default function TenantsPage() {
                 </div>
               )}
 
+            {outstandingMoveOutInvoices.length > 0 && (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <p className="font-semibold">บิลค้างชำระ (รวมในสรุปย้ายออก)</p>
+                  <Link
+                    href="/invoices"
+                    className="shrink-0 text-sm font-medium text-amber-900 underline hover:text-amber-700"
+                  >
+                    ไปหน้าใบแจ้งหนี้
+                  </Link>
+                </div>
+                <ul className="mt-2 space-y-1.5 text-xs">
+                  {outstandingMoveOutInvoices.map((inv) => (
+                    <li key={inv.id} className="flex flex-wrap justify-between gap-2 border-b border-amber-200/60 pb-1 last:border-0">
+                      <span>
+                        งวด {String(inv.start_date ?? "").slice(0, 10)} → {String(inv.end_date ?? "").slice(0, 10)} ·{" "}
+                        <span className="font-medium">{inv.status}</span>
+                      </span>
+                      <span className="font-semibold">ค้าง ฿{formatMoney(getInvoiceOutstanding(inv))}</span>
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-2 text-xs text-amber-900/80">
+                  รวมยอดค้าง: ฿{formatMoney(unpaidInvoicesSubtotal)} — นำไปรวมใน &quot;รวมค่าใช้จ่าย&quot; ด้านล่าง
+                </p>
+              </div>
+            )}
+
             {activeMoveOutRequest && (
               <div className="rounded-2xl border border-orange-200 bg-orange-50 p-4 text-sm text-orange-900">
                 <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1752,6 +1859,12 @@ export default function TenantsPage() {
                 </div>
               </div>
             )}
+
+            <p className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+              ค่าเช่า Pro-rate หลังบิลล่าสุด: ใช้วันสิ้นสุดรอบในใบแจ้งหนี้ (
+              <span className="font-mono">{latestBilledEndYmd ?? "—"}</span>
+              ) เทียบกับวันย้ายออก — ช่วงหลังวันนั้นจนถึงวันย้ายออกจะคิดเพิ่ม (เช่น บิลสร้างวันที่ 25 แต่คุมถึงวันที่ 25 ยังเหลือถึงวันย้ายออก 30 = 5 วัน) ค่าไฟ/น้ำช่วงท้ายจะตามมิเตอร์วันย้ายออก (กรอกได้ทีหลัง)
+            </p>
 
             <div className="grid gap-4 md:grid-cols-2">
               <Input
@@ -1876,10 +1989,25 @@ export default function TenantsPage() {
                 <p>วันที่ย้ายออกจริง: {form.final_move_out_date || "-"}</p>
               </div>
               <div className="space-y-1">
-                <p className="flex justify-between"><span>ค่าเช่าห้อง</span><span>฿{formatMoney(roomPrice)}</span></p>
+                {unpaidInvoicesSubtotal > 0 && (
+                  <p className="flex justify-between text-amber-900">
+                    <span>ยอดบิลค้างชำระ ({outstandingMoveOutInvoices.length} รายการ)</span>
+                    <span>฿{formatMoney(unpaidInvoicesSubtotal)}</span>
+                  </p>
+                )}
+                <p className="flex justify-between">
+                  <span>
+                    {latestBilledEndYmd
+                      ? `ค่าเช่า Pro-rate หลังบิล (สิ้นสุดบิล ${latestBilledEndYmd}${
+                          tailDaysAfterBilledPeriod > 0 ? ` — ${tailDaysAfterBilledPeriod} วัน` : ""
+                        })`
+                      : "ค่าเช่าห้อง (ไม่มีบิลในระบบ — ใช้งวดเต็มตามอัตรา)"}
+                  </span>
+                  <span>฿{formatMoney(moveOutRentBase)}</span>
+                </p>
                 {overstayRentCharge > 0 && (
                   <p className="flex justify-between">
-                    <span>ค่าเช่า Pro-rate จากวันที่เกิน ({overstayDays} วัน)</span>
+                    <span>ค่าเช่า Pro-rate จากวันที่เกินค่าเช่าล่วงหน้า ({overstayDays} วัน)</span>
                     <span>฿{formatMoney(overstayRentCharge)}</span>
                   </p>
                 )}

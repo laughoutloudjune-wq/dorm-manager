@@ -3,6 +3,7 @@ import { createAdminClient } from "@/lib/supabase-admin";
 import { Client, FlexMessage } from "@line/bot-sdk";
 import { requireLineAdminAccess } from "@/lib/line-admin-auth";
 import { applyInvoicePaymentAllocation } from "@/lib/invoice-ledger";
+import { getPublicSiteOrigin } from "@/lib/public-site-url";
 
 const channelAccessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN || "";
 const lineClient = new Client({ channelAccessToken });
@@ -125,12 +126,17 @@ export async function POST(req: Request) {
       if (!token) {
         return NextResponse.json({ error: "Invoice has no public token" }, { status: 400 });
       }
-      const baseUrlRaw = (process.env.NEXT_PUBLIC_BASE_URL || "").trim();
-      if (!baseUrlRaw) {
-        return NextResponse.json({ error: "NEXT_PUBLIC_BASE_URL is missing" }, { status: 500 });
+      const origin = getPublicSiteOrigin();
+      if (!origin) {
+        return NextResponse.json(
+          {
+            error:
+              "No public URL for payment links. Set INVOICE_PUBLIC_BASE_URL to your Vercel origin when using localhost, or set NEXT_PUBLIC_BASE_URL / deploy on Vercel (VERCEL_URL).",
+          },
+          { status: 500 }
+        );
       }
-      const baseUrl = /^https?:\/\//i.test(baseUrlRaw) ? baseUrlRaw : `https://${baseUrlRaw}`;
-      const payUrl = `${baseUrl.replace(/\/$/, "")}/payment/${token}`;
+      const payUrl = `${origin}/payment/${token}`;
 
       const flexMessage: FlexMessage = {
         type: "flex",
