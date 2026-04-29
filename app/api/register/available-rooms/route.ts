@@ -1,35 +1,64 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase-admin";
 
+/** Strip ILIKE wildcard chars so typed room numbers behave as literals (patterns use % externally). */
+const sanitizeIlikeSubstring = (raw: string) => raw.trim().replace(/[%_\\\u0000-\u001F]/g, "");
+
+const roomSortKey = (a: string, b: string) =>
+  a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
-    const query = (searchParams.get("query") || "").trim();
+    const query = sanitizeIlikeSubstring(searchParams.get("query") ?? "");
 
     if (!query) {
       return NextResponse.json({ rooms: [] });
     }
 
     const supabase = createAdminClient();
-    const { data: rooms, error } = await supabase
+
+    // Large enough pool: LINE/T filters run after — small limits here dropped all free rooms.
+    const { data: matches, error: matchErr } = await supabase
       .from("rooms")
       .select("id,room_number,buildings(name)")
       .ilike("room_number", `%${query}%`)
       .order("room_number", { ascending: true })
-      .limit(50);
+      .limit(400);
 
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+    if (matchErr) {
+      return NextResponse.json({ error: matchErr.message }, { status: 500 });
     }
 
-    const roomIds = (rooms ?? []).map((row: any) => row.id);
+    let rooms = matches ?? [];
+
+    // Prefer rows whose room_number matches the typed query exactly (case-insensitive, trimmed).
+    const qLower = query.toLowerCase();
+    const rank = (roomNumber: string) => {
+      const n = String(roomNumber ?? "").trim().toLowerCase();
+      if (n === qLower) return 0;
+      if (n.startsWith(query.toLowerCase())) return 1;
+      return 2;
+    };
+
+    rooms = [...rooms].sort((x: any, y: any) => {
+      const dr = rank(x.room_number) - rank(y.room_number);
+      if (dr !== 0) return dr;
+      const a = Array.isArray(x.buildings) ? x.buildings[0] : x.buildings;
+      const b = Array.isArray(y.buildings) ? y.buildings[0] : y.buildings;
+      const bn = roomSortKey(String(a?.name ?? ""), String(b?.name ?? ""));
+      if (bn !== 0) return bn;
+      return roomSortKey(String(x.room_number ?? ""), String(y.room_number ?? ""));
+    });
+
+    const roomIds = rooms.map((row: any) => row.id);
     if (roomIds.length === 0) {
       return NextResponse.json({ rooms: [] });
     }
 
     const { data: linkedTenants, error: tenantError } = await supabase
       .from("tenants")
-      .select("room_id,status")
+      .select("room_id")
       .in("room_id", roomIds)
       .eq("status", "active")
       .not("line_user_id", "is", null);
@@ -39,8 +68,7 @@ export async function GET(req: Request) {
     }
 
     const linkedRoomIds = new Set((linkedTenants ?? []).map((row: any) => row.room_id));
-
-    const availableForRegister = (rooms ?? []).filter((row: any) => !linkedRoomIds.has(row.id));
+    const availableForRegister = rooms.filter((row: any) => !linkedRoomIds.has(row.id));
 
     const mapped = availableForRegister.map((row: any) => {
       const building = Array.isArray(row.buildings) ? row.buildings[0] : row.buildings;

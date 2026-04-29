@@ -5,6 +5,7 @@ export async function POST(req: Request) {
   try {
     const body = await req.json();
     const {
+      roomId,
       roomNumber,
       fullName,
       phoneNumber,
@@ -21,7 +22,7 @@ export async function POST(req: Request) {
       policyVersion,
     } = body ?? {};
 
-    if (!roomNumber || !fullName || !phoneNumber || !userId) {
+    if ((!roomNumber && !roomId) || !fullName || !phoneNumber || !userId) {
       return NextResponse.json({ error: "Missing required fields." }, { status: 400 });
     }
 
@@ -40,14 +41,46 @@ export async function POST(req: Request) {
 
     const supabase = createAdminClient();
 
-    const { data: room, error: roomError } = await supabase
-      .from("rooms")
-      .select("id,status")
-      .eq("room_number", roomNumber)
-      .single();
+    const trimmedRoomNumber = typeof roomNumber === "string" ? roomNumber.trim() : "";
+    const trimmedRoomId = typeof roomId === "string" ? roomId.trim() : "";
 
-    if (roomError || !room) {
-      return NextResponse.json({ error: "Room not found." }, { status: 404 });
+    let room: { id: string; status: string } | null = null;
+
+    if (trimmedRoomId) {
+      const { data: byId, error: roomError } = await supabase
+        .from("rooms")
+        .select("id,status")
+        .eq("id", trimmedRoomId)
+        .maybeSingle();
+      if (roomError || !byId) {
+        return NextResponse.json({ error: "Room not found." }, { status: 404 });
+      }
+      room = byId;
+    } else if (trimmedRoomNumber) {
+      const { data: candidates, error: roomError } = await supabase
+        .from("rooms")
+        .select("id,status,room_number")
+        .eq("room_number", trimmedRoomNumber);
+
+      if (roomError) {
+        return NextResponse.json({ error: roomError.message }, { status: 500 });
+      }
+      const rows = candidates ?? [];
+      if (rows.length === 0) {
+        return NextResponse.json({ error: "Room not found." }, { status: 404 });
+      }
+      if (rows.length > 1) {
+        return NextResponse.json(
+          {
+            error:
+              "เลขห้องนี้มีมากกว่าหนึ่งรายการ (หลายอาคาร) — โปรดเลือกห้องจากรายการที่แสดง แทนการพิมพ์เอง",
+          },
+          { status: 400 }
+        );
+      }
+      room = rows[0];
+    } else {
+      return NextResponse.json({ error: "Missing required fields." }, { status: 400 });
     }
 
     const { data: tenant } = await supabase

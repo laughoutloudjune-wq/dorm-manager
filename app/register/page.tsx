@@ -88,6 +88,7 @@ export default function RegisterPage() {
   const supabase = useMemo(() => createClient(), []);
   const [profile, setProfile] = useState<LiffProfile | null>(null);
   const [roomNumber, setRoomNumber] = useState("");
+  const [pickedRoomId, setPickedRoomId] = useState<string | null>(null);
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [phoneNumber, setPhoneNumber] = useState("");
@@ -254,6 +255,7 @@ export default function RegisterPage() {
         "ngrok-skip-browser-warning": "true",
       },
       body: JSON.stringify({
+        roomId: pickedRoomId,
         roomNumber: roomNumber.trim(),
         fullName: `${firstName.trim()} ${lastName.trim()}`.replace(/\s+/g, " ").trim(),
         phoneNumber: phoneNumber.trim(),
@@ -276,6 +278,7 @@ export default function RegisterPage() {
       setStatus("ลงทะเบียนสำเร็จ");
       setShowSuccessOverlay(true);
       setRoomNumber("");
+      setPickedRoomId(null);
       setFirstName("");
       setLastName("");
       setPhoneNumber("");
@@ -321,7 +324,10 @@ export default function RegisterPage() {
                 เลขห้อง
                 <input
                   value={roomNumber}
-                  onChange={(event) => setRoomNumber(event.target.value)}
+                  onChange={(event) => {
+                    setRoomNumber(event.target.value);
+                    setPickedRoomId(null);
+                  }}
                   className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm"
                   required
                   placeholder="เช่น 101"
@@ -340,6 +346,7 @@ export default function RegisterPage() {
                         type="button"
                         onClick={() => {
                           setRoomNumber(room.room_number);
+                          setPickedRoomId(room.id);
                           setSuggestions([]);
                         }}
                         className="w-full rounded-lg px-3 py-2 text-left text-sm text-slate-700 hover:bg-white"
@@ -349,7 +356,9 @@ export default function RegisterPage() {
                       </button>
                     ))}
                     {!suggestLoading && suggestions.length === 0 && (
-                      <p className="px-3 py-2 text-xs text-slate-500">ไม่พบห้องที่ลงทะเบียนได้ตามเลขห้องที่พิมพ์</p>
+                      <p className="px-3 py-2 text-xs text-slate-600">
+                        ไม่พบห้องที่ลงทะเบียนได้ตามเลขห้องที่พิมพ์ (ห้องอาจผูก LINE แล้ว หรือไม่ตรงเลขห้อง) หากมีหลายอาคารใช้เลขห้องเดียวกัน — โปรดแตะเลือกจากรายการ
+                      </p>
                     )}
                   </div>
                 </div>
