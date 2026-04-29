@@ -291,7 +291,7 @@ export default function RegisterPage() {
     setSubmitting(false);
   };
 
-  const showSuggestions = useMemo(() => roomNumber.trim().length > 0, [roomNumber]);
+  const showRoomHelpPanel = useMemo(() => roomNumber.trim().length > 0, [roomNumber]);
 
   return (
     <div className="min-h-screen bg-slate-50 px-4 py-12">
@@ -334,33 +334,41 @@ export default function RegisterPage() {
                 />
               </label>
 
-              {showSuggestions && (
+              {showRoomHelpPanel && (
                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-2">
-                  <p className="px-2 py-1 text-xs text-slate-500">
-                    {suggestLoading ? "กำลังค้นหาห้อง..." : "ห้องที่ตรงกับข้อมูล"}
-                  </p>
-                  <div className="max-h-44 space-y-1 overflow-auto">
-                    {suggestions.map((room) => (
-                      <button
-                        key={room.id}
-                        type="button"
-                        onClick={() => {
-                          setRoomNumber(room.room_number);
-                          setPickedRoomId(room.id);
-                          setSuggestions([]);
-                        }}
-                        className="w-full rounded-lg px-3 py-2 text-left text-sm text-slate-700 hover:bg-white"
-                      >
-                        {room.room_number}
-                        {room.building_name ? ` (${room.building_name})` : ""}
-                      </button>
-                    ))}
-                    {!suggestLoading && suggestions.length === 0 && (
-                      <p className="px-3 py-2 text-xs text-slate-600">
-                        ไม่พบห้องที่ลงทะเบียนได้ตามเลขห้องที่พิมพ์ (ห้องอาจผูก LINE แล้ว หรือไม่ตรงเลขห้อง) หากมีหลายอาคารใช้เลขห้องเดียวกัน — โปรดแตะเลือกจากรายการ
+                  {pickedRoomId ? (
+                    <p className="rounded-lg bg-emerald-50 px-3 py-2.5 text-xs font-medium leading-relaxed text-emerald-900">
+                      เลือกห้องจากรายการแล้ว กรอกชื่อ เบอร์โทร และยืนยันการลงทะเบียนได้เลย — ถ้าจะเปลี่ยนห้องให้พิมพ์เลขห้องใหม่
+                    </p>
+                  ) : (
+                    <>
+                      <p className="px-2 py-1 text-xs text-slate-500">
+                        {suggestLoading ? "กำลังค้นหาห้อง..." : "ห้องที่ตรงกับข้อมูล"}
                       </p>
-                    )}
-                  </div>
+                      <div className="max-h-44 space-y-1 overflow-auto">
+                        {suggestions.map((room) => (
+                          <button
+                            key={room.id}
+                            type="button"
+                            onClick={() => {
+                              setRoomNumber(room.room_number);
+                              setPickedRoomId(room.id);
+                              setSuggestions([]);
+                            }}
+                            className="w-full rounded-lg px-3 py-2 text-left text-sm text-slate-700 hover:bg-white"
+                          >
+                            {room.room_number}
+                            {room.building_name ? ` (${room.building_name})` : ""}
+                          </button>
+                        ))}
+                        {!suggestLoading && suggestions.length === 0 && (
+                          <p className="px-3 py-2 text-xs text-slate-600">
+                            ไม่พบห้องที่ลงทะเบียนได้ตามเลขห้องที่พิมพ์ (ห้องอาจผูก LINE แล้ว หรือไม่ตรงเลขห้อง) หากมีหลายอาคารใช้เลขห้องเดียวกัน — โปรดแตะเลือกจากรายการ
+                          </p>
+                        )}
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
 
