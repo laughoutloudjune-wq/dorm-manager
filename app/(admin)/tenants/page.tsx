@@ -984,9 +984,11 @@ export default function TenantsPage() {
           )}</span></div>`
       )
       .join("");
-    const rentLabel = latestBilledEndYmd
-      ? `ค่าเช่า (Pro-rate หลังรอบบิล${tailDaysAfterBilledPeriod > 0 ? ` — ${tailDaysAfterBilledPeriod} วัน` : ""})`
-      : "ค่าเช่าห้อง (งวด/สรุป)";
+    const rentLabel = !useProrate
+      ? "ค่าเช่า (ปิดการคำนวณ Pro-rate — ไม่นำมาหัก)"
+      : latestBilledEndYmd
+        ? `ค่าเช่า (Pro-rate หลังรอบบิล${tailDaysAfterBilledPeriod > 0 ? ` — ${tailDaysAfterBilledPeriod} วัน` : ""})`
+        : "ค่าเช่าห้อง (งวด/สรุป)";
     const html = `<!doctype html>
 <html>
   <head>
@@ -1021,7 +1023,7 @@ export default function TenantsPage() {
             )}</span></div>`
           : ""
       }
-      <div class="row"><span class="label">${rentLabel}</span><span class="value">฿${formatMoney(moveOutRentBase)}</span></div>
+      <div class="row"><span class="label">${rentLabel}</span><span class="value">฿${formatMoney(appliedMoveOutRentBase)}</span></div>
       ${
         overstayRentCharge > 0
           ? `<div class="row"><span class="label">ค่าเช่าคิดตามจำนวนวันค้าง (${overstayDays} วัน)</span><span class="value">฿${formatMoney(
@@ -1240,6 +1242,8 @@ export default function TenantsPage() {
     };
   }, [latestBilledEndYmd, moveOutYmdForTail, roomPrice]);
 
+  const appliedMoveOutRentBase = useProrate ? moveOutRentBase : 0;
+
   const outstandingMoveOutInvoices = useMemo(
     () =>
       tenantInvoiceHistory.filter(
@@ -1254,7 +1258,11 @@ export default function TenantsPage() {
   );
 
   const totalCost =
-    unpaidInvoicesSubtotal + moveOutRentBase + utilityTotal + overstayRentCharge + additionalFeesTotal;
+    unpaidInvoicesSubtotal +
+    appliedMoveOutRentBase +
+    utilityTotal +
+    overstayRentCharge +
+    additionalFeesTotal;
   const refundableDeposit = forfeitDeposit ? 0 : toNumber(form.security_deposit_amount);
   const forfeitedDepositAmount = forfeitDeposit ? toNumber(form.security_deposit_amount) : 0;
   const prepaid = refundableDeposit + toNumber(form.advance_rent_amount);
@@ -1864,6 +1872,7 @@ export default function TenantsPage() {
               ค่าเช่า Pro-rate หลังบิลล่าสุด: ใช้วันสิ้นสุดรอบในใบแจ้งหนี้ (
               <span className="font-mono">{latestBilledEndYmd ?? "—"}</span>
               ) เทียบกับวันย้ายออก — ช่วงหลังวันนั้นจนถึงวันย้ายออกจะคิดเพิ่ม (เช่น บิลสร้างวันที่ 25 แต่คุมถึงวันที่ 25 ยังเหลือถึงวันย้ายออก 30 = 5 วัน) ค่าไฟ/น้ำช่วงท้ายจะตามมิเตอร์วันย้ายออก (กรอกได้ทีหลัง)
+              หากไม่ต้องการให้ระบบนำยอด Pro-rate ไปหักในสรุป ให้ยกเลิกการเลือกช่องด้านล่าง
             </p>
 
             <div className="grid gap-4 md:grid-cols-2">
@@ -1905,7 +1914,7 @@ export default function TenantsPage() {
                 checked={useProrate}
                 onChange={(event) => setUseProrate(event.target.checked)}
               />
-              ใช้การคำนวณ Pro-rate สำหรับวันที่เกินจากค่าเช่าล่วงหน้า
+              ใช้การคำนวณ Pro-rate (ช่วงหลังบิลล่าสุด และวันที่เกินจากค่าเช่าล่วงหน้า)
             </label>
 
             <label className="block rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
@@ -1997,13 +2006,15 @@ export default function TenantsPage() {
                 )}
                 <p className="flex justify-between">
                   <span>
-                    {latestBilledEndYmd
-                      ? `ค่าเช่า Pro-rate หลังบิล (สิ้นสุดบิล ${latestBilledEndYmd}${
-                          tailDaysAfterBilledPeriod > 0 ? ` — ${tailDaysAfterBilledPeriod} วัน` : ""
-                        })`
-                      : "ค่าเช่าห้อง (ไม่มีบิลในระบบ — ใช้งวดเต็มตามอัตรา)"}
+                    {!useProrate
+                      ? "ค่าเช่า (ปิดการคำนวณ Pro-rate — ไม่นำมาหัก)"
+                      : latestBilledEndYmd
+                        ? `ค่าเช่า Pro-rate หลังบิล (สิ้นสุดบิล ${latestBilledEndYmd}${
+                            tailDaysAfterBilledPeriod > 0 ? ` — ${tailDaysAfterBilledPeriod} วัน` : ""
+                          })`
+                        : "ค่าเช่าห้อง (ไม่มีบิลในระบบ — ใช้งวดเต็มตามอัตรา)"}
                   </span>
-                  <span>฿{formatMoney(moveOutRentBase)}</span>
+                  <span>฿{formatMoney(appliedMoveOutRentBase)}</span>
                 </p>
                 {overstayRentCharge > 0 && (
                   <p className="flex justify-between">
