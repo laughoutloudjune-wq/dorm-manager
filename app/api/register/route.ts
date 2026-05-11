@@ -87,6 +87,7 @@ export async function POST(req: Request) {
       .from("tenants")
       .select("id,line_user_id")
       .eq("room_id", room.id)
+      .eq("status", "active")
       .maybeSingle();
 
     const shouldMarkAsNewTenant = Boolean(isNewTenant);
@@ -106,8 +107,37 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "กรุณายอมรับกฎระเบียบหอพักก่อนลงทะเบียน" }, { status: 400 });
     }
 
-    if (shouldMarkAsNewTenant && tenant?.id) {
-      return NextResponse.json({ error: "ห้องนี้มีผู้เช่าอยู่แล้ว ไม่สามารถเพิ่มผู้เช่าใหม่ซ้ำได้" }, { status: 400 });
+    // Self-service takeover flow:
+    // If room is already occupied by another LINE user and the user is trying to register as a new tenant,
+    // we create a takeover request instead of hard-blocking forever.
+    if (
+      shouldMarkAsNewTenant &&
+      tenant?.id &&
+      tenant.line_user_id &&
+      tenant.line_user_id !== userId
+    ) {
+      const takeoverRequestId = crypto.randomUUID();
+      const { error: takeoverError } = await supabase.from("room_takeover_requests").insert({
+        id: takeoverRequestId,
+        room_id: room.id,
+        requester_line_user_id: userId,
+        requester_full_name: fullName,
+        requester_phone: phoneNumber,
+        status: "requested",
+        current_active_tenant_id: tenant.id,
+      });
+
+      if (takeoverError) {
+        return NextResponse.json({ error: takeoverError.message }, { status: 500 });
+      }
+
+      return NextResponse.json(
+        {
+          error: "ห้องนี้มีผู้เช่าอยู่แล้ว ระบบได้ส่งคำขอย้ายเข้าให้แอดมินตรวจสอบแล้ว กรุณารอการอนุมัติก่อนลงทะเบียน",
+          takeoverRequestId,
+        },
+        { status: 409 }
+      );
     }
 
     const depositAmount = Number.isFinite(Number(securityDepositAmount))

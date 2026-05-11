@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { Client, FlexMessage } from "@line/bot-sdk";
 import { getPublicSiteOrigin } from "@/lib/public-site-url";
 import { createAdminClient } from "@/lib/supabase-admin";
+import { requireAdminPermission } from "@/lib/admin-api-auth";
 
 const channelAccessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN || "";
 
@@ -24,10 +25,14 @@ export async function POST(req: Request) {
       );
     }
 
-    const body = await req.json();
-    const { userId, roomNumber, month, year, total, publicToken, invoiceId } = body ?? {};
+    const adminAuth = await requireAdminPermission(req, "invoice.payment.record");
+    if ("error" in adminAuth) return adminAuth.error;
 
-    if (!userId) {
+    const body = await req.json();
+    const { userId: rawUserId, roomNumber, month, year, total, publicToken, invoiceId } = body ?? {};
+    let targetUserId = rawUserId ? String(rawUserId) : "";
+
+    if (!targetUserId && !invoiceId) {
       return NextResponse.json({ error: "Missing LINE user ID." }, { status: 400 });
     }
 
@@ -50,7 +55,7 @@ export async function POST(req: Request) {
       const { data, error } = await supabase
         .from("invoices")
         .select(
-          "public_token,total_amount,issue_date,due_date,rent_amount,water_bill,electricity_bill,common_fee,additional_fees_total,rooms(room_number)"
+          "public_token,total_amount,issue_date,due_date,rent_amount,water_bill,electricity_bill,common_fee,additional_fees_total,rooms(room_number),tenants(line_user_id)"
         )
         .eq("id", invoiceId)
         .single();
@@ -61,6 +66,9 @@ export async function POST(req: Request) {
 
       const room = Array.isArray(data.rooms) ? data.rooms[0] : data.rooms;
       const issueDate = new Date(data.issue_date);
+      const invoiceTenant = Array.isArray((data as any).tenants) ? (data as any).tenants[0] : (data as any).tenants;
+      const tenantLineUserId = String(invoiceTenant?.line_user_id ?? "");
+      if (tenantLineUserId) targetUserId = tenantLineUserId;
       resolved = {
         roomNumber: room?.room_number ?? "",
         month: issueDate.getMonth() + 1,
@@ -78,6 +86,9 @@ export async function POST(req: Request) {
 
     if (!resolved.publicToken) {
       return NextResponse.json({ error: "Missing payment token." }, { status: 400 });
+    }
+    if (!targetUserId) {
+      return NextResponse.json({ error: "Missing LINE user ID." }, { status: 400 });
     }
 
     const baseUrl = getPublicSiteOrigin();
@@ -197,7 +208,7 @@ export async function POST(req: Request) {
       },
     };
 
-    await client.pushMessage(userId, flexMessage);
+    await client.pushMessage(targetUserId, flexMessage);
     return NextResponse.json({ success: true, message: "Invoice sent to LINE." });
   } catch (error: any) {
     const statusCode = error?.statusCode || error?.originalError?.response?.status || 500;

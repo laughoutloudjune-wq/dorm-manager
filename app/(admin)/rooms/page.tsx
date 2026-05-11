@@ -154,9 +154,20 @@ export default function RoomsPage() {
     }
 
     const invoice = latestInvoice as InvoiceRow;
+
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData.session?.access_token;
+    if (!token) {
+      setStatus("Session หมดอายุ กรุณาเข้าสู่ระบบใหม่");
+      return;
+    }
+
     const response = await fetch("/api/send-invoice", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
       body: JSON.stringify({
         userId: room.tenant_line_user_id,
         roomNumber: room.room_number,

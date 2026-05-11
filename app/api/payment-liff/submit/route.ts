@@ -103,7 +103,7 @@ export async function POST(req: Request) {
         fetch(`${new URL(req.url).origin}/api/notify-slip-upload`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ invoiceId, slipUrl }),
+          body: JSON.stringify({ invoiceId, slipUrl, accessToken }),
         }).catch(() => null)
       )
     );

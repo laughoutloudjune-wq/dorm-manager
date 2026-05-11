@@ -6,6 +6,8 @@ import { Badge } from "@/components/ui/Badge";
 import { createClient } from "@/lib/supabase-client";
 import { CheckCircle2, Download, UploadCloud } from "lucide-react";
 
+const NGROK_SKIP_QUERY = "ngrok-skip-browser-warning=true";
+
 type PaymentMethod = {
   label?: string;
   bank_name?: string;
@@ -232,10 +234,78 @@ export default function PaymentTokenPage() {
   const [waterUnits, setWaterUnits] = useState<number | null>(null);
   const [electricityUnits, setElectricityUnits] = useState<number | null>(null);
   const [meterReading, setMeterReading] = useState<MeterReadingRow | null>(null);
-  const hasLoggedInvoiceView = useRef(false);
+  const [accessToken, setAccessToken] = useState("");
+  const [liffReady, setLiffReady] = useState(false);
+  const hasAuthorizedInvoiceRef = useRef(false);
+
+  useEffect(() => {
+    const init = async () => {
+      try {
+        if (
+          window.location.hostname.includes("ngrok") &&
+          !window.location.search.includes("ngrok-skip-browser-warning")
+        ) {
+          const nextUrl = new URL(window.location.href);
+          nextUrl.searchParams.set("ngrok-skip-browser-warning", "true");
+          window.location.replace(nextUrl.toString());
+          return;
+        }
+
+        const { default: liff } = await import("@line/liff");
+        const liffId = process.env.NEXT_PUBLIC_PAYMENT_LIFF_ID;
+        if (!liffId) {
+          setError("ไม่พบ NEXT_PUBLIC_PAYMENT_LIFF_ID กรุณาตั้งค่าใน .env.local");
+          setLiffReady(true);
+          return;
+        }
+
+        await liff.init({ liffId });
+        if (!liff.isLoggedIn()) {
+          liff.login({
+            redirectUri: `${window.location.origin}${window.location.pathname}?${NGROK_SKIP_QUERY}`,
+          });
+          return;
+        }
+
+        setAccessToken(liff.getAccessToken() || "");
+      } catch (error: any) {
+        setError(error?.message ?? "เริ่มต้น LINE LIFF ไม่สำเร็จ");
+      } finally {
+        setLiffReady(true);
+      }
+    };
+
+    void init();
+  }, []);
 
   useEffect(() => {
     const load = async () => {
+      if (!accessToken) {
+        setError("กรุณาเข้าสู่ระบบ LINE ก่อนเปิดใบแจ้งหนี้");
+        return;
+      }
+
+      if (!token) {
+        setError("Missing token");
+        return;
+      }
+
+      if (!hasAuthorizedInvoiceRef.current) {
+        const authRes = await fetch("/api/invoice-view", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token, accessToken }),
+        }).catch(() => null);
+
+        if (!authRes || !authRes.ok) {
+          const data = await authRes?.json().catch(() => ({} as any));
+          setError(data?.error ?? "ไม่สามารถเปิดใบแจ้งหนี้ได้");
+          return;
+        }
+
+        hasAuthorizedInvoiceRef.current = true;
+      }
+
       const { data: methodData } = await supabase
         .from("payment_methods")
         .select("label,bank_name,account_name,account_number,qr_url")
@@ -316,20 +386,8 @@ export default function PaymentTokenPage() {
       setElectricityUnits(nextElectricityUnits);
     };
 
-    if (token) void load();
-  }, [token, supabase]);
-
-  useEffect(() => {
-    if (!token || !invoice?.id || hasLoggedInvoiceView.current) return;
-    hasLoggedInvoiceView.current = true;
-    void fetch("/api/invoice-view", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token }),
-    }).catch(() => {
-      // Tracking should not block the invoice page.
-    });
-  }, [token, invoice?.id]);
+    if (token && liffReady) void load();
+  }, [token, supabase, accessToken, liffReady]);
 
   const method: PaymentMethod | null = invoice?.custom_payment_method ?? defaultMethod ?? null;
   const transferBreakdownItems = (invoice?.additional_fees_breakdown ?? []).filter((row: any) =>
@@ -388,7 +446,7 @@ export default function PaymentTokenPage() {
       void fetch("/api/notify-slip-upload", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ invoiceId: invoice.id, slipUrl: publicUrl }),
+        body: JSON.stringify({ invoiceId: invoice.id, slipUrl: publicUrl, accessToken }),
       });
 
       setInvoice((prev) =>

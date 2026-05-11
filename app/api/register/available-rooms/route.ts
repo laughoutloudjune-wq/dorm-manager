@@ -60,8 +60,7 @@ export async function GET(req: Request) {
       .from("tenants")
       .select("room_id")
       .in("room_id", roomIds)
-      .eq("status", "active")
-      .not("line_user_id", "is", null);
+      .eq("status", "active");
 
     if (tenantError) {
       return NextResponse.json({ error: tenantError.message }, { status: 500 });

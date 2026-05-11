@@ -2333,9 +2333,18 @@ export default function InvoicesPage() {
       throw new Error(`ไม่พบ LINE user id ของ ${invoice.tenant_name}`);
     }
 
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
+    if (!token) {
+      throw new Error("Session expired. Please log in again.");
+    }
+
     const response = await fetch("/api/send-invoice", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
       body: JSON.stringify({
         userId: invoice.tenant_line_user_id,
         invoiceId: invoice.id,

@@ -2,6 +2,7 @@
 import { Client } from "@line/bot-sdk";
 import { getPublicSiteOrigin } from "@/lib/public-site-url";
 import { createAdminClient } from "@/lib/supabase-admin";
+import { verifyLineAccessToken } from "@/lib/line-admin-auth";
 
 const channelAccessToken =
   process.env.LINE_SLIP_NOTIFY_CHANNEL_ACCESS_TOKEN || process.env.LINE_CHANNEL_ACCESS_TOKEN || "";
@@ -36,16 +37,45 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json();
+    const accessToken = String(body?.accessToken ?? "");
     const invoiceId = String(body?.invoiceId ?? "");
+    const slipUrl = body?.slipUrl ? String(body.slipUrl) : "";
     if (!invoiceId) {
       return NextResponse.json({ error: "Missing invoiceId." }, { status: 400 });
     }
+    if (!accessToken) {
+      return NextResponse.json({ error: "Missing accessToken." }, { status: 400 });
+    }
+    if (!slipUrl) {
+      return NextResponse.json({ error: "Missing slipUrl." }, { status: 400 });
+    }
+
+    const profile = await verifyLineAccessToken(accessToken);
+    if (!profile?.userId) {
+      return NextResponse.json({ error: "LINE profile verification failed" }, { status: 401 });
+    }
+    const lineUserId = String(profile.userId);
 
     const supabase = createAdminClient();
+
+    // Authorization: only the tenant that owns this invoice may trigger notifications.
+    const { data: tenant, error: tenantError } = await supabase
+      .from("tenants")
+      .select("id")
+      .eq("line_user_id", lineUserId)
+      .maybeSingle();
+    if (tenantError) {
+      return NextResponse.json({ error: tenantError.message }, { status: 500 });
+    }
+    if (!tenant?.id) {
+      return NextResponse.json({ error: "Tenant not found for this LINE account." }, { status: 404 });
+    }
+
     const { data: invoice, error } = await supabase
       .from("invoices")
       .select("id,public_token,issue_date,tenants(full_name),rooms(room_number)")
       .eq("id", invoiceId)
+      .eq("tenant_id", tenant.id)
       .single();
 
     if (error || !invoice) {
