@@ -59,7 +59,7 @@ export async function POST(req: Request) {
     const supabase = createAdminClient();
 
     // Authorization: only the tenant that owns this invoice may trigger notifications.
-    const { data: tenant, error: tenantError } = await supabase
+    const { data: authorizedTenant, error: tenantError } = await supabase
       .from("tenants")
       .select("id")
       .eq("line_user_id", lineUserId)
@@ -67,7 +67,7 @@ export async function POST(req: Request) {
     if (tenantError) {
       return NextResponse.json({ error: tenantError.message }, { status: 500 });
     }
-    if (!tenant?.id) {
+    if (!authorizedTenant?.id) {
       return NextResponse.json({ error: "Tenant not found for this LINE account." }, { status: 404 });
     }
 
@@ -75,14 +75,14 @@ export async function POST(req: Request) {
       .from("invoices")
       .select("id,public_token,issue_date,tenants(full_name),rooms(room_number)")
       .eq("id", invoiceId)
-      .eq("tenant_id", tenant.id)
+      .eq("tenant_id", authorizedTenant.id)
       .single();
 
     if (error || !invoice) {
       return NextResponse.json({ error: "Invoice not found." }, { status: 404 });
     }
 
-    const tenant = Array.isArray((invoice as any).tenants) ? (invoice as any).tenants[0] : (invoice as any).tenants;
+    const invoiceTenant = Array.isArray((invoice as any).tenants) ? (invoice as any).tenants[0] : (invoice as any).tenants;
     const room = Array.isArray((invoice as any).rooms) ? (invoice as any).rooms[0] : (invoice as any).rooms;
 
     const baseUrl = (getPublicSiteOrigin() || "").replace(/\/$/, "");
@@ -159,7 +159,7 @@ export async function POST(req: Request) {
               spacing: "sm",
               contents: [
                 { type: "text", text: `ห้อง: ${room?.room_number ?? "-"}`, size: "sm", color: "#374151" },
-                { type: "text", text: `ผู้เช่า: ${tenant?.full_name ?? "-"}`, size: "sm", color: "#374151", wrap: true },
+                { type: "text", text: `ผู้เช่า: ${invoiceTenant?.full_name ?? "-"}`, size: "sm", color: "#374151", wrap: true },
                 { type: "text", text: `งวดบิล: ${issueMonthLabel}`, size: "sm", color: "#374151" },
               ],
             },
