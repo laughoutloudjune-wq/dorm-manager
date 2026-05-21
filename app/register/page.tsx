@@ -13,6 +13,8 @@ type RoomSuggestion = {
   id: string;
   room_number: string;
   building_name?: string | null;
+  registration_status?: "available" | "takeover_required";
+  has_active_tenant?: boolean;
 };
 
 const NGROK_SKIP_QUERY = "ngrok-skip-browser-warning=true";
@@ -272,6 +274,14 @@ export default function RegisterPage() {
     });
 
     const data = await response.json();
+    if (response.status === 409 && data?.takeoverRequestId) {
+      setStatus(
+        data?.error ??
+          "ห้องนี้มีผู้เช่าอยู่แล้ว ระบบส่งคำขอย้ายเข้าให้แอดมินแล้ว กรุณารอการอนุมัติก่อนลงทะเบียนอีกครั้ง"
+      );
+      setSubmitting(false);
+      return;
+    }
     if (!response.ok) {
       setStatus(data?.error ?? "ลงทะเบียนไม่สำเร็จ");
     } else {
@@ -346,24 +356,42 @@ export default function RegisterPage() {
                         {suggestLoading ? "กำลังค้นหาห้อง..." : "ห้องที่ตรงกับข้อมูล"}
                       </p>
                       <div className="max-h-44 space-y-1 overflow-auto">
-                        {suggestions.map((room) => (
-                          <button
-                            key={room.id}
-                            type="button"
-                            onClick={() => {
-                              setRoomNumber(room.room_number);
-                              setPickedRoomId(room.id);
-                              setSuggestions([]);
-                            }}
-                            className="w-full rounded-lg px-3 py-2 text-left text-sm text-slate-700 hover:bg-white"
-                          >
-                            {room.room_number}
-                            {room.building_name ? ` (${room.building_name})` : ""}
-                          </button>
-                        ))}
+                        {suggestions.map((room) => {
+                          const needsTakeover = room.registration_status === "takeover_required";
+                          return (
+                            <button
+                              key={room.id}
+                              type="button"
+                              onClick={() => {
+                                setRoomNumber(room.room_number);
+                                setPickedRoomId(room.id);
+                                setSuggestions([]);
+                                if (needsTakeover) {
+                                  setIsNewTenant(true);
+                                  setStatus(
+                                    "ห้องนี้มีผู้เช่าอยู่แล้ว — เลือก「ผู้เช่าใหม่」แล้วส่งแบบฟอร์มเพื่อขออนุมัติย้ายเข้า"
+                                  );
+                                } else {
+                                  setStatus(null);
+                                }
+                              }}
+                              className={`w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-white ${
+                                needsTakeover ? "text-amber-900" : "text-slate-700"
+                              }`}
+                            >
+                              {room.room_number}
+                              {room.building_name ? ` (${room.building_name})` : ""}
+                              {needsTakeover ? (
+                                <span className="mt-0.5 block text-xs font-medium text-amber-700">
+                                  มีผู้เช่าอยู่ — ขออนุมัติย้ายเข้า
+                                </span>
+                              ) : null}
+                            </button>
+                          );
+                        })}
                         {!suggestLoading && suggestions.length === 0 && (
                           <p className="px-3 py-2 text-xs text-slate-600">
-                            ไม่พบห้องที่ลงทะเบียนได้ตามเลขห้องที่พิมพ์ (ห้องอาจผูก LINE แล้ว หรือไม่ตรงเลขห้อง) หากมีหลายอาคารใช้เลขห้องเดียวกัน — โปรดแตะเลือกจากรายการ
+                            ไม่พบห้องตามเลขที่พิมพ์ หากมีหลายอาคารใช้เลขห้องเดียวกัน — โปรดแตะเลือกจากรายการ
                           </p>
                         )}
                       </div>

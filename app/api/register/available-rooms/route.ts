@@ -56,9 +56,9 @@ export async function GET(req: Request) {
       return NextResponse.json({ rooms: [] });
     }
 
-    const { data: linkedTenants, error: tenantError } = await supabase
+    const { data: activeTenants, error: tenantError } = await supabase
       .from("tenants")
-      .select("room_id")
+      .select("room_id,line_user_id")
       .in("room_id", roomIds)
       .eq("status", "active");
 
@@ -66,15 +66,23 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: tenantError.message }, { status: 500 });
     }
 
-    const linkedRoomIds = new Set((linkedTenants ?? []).map((row: any) => row.room_id));
-    const availableForRegister = rooms.filter((row: any) => !linkedRoomIds.has(row.id));
+    const activeByRoom = new Map<string, { line_user_id: string | null }>();
+    for (const row of activeTenants ?? []) {
+      activeByRoom.set(String((row as any).room_id), {
+        line_user_id: (row as any).line_user_id ?? null,
+      });
+    }
 
-    const mapped = availableForRegister.map((row: any) => {
+    const mapped = rooms.map((row: any) => {
       const building = Array.isArray(row.buildings) ? row.buildings[0] : row.buildings;
+      const active = activeByRoom.get(String(row.id));
+      const registration_status = active ? "takeover_required" : "available";
       return {
         id: row.id,
         room_number: row.room_number,
         building_name: building?.name ?? null,
+        registration_status,
+        has_active_tenant: Boolean(active),
       };
     });
 

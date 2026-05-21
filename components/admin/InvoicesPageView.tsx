@@ -2391,25 +2391,61 @@ export default function InvoicesPage() {
     setLineSendState("sending");
     setLineSendTitle("กำลังส่งใบแจ้งหนี้หลายรายการ");
     let sentCount = 0;
-    try {
-      for (let i = 0; i < selectedInvoices.length; i += 1) {
-        const invoice = selectedInvoices[i];
-        setLineSendMessage(
-          `กำลังส่ง ${i + 1}/${selectedInvoices.length}: ห้อง ${invoice.room_number} (${invoice.tenant_name})`
-        );
+    let skippedCount = 0;
+    let failedCount = 0;
+    const skippedRooms: string[] = [];
+    const failedRooms: string[] = [];
+
+    for (let i = 0; i < selectedInvoices.length; i += 1) {
+      const invoice = selectedInvoices[i];
+      setLineSendMessage(
+        `กำลังส่ง ${i + 1}/${selectedInvoices.length}: ห้อง ${invoice.room_number} (${invoice.tenant_name})`
+      );
+
+      if (!invoice.tenant_line_user_id) {
+        skippedCount += 1;
+        skippedRooms.push(invoice.room_number);
+        continue;
+      }
+
+      try {
         await sendInvoiceToLineRequest(invoice);
         sentCount += 1;
+      } catch (error: any) {
+        failedCount += 1;
+        failedRooms.push(`${invoice.room_number}: ${error?.message ?? "ส่งไม่สำเร็จ"}`);
       }
+    }
+
+    const summaryParts = [`ส่งสำเร็จ ${sentCount}/${selectedInvoices.length} รายการ`];
+    if (skippedCount > 0) {
+      summaryParts.push(`ข้าม ${skippedCount} รายการ (ยังไม่เชื่อม LINE)`);
+    }
+    if (failedCount > 0) {
+      summaryParts.push(`ล้มเหลว ${failedCount} รายการ`);
+    }
+
+    if (sentCount === 0 && (skippedCount > 0 || failedCount > 0)) {
+      setLineSendState("error");
+      setLineSendTitle("ส่งใบแจ้งหนี้ไม่สำเร็จ");
+      setLineSendMessage(
+        [
+          summaryParts.join(" · "),
+          skippedRooms.length > 0 ? `ข้าม: ${skippedRooms.join(", ")}` : "",
+          failedRooms.length > 0 ? failedRooms.slice(0, 3).join(" | ") : "",
+        ]
+          .filter(Boolean)
+          .join("\n")
+      );
+      setError(summaryParts.join(" · "));
+    } else if (failedCount > 0 || skippedCount > 0) {
+      setLineSendState("success");
+      setLineSendTitle("ส่งใบแจ้งหนี้เสร็จ (มีบางรายการข้าม/ล้มเหลว)");
+      setLineSendMessage(summaryParts.join(" · "));
+    } else {
       setLineSendState("success");
       setLineSendTitle("ส่งใบแจ้งหนี้ครบแล้ว");
-      setLineSendMessage(`ส่งสำเร็จ ${sentCount}/${selectedInvoices.length} รายการ`);
-    } catch (error: any) {
-      setLineSendState("error");
-      setLineSendTitle("ส่งใบแจ้งหนี้บางรายการไม่สำเร็จ");
-      setLineSendMessage(
-        `${error?.message ?? "เกิดข้อผิดพลาด"} (ส่งสำเร็จ ${sentCount}/${selectedInvoices.length} รายการ)`
-      );
-      setError(error?.message ?? "ส่ง LINE ไม่สำเร็จ");
+      setLineSendMessage(summaryParts.join(" · "));
     }
   };
 

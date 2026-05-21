@@ -108,13 +108,11 @@ export async function POST(req: Request) {
     }
 
     // Self-service takeover flow:
-    // If room is already occupied by another LINE user and the user is trying to register as a new tenant,
-    // we create a takeover request instead of hard-blocking forever.
+    // If room has an active tenant (any occupant) and user registers as new tenant, create takeover request.
     if (
       shouldMarkAsNewTenant &&
       tenant?.id &&
-      tenant.line_user_id &&
-      tenant.line_user_id !== userId
+      (!tenant.line_user_id || tenant.line_user_id !== userId)
     ) {
       const takeoverRequestId = crypto.randomUUID();
       const { error: takeoverError } = await supabase.from("room_takeover_requests").insert({
