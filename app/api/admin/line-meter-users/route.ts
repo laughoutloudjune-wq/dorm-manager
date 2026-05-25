@@ -3,12 +3,14 @@ import { requireAdminPermission } from "@/lib/admin-api-auth";
 
 export async function GET(req: Request) {
   try {
-    const auth = await requireAdminPermission(req, "settings.permissions");
+    const auth = await requireAdminPermission(req, "meter.edit");
     if ("error" in auth) return auth.error;
 
     const { data, error } = await auth.supabase
       .from("line_meter_users")
-      .select("id,line_user_id,display_name,picture_url,last_event_type,first_seen_at,last_seen_at")
+      .select(
+        "id,line_user_id,display_name,picture_url,staff_note,status,registered_via,source_channel,last_event_type,first_seen_at,last_seen_at,created_at"
+      )
       .order("last_seen_at", { ascending: false })
       .limit(1000);
 

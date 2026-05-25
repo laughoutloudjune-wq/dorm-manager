@@ -16,6 +16,7 @@ const adminNavKeys = [
   { href: "/tenants", labelKey: "nav_tenants", icon: Users },
   { href: "/move-outs", labelKey: "nav_move_outs", icon: LogOut },
   { href: "/meters", labelKey: "nav_meters", icon: SlidersHorizontal },
+  { href: "/meter-staff", labelKey: null, label: "พนักงานมิเตอร์ LINE", icon: Users },
   { href: "/invoices", labelKey: "nav_invoices", icon: FileText },
   { href: "/reports", labelKey: null, label: "รายงาน", icon: ReceiptText },
   { href: "/settings", labelKey: "nav_settings", icon: Settings },

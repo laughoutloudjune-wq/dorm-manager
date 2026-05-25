@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { isLineMeterStaffAllowed } from "@/lib/line-meter-auth";
 
 export type LineProfile = {
   userId: string;
@@ -7,11 +8,6 @@ export type LineProfile = {
 };
 
 const adminLineUserIds = (process.env.LINE_ADMIN_USER_IDS || "")
-  .split(",")
-  .map((id) => id.trim())
-  .filter(Boolean);
-
-const meterLineUserIds = (process.env.LINE_METER_USER_IDS || "")
   .split(",")
   .map((id) => id.trim())
   .filter(Boolean);
@@ -60,8 +56,8 @@ export async function requireLineMeterAccess(accessToken: string) {
       error: NextResponse.json({ error: "LINE profile verification failed" }, { status: 401 }),
     };
   }
-  const allowedSet = new Set([...adminLineUserIds, ...meterLineUserIds]);
-  if (!allowedSet.has(profile.userId)) {
+  const allowed = await isLineMeterStaffAllowed(profile.userId);
+  if (!allowed) {
     return {
       error: NextResponse.json(
         { error: "LINE account is not allowed for meter LIFF" },

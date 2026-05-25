@@ -292,11 +292,15 @@ CREATE TABLE IF NOT EXISTS public.line_meter_users (
   display_name TEXT,
   picture_url TEXT,
   source_channel TEXT,
+  registered_via TEXT,
+  staff_note TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
   last_event_type TEXT,
   first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT line_meter_users_status_check CHECK (status IN ('active', 'inactive'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_line_meter_users_last_seen_at
