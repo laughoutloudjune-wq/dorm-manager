@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
@@ -261,9 +261,9 @@ export default function PaymentTokenPage() {
 
         await liff.init({ liffId });
         if (!liff.isLoggedIn()) {
-          liff.login({
-            redirectUri: `${window.location.origin}${window.location.pathname}?${NGROK_SKIP_QUERY}`,
-          });
+          // Dynamic URLs cannot be registered as LINE login callbacks, causing a 400 Bad Request.
+          // Redirect to the LIFF app endpoint where they can view all invoices and login properly.
+          window.location.replace(`https://liff.line.me/${liffId}`);
           return;
         }
 
