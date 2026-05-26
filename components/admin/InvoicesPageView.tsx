@@ -22,6 +22,7 @@ import {
   Mail,
   MailOpen,
   UserPlus,
+  LogOut,
 } from "lucide-react";
 
 const statusVariant = {
@@ -69,6 +70,8 @@ type InvoiceRecord = {
   tenant_line_user_id: string | null;
   tenant_custom_payment_method: any;
   tenant_move_in_date: string | null;
+  tenant_move_out_date: string | null;
+  tenant_status: string;
   room_number: string;
   room_price_month: number;
   building_name: string;
@@ -654,6 +657,8 @@ function normalizeInvoice(row: any): InvoiceRecord {
     tenant_line_user_id: tenant?.line_user_id ?? null,
     tenant_custom_payment_method: tenant?.custom_payment_method ?? null,
     tenant_move_in_date: tenant?.move_in_date ?? null,
+    tenant_move_out_date: tenant?.move_out_date ?? null,
+    tenant_status: tenant?.status ?? "active",
     room_number: room?.room_number ?? "-",
     room_price_month: toNumber(room?.price_month),
     building_name: buildingItem?.name ?? "Unassigned",
@@ -913,7 +918,7 @@ export default function InvoicesPage() {
     const { data, error: fetchError } = await supabase
       .from("invoices")
       .select(
-        "id,tenant_id,room_id,status,total_amount,paid_amount,payment_history,issue_date,due_date,start_date,end_date,rent_amount,water_bill,electricity_bill,common_fee,discount_amount,discount_breakdown,late_fee_amount,late_fee_per_day,late_fee_start_date,carry_forward_amount,additional_fees_total,additional_fees_breakdown,notes,public_token,slip_url,opened_count,first_opened_at,last_opened_at,tenants(full_name,phone_number,line_user_id,custom_payment_method,move_in_date),rooms(room_number,price_month,buildings(name))"
+        "id,tenant_id,room_id,status,total_amount,paid_amount,payment_history,issue_date,due_date,start_date,end_date,rent_amount,water_bill,electricity_bill,common_fee,discount_amount,discount_breakdown,late_fee_amount,late_fee_per_day,late_fee_start_date,carry_forward_amount,additional_fees_total,additional_fees_breakdown,notes,public_token,slip_url,opened_count,first_opened_at,last_opened_at,tenants(full_name,phone_number,line_user_id,custom_payment_method,move_in_date,move_out_date,status),rooms(room_number,price_month,buildings(name))"
       )
       .eq("start_date", periodStart)
       .eq("end_date", periodEnd)
@@ -925,18 +930,68 @@ export default function InvoicesPage() {
     } else {
       const normalized = (data ?? []).map(normalizeInvoice);
 
+      // Fetch all invoices for active tenants to accurately determine "new tenant" status
+      const tenantIds = [...new Set(normalized.map((inv) => inv.tenant_id))];
+      const { data: allTenantInvoices } = tenantIds.length > 0 
+        ? await supabase
+          .from("invoices")
+          .select("tenant_id,start_date")
+          .in("tenant_id", tenantIds)
+          .neq("status", "cancelled")
+        : { data: [] };
+
+      const invoicesByTenant = new Map<string, string[]>();
+      for (const item of (allTenantInvoices ?? [])) {
+        if (!item?.tenant_id) continue;
+        const id = String(item.tenant_id);
+        if (!invoicesByTenant.has(id)) invoicesByTenant.set(id, []);
+        invoicesByTenant.get(id)!.push(String(item.start_date));
+      }
+
       const hydrated = await Promise.all(
         normalized.map(async (invoice) => {
-          if (invoice.slip_url) return invoice;
+          const tenantInvoices = invoicesByTenant.get(invoice.tenant_id) ?? [];
+          let earliestMonth: string | null = null;
+          if (tenantInvoices.length > 0) {
+            const earliestDate = [...tenantInvoices].sort((a, b) => new Date(a).getTime() - new Date(b).getTime())[0];
+            earliestMonth = earliestDate ? String(earliestDate).slice(0, 7) : null;
+          }
 
-          const { data: files, error: fileError } = await supabase.storage
-            .from("payment_slips")
+          const invoiceMonth = invoice.start_date ? String(invoice.start_date).slice(0, 7) : null;
+          const moveInDate = invoice.tenant_move_in_date ? new Date(invoice.tenant_move_in_date) : null;
+          const invoiceDate = invoice.start_date ? new Date(invoice.start_date) : null;
+          
+          let diffMonths = -1;
+          if (moveInDate && invoiceDate) {
+            diffMonths = (invoiceDate.getFullYear() - moveInDate.getFullYear()) * 12 + (invoiceDate.getMonth() - moveInDate.getMonth());
+          }
+
+          const isFirstInvoice = Boolean(
+            invoiceMonth && (
+              invoiceMonth === earliestMonth ||
+              diffMonths === 0 ||
+              diffMonths === 1
+            )
+          );
+
+          const isWaitingMoveOut = Boolean(invoice.tenant_move_out_date && invoice.tenant_status === "active");
+
+          // We pass a new flag down to be used for the indicator
+          const hydratedInvoice = {
+            ...invoice,
+            _is_first_regular_invoice: isFirstInvoice,
+            _is_waiting_for_move_out: isWaitingMoveOut
+          };
+
+          if (hydratedInvoice.slip_url) return hydratedInvoice;
+
+          const { data: files, error: fileError } = await supabase.storage            .from("payment_slips")
             .list(invoice.id, {
               limit: 1,
               sortBy: { column: "name", order: "desc" },
             });
 
-          if (fileError || !files || files.length === 0) return invoice;
+          if (fileError || !files || files.length === 0) return hydratedInvoice;
 
           const latest = files[0];
           const { data: publicData } = supabase.storage
@@ -944,7 +999,7 @@ export default function InvoicesPage() {
             .getPublicUrl(`${invoice.id}/${latest.name}`);
 
           return {
-            ...invoice,
+            ...hydratedInvoice,
             slip_url: publicData.publicUrl,
           };
         })
@@ -3691,12 +3746,20 @@ export default function InvoicesPage() {
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
                           <span>{invoice.tenant_name}</span>
-                          {invoice.tenant_move_in_date?.slice(0, 7) === selectedMonth && (
+                          {(invoice as any)._is_first_regular_invoice && (
                             <span
                               title={`ผู้เช่าเข้าใหม่ (${invoice.tenant_move_in_date})`}
                               className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-emerald-200 bg-emerald-50 text-emerald-700"
                             >
                               <UserPlus size={12} />
+                            </span>
+                          )}
+                          {(invoice as any)._is_waiting_for_move_out && (
+                            <span
+                              title={`เตรียมย้ายออก (${invoice.tenant_move_out_date})`}
+                              className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-orange-200 bg-orange-50 text-orange-700"
+                            >
+                              <LogOut size={12} />
                             </span>
                           )}
                         </div>

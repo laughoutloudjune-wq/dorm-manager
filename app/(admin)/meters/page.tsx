@@ -220,10 +220,12 @@ export default function MetersPage() {
       if (!currentMap.has(item.room_id)) currentMap.set(item.room_id, item);
     }
     const moveInMap = new Map<string, MoveInTenantRow>();
-    const billedTenantIds = new Set<string>();
+    const invoicesByTenant = new Map<string, string[]>();
     for (const item of ((tenantInvoices ?? []) as TenantInvoiceRow[])) {
       if (!item?.tenant_id) continue;
-      billedTenantIds.add(String(item.tenant_id));
+      const id = String(item.tenant_id);
+      if (!invoicesByTenant.has(id)) invoicesByTenant.set(id, []);
+      invoicesByTenant.get(id)!.push(item.start_date);
     }
 
     for (const item of ((activeTenants ?? []) as any[])) {
@@ -231,7 +233,11 @@ export default function MetersPage() {
       const tenantId = String(item.id ?? "");
       const moveInDate = String(item.move_in_date ?? "");
       if (!tenantId || !moveInDate) continue;
-      if (billedTenantIds.has(tenantId)) continue;
+      
+      const invoices = invoicesByTenant.get(tenantId) ?? [];
+      const hasRegularInvoice = invoices.length > 1 || invoices.some(date => date !== moveInDate);
+      if (hasRegularInvoice) continue;
+
       if (!moveInMap.has(item.room_id)) {
         moveInMap.set(item.room_id, {
           tenant_id: tenantId,

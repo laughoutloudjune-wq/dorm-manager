@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Card, CardContent } from "@/components/ui/Card";
 import { createClient } from "@/lib/supabase-client";
 import { usePermissions } from "@/lib/use-permissions";
-import { Building2, ChevronRight, LogOut, UserCog, RefreshCw } from "lucide-react";
+import { Building2, ChevronRight, RefreshCw, CalendarDays, Smartphone } from "lucide-react";
 
 type RequestRow = {
   id: string;
@@ -63,6 +63,7 @@ const requestStatusThai = (s: string) => {
   if (s === "rejected") return "ไม่อนุมัติ";
   if (s === "completed") return "เสร็จสิ้น";
   if (s === "cancelled") return "ยกเลิก";
+  if (s === "manual") return "กำหนดแล้ว";
   return s;
 };
 
@@ -80,7 +81,6 @@ export default function MoveOutsPage() {
   const { can, loading: permLoading } = usePermissions();
   const canView = can("tenant.view");
 
-  const [tab, setTab] = useState<"tenant" | "admin">("tenant");
   const [loading, setLoading] = useState(true);
   const [requests, setRequests] = useState<RequestRow[]>([]);
   const [tenantsWithDate, setTenantsWithDate] = useState<TenantWithMoveOut[]>([]);
@@ -123,54 +123,86 @@ export default function MoveOutsPage() {
     if (!permLoading && canView) void load();
   }, [canView, permLoading, load]);
 
-  const requestedOnly = useMemo(
-    () => requests.filter((r) => r.status === "requested"),
-    [requests]
-  );
+  const unifiedList = useMemo(() => {
+    const map = new Map<string, any>();
+
+    // Process requests
+    requests.forEach((req) => {
+      if (req.status === "completed") return; // Filter out already moved out
+
+      const { room, building } = roomFromRequest(req);
+      const tenant_name = getTenantFromJoin(req)?.full_name ?? "—";
+      const move_out_date = req.approved_move_out_date ?? req.requested_move_out_date;
+      
+      map.set(`req-${req.id}`, {
+        key: `req-${req.id}`,
+        tenant_id: req.tenant_id,
+        tenant_name,
+        room,
+        building,
+        move_out_date,
+        sort_date: new Date(`${move_out_date}T00:00:00`).getTime(),
+        status: req.status,
+        status_label: requestStatusThai(req.status),
+        source: "tenant",
+        notice_date: req.notice_date,
+      });
+    });
+
+    // Process tenantsWithDate
+    tenantsWithDate.forEach((t) => {
+      // Find if this tenant already has an active request in the list
+      const existingReq = Array.from(map.values()).find(
+        (u) => u.tenant_id === t.id && (u.status === "approved" || u.status === "requested")
+      );
+
+      if (existingReq) {
+        // Update the move_out_date to be the actual confirmed one if different
+        existingReq.move_out_date = t.move_out_date;
+        existingReq.sort_date = new Date(`${t.move_out_date}T00:00:00`).getTime();
+      } else {
+        // No active request, meaning the admin set the date manually
+        const { room, building } = roomFromTenant(t);
+        map.set(`ten-${t.id}`, {
+          key: `ten-${t.id}`,
+          tenant_id: t.id,
+          tenant_name: t.full_name,
+          room,
+          building,
+          move_out_date: t.move_out_date,
+          sort_date: new Date(`${t.move_out_date}T00:00:00`).getTime(),
+          status: "manual",
+          status_label: requestStatusThai("manual"),
+          source: "admin",
+          notice_date: null,
+        });
+      }
+    });
+
+    // Sort: Pending requests first, then by date descending/ascending
+    return Array.from(map.values()).sort((a, b) => {
+      if (a.status === "requested" && b.status !== "requested") return -1;
+      if (b.status === "requested" && a.status !== "requested") return 1;
+      return a.sort_date - b.sort_date;
+    });
+  }, [requests, tenantsWithDate]);
+
+  const requestedCount = unifiedList.filter((r) => r.status === "requested").length;
+
+  const getBadgeVariant = (status: string) => {
+    if (status === "requested") return "warning";
+    if (status === "approved" || status === "manual") return "success";
+    if (status === "rejected" || status === "cancelled") return "danger";
+    return "default";
+  };
 
   return (
     <div className="space-y-6">
-      <p className="text-sm text-slate-500">
-        รวมคำขอย้ายออกจากผู้เช่า และรายการที่ตั้ง <span className="font-medium">วันย้ายออก</span> บนหน้าผู้เช่า
-      </p>
-
-      {!permLoading && !canView && (
-        <p className="text-sm text-amber-800">ไม่มีสิทธิ์ดูข้อมูลนี้</p>
-      )}
-
-      {canView && (
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="inline-flex rounded-xl border border-slate-200/90 bg-slate-50/80 p-1">
-            <button
-              type="button"
-              onClick={() => setTab("tenant")}
-              className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition ${
-                tab === "tenant"
-                  ? "bg-white text-slate-900 shadow-sm"
-                  : "text-slate-600 hover:text-slate-900"
-              }`}
-            >
-              <LogOut className="h-4 w-4 opacity-80" />
-              คำขอจากผู้เช่า
-              {requestedOnly.length > 0 && (
-                <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-xs font-semibold text-amber-900">
-                  {requestedOnly.length}
-                </span>
-              )}
-            </button>
-            <button
-              type="button"
-              onClick={() => setTab("admin")}
-              className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition ${
-                tab === "admin"
-                  ? "bg-white text-slate-900 shadow-sm"
-                  : "text-slate-600 hover:text-slate-900"
-              }`}
-            >
-              <UserCog className="h-4 w-4 opacity-80" />
-              ตั้งวันย้ายออก (แอดมิน)
-            </button>
-          </div>
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-slate-500">
+          รวมรายการผู้เช่าที่เตรียมย้ายออกทั้งหมด (เรียงตามวันที่)
+        </p>
+        {canView && (
           <button
             type="button"
             onClick={() => void load()}
@@ -180,7 +212,11 @@ export default function MoveOutsPage() {
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
             รีเฟรช
           </button>
-        </div>
+        )}
+      </div>
+
+      {!permLoading && !canView && (
+        <p className="text-sm text-amber-800">ไม่มีสิทธิ์ดูข้อมูลนี้</p>
       )}
 
       {error && <p className="text-sm text-red-600">{error}</p>}
@@ -193,141 +229,87 @@ export default function MoveOutsPage() {
       )}
 
       {canView && !loading && (
-        <>
-          {tab === "tenant" && (
-            <Card>
-              <CardContent className="!p-0">
-                <div className="border-b border-slate-100 px-4 py-3 text-sm text-slate-600">
-                  ทุกสถานะ (เรียงตามเวลาล่าสุด) — รอตรวจสอบ:{" "}
-                  <span className="font-semibold text-amber-900">{requestedOnly.length} รายการ</span>
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full min-w-[720px] text-left text-sm">
-                    <thead className="bg-slate-50/90 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                      <tr>
-                        <th className="px-4 py-3">สถานะ</th>
-                        <th className="px-4 py-3">ผู้เช่า</th>
-                        <th className="px-4 py-3">ห้อง / อาคาร</th>
-                        <th className="px-4 py-3">แจ้ง / วันขอออก</th>
-                        <th className="px-4 py-3 w-12" />
+        <Card>
+          <CardContent className="!p-0">
+            <div className="border-b border-slate-100 px-4 py-3 text-sm text-slate-600 flex gap-4">
+              <span>ทั้งหมด: <span className="font-medium text-slate-800">{unifiedList.length}</span> รายการ</span>
+              <span>รอตรวจสอบ: <span className="font-semibold text-amber-600">{requestedCount}</span> รายการ</span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[800px] text-left text-sm">
+                <thead className="bg-slate-50/90 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  <tr>
+                    <th className="px-4 py-3">สถานะ</th>
+                    <th className="px-4 py-3">ผู้เช่า</th>
+                    <th className="px-4 py-3">ห้อง / อาคาร</th>
+                    <th className="px-4 py-3">วันย้ายออก</th>
+                    <th className="px-4 py-3">ที่มา</th>
+                    <th className="px-4 py-3 w-12" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {unifiedList.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="px-4 py-8 text-center text-slate-500">
+                        ไม่มีรายการย้ายออกในระบบ
+                      </td>
+                    </tr>
+                  ) : (
+                    unifiedList.map((row) => (
+                      <tr
+                        key={row.key}
+                        className="border-t border-slate-100/90 transition-colors hover:bg-slate-50/60"
+                      >
+                        <td className="px-4 py-3">
+                          <Badge variant={getBadgeVariant(row.status)}>
+                            {row.status_label}
+                          </Badge>
+                        </td>
+                        <td className="px-4 py-3 font-medium text-slate-900">{row.tenant_name}</td>
+                        <td className="px-4 py-3 text-slate-700">
+                          <span className="inline-flex items-center gap-1.5">
+                            <Building2 className="h-3.5 w-3.5 text-slate-400" />
+                            {row.room} · {row.building}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-slate-600">
+                          <div className="flex flex-col gap-0.5">
+                            <span className={row.status === "requested" ? "font-medium text-amber-700" : "font-medium text-slate-800"}>
+                              {formatThai(row.move_out_date)}
+                            </span>
+                            {row.notice_date && (
+                              <span className="text-[11px] text-slate-400">แจ้งเมื่อ: {formatThai(row.notice_date)}</span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3">
+                          {row.source === "tenant" ? (
+                            <span className="inline-flex items-center gap-1 text-xs text-blue-600 bg-blue-50 px-2 py-1 rounded-md">
+                              <Smartphone className="h-3 w-3" /> แอปผู้เช่า
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 text-xs text-purple-600 bg-purple-50 px-2 py-1 rounded-md">
+                              <CalendarDays className="h-3 w-3" /> แอดมินตั้ง
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3">
+                          <Link
+                            href={`/tenants?focusTenant=${row.tenant_id}&tab=move_out`}
+                            className="inline-flex items-center gap-0.5 text-sm font-medium text-blue-600 hover:underline"
+                          >
+                            จัดการ
+                            <ChevronRight className="h-4 w-4" />
+                          </Link>
+                        </td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {requests.length === 0 ? (
-                        <tr>
-                          <td colSpan={5} className="px-4 py-8 text-center text-slate-500">
-                            ยังไม่มีคำขอในระบบ
-                          </td>
-                        </tr>
-                      ) : (
-                        requests.map((row) => {
-                          const { room, building } = roomFromRequest(row);
-                          const tname = getTenantFromJoin(row)?.full_name ?? "—";
-                          return (
-                            <tr
-                              key={row.id}
-                              className="border-t border-slate-100/90 transition-colors hover:bg-slate-50/60"
-                            >
-                              <td className="px-4 py-3">
-                                <Badge
-                                  variant={row.status === "requested" ? "warning" : "default"}
-                                >
-                                  {requestStatusThai(row.status)}
-                                </Badge>
-                              </td>
-                              <td className="px-4 py-3 font-medium text-slate-900">{tname}</td>
-                              <td className="px-4 py-3 text-slate-700">
-                                <span className="inline-flex items-center gap-1.5">
-                                  <Building2 className="h-3.5 w-3.5 text-slate-400" />
-                                  {room} · {building}
-                                </span>
-                              </td>
-                              <td className="px-4 py-3 text-slate-600">
-                                {formatThai(row.notice_date)} → {formatThai(row.requested_move_out_date)}
-                              </td>
-                              <td className="px-4 py-3">
-                                <Link
-                                  href={`/tenants?focusTenant=${row.tenant_id}&tab=move_out`}
-                                  className="inline-flex items-center gap-0.5 text-sm font-medium text-blue-600 hover:underline"
-                                >
-                                  จัดการ
-                                  <ChevronRight className="h-4 w-4" />
-                                </Link>
-                              </td>
-                            </tr>
-                          );
-                        })
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </CardContent>
-            </Card>
-          )}
-
-          {tab === "admin" && (
-            <Card>
-              <CardContent className="!p-0">
-                <div className="border-b border-slate-100 px-4 py-3 text-sm text-slate-600">
-                  ผู้เช่า <span className="font-medium text-slate-800">active</span> ที่กำหนด{" "}
-                  <span className="font-medium">move_out_date</span> แล้ว (ตั้งบนหน้าผู้เช่า) — {tenantsWithDate.length}{" "}
-                  ราย
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full min-w-[640px] text-left text-sm">
-                    <thead className="bg-slate-50/90 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                      <tr>
-                        <th className="px-4 py-3">ผู้เช่า</th>
-                        <th className="px-4 py-3">ห้อง / อาคาร</th>
-                        <th className="px-4 py-3">วันย้ายออก (ปฏิทิน)</th>
-                        <th className="px-4 py-3 w-12" />
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {tenantsWithDate.length === 0 ? (
-                        <tr>
-                          <td colSpan={4} className="px-4 py-8 text-center text-slate-500">
-                            ยังไม่มีผู้เช่าที่กำหนดวันย้ายออก
-                          </td>
-                        </tr>
-                      ) : (
-                        tenantsWithDate.map((row) => {
-                          const { room, building } = roomFromTenant(row);
-                          return (
-                            <tr
-                              key={row.id}
-                              className="border-t border-slate-100/90 transition-colors hover:bg-slate-50/60"
-                            >
-                              <td className="px-4 py-3 font-medium text-slate-900">{row.full_name}</td>
-                              <td className="px-4 py-3 text-slate-700">
-                                <span className="inline-flex items-center gap-1.5">
-                                  <Building2 className="h-3.5 w-3.5 text-slate-400" />
-                                  {room} · {building}
-                                </span>
-                              </td>
-                              <td className="px-4 py-3 text-slate-800 tabular-nums">
-                                {formatThai(row.move_out_date)}
-                              </td>
-                              <td className="px-4 py-3">
-                                <Link
-                                  href={`/tenants?focusTenant=${row.id}&tab=move_out`}
-                                  className="inline-flex items-center gap-0.5 text-sm font-medium text-blue-600 hover:underline"
-                                >
-                                  จัดการ
-                                  <ChevronRight className="h-4 w-4" />
-                                </Link>
-                              </td>
-                            </tr>
-                          );
-                        })
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </CardContent>
-            </Card>
-          )}
-        </>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
       )}
     </div>
   );
