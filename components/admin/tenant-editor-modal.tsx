@@ -593,6 +593,14 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
     }
   };
 
+  useEffect(() => {
+    if (isOpen && tenantId) {
+      void openModalById(tenantId, initialTab);
+    } else if (!isOpen) {
+      setActiveTenant(null);
+    }
+  }, [isOpen, tenantId]);
+
   const openModal = async (
     tenant?: TenantRow,
     initialTab: "info" | "move_in" | "move_out" | "payments" = "info"
