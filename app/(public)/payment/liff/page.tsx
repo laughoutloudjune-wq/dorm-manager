@@ -160,11 +160,19 @@ export default function PaymentLiffPage() {
   useEffect(() => {
     const boot = async () => {
       try {
+        const nextUrl = new URL(window.location.href);
+        const invoiceToken = nextUrl.searchParams.get("invoiceToken");
+        if (invoiceToken) {
+          nextUrl.pathname = `/payment/${invoiceToken}`;
+          nextUrl.searchParams.delete("invoiceToken");
+          window.location.replace(nextUrl.toString());
+          return;
+        }
+
         if (
           window.location.hostname.includes("ngrok") &&
           !window.location.search.includes("ngrok-skip-browser-warning")
         ) {
-          const nextUrl = new URL(window.location.href);
           nextUrl.searchParams.set("ngrok-skip-browser-warning", "true");
           window.location.replace(nextUrl.toString());
           return;

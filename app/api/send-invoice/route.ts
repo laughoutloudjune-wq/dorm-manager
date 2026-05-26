@@ -102,7 +102,10 @@ export async function POST(req: Request) {
       );
     }
 
-    const payUrl = `${baseUrl}/payment/${resolved.publicToken}`;
+    const liffId = process.env.NEXT_PUBLIC_PAYMENT_LIFF_ID;
+    const payUrl = liffId 
+      ? `https://liff.line.me/${liffId}?invoiceToken=${resolved.publicToken}`
+      : `${baseUrl}/payment/${resolved.publicToken}`;
     const dueDateText = resolved.dueDate
       ? new Date(resolved.dueDate).toLocaleDateString("th-TH")
       : "-";
