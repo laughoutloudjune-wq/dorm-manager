@@ -1419,7 +1419,7 @@ export default function TenantsPage() {
         onClose={() => setIsModalOpen(false)}
         tenantId={activeTenant?.id ?? null}
         initialTab={activeTab}
-        onRefresh={load}
+        onRefresh={loadTenants}
       />
     </div>
   );

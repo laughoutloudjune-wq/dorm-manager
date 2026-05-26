@@ -1308,8 +1308,7 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
 
   return (
     <>
-      <Modal isOpen={isOpen} onClose={onClose}
-         onClose={onClose} title="รายละเอียดผู้เช่า" size="xl">
+      <Modal isOpen={isOpen} onClose={onClose} title="รายละเอียดผู้เช่า" size="xl">
         {!canEditTenant && (
           <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
             บัญชีนี้ไม่มีสิทธิ์แก้ไขข้อมูลผู้เช่า (ดูได้อย่างเดียว)
