@@ -321,7 +321,7 @@ export async function POST(req: Request) {
       if (requestStatus === "approved" && approvedMoveOutDate) {
         const { error: updateTenantError } = await auth.supabase
           .from("tenants")
-          .update({ move_out_date: approvedMoveOutDate, status: "inactive" })
+          .update({ move_out_date: approvedMoveOutDate })
           .eq("id", String(requestRow.tenant_id));
 
         if (updateTenantError) {
@@ -341,7 +341,12 @@ export async function POST(req: Request) {
       const tenantId = String(body?.tenantId ?? "");
       const roomId = String(body?.roomId ?? "");
       const payload = body?.payload ?? {};
-      const { error } = await auth.supabase.from("tenants").update(payload).eq("id", tenantId);
+      const updatePayload = {
+        ...payload,
+        status: "inactive",
+        room_id: null,
+      };
+      const { error } = await auth.supabase.from("tenants").update(updatePayload).eq("id", tenantId);
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
       const moveOutDate =
@@ -369,8 +374,12 @@ export async function POST(req: Request) {
         created_at: new Date().toISOString(),
       });
 
-      const { error: deleteError } = await auth.supabase.from("tenants").delete().eq("id", tenantId);
-      if (deleteError) return NextResponse.json({ error: deleteError.message }, { status: 500 });
+      const { error: requestsError } = await auth.supabase
+        .from("move_out_requests")
+        .update({ status: "completed", updated_at: new Date().toISOString(), actual_move_out_date: moveOutDate })
+        .eq("tenant_id", tenantId)
+        .in("status", ["requested", "approved"]);
+      if (requestsError) return NextResponse.json({ error: requestsError.message }, { status: 500 });
       return NextResponse.json({ success: true });
     }
 

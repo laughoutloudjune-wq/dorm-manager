@@ -189,25 +189,37 @@ export async function syncInvoiceLedger(
       continue;
     }
 
+    const currentLateFee = toNumber(invoice.late_fee_amount);
+    const newLateFee = calculateLateFeeAmount(invoice, todayText);
+    const lateFeeDiff = newLateFee - currentLateFee;
+    const nextTotalAmount = toNumber(invoice.total_amount) + lateFeeDiff;
+
     const nextStatus = resolveInvoiceStatus(
       {
-        total_amount: toNumber(invoice.total_amount),
+        total_amount: nextTotalAmount,
         paid_amount: invoice.paid_amount,
         due_date: invoice.due_date ?? null,
       },
       todayText
     );
 
-    if (nextStatus === String(invoice.status ?? "")) {
-      continue;
+    const updatePayload: any = {};
+    if (nextStatus !== String(invoice.status ?? "")) {
+      updatePayload.status = nextStatus;
+    }
+    if (lateFeeDiff !== 0) {
+      updatePayload.late_fee_amount = newLateFee;
+      updatePayload.total_amount = nextTotalAmount;
     }
 
-    const { error: updateError } = await supabase
-      .from("invoices")
-      .update({ status: nextStatus })
-      .eq("id", invoice.id);
-    if (updateError) throw new Error(updateError.message);
-    updatedIds.push(invoice.id);
+    if (Object.keys(updatePayload).length > 0) {
+      const { error: updateError } = await supabase
+        .from("invoices")
+        .update(updatePayload)
+        .eq("id", invoice.id);
+      if (updateError) throw new Error(updateError.message);
+      updatedIds.push(invoice.id);
+    }
   }
 
   return { updatedIds };

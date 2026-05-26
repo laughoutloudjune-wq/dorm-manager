@@ -7,6 +7,7 @@ import { Card, CardContent } from "@/components/ui/Card";
 import { createClient } from "@/lib/supabase-client";
 import { usePermissions } from "@/lib/use-permissions";
 import { Building2, ChevronRight, RefreshCw, CalendarDays, Smartphone } from "lucide-react";
+import { TenantEditorModal } from "@/components/admin/tenant-editor-modal";
 
 type RequestRow = {
   id: string;
@@ -85,6 +86,9 @@ export default function MoveOutsPage() {
   const [requests, setRequests] = useState<RequestRow[]>([]);
   const [tenantsWithDate, setTenantsWithDate] = useState<TenantWithMoveOut[]>([]);
   const [error, setError] = useState<string | null>(null);
+
+  const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null);
+  const [isModalOpen, setIsModalOpen] = useState(false);
 
   const load = useCallback(async () => {
     if (!canView) return;
@@ -294,13 +298,16 @@ export default function MoveOutsPage() {
                           )}
                         </td>
                         <td className="px-4 py-3">
-                          <Link
-                            href={`/tenants?focusTenant=${row.tenant_id}&tab=move_out`}
+                          <button
+                            onClick={() => {
+                              setSelectedTenantId(row.tenant_id);
+                              setIsModalOpen(true);
+                            }}
                             className="inline-flex items-center gap-0.5 text-sm font-medium text-blue-600 hover:underline"
                           >
                             จัดการ
                             <ChevronRight className="h-4 w-4" />
-                          </Link>
+                          </button>
                         </td>
                       </tr>
                     ))
@@ -310,6 +317,16 @@ export default function MoveOutsPage() {
             </div>
           </CardContent>
         </Card>
+      )}
+
+      {isModalOpen && (
+        <TenantEditorModal
+          isOpen={isModalOpen}
+          onClose={() => setIsModalOpen(false)}
+          tenantId={selectedTenantId}
+          initialTab="move_out"
+          onRefresh={load}
+        />
       )}
     </div>
   );
