@@ -9,7 +9,7 @@ export async function GET(req: Request) {
     const { data, error } = await auth.supabase
       .from("line_meter_users")
       .select(
-        "id,line_user_id,display_name,picture_url,staff_note,status,registered_via,source_channel,last_event_type,first_seen_at,last_seen_at,created_at"
+      "id,line_user_id,display_name,picture_url,staff_note,status,registered_via,source_channel,last_event_type,first_seen_at,last_seen_at,created_at,notify_payment,notify_move_out"
       )
       .order("last_seen_at", { ascending: false })
       .limit(1000);

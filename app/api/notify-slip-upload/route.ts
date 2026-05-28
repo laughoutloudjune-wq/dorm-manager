@@ -1,4 +1,4 @@
-﻿import { NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { Client } from "@line/bot-sdk";
 import { getPublicSiteOrigin } from "@/lib/public-site-url";
 import { createAdminClient } from "@/lib/supabase-admin";
@@ -84,6 +84,17 @@ export async function POST(req: Request) {
 
     const invoiceTenant = Array.isArray((invoice as any).tenants) ? (invoice as any).tenants[0] : (invoice as any).tenants;
     const room = Array.isArray((invoice as any).rooms) ? (invoice as any).rooms[0] : (invoice as any).rooms;
+
+    // Resolve recipients: prefer DB staff flagged notify_payment=true; fall back to env var list.
+    const { data: dbRecipients } = await supabase
+      .from("line_meter_users")
+      .select("line_user_id")
+      .eq("notify_payment", true)
+      .eq("status", "active");
+    const recipientIds =
+      dbRecipients && dbRecipients.length > 0
+        ? dbRecipients.map((r: any) => String(r.line_user_id)).filter(Boolean)
+        : adminLineUserIds;
 
     const baseUrl = (getPublicSiteOrigin() || "").replace(/\/$/, "");
     const publicToken = (invoice as any).public_token as string | null;
@@ -179,7 +190,7 @@ export async function POST(req: Request) {
       },
     };
 
-    await Promise.all(adminLineUserIds.map((userId) => lineClient.pushMessage(userId, message as any)));
+    await Promise.all(recipientIds.map((userId) => lineClient.pushMessage(userId, message as any)));
 
     return NextResponse.json({ success: true });
   } catch (error: any) {

@@ -18,6 +18,8 @@ type MeterStaffRow = {
   source_channel: string | null;
   last_seen_at: string | null;
   first_seen_at: string | null;
+  notify_payment: boolean;
+  notify_move_out: boolean;
 };
 
 const statusLabel = (status: string) => (status === "active" ? "ใช้งานได้" : "ปิดการใช้งาน");
@@ -41,6 +43,8 @@ export default function MeterStaffPage() {
     display_name: "",
     staff_note: "",
     status: "active",
+    notify_payment: false,
+    notify_move_out: false,
   });
 
   const registerLiffUrl =
@@ -100,7 +104,7 @@ export default function MeterStaffPage() {
 
   const openCreate = () => {
     setEditing(null);
-    setForm({ line_user_id: "", display_name: "", staff_note: "", status: "active" });
+    setForm({ line_user_id: "", display_name: "", staff_note: "", status: "active", notify_payment: false, notify_move_out: false });
     setEditOpen(true);
   };
 
@@ -111,6 +115,8 @@ export default function MeterStaffPage() {
       display_name: row.display_name ?? "",
       staff_note: row.staff_note ?? "",
       status: row.status,
+      notify_payment: row.notify_payment ?? false,
+      notify_move_out: row.notify_move_out ?? false,
     });
     setEditOpen(true);
   };
@@ -123,6 +129,8 @@ export default function MeterStaffPage() {
         displayName: form.display_name.trim() || null,
         staffNote: form.staff_note.trim() || null,
         status: form.status,
+        notifyPayment: form.notify_payment,
+        notifyMoveOut: form.notify_move_out,
       });
       setEditOpen(false);
       setMessage(editing ? "บันทึกการแก้ไขแล้ว" : "เพิ่มพนักงานแล้ว");
@@ -232,7 +240,8 @@ export default function MeterStaffPage() {
                 <th className="px-4 py-3">ชื่อ</th>
                 <th className="px-4 py-3">LINE User ID</th>
                 <th className="px-4 py-3">หมายเหตุ</th>
-                <th className="px-4 py-3">ลงทะเบียนผ่าน</th>
+                <th className="px-4 py-3 text-center">แจ้งชำระเงิน</th>
+                <th className="px-4 py-3 text-center">แจ้งย้ายออก</th>
                 <th className="px-4 py-3">เห็นล่าสุด</th>
                 <th className="px-4 py-3 w-40">จัดการ</th>
               </tr>
@@ -269,7 +278,16 @@ export default function MeterStaffPage() {
                       </div>
                     </td>
                     <td className="px-4 py-3 text-slate-600">{row.staff_note ?? "—"}</td>
-                    <td className="px-4 py-3 text-slate-600">{row.registered_via ?? row.source_channel ?? "—"}</td>
+                    <td className="px-4 py-3 text-center">
+                      {row.notify_payment
+                        ? <span className="inline-block rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-700">✓</span>
+                        : <span className="text-slate-300">—</span>}
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      {row.notify_move_out
+                        ? <span className="inline-block rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-700">✓</span>
+                        : <span className="text-slate-300">—</span>}
+                    </td>
                     <td className="px-4 py-3 text-slate-600">{formatThaiDateTime(row.last_seen_at)}</td>
                     <td className="px-4 py-3">
                       <div className="flex flex-wrap gap-1">
@@ -350,6 +368,27 @@ export default function MeterStaffPage() {
               <option value="inactive">ปิดการใช้งาน</option>
             </select>
           </label>
+          <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-3 space-y-2">
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">การแจ้งเตือน LINE</p>
+            <label className="flex items-center gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={form.notify_payment}
+                onChange={(e) => setForm((prev) => ({ ...prev, notify_payment: e.target.checked }))}
+                className="h-4 w-4 rounded border-slate-300 accent-blue-600"
+              />
+              <span className="text-sm text-slate-700">รับแจ้งเมื่อผู้เช่าอัปโหลดสลิปชำระเงิน</span>
+            </label>
+            <label className="flex items-center gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={form.notify_move_out}
+                onChange={(e) => setForm((prev) => ({ ...prev, notify_move_out: e.target.checked }))}
+                className="h-4 w-4 rounded border-slate-300 accent-blue-600"
+              />
+              <span className="text-sm text-slate-700">รับแจ้งเมื่อผู้เช่าส่งคำขอย้ายออก</span>
+            </label>
+          </div>
           <button
             type="button"
             onClick={() => void saveForm()}

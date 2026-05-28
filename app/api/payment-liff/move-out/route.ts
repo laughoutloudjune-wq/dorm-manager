@@ -1,6 +1,25 @@
 import { NextResponse } from "next/server";
+import { Client } from "@line/bot-sdk";
 import { bangkokYmd } from "@/lib/move-out-notice";
 import { createAdminClient } from "@/lib/supabase-admin";
+import { getPublicSiteOrigin } from "@/lib/public-site-url";
+
+const channelAccessToken =
+  process.env.LINE_SLIP_NOTIFY_CHANNEL_ACCESS_TOKEN || process.env.LINE_CHANNEL_ACCESS_TOKEN || "";
+// Use LINE_MOVE_OUT_NOTIFY_USER_IDS for move-out alerts so you can assign
+// different staff than the payment-slip recipients. Falls back to the shared
+// slip-notify / admin lists when the dedicated var is not set.
+const moveOutNotifyUserIds = (
+  process.env.LINE_MOVE_OUT_NOTIFY_USER_IDS ||
+  process.env.LINE_SLIP_NOTIFY_ADMIN_USER_IDS ||
+  process.env.LINE_ADMIN_USER_IDS ||
+  ""
+)
+  .split(",")
+  .map((id) => id.trim())
+  .filter(Boolean);
+
+const lineClient = channelAccessToken ? new Client({ channelAccessToken }) : null;
 
 const ACTIVE_MOVE_OUT_STATUSES = ["requested", "approved"];
 
@@ -155,6 +174,107 @@ export async function POST(req: Request) {
       if (requestError) {
         return NextResponse.json({ error: requestError.message }, { status: 500 });
       }
+
+      // --- Send LINE notification to admins ---
+      if (lineClient) {
+        try {
+          // Resolve recipients: prefer DB staff flagged notify_move_out=true; fall back to env var list.
+          const { data: dbRecipients } = await supabase
+            .from("line_meter_users")
+            .select("line_user_id")
+            .eq("notify_move_out", true)
+            .eq("status", "active");
+          const recipientIds =
+            dbRecipients && dbRecipients.length > 0
+              ? dbRecipients.map((r: any) => String(r.line_user_id)).filter(Boolean)
+              : moveOutNotifyUserIds;
+
+          if (recipientIds.length === 0) throw new Error("no recipients");
+          const roomRel = Array.isArray((tenant as any).rooms) ? (tenant as any).rooms[0] : (tenant as any).rooms;
+          const roomNumber = roomRel?.room_number ?? "-";
+          const tenantName = (tenant as any).full_name ?? "-";
+          const moveOutDateLabel = requestedMoveOutDate
+            ? new Date(requestedMoveOutDate).toLocaleDateString("th-TH", {
+                day: "numeric",
+                month: "long",
+                year: "numeric",
+              })
+            : "-";
+          const noteText = requestNote ? `หมายเหตุ: ${requestNote}` : null;
+
+          const baseUrl = (getPublicSiteOrigin() || "").replace(/\/$/, "");
+          const adminMoveOutUrl = baseUrl ? `${baseUrl}/admin/move-out` : null;
+
+          const footerButtons: any[] = [];
+          if (adminMoveOutUrl) {
+            footerButtons.push({
+              type: "button",
+              style: "primary",
+              height: "sm",
+              color: "#2563EB",
+              action: {
+                type: "uri",
+                label: "ดูคำขอย้ายออก",
+                uri: adminMoveOutUrl,
+              },
+            });
+          }
+
+          const bodyContents: any[] = [
+            {
+              type: "text",
+              text: "มีคำขอแจ้งย้ายออก",
+              weight: "bold",
+              size: "md",
+              wrap: true,
+              color: "#111827",
+            },
+            {
+              type: "box",
+              layout: "vertical",
+              spacing: "sm",
+              contents: [
+                { type: "text", text: `ห้อง: ${roomNumber}`, size: "sm", color: "#374151" },
+                { type: "text", text: `ผู้เช่า: ${tenantName}`, size: "sm", color: "#374151", wrap: true },
+                { type: "text", text: `วันที่ต้องการย้ายออก: ${moveOutDateLabel}`, size: "sm", color: "#374151", wrap: true },
+                ...(noteText
+                  ? [{ type: "text", text: noteText, size: "sm", color: "#6B7280", wrap: true }]
+                  : []),
+              ],
+            },
+          ];
+
+          const message = {
+            type: "flex" as const,
+            altText: `มีคำขอแจ้งย้ายออก ห้อง ${roomNumber} (${tenantName})`,
+            contents: {
+              type: "bubble",
+              body: {
+                type: "box",
+                layout: "vertical",
+                spacing: "md",
+                contents: bodyContents,
+              },
+              ...(footerButtons.length > 0
+                ? {
+                    footer: {
+                      type: "box",
+                      layout: "vertical",
+                      spacing: "sm",
+                      contents: footerButtons,
+                      flex: 0,
+                    },
+                  }
+                : {}),
+            },
+          };
+
+          await Promise.all(recipientIds.map((uid) => lineClient!.pushMessage(uid, message as any)));
+        } catch {
+          // Notification failure must not block the response
+        }
+      }
+      // ----------------------------------------
 
       return NextResponse.json({ success: true, move_out_request: latestRequest ?? null });
     }

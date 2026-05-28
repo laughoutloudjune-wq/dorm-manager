@@ -15,6 +15,8 @@ export async function POST(req: Request) {
       const staffNote = body?.staffNote != null ? String(body.staffNote).trim() : null;
       const status = String(body?.status ?? "active");
       const id = body?.id ? String(body.id) : null;
+      const notifyPayment = Boolean(body?.notifyPayment ?? false);
+      const notifyMoveOut = Boolean(body?.notifyMoveOut ?? false);
 
       if (!lineUserId && !id) {
         return NextResponse.json({ error: "Missing line user id." }, { status: 400 });
@@ -28,6 +30,8 @@ export async function POST(req: Request) {
         display_name: displayName,
         staff_note: staffNote || null,
         status,
+        notify_payment: notifyPayment,
+        notify_move_out: notifyMoveOut,
         registered_via: "admin",
         source_channel: "admin_console",
         updated_at: nowIso,
