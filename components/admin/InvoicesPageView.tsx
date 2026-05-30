@@ -246,6 +246,7 @@ export default function InvoicesPage() {
   } = state;
 
   return (
+    <InvoiceProvider state={state}>
     <div className="space-y-6">
       <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
         {pendingMoveOutCount > 0 && (
@@ -649,6 +650,6 @@ export default function InvoicesPage() {
 
         <InvoicePreviewModal />
     </div>
+    </InvoiceProvider>
   );
 }
-
