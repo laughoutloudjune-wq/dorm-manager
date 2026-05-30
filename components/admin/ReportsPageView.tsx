@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Download, FileSpreadsheet, Loader2 } from "lucide-react";
+import { Download, FileSpreadsheet, Loader2, Search } from "lucide-react";
+import { Modal } from "@/components/ui/Modal";
 import { Card, CardContent } from "@/components/ui/Card";
 import { createClient } from "@/lib/supabase-client";
 import { usePermissions } from "@/lib/use-permissions";
 
-type ReportTab = "income" | "move_in" | "move_out" | "yearly" | "utilities" | "movement";
+type ReportTab = "income" | "arrears" | "move_in" | "move_out" | "yearly" | "utilities" | "movement";
 
 const toNumber = (value: any) => {
   const parsed = typeof value === "number" ? value : Number(value ?? 0);
@@ -100,6 +101,13 @@ export default function ReportsPageView() {
   const [selectedMonth, setSelectedMonth] = useState(() => new Date().toISOString().slice(0, 7));
   const [activeTab, setActiveTab] = useState<ReportTab>("income");
   const [loading, setLoading] = useState(true);
+  const [incomeSearchQuery, setIncomeSearchQuery] = useState("");
+  const [incomeBuildingFilter, setIncomeBuildingFilter] = useState("all");
+  const [incomeStatusFilter, setIncomeStatusFilter] = useState("all");
+  const [incomePaymentMethodFilter, setIncomePaymentMethodFilter] = useState("all");
+  const [selectedIncomeInvoice, setSelectedIncomeInvoice] = useState<any>(null);
+  const [movementSearchQuery, setMovementSearchQuery] = useState("");
+  const [movementTypeFilter, setMovementTypeFilter] = useState("all");
   const [error, setError] = useState<string | null>(null);
   const [settings, setSettings] = useState({ water_rate: 0, electricity_rate: 0 });
   const [invoices, setInvoices] = useState<any[]>([]);
@@ -244,10 +252,34 @@ export default function ReportsPageView() {
     [invoices, meterByRoomMonth]
   );
 
-  const filteredIncomeRows = useMemo(
-    () => incomeRows.filter((row) => row.month === selectedMonth).sort(byBuildingAndRoom),
-    [incomeRows, selectedMonth]
-  );
+  const incomeBuildingOptions = useMemo(() => Array.from(new Set(incomeRows.filter(r => r.month === selectedMonth).map((r) => r.building_name).filter(Boolean))), [incomeRows, selectedMonth]);
+  const incomePaymentMethodOptions = useMemo(() => Array.from(new Set(incomeRows.filter(r => r.month === selectedMonth).map((r) => r.paymentMethod).filter(Boolean))), [incomeRows, selectedMonth]);
+
+  const filteredIncomeRows = useMemo(() => {
+    let rows = incomeRows.filter((row) => row.month === selectedMonth);
+    if (incomeSearchQuery.trim()) {
+      const q = incomeSearchQuery.toLowerCase();
+      rows = rows.filter((row) => 
+        (row.room_number && row.room_number.toLowerCase().includes(q)) || 
+        (row.tenant_name && row.tenant_name.toLowerCase().includes(q))
+      );
+    }
+    if (incomeBuildingFilter !== "all") {
+      rows = rows.filter(row => row.building_name === incomeBuildingFilter);
+    }
+    if (incomeStatusFilter !== "all") {
+      rows = rows.filter(row => row.status === incomeStatusFilter);
+    }
+    if (incomePaymentMethodFilter !== "all") {
+      rows = rows.filter(row => row.paymentMethod === incomePaymentMethodFilter);
+    }
+    return rows.sort((a, b) => {
+      const dateA = new Date(a.issue_date || a.start_date || 0).getTime();
+      const dateB = new Date(b.issue_date || b.start_date || 0).getTime();
+      if (dateA !== dateB) return dateB - dateA;
+      return byBuildingAndRoom(a, b);
+    });
+  }, [incomeRows, selectedMonth, incomeSearchQuery, incomeBuildingFilter, incomeStatusFilter, incomePaymentMethodFilter]);
 
   const incomeSummary = useMemo(() => {
     const billed = filteredIncomeRows.reduce((sum, row) => sum + row.total_amount, 0);
@@ -332,7 +364,12 @@ export default function ReportsPageView() {
       })
       .filter((row) => !seen.has(`${row.tenant}:${row.room}:${row.date}`));
 
-    return [...direct, ...history].sort(byBuildingAndRoom);
+    return [...direct, ...history].sort((a, b) => {
+      const dateA = new Date(a.date || 0).getTime();
+      const dateB = new Date(b.date || 0).getTime();
+      if (dateA !== dateB) return dateB - dateA;
+      return byBuildingAndRoom(a, b);
+    });
   }, [logs, roomNumberById, selectedMonth, tenants]);
 
   const moveInSummary = useMemo(
@@ -378,7 +415,12 @@ export default function ReportsPageView() {
       })
       .filter((row) => !seen.has(`${row.tenant}:${row.room}:${row.date}`));
 
-    return [...direct, ...history].sort(byBuildingAndRoom);
+    return [...direct, ...history].sort((a, b) => {
+      const dateA = new Date(a.date || 0).getTime();
+      const dateB = new Date(b.date || 0).getTime();
+      if (dateA !== dateB) return dateB - dateA;
+      return byBuildingAndRoom(a, b);
+    });
   }, [logs, roomNumberById, selectedMonth, tenants]);
 
   const moveOutSummary = useMemo(
@@ -506,6 +548,64 @@ export default function ReportsPageView() {
     }),
     [movementRows]
   );
+
+  const filteredMovementRows = useMemo(() => {
+    let rows = movementRows;
+    if (movementTypeFilter !== "all") {
+      rows = rows.filter((row) => row.type === movementTypeFilter);
+    }
+    if (movementSearchQuery.trim()) {
+      const q = movementSearchQuery.toLowerCase();
+      rows = rows.filter((row) => 
+        (row.room && row.room.toLowerCase().includes(q)) || 
+        (row.tenant && row.tenant.toLowerCase().includes(q))
+      );
+    }
+    return rows;
+  }, [movementRows, movementTypeFilter, movementSearchQuery]);
+
+  
+  const arrearsRows = useMemo(() => {
+    const tenantDebts = new Map<string, any>();
+    for (const invoice of invoices) {
+      if (["pending", "partial", "overdue", "verifying"].includes(String(invoice.status))) {
+        const outstanding = invoice.total_amount - invoice.paid_amount;
+        if (outstanding > 0) {
+          const tenantId = invoice.tenant_id || invoice.tenant_name || "unknown";
+          if (!tenantDebts.has(tenantId)) {
+            tenantDebts.set(tenantId, {
+              tenant_name: invoice.tenant_name,
+              room_number: invoice.room_number,
+              building_name: invoice.building_name,
+              outstanding: 0,
+              invoice_count: 0,
+              oldest_due_date: invoice.due_date
+            });
+          }
+          const data = tenantDebts.get(tenantId)!;
+          data.outstanding += outstanding;
+          data.invoice_count += 1;
+          if (invoice.due_date && (!data.oldest_due_date || new Date(invoice.due_date) < new Date(data.oldest_due_date))) {
+            data.oldest_due_date = invoice.due_date;
+          }
+        }
+      }
+    }
+    return Array.from(tenantDebts.values()).sort((a, b) => b.outstanding - a.outstanding);
+  }, [invoices]);
+
+  const arrearsSummary = useMemo(() => ({
+    total_outstanding: arrearsRows.reduce((sum, row) => sum + row.outstanding, 0),
+    total_tenants: arrearsRows.length,
+    total_invoices: arrearsRows.reduce((sum, row) => sum + row.invoice_count, 0)
+  }), [arrearsRows]);
+
+  const exportArrears = () =>
+    downloadCsv(
+      `arrears-report.csv`,
+      ["อาคาร", "ห้อง", "ชื่อผู้เช่า", "จำนวนบิลที่ค้าง", "วันที่ค้างนานสุด", "ยอดค้างรวม"],
+      arrearsRows.map((row) => [row.building_name, row.room_number, row.tenant_name, row.invoice_count, formatDate(row.oldest_due_date), row.outstanding])
+    );
 
   const exportIncome = () =>
     downloadCsv(
@@ -639,6 +739,7 @@ export default function ReportsPageView() {
 
           <div className="flex flex-wrap gap-2 rounded-2xl bg-slate-100 p-2">
             <TabButton active={activeTab === "income"} onClick={() => setActiveTab("income")} label="รายได้รายเดือน" />
+            <TabButton active={activeTab === "arrears"} onClick={() => setActiveTab("arrears")} label="ยอดค้างชำระ (ลูกหนี้)" />
             <TabButton active={activeTab === "move_in"} onClick={() => setActiveTab("move_in")} label="ย้ายเข้า" />
             <TabButton active={activeTab === "move_out"} onClick={() => setActiveTab("move_out")} label="ย้ายออก" />
             <TabButton active={activeTab === "yearly"} onClick={() => setActiveTab("yearly")} label="สรุปทั้งปี" />
@@ -663,13 +764,58 @@ export default function ReportsPageView() {
                 <p className="text-sm text-slate-500">เลือกเดือนที่ต้องการดู แล้วส่งออกเฉพาะเดือนนั้นได้</p>
               </div>
               <div className="flex flex-wrap items-end gap-3">
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                  <input
+                    type="text"
+                    placeholder="ค้นหาห้อง / ผู้เช่า..."
+                    value={incomeSearchQuery}
+                    onChange={(e) => setIncomeSearchQuery(e.target.value)}
+                    className="h-[38px] w-48 rounded-xl border border-slate-200 pl-9 pr-3 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                </div>
+                {incomeBuildingOptions.length > 0 && (
+                  <select
+                    value={incomeBuildingFilter}
+                    onChange={(e) => setIncomeBuildingFilter(e.target.value)}
+                    className="h-[38px] rounded-xl border border-slate-200 px-3 py-1 text-sm text-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  >
+                    <option value="all">ทุกอาคาร</option>
+                    {incomeBuildingOptions.map(b => (
+                      <option key={b} value={b}>{b}</option>
+                    ))}
+                  </select>
+                )}
+                <select
+                  value={incomeStatusFilter}
+                  onChange={(e) => setIncomeStatusFilter(e.target.value)}
+                  className="h-[38px] rounded-xl border border-slate-200 px-3 py-1 text-sm text-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                >
+                  <option value="all">ทุกสถานะ</option>
+                  <option value="paid">ชำระแล้ว (Paid)</option>
+                  <option value="pending">รอชำระ (Pending)</option>
+                  <option value="partial">จ่ายบางส่วน (Partial)</option>
+                  <option value="overdue">ค้างชำระ (Overdue)</option>
+                  <option value="verifying">รอตรวจสอบ (Verifying)</option>
+                </select>
+                {incomePaymentMethodOptions.length > 0 && (
+                  <select
+                    value={incomePaymentMethodFilter}
+                    onChange={(e) => setIncomePaymentMethodFilter(e.target.value)}
+                    className="h-[38px] rounded-xl border border-slate-200 px-3 py-1 text-sm text-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  >
+                    <option value="all">ทุกวิธีชำระ</option>
+                    {incomePaymentMethodOptions.map(m => (
+                      <option key={m} value={m}>{m}</option>
+                    ))}
+                  </select>
+                )}
                 <label className="space-y-1 text-sm text-slate-600">
-                  <span className="block font-medium">เดือน</span>
                   <input
                     type="month"
                     value={selectedMonth}
                     onChange={(event) => setSelectedMonth(event.target.value)}
-                    className="rounded-xl border border-slate-200 px-3 py-2 text-slate-900"
+                    className="h-[38px] rounded-xl border border-slate-200 px-3 py-2 text-slate-900"
                   />
                 </label>
                 <ExportButton onClick={exportIncome} />
@@ -682,26 +828,164 @@ export default function ReportsPageView() {
               { label: "ยอดชำระ", value: formatMoney(incomeSummary.paid) },
               { label: "ยอดค้าง", value: formatMoney(incomeSummary.outstanding) },
               { label: "ค่าธรรมเนียมเพิ่ม", value: formatMoney(incomeSummary.additional) },
-              { label: "ค่าไฟที่เรียกเก็บ", value: formatMoney(incomeSummary.electricityCollected) },
-              { label: "ค่าน้ำที่เรียกเก็บ", value: formatMoney(incomeSummary.waterCollected) },
+              { label: "ค่าไฟ", value: formatMoney(incomeSummary.electricityCollected) },
+              { label: "ค่าน้ำ", value: formatMoney(incomeSummary.waterCollected) },
+            ]}
+          />
+          <Card>
+            <CardContent className="p-0">
+              <div className="overflow-x-auto rounded-xl">
+                <table className="min-w-full text-left text-sm">
+                  <thead className="bg-slate-50 text-slate-500">
+                    <tr>
+                      <th className="px-3 py-2">อาคาร</th>
+                      <th className="px-3 py-2">เลขห้อง</th>
+                      <th className="px-3 py-2">ชื่อผู้เช่า</th>
+                      <th className="px-3 py-2 text-right">ยอดเรียกเก็บ</th>
+                      <th className="px-3 py-2 text-right">ยอดชำระ</th>
+                      <th className="px-3 py-2 text-center">วิธีชำระ</th>
+                      <th className="px-3 py-2 text-center">สถานะ</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredIncomeRows.length > 0 ? (
+                      filteredIncomeRows.map((row) => (
+                        <tr 
+                          key={row.id} 
+                          className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer"
+                          onClick={() => setSelectedIncomeInvoice(row)}
+                        >
+                          <td className="px-3 py-2">{row.building_name}</td>
+                          <td className="px-3 py-2 font-medium">{row.room_number}</td>
+                          <td className="px-3 py-2">{row.tenant_name}</td>
+                          <td className="px-3 py-2 text-right">{formatMoney(row.total_amount)}</td>
+                          <td className="px-3 py-2 text-right text-green-600">{formatMoney(row.paid_amount)}</td>
+                          <td className="px-3 py-2 text-center">{row.paymentMethod}</td>
+                          <td className="px-3 py-2 text-center">
+                            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px]">{statusLabel(row.status)}</span>
+                          </td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan={7} className="px-3 py-6 text-center text-slate-500">
+                          ไม่พบข้อมูลรายได้
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+          
+          <Modal
+            isOpen={!!selectedIncomeInvoice}
+            onClose={() => setSelectedIncomeInvoice(null)}
+            title="รายละเอียดบิล"
+            size="lg"
+          >
+            {selectedIncomeInvoice && (
+              <div className="space-y-4 text-sm">
+                <div className="flex justify-between rounded-xl bg-slate-50 p-4 border border-slate-100">
+                  <div>
+                    <p className="font-semibold text-slate-900">ห้อง {selectedIncomeInvoice.room_number}</p>
+                    <p className="text-slate-500">{selectedIncomeInvoice.tenant_name}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="font-semibold text-slate-900">{formatMoney(selectedIncomeInvoice.total_amount)}</p>
+                    <p className="text-slate-500">สถานะ: {statusLabel(selectedIncomeInvoice.status)}</p>
+                  </div>
+                </div>
+                
+                <table className="w-full text-sm border-collapse">
+                  <thead className="bg-slate-50 text-slate-600 border border-slate-100">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-medium border-b border-slate-100">รายการ</th>
+                      <th className="px-3 py-2 text-right font-medium border-b border-slate-100">จำนวนเงิน</th>
+                    </tr>
+                  </thead>
+                  <tbody className="border border-slate-100">
+                    <tr className="border-b border-slate-100">
+                      <td className="px-3 py-2">ค่าเช่า</td>
+                      <td className="px-3 py-2 text-right">{formatMoney(selectedIncomeInvoice.rent_amount)}</td>
+                    </tr>
+                    <tr className="border-b border-slate-100">
+                      <td className="px-3 py-2">ค่าน้ำ ({selectedIncomeInvoice.waterUsage} หน่วย)</td>
+                      <td className="px-3 py-2 text-right">{formatMoney(selectedIncomeInvoice.water_bill)}</td>
+                    </tr>
+                    <tr className="border-b border-slate-100">
+                      <td className="px-3 py-2">ค่าไฟ ({selectedIncomeInvoice.electricityUsage} หน่วย)</td>
+                      <td className="px-3 py-2 text-right">{formatMoney(selectedIncomeInvoice.electricity_bill)}</td>
+                    </tr>
+                    {selectedIncomeInvoice.common_fee > 0 && (
+                      <tr className="border-b border-slate-100">
+                        <td className="px-3 py-2">ค่าส่วนกลาง</td>
+                        <td className="px-3 py-2 text-right">{formatMoney(selectedIncomeInvoice.common_fee)}</td>
+                      </tr>
+                    )}
+                    {selectedIncomeInvoice.late_fee_amount > 0 && (
+                      <tr className="border-b border-slate-100">
+                        <td className="px-3 py-2">ค่าปรับล่าช้า</td>
+                        <td className="px-3 py-2 text-right">{formatMoney(selectedIncomeInvoice.late_fee_amount)}</td>
+                      </tr>
+                    )}
+                    {Array.isArray(selectedIncomeInvoice.additional_fees_breakdown) && selectedIncomeInvoice.additional_fees_breakdown.map((fee, idx) => (
+                      <tr key={idx} className="border-b border-slate-100">
+                        <td className="px-3 py-2">ค่าอื่นๆ ({fee.detail || fee.label || '-'})</td>
+                        <td className="px-3 py-2 text-right">{formatMoney(fee.amount || fee.total_amount)}</td>
+                      </tr>
+                    ))}
+                    {selectedIncomeInvoice.discount_amount > 0 && (
+                      <tr className="border-b border-slate-100 text-green-600">
+                        <td className="px-3 py-2">ส่วนลด</td>
+                        <td className="px-3 py-2 text-right">-{formatMoney(selectedIncomeInvoice.discount_amount)}</td>
+                      </tr>
+                    )}
+                    <tr className="bg-slate-50 font-semibold">
+                      <td className="px-3 py-3 text-right">รวมสุทธิ</td>
+                      <td className="px-3 py-3 text-right">{formatMoney(selectedIncomeInvoice.total_amount)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Modal>
+        </>
+      )}
+
+      
+      {activeTab === "arrears" && (
+        <>
+          <Card>
+            <CardContent className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+              <div>
+                <h3 className="text-lg font-semibold text-slate-900">รายงานยอดค้างชำระ (ลูกหนี้)</h3>
+                <p className="text-sm text-slate-500">รวมยอดผู้เช่าที่มียอดค้างชำระ เรียงจากค้างมากที่สุด</p>
+              </div>
+              <div className="flex flex-wrap items-end gap-3">
+                <ExportButton onClick={exportArrears} />
+              </div>
+            </CardContent>
+          </Card>
+          <SummaryCards
+            items={[
+              { label: "จำนวนผู้เช่าที่ค้างชำระ", value: arrearsSummary.total_tenants.toLocaleString("th-TH") + " คน" },
+              { label: "จำนวนบิลที่ค้างรวม", value: arrearsSummary.total_invoices.toLocaleString("th-TH") + " ใบ" },
+              { label: "ยอดค้างรวมทั้งหมด", value: formatMoney(arrearsSummary.total_outstanding) },
             ]}
           />
           <ReportTable
-            headers={["อาคาร", "เลขห้อง", "ชื่อผู้เช่า", "หน่วยไฟ", "ค่าไฟ", "หน่วยน้ำ", "ค่าน้ำ", "ยอดเรียกเก็บ", "วิธีชำระ", "สถานะ", "ค่าธรรมเนียมเพิ่มเติม"]}
-            rows={filteredIncomeRows.map((row) => [
+            headers={["อาคาร", "ห้อง", "ชื่อผู้เช่า", "จำนวนบิลที่ค้าง", "เริ่มค้างตั้งแต่", "ยอดค้างรวม"]}
+            rows={arrearsRows.map((row) => [
               row.building_name,
               row.room_number,
               row.tenant_name,
-              row.electricityUsage.toLocaleString("th-TH"),
-              formatMoney(row.electricity_bill),
-              row.waterUsage.toLocaleString("th-TH"),
-              formatMoney(row.water_bill),
-              formatMoney(row.total_amount),
-              row.paymentMethod,
-              statusLabel(row.status),
-              row.additionalFeeText,
+              row.invoice_count.toLocaleString("th-TH"),
+              formatDate(row.oldest_due_date),
+              formatMoney(row.outstanding),
             ])}
-            emptyText={`ไม่พบข้อมูลรายได้ของเดือน ${selectedMonth}`}
+            emptyText="ไม่มีผู้เช่าที่ค้างชำระ"
           />
         </>
       )}
@@ -906,16 +1190,38 @@ export default function ReportsPageView() {
           />
           <Card>
             <CardContent className="space-y-4">
-              <div className="flex items-center justify-between gap-3">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
                 <div>
                   <h3 className="text-lg font-semibold text-slate-900">รายงานการเคลื่อนไหวห้องและผู้เช่า</h3>
                   <p className="text-sm text-slate-500">ดูว่าห้องไหนมีการย้ายเข้า ย้ายออก หรือย้ายห้องเมื่อใด</p>
                 </div>
-                <ExportButton onClick={exportMovement} />
+                <div className="flex flex-wrap items-end gap-3">
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                    <input
+                      type="text"
+                      placeholder="ค้นหาห้อง / ผู้เช่า..."
+                      value={movementSearchQuery}
+                      onChange={(e) => setMovementSearchQuery(e.target.value)}
+                      className="h-[38px] w-48 rounded-xl border border-slate-200 pl-9 pr-3 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                  </div>
+                  <select
+                    value={movementTypeFilter}
+                    onChange={(e) => setMovementTypeFilter(e.target.value)}
+                    className="h-[38px] rounded-xl border border-slate-200 px-3 py-1 text-sm text-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  >
+                    <option value="all">ทุกประเภท</option>
+                    <option value="ย้ายเข้า">ย้ายเข้า</option>
+                    <option value="ย้ายออก">ย้ายออก</option>
+                    <option value="ย้ายห้อง">ย้ายห้อง</option>
+                  </select>
+                  <ExportButton onClick={exportMovement} />
+                </div>
               </div>
               <ReportTable
                 headers={["อาคาร", "ห้อง", "วันที่", "ประเภท", "ชื่อผู้เช่า", "รายละเอียด"]}
-                rows={movementRows.map((row) => [
+                rows={filteredMovementRows.map((row) => [
                   row.building ?? "-",
                   row.room,
                   formatDate(row.date),

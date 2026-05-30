@@ -155,7 +155,13 @@ export default function TenantsPage() {
                   </Badge>
                 </div>
                 <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-                  {buildingTenants.map((tenant) => (
+                  {buildingTenants
+                    .sort((a, b) => {
+                      const rA = tenantRoomNumber(a, roomsById);
+                      const rB = tenantRoomNumber(b, roomsById);
+                      return rA.localeCompare(rB, undefined, { numeric: true, sensitivity: "base" });
+                    })
+                    .map((tenant) => (
                     <div
                       key={tenant.id}
                       className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition-shadow hover:shadow-md"

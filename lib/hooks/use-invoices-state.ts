@@ -1686,8 +1686,8 @@ export function useInvoicesState() {
         label: item.detail,
       })),
       late_fee_amount: feeItemsTotal(editableLateFeeItems),
-      late_fee_per_day: toNumber(form.late_fee_per_day),
-      late_fee_start_date: form.late_fee_start_date || null,
+      late_fee_per_day: editableLateFeeItems.length === 0 ? 0 : toNumber(form.late_fee_per_day),
+      late_fee_start_date: editableLateFeeItems.length === 0 ? null : (form.late_fee_start_date || null),
       carry_forward_amount: feeItemsTotal(editableCarryForwardItems),
       additional_fees_total: feeItemsTotal(editableFeeItems),
       additional_fees_breakdown: [

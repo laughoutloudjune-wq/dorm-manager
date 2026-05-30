@@ -89,6 +89,7 @@ export default function MoveOutsPage() {
 
   const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<"waiting_verify" | "waiting_moveout" | "declined" | "past">("waiting_verify");
 
   const load = useCallback(async () => {
     if (!canView) return;
@@ -131,7 +132,7 @@ export default function MoveOutsPage() {
 
     // Process requests
     requests.forEach((req) => {
-      if (req.status === "completed") return; // Filter out already moved out
+      // if (req.status === "completed") return; // Keep completed for past moveout tab
 
       const { room, building } = roomFromRequest(req);
       const tenant_name = getTenantFromJoin(req)?.full_name ?? "—";
@@ -191,6 +192,16 @@ export default function MoveOutsPage() {
   }, [requests, tenantsWithDate]);
 
   const requestedCount = unifiedList.filter((r) => r.status === "requested").length;
+  
+  const filteredList = useMemo(() => {
+    return unifiedList.filter(row => {
+      if (activeTab === "waiting_verify") return row.status === "requested";
+      if (activeTab === "waiting_moveout") return row.status === "approved" || row.status === "manual";
+      if (activeTab === "declined") return row.status === "rejected" || row.status === "cancelled";
+      if (activeTab === "past") return row.status === "completed";
+      return true;
+    });
+  }, [unifiedList, activeTab]);
 
   const getBadgeVariant = (status: string) => {
     if (status === "requested") return "warning";
@@ -234,9 +245,32 @@ export default function MoveOutsPage() {
       {canView && !loading && (
         <Card>
           <CardContent className="!p-0">
-            <div className="border-b border-slate-100 px-4 py-3 text-sm text-slate-600 flex gap-4">
-              <span>ทั้งหมด: <span className="font-medium text-slate-800">{unifiedList.length}</span> รายการ</span>
-              <span>รอตรวจสอบ: <span className="font-semibold text-amber-600">{requestedCount}</span> รายการ</span>
+            <div className="flex border-b border-slate-100 overflow-x-auto">
+              <button
+                onClick={() => setActiveTab("waiting_verify")}
+                className={`px-4 py-3 text-sm font-semibold whitespace-nowrap ${activeTab === "waiting_verify" ? "border-b-2 border-blue-600 text-blue-700" : "text-slate-500 hover:text-slate-700 hover:bg-slate-50"}`}
+              >
+                รอตรวจสอบ
+                {requestedCount > 0 && <span className="ml-2 rounded-full bg-amber-100 text-amber-700 px-2 py-0.5 text-xs">{requestedCount}</span>}
+              </button>
+              <button
+                onClick={() => setActiveTab("waiting_moveout")}
+                className={`px-4 py-3 text-sm font-semibold whitespace-nowrap ${activeTab === "waiting_moveout" ? "border-b-2 border-blue-600 text-blue-700" : "text-slate-500 hover:text-slate-700 hover:bg-slate-50"}`}
+              >
+                รอย้ายออก
+              </button>
+              <button
+                onClick={() => setActiveTab("declined")}
+                className={`px-4 py-3 text-sm font-semibold whitespace-nowrap ${activeTab === "declined" ? "border-b-2 border-blue-600 text-blue-700" : "text-slate-500 hover:text-slate-700 hover:bg-slate-50"}`}
+              >
+                ปฏิเสธ / ยกเลิก
+              </button>
+              <button
+                onClick={() => setActiveTab("past")}
+                className={`px-4 py-3 text-sm font-semibold whitespace-nowrap ${activeTab === "past" ? "border-b-2 border-blue-600 text-blue-700" : "text-slate-500 hover:text-slate-700 hover:bg-slate-50"}`}
+              >
+                ย้ายออกแล้ว
+              </button>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full min-w-[800px] text-left text-sm">
@@ -251,14 +285,14 @@ export default function MoveOutsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {unifiedList.length === 0 ? (
+                  {filteredList.length === 0 ? (
                     <tr>
                       <td colSpan={6} className="px-4 py-8 text-center text-slate-500">
                         ไม่มีรายการย้ายออกในระบบ
                       </td>
                     </tr>
                   ) : (
-                    unifiedList.map((row) => (
+                    filteredList.map((row) => (
                       <tr
                         key={row.key}
                         className="border-t border-slate-100/90 transition-colors hover:bg-slate-50/60"

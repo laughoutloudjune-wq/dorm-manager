@@ -394,15 +394,25 @@ export async function applyInvoicePaymentAllocation(
     });
   }
 
+  let sourceAllocatedTotal = 0;
+
   for (const invoice of paymentTargets) {
     const outstanding = getInvoiceOutstanding(invoice as InvoiceLike);
     if (outstanding <= 0 || remaining <= 0) continue;
 
     const allocated = Math.min(outstanding, remaining);
-    const nextPaidAmount = Math.min(toNumber(invoice.total_amount), toNumber(invoice.paid_amount) + allocated);
+    
+    let effectiveAllocated = allocated;
+    if (String(invoice.id) !== String(invoiceId)) {
+      sourceAllocatedTotal += allocated;
+    } else {
+      effectiveAllocated = allocated + sourceAllocatedTotal;
+    }
+
+    const nextPaidAmount = Math.min(toNumber(invoice.total_amount), toNumber(invoice.paid_amount) + effectiveAllocated);
     const paymentHistory = Array.isArray(invoice.payment_history) ? invoice.payment_history : [];
     const paymentEntry: Record<string, unknown> = {
-      amount: allocated,
+      amount: effectiveAllocated,
       mode,
       paid_at: paidAt,
       slip_url: slipUrl,

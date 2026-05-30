@@ -351,15 +351,30 @@ export function InvoiceDetailModal() {
                                       {(item.mode ?? "-").toString().toUpperCase()} |{" "}
                                       {item.paid_at ? new Date(item.paid_at).toLocaleString("th-TH") : "-"}
                                     </p>
-                                    <button
-                                      type="button"
-                                      onClick={() => void cancelPaymentEntry(idx)}
-                                      disabled={!canRecordInvoicePayment || paymentSubmitting}
-                                      title={!canRecordInvoicePayment ? "ไม่มีสิทธิ์ยกเลิกรายการชำระเงิน" : undefined}
-                                      className="rounded-md border border-red-200 px-2 py-1 text-[11px] font-semibold text-red-600 disabled:cursor-not-allowed disabled:opacity-50"
-                                    >
-                                      ยกเลิกรายการ
-                                    </button>
+                                    <div className="flex items-center gap-2">
+                                      {item.slip_url && (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setSlipModalTitle(`สลิปการชำระเงิน - จำนวน ${formatMoney(toNumber(item.amount))}`);
+                                            setSlipModalUrl(item.slip_url);
+                                            setSlipModalOpen(true);
+                                          }}
+                                          className="rounded-md border border-blue-200 px-2 py-1 text-[11px] font-semibold text-blue-600 hover:bg-blue-50"
+                                        >
+                                          ดูสลิป
+                                        </button>
+                                      )}
+                                      <button
+                                        type="button"
+                                        onClick={() => void cancelPaymentEntry(idx)}
+                                        disabled={!canRecordInvoicePayment || paymentSubmitting}
+                                        title={!canRecordInvoicePayment ? "ไม่มีสิทธิ์ยกเลิกรายการชำระเงิน" : undefined}
+                                        className="rounded-md border border-red-200 px-2 py-1 text-[11px] font-semibold text-red-600 disabled:cursor-not-allowed disabled:opacity-50 hover:bg-red-50"
+                                      >
+                                        ยกเลิกรายการ
+                                      </button>
+                                    </div>
                                   </div>
                                 </div>
                               ))}
@@ -663,6 +678,11 @@ export function InvoiceDetailModal() {
                               readOnly
                               className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-right"
                             />
+                            {form.late_fee_start_date && form.late_fee_amount > 0 && (
+                              <p className="mt-1 text-[11px] text-slate-500 text-right">
+                                (อัตรา {form.late_fee_per_day} บาท/วัน เริ่มตั้งแต่ {new Date(form.late_fee_start_date).toLocaleDateString("th-TH")})
+                              </p>
+                            )}
                           </td>
                         </tr>
                         <tr className="border-t border-amber-200 bg-amber-50/60">
