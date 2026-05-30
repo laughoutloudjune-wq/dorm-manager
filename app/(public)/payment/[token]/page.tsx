@@ -1,5 +1,7 @@
 "use client";
 
+import { toast } from "sonner";
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { Badge } from "@/components/ui/Badge";
@@ -225,7 +227,6 @@ export default function PaymentTokenPage() {
   const [defaultMethod, setDefaultMethod] = useState<PaymentMethod | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [submitted, setSubmitted] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [billingDay, setBillingDay] = useState<number | null>(null);
@@ -254,7 +255,7 @@ export default function PaymentTokenPage() {
         const { default: liff } = await import("@line/liff");
         const liffId = process.env.NEXT_PUBLIC_PAYMENT_LIFF_ID;
         if (!liffId) {
-          setError("ไม่พบ NEXT_PUBLIC_PAYMENT_LIFF_ID กรุณาตั้งค่าใน .env.local");
+          toast.error("ไม่พบ NEXT_PUBLIC_PAYMENT_LIFF_ID กรุณาตั้งค่าใน .env.local");
           setLiffReady(true);
           return;
         }
@@ -269,7 +270,7 @@ export default function PaymentTokenPage() {
 
         setAccessToken(liff.getAccessToken() || "");
       } catch (error: any) {
-        setError(error?.message ?? "เริ่มต้น LINE LIFF ไม่สำเร็จ");
+        toast.error(error?.message ?? "เริ่มต้น LINE LIFF ไม่สำเร็จ");
       } finally {
         setLiffReady(true);
       }
@@ -281,12 +282,12 @@ export default function PaymentTokenPage() {
   useEffect(() => {
     const load = async () => {
       if (!accessToken) {
-        setError("กรุณาเข้าสู่ระบบ LINE ก่อนเปิดใบแจ้งหนี้");
+        toast.error("กรุณาเข้าสู่ระบบ LINE ก่อนเปิดใบแจ้งหนี้");
         return;
       }
 
       if (!token) {
-        setError("Missing token");
+        toast.error("Missing token");
         return;
       }
 
@@ -299,7 +300,7 @@ export default function PaymentTokenPage() {
 
         if (!authRes || !authRes.ok) {
           const data = await authRes?.json().catch(() => ({} as any));
-          setError(data?.error ?? "ไม่สามารถเปิดใบแจ้งหนี้ได้");
+          toast.error(data?.error ?? "ไม่สามารถเปิดใบแจ้งหนี้ได้");
           return;
         }
 
@@ -335,7 +336,7 @@ export default function PaymentTokenPage() {
         .single();
 
       if (fetchError || !data) {
-        setError("ไม่พบใบแจ้งหนี้");
+        toast.error("ไม่พบใบแจ้งหนี้");
         return;
       }
 
@@ -416,8 +417,6 @@ export default function PaymentTokenPage() {
 
     setUploading(true);
     setUploadProgress(0);
-    setError(null);
-
     try {
       const bucket = "payment_slips";
       const filePath = `${invoice.id}/${Date.now()}-${file.name}`;
@@ -437,7 +436,7 @@ export default function PaymentTokenPage() {
         .eq("id", invoice.id);
 
       if (updateError) {
-        setError(updateError.message);
+        toast.error(updateError.message);
         setUploading(false);
         return;
       }
@@ -462,7 +461,7 @@ export default function PaymentTokenPage() {
       setSubmitted(true);
       setUploading(false);
     } catch (uploadError: any) {
-      setError(uploadError?.message ?? "อัปโหลดสลิปไม่สำเร็จ");
+      toast.error(uploadError?.message ?? "อัปโหลดสลิปไม่สำเร็จ");
       setUploading(false);
     }
   };
@@ -486,7 +485,7 @@ export default function PaymentTokenPage() {
     return (
       <div className="min-h-screen px-4 py-10">
         <div className="mx-auto max-w-md rounded-3xl border border-white/60 bg-white/90 p-6 text-center shadow-xl">
-          <p className="text-sm text-slate-500">{error ?? "กำลังโหลดใบแจ้งหนี้..."}</p>
+          <p className="text-sm text-slate-500">"กำลังโหลดใบแจ้งหนี้..."</p>
         </div>
       </div>
     );
@@ -696,11 +695,7 @@ export default function PaymentTokenPage() {
                 </div>
               )}
 
-              {error && (
-                <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-                  {error}
-                </div>
-              )}
+              
             </div>
           </section>
         )}

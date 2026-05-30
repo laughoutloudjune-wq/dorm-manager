@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 import { Badge } from "@/components/ui/Badge";
 import { Card, CardContent } from "@/components/ui/Card";
 import { createClient } from "@/lib/supabase-client";
@@ -85,7 +86,6 @@ export default function MoveOutsPage() {
   const [loading, setLoading] = useState(true);
   const [requests, setRequests] = useState<RequestRow[]>([]);
   const [tenantsWithDate, setTenantsWithDate] = useState<TenantWithMoveOut[]>([]);
-  const [error, setError] = useState<string | null>(null);
 
   const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -93,7 +93,6 @@ export default function MoveOutsPage() {
   const load = useCallback(async () => {
     if (!canView) return;
     setLoading(true);
-    setError(null);
     const [reqRes, tenRes] = await Promise.all([
       supabase
         .from("move_out_requests")
@@ -109,13 +108,13 @@ export default function MoveOutsPage() {
         .order("move_out_date", { ascending: true }),
     ]);
     if (reqRes.error) {
-      setError(reqRes.error.message);
+      toast.error(reqRes.error.message);
       setRequests([]);
     } else {
       setRequests((reqRes.data ?? []) as unknown as RequestRow[]);
     }
     if (tenRes.error) {
-      setError((prev) => prev ?? tenRes.error?.message ?? null);
+      toast.error(tenRes.error.message);
       setTenantsWithDate([]);
     } else {
       setTenantsWithDate((tenRes.data ?? []) as TenantWithMoveOut[]);
@@ -223,7 +222,7 @@ export default function MoveOutsPage() {
         <p className="text-sm text-amber-800">ไม่มีสิทธิ์ดูข้อมูลนี้</p>
       )}
 
-      {error && <p className="text-sm text-red-600">{error}</p>}
+
 
       {canView && loading && (
         <div className="flex items-center justify-center gap-2 rounded-2xl border border-slate-200/80 py-10 text-slate-500">

@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/Badge";
@@ -7,6 +7,9 @@ import { Input } from "@/components/ui/Input";
 import { createClient } from "@/lib/supabase-client";
 import { ConfirmActionModal } from "@/components/ui/ConfirmActionModal";
 import { Building2, Droplets, Save, UserRound, Zap } from "lucide-react";
+import { toast } from "sonner";
+import { toNumber, toLocalDateString, formatThaiDateShort, monthStartFromDateString } from "@/lib/format";
+import { useMeterReadingsRawData } from "@/lib/hooks/use-data";
 
 type RoomRow = {
   id: string;
@@ -65,29 +68,7 @@ type MeterReadingDb = {
   usage: number | null;
 };
 
-const toNumber = (value: string | number) => {
-  const parsed = typeof value === "number" ? value : Number(value);
-  return Number.isNaN(parsed) ? 0 : parsed;
-};
 
-const toLocalDateString = (date: Date) =>
-  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
-    date.getDate()
-  ).padStart(2, "0")}`;
-
-const monthStartFromDateString = (value: string) => {
-  const date = new Date(value);
-  return toLocalDateString(new Date(date.getFullYear(), date.getMonth(), 1));
-};
-
-const formatThaiDateShort = (value: string | null) => {
-  if (!value) return "—";
-  return new Date(`${value}T12:00:00`).toLocaleDateString("th-TH", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
-};
 
 const numberCellClass = "px-2 py-2.5 text-right tabular-nums text-slate-800 sm:px-3";
 const numberInputClass =
@@ -97,9 +78,8 @@ export default function MetersPage() {
   const supabase = useMemo(() => createClient(), []);
   const inputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const [selectedMonth, setSelectedMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const { data: rawData, error: rawError, isLoading: rawLoading, mutate } = useMeterReadingsRawData(selectedMonth);
   const [rows, setRows] = useState<Record<string, MeterRow[]>>({});
-  const [loading, setLoading] = useState(true);
-  const [status, setStatus] = useState<string | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [electricityMax, setElectricityMax] = useState(9999);
@@ -146,70 +126,23 @@ export default function MetersPage() {
     return next;
   };
 
-  const fetchData = async () => {
-    setLoading(true);
-    setStatus(null);
-
-    const [year, month] = selectedMonth.split("-").map(Number);
-    const monthDate = new Date(year, month - 1, 1);
-    const prevMonthDate = new Date(year, month - 2, 1);
-    const currentMonthKey = toLocalDateString(monthDate);
-    const prevMonthKey = toLocalDateString(prevMonthDate);
-
-    const { data: roomData, error: roomError } = await supabase
-      .from("rooms")
-      .select("id,room_number,buildings(name)")
-      .order("room_number", { ascending: true });
-
-    if (roomError) {
-      setStatus(roomError.message);
-      setLoading(false);
+  useEffect(() => {
+    if (rawError) {
+      toast.error(rawError.message);
+      return;
+    }
+    if (!rawData) {
       return;
     }
 
-    const nextMonthDate = new Date(year, month, 1);
-    const nextMonthKey = toLocalDateString(nextMonthDate);
-
-    const { data: currentReadings } = await supabase
-      .from("meter_readings")
-      .select(
-        "id,room_id,reading_month,created_at,previous_electricity,current_electricity,electricity_usage,previous_water,current_water,water_usage,previous_reading,current_reading,usage"
-      )
-      .gte("reading_month", currentMonthKey)
-      .lt("reading_month", nextMonthKey)
-      .order("reading_month", { ascending: false })
-      .order("created_at", { ascending: false });
-
-    const { data: previousReadings } = await supabase
-      .from("meter_readings")
-      .select("id,room_id,reading_month,created_at,current_electricity,current_water,current_reading")
-      .gte("reading_month", prevMonthKey)
-      .lt("reading_month", currentMonthKey)
-      .order("reading_month", { ascending: false })
-      .order("created_at", { ascending: false });
-
-    const { data: activeTenants } = await supabase
-      .from("tenants")
-      .select(
-        "id,room_id,full_name,move_in_date,initial_electricity_reading,initial_water_reading,status"
-      )
-      .lt("move_in_date", nextMonthKey)
-      .eq("status", "active")
-      .order("move_in_date", { ascending: false });
-
-    const activeTenantIds = ((activeTenants ?? []) as any[])
-      .map((item) => String(item?.id ?? ""))
-      .filter(Boolean);
-
-    const { data: tenantInvoices } =
-      activeTenantIds.length > 0
-        ? await supabase
-            .from("invoices")
-            .select("tenant_id,start_date,status")
-            .in("tenant_id", activeTenantIds)
-            .lt("start_date", currentMonthKey)
-            .neq("status", "cancelled")
-        : { data: [] as TenantInvoiceRow[] };
+    const {
+      roomData,
+      currentReadings,
+      previousReadings,
+      activeTenants,
+      tenantInvoices,
+      currentMonthKey,
+    } = rawData;
 
     const previousMap = new Map<string, any>();
     for (const item of previousReadings ?? []) {
@@ -335,12 +268,7 @@ export default function MetersPage() {
     }
 
     setRows(grouped);
-    setLoading(false);
-  };
-
-  useEffect(() => {
-    fetchData();
-  }, [selectedMonth]);
+  }, [rawData, rawError, electricityMax, waterMax]);
 
   const updateMeter = (
     building: string,
@@ -435,11 +363,11 @@ export default function MetersPage() {
       }));
     try {
       await callMetersAction("save_all", { payload });
-      setStatus("บันทึกค่ามิเตอร์เรียบร้อย");
+      toast.success("บันทึกค่ามิเตอร์เรียบร้อย");
       setConfirmOpen(false);
-      await fetchData();
+      await mutate();
     } catch (error: any) {
-      setStatus(error?.message ?? "บันทึกค่ามิเตอร์ไม่สำเร็จ");
+      toast.error(error?.message ?? "บันทึกค่ามิเตอร์ไม่สำเร็จ");
     } finally {
       setSaving(false);
     }
@@ -537,10 +465,26 @@ export default function MetersPage() {
         </CardContent>
       </Card>
 
-      {loading ? (
-        <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-slate-200/80 bg-white/90 py-12 text-sm text-slate-500 shadow-soft">
-          <span className="inline-block h-8 w-8 animate-pulse rounded-full bg-slate-200/80" />
-          กำลังโหลดข้อมูลมิเตอร์…
+      {rawLoading ? (
+        <div className="grid gap-6 lg:grid-cols-2">
+          {[...Array(2)].map((_, i) => (
+            <div key={i} className="space-y-0 animate-pulse">
+              <div className="mb-2 flex items-center gap-2">
+                <div className="h-8 w-8 rounded-lg bg-slate-200"></div>
+                <div>
+                  <div className="h-5 w-24 rounded bg-slate-200 mb-1"></div>
+                  <div className="h-4 w-16 rounded bg-slate-200"></div>
+                </div>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="space-y-4">
+                  {[...Array(5)].map((_, j) => (
+                    <div key={j} className="h-16 w-full rounded-xl bg-slate-100"></div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ))}
         </div>
       ) : (
         <div className="grid gap-6 lg:grid-cols-2">

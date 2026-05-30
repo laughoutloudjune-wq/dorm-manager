@@ -1,7 +1,8 @@
-﻿"use client";
+"use client";
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
+import { toast } from "sonner";
 import { Building, Search } from "lucide-react";
 import { createClient } from "@/lib/supabase-client";
 
@@ -9,11 +10,9 @@ export default function SearchInvoicesPage() {
   const supabase = useMemo(() => createClient(), []);
   const [roomNumber, setRoomNumber] = useState("");
   const [invoices, setInvoices] = useState<any[]>([]);
-  const [status, setStatus] = useState<string | null>(null);
 
   const handleSearch = async (event: React.FormEvent) => {
     event.preventDefault();
-    setStatus(null);
     setInvoices([]);
 
     const { data: room } = await supabase
@@ -23,7 +22,7 @@ export default function SearchInvoicesPage() {
       .single();
 
     if (!room) {
-      setStatus("Room number not found. Please check and try again.");
+      toast.error("Room number not found. Please check and try again.");
       return;
     }
 
@@ -35,7 +34,7 @@ export default function SearchInvoicesPage() {
       .order("issue_date", { ascending: false });
 
     if (!data || data.length === 0) {
-      setStatus("No unpaid invoices found. You're all caught up!");
+      toast.error("No unpaid invoices found. You're all caught up!");
       return;
     }
 
@@ -78,12 +77,6 @@ export default function SearchInvoicesPage() {
               Search Invoices
             </button>
           </form>
-
-          {status && (
-            <p className="mt-6 rounded-xl bg-slate-100 p-3 text-center text-sm text-slate-600">
-              {status}
-            </p>
-          )}
 
           {invoices.length > 0 && (
             <div className="mt-6 border-t border-slate-100 pt-5">

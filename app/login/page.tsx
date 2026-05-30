@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import { Building } from "lucide-react";
 import { createClient } from "@/lib/supabase-client";
 
@@ -12,7 +13,6 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [checking, setChecking] = useState(true);
-  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -36,7 +36,6 @@ export default function LoginPage() {
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
     setLoading(true);
-    setError(null);
 
     const { error: signInError } = await supabase.auth.signInWithPassword({
       email: email.trim(),
@@ -46,7 +45,7 @@ export default function LoginPage() {
     setLoading(false);
 
     if (signInError) {
-      setError(signInError.message);
+      toast.error(signInError.message);
       return;
     }
 
@@ -100,11 +99,7 @@ export default function LoginPage() {
               />
             </label>
 
-            {error && (
-              <p className="rounded-xl border border-red-200/80 bg-red-50/90 px-3 py-2.5 text-xs text-red-800">
-                {error}
-              </p>
-            )}
+
 
             <button
               type="submit"

@@ -1,5 +1,7 @@
 "use client";
 
+import { toast } from "sonner";
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/Badge";
 import { createClient } from "@/lib/supabase-client";
@@ -48,14 +50,11 @@ export default function TakeoversAdminPage() {
   const canView = can("tenant.view") || can("tenant.edit");
 
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [requests, setRequests] = useState<TakeoverRow[]>([]);
 
   const load = useCallback(async () => {
     if (!canView) return;
     setLoading(true);
-    setError(null);
-
     const { data, error: fetchError } = await supabase
       .from("room_takeover_requests")
       .select(
@@ -65,7 +64,7 @@ export default function TakeoversAdminPage() {
       .order("created_at", { ascending: false });
 
     if (fetchError) {
-      setError(fetchError.message);
+      toast.error(fetchError.message);
       setRequests([]);
       setLoading(false);
       return;
@@ -81,13 +80,13 @@ export default function TakeoversAdminPage() {
 
   const approve = async (requestId: string) => {
     if (!can("tenant.edit")) {
-      setError("คุณไม่มีสิทธิ์อนุมัติคำขอนี้");
+      toast.error("คุณไม่มีสิทธิ์อนุมัติคำขอนี้");
       return;
     }
     const { data } = await supabase.auth.getSession();
     const token = data.session?.access_token;
     if (!token) {
-      setError("Session หมดอายุ กรุณาเข้าสู่ระบบใหม่");
+      toast.error("Session หมดอายุ กรุณาเข้าสู่ระบบใหม่");
       return;
     }
 
@@ -98,7 +97,7 @@ export default function TakeoversAdminPage() {
     });
     const dataJson = await response.json().catch(() => ({}));
     if (!response.ok) {
-      setError(dataJson?.error ?? "อนุมัติไม่สำเร็จ");
+      toast.error(dataJson?.error ?? "อนุมัติไม่สำเร็จ");
       return;
     }
     await load();
@@ -106,7 +105,7 @@ export default function TakeoversAdminPage() {
 
   const reject = async (requestId: string) => {
     if (!can("tenant.edit")) {
-      setError("คุณไม่มีสิทธิ์ปฏิเสธคำขอนี้");
+      toast.error("คุณไม่มีสิทธิ์ปฏิเสธคำขอนี้");
       return;
     }
     const note = window.prompt("หมายเหตุสำหรับการปฏิเสธ (ไม่บังคับ):") ?? null;
@@ -114,7 +113,7 @@ export default function TakeoversAdminPage() {
     const { data } = await supabase.auth.getSession();
     const token = data.session?.access_token;
     if (!token) {
-      setError("Session หมดอายุ กรุณาเข้าสู่ระบบใหม่");
+      toast.error("Session หมดอายุ กรุณาเข้าสู่ระบบใหม่");
       return;
     }
 
@@ -125,7 +124,7 @@ export default function TakeoversAdminPage() {
     });
     const dataJson = await response.json().catch(() => ({}));
     if (!response.ok) {
-      setError(dataJson?.error ?? "ปฏิเสธไม่สำเร็จ");
+      toast.error(dataJson?.error ?? "ปฏิเสธไม่สำเร็จ");
       return;
     }
     await load();
@@ -148,7 +147,7 @@ export default function TakeoversAdminPage() {
         </button>
       </div>
 
-      {error && <p className="text-sm text-red-600">{error}</p>}
+
 
       {!permLoading && !canView && <p className="text-sm text-amber-800">ไม่มีสิทธิ์ดูข้อมูลนี้</p>}
 

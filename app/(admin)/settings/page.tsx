@@ -1,4 +1,6 @@
-﻿"use client";
+"use client";
+
+import { toast } from "sonner";
 
 import { useEffect, useMemo, useState } from "react";
 import { Input } from "@/components/ui/Input";
@@ -218,7 +220,7 @@ export default function SettingsPage() {
     if (!tabLocked(tab)) return true;
     const message = `ไม่มีสิทธิ์${actionLabel}`;
     setStatusMessage(message);
-    if (typeof window !== "undefined") window.alert(message);
+    if (typeof window !== "undefined") toast.success(message);
     return false;
   };
 
@@ -1483,7 +1485,16 @@ export default function SettingsPage() {
                 </button>
               </div>
               {loadingUserRoles ? (
-                <div className="rounded-xl border border-slate-200 p-4 text-sm text-slate-500">กำลังโหลดผู้ใช้...</div>
+                <div className="space-y-3 animate-pulse">
+                  {Array.from({ length: 5 }).map((_, i) => (
+                    <div key={i} className="flex h-14 items-center gap-4 rounded-xl border border-slate-100 bg-slate-50 px-4">
+                      <div className="h-4 w-32 rounded bg-slate-200"></div>
+                      <div className="h-4 w-24 rounded bg-slate-200"></div>
+                      <div className="h-8 w-24 rounded-lg bg-slate-200"></div>
+                      <div className="h-8 w-24 rounded-lg bg-slate-200"></div>
+                    </div>
+                  ))}
+                </div>
               ) : (
                 <div className="overflow-x-auto rounded-2xl border border-slate-200">
                   <table className="w-full min-w-[760px] text-sm">

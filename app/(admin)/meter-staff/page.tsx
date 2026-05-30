@@ -1,5 +1,7 @@
 "use client";
 
+import { toast } from "sonner";
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/Badge";
 import { Modal } from "@/components/ui/Modal";
@@ -33,7 +35,6 @@ export default function MeterStaffPage() {
   const canEdit = can("meter.edit");
 
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [staff, setStaff] = useState<MeterStaffRow[]>([]);
   const [editOpen, setEditOpen] = useState(false);
@@ -73,12 +74,10 @@ export default function MeterStaffPage() {
   const loadStaff = useCallback(async () => {
     if (!canEdit) return;
     setLoading(true);
-    setError(null);
-
     const { data } = await supabase.auth.getSession();
     const token = data.session?.access_token;
     if (!token) {
-      setError("Session หมดอายุ กรุณาเข้าสู่ระบบใหม่");
+      toast.error("Session หมดอายุ กรุณาเข้าสู่ระบบใหม่");
       setLoading(false);
       return;
     }
@@ -88,7 +87,7 @@ export default function MeterStaffPage() {
     });
     const json = await response.json().catch(() => ({}));
     if (!response.ok) {
-      setError(json?.error ?? "โหลดรายชื่อไม่สำเร็จ");
+      toast.error(json?.error ?? "โหลดรายชื่อไม่สำเร็จ");
       setStaff([]);
       setLoading(false);
       return;
@@ -136,7 +135,7 @@ export default function MeterStaffPage() {
       setMessage(editing ? "บันทึกการแก้ไขแล้ว" : "เพิ่มพนักงานแล้ว");
       await loadStaff();
     } catch (err: any) {
-      setError(err?.message ?? "บันทึกไม่สำเร็จ");
+      toast.error(err?.message ?? "บันทึกไม่สำเร็จ");
     }
   };
 
@@ -147,7 +146,7 @@ export default function MeterStaffPage() {
       setMessage(next === "active" ? "เปิดใช้งานแล้ว" : "ปิดการใช้งานแล้ว");
       await loadStaff();
     } catch (err: any) {
-      setError(err?.message ?? "อัปเดตสถานะไม่สำเร็จ");
+      toast.error(err?.message ?? "อัปเดตสถานะไม่สำเร็จ");
     }
   };
 
@@ -158,7 +157,7 @@ export default function MeterStaffPage() {
       setMessage("ลบรายการแล้ว");
       await loadStaff();
     } catch (err: any) {
-      setError(err?.message ?? "ลบไม่สำเร็จ");
+      toast.error(err?.message ?? "ลบไม่สำเร็จ");
     }
   };
 
@@ -167,7 +166,7 @@ export default function MeterStaffPage() {
       await navigator.clipboard.writeText(text);
       setMessage("คัดลอกแล้ว");
     } catch {
-      setError("คัดลอกไม่สำเร็จ");
+      toast.error("คัดลอกไม่สำเร็จ");
     }
   };
 
@@ -224,7 +223,7 @@ export default function MeterStaffPage() {
         </div>
       )}
 
-      {error && <p className="text-sm text-red-600">{error}</p>}
+
       {message && <p className="text-sm text-emerald-700">{message}</p>}
 
       {canEdit && loading && (

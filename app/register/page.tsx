@@ -1,6 +1,7 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 import { createClient } from "@/lib/supabase-client";
 
 type LiffProfile = {
@@ -98,7 +99,6 @@ export default function RegisterPage() {
   const [moveInDate, setMoveInDate] = useState(new Date().toISOString().slice(0, 10));
   const [newTenantSlipUrl, setNewTenantSlipUrl] = useState("");
   const [suggestions, setSuggestions] = useState<RoomSuggestion[]>([]);
-  const [status, setStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [suggestLoading, setSuggestLoading] = useState(false);
@@ -123,7 +123,7 @@ export default function RegisterPage() {
         const { default: liff } = await import("@line/liff");
         const liffId = process.env.NEXT_PUBLIC_LIFF_ID;
         if (!liffId) {
-          setStatus("ไม่พบ LIFF ID กรุณาตั้งค่า NEXT_PUBLIC_LIFF_ID ใน .env.local");
+          toast.error("ไม่พบ LIFF ID กรุณาตั้งค่า NEXT_PUBLIC_LIFF_ID ใน .env.local");
           setLoading(false);
           return;
         }
@@ -144,7 +144,7 @@ export default function RegisterPage() {
         });
         setLoading(false);
       } catch (error: any) {
-        setStatus(error?.message ?? "เริ่มต้น LINE LIFF ไม่สำเร็จ");
+        toast.error(error?.message ?? "เริ่มต้น LINE LIFF ไม่สำเร็จ");
         setLoading(false);
       }
     };
@@ -219,13 +219,13 @@ export default function RegisterPage() {
         .upload(path, file, { upsert: true });
 
       if (uploadError) {
-        setStatus(uploadError.message);
+        toast.error(uploadError.message);
         return;
       }
 
       const { data } = supabase.storage.from("tenant-docs").getPublicUrl(path);
       setNewTenantSlipUrl(data.publicUrl);
-      setStatus("อัปโหลดสลิปสำเร็จ");
+      toast.success("อัปโหลดสลิปสำเร็จ");
     } finally {
       setUploadingNewTenantSlip(false);
     }
@@ -236,17 +236,16 @@ export default function RegisterPage() {
     if (!profile) return;
 
     if (isNewTenant && !newTenantSlipUrl) {
-      setStatus("กรุณาอัปโหลดสลิปเงินประกันหรือค่าเช่าล่วงหน้าก่อนลงทะเบียน");
+      toast.error("กรุณาอัปโหลดสลิปเงินประกันหรือค่าเช่าล่วงหน้าก่อนลงทะเบียน");
       return;
     }
 
     if (isNewTenant && !policyAccepted) {
-      setStatus("กรุณาอ่านและยอมรับกฎระเบียบหอพักก่อนลงทะเบียน");
+      toast.error("กรุณาอ่านและยอมรับกฎระเบียบหอพักก่อนลงทะเบียน");
       return;
     }
 
     setSubmitting(true);
-    setStatus(null);
     const { default: liff } = await import("@line/liff");
     const accessToken = liff.getAccessToken();
 
@@ -275,7 +274,7 @@ export default function RegisterPage() {
 
     const data = await response.json();
     if (response.status === 409 && data?.takeoverRequestId) {
-      setStatus(
+      toast.error(
         data?.error ??
           "ห้องนี้มีผู้เช่าอยู่แล้ว ระบบส่งคำขอย้ายเข้าให้แอดมินแล้ว กรุณารอการอนุมัติก่อนลงทะเบียนอีกครั้ง"
       );
@@ -283,9 +282,9 @@ export default function RegisterPage() {
       return;
     }
     if (!response.ok) {
-      setStatus(data?.error ?? "ลงทะเบียนไม่สำเร็จ");
+      toast.error(data?.error ?? "ลงทะเบียนไม่สำเร็จ");
     } else {
-      setStatus("ลงทะเบียนสำเร็จ");
+      toast.success("ลงทะเบียนสำเร็จ");
       setShowSuccessOverlay(true);
       setRoomNumber("");
       setPickedRoomId(null);
@@ -368,11 +367,9 @@ export default function RegisterPage() {
                                 setSuggestions([]);
                                 if (needsTakeover) {
                                   setIsNewTenant(true);
-                                  setStatus(
+                                  toast.success(
                                     "ห้องนี้มีผู้เช่าอยู่แล้ว — เลือก「ผู้เช่าใหม่」แล้วส่งแบบฟอร์มเพื่อขออนุมัติย้ายเข้า"
                                   );
-                                } else {
-                                  setStatus(null);
                                 }
                               }}
                               className={`w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-white ${
@@ -540,12 +537,10 @@ export default function RegisterPage() {
             </form>
           </div>
         ) : (
-          <p className="mt-6 text-sm text-red-600">{status ?? "ไม่สามารถโหลดโปรไฟล์ LINE ได้"}</p>
+          <p className="mt-6 text-sm text-red-600">ไม่สามารถโหลดโปรไฟล์ LINE ได้</p>
         )}
 
-        {status && profile && (
-          <p className="mt-4 rounded-xl bg-slate-100 px-3 py-2 text-xs text-slate-600">{status}</p>
-        )}
+
 
         <p className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
           กรุณาใส่ชื่อ-นามสกุลเต็มของผู้เช่าเพื่อความถูกต้องในการออกใบแจ้งหนี้และใบเสร็จ
@@ -614,7 +609,6 @@ export default function RegisterPage() {
                   onClick={() => {
                     setPolicyAccepted(true);
                     setPolicyModalOpen(false);
-                    setStatus(null);
                   }}
                   className="rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white"
                 >

@@ -1,6 +1,7 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 import { Badge } from "@/components/ui/Badge";
 import { Card } from "@/components/ui/Card";
 import { Modal } from "@/components/ui/Modal";
@@ -72,7 +73,6 @@ export default function RoomsPage() {
   const [buildings, setBuildings] = useState<string[]>([]);
   const [activeBuilding, setActiveBuilding] = useState<string>("");
   const [selectedRoom, setSelectedRoom] = useState<RoomRecord | null>(null);
-  const [status, setStatus] = useState<string | null>(null);
   const [movementLogs, setMovementLogs] = useState<TenantMovementRow[]>([]);
   const [movementLoading, setMovementLoading] = useState(false);
 
@@ -100,7 +100,7 @@ export default function RoomsPage() {
       .order("room_number");
 
     if (fetchError) {
-      setStatus(fetchError.message);
+      toast.error(fetchError.message);
       return;
     }
 
@@ -123,7 +123,7 @@ export default function RoomsPage() {
     try {
       await callRoomsAction("toggle_status", { roomId: room.id, status: nextStatus });
     } catch (error: any) {
-      setStatus(error?.message ?? "อัปเดตสถานะห้องไม่สำเร็จ");
+      toast.error(error?.message ?? "อัปเดตสถานะห้องไม่สำเร็จ");
       return;
     }
 
@@ -131,12 +131,12 @@ export default function RoomsPage() {
       prev.map((item) => (item.id === room.id ? { ...item, status: nextStatus } : item))
     );
     setSelectedRoom((prev) => (prev && prev.id === room.id ? { ...prev, status: nextStatus } : prev));
-    setStatus(`เปลี่ยนสถานะห้อง ${room.room_number} เป็น ${statusLabel(nextStatus)} แล้ว`);
+    toast.success(`เปลี่ยนสถานะห้อง ${room.room_number} เป็น ${statusLabel(nextStatus)} แล้ว`);
   };
 
   const sendLineReminder = async (room: RoomRecord) => {
     if (!room.tenant_line_user_id) {
-      setStatus("ผู้เช่ายังไม่ได้เชื่อม LINE");
+      toast.error("ผู้เช่ายังไม่ได้เชื่อม LINE");
       return;
     }
 
@@ -149,7 +149,7 @@ export default function RoomsPage() {
       .maybeSingle();
 
     if (!latestInvoice) {
-      setStatus("ไม่พบใบแจ้งหนี้ของห้องนี้");
+      toast.error("ไม่พบใบแจ้งหนี้ของห้องนี้");
       return;
     }
 
@@ -158,7 +158,7 @@ export default function RoomsPage() {
     const { data: sessionData } = await supabase.auth.getSession();
     const token = sessionData.session?.access_token;
     if (!token) {
-      setStatus("Session หมดอายุ กรุณาเข้าสู่ระบบใหม่");
+      toast.error("Session หมดอายุ กรุณาเข้าสู่ระบบใหม่");
       return;
     }
 
@@ -183,11 +183,11 @@ export default function RoomsPage() {
       const detail = [data?.error, data?.lineStatus && `LINE ${data.lineStatus}`, data?.lineMessage]
         .filter(Boolean)
         .join(" | ");
-      setStatus(detail || "ส่งแจ้งเตือน LINE ไม่สำเร็จ");
+      toast.error(detail || "ส่งแจ้งเตือน LINE ไม่สำเร็จ");
       return;
     }
 
-    setStatus(`ส่งแจ้งเตือน LINE ไปห้อง ${room.room_number} แล้ว`);
+    toast.success(`ส่งแจ้งเตือน LINE ไปห้อง ${room.room_number} แล้ว`);
   };
 
   const filteredRooms = rooms.filter((room) => room.building_name === activeBuilding);
@@ -201,7 +201,7 @@ export default function RoomsPage() {
       .order("move_in_date", { ascending: false });
 
     if (error) {
-      setStatus(error.message);
+      toast.error(error.message);
       setMovementLogs([]);
       setMovementLoading(false);
       return;
@@ -237,7 +237,7 @@ export default function RoomsPage() {
         ))}
       </div>
 
-      {status && <span className="text-sm text-slate-600">{status}</span>}
+
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {filteredRooms.map((room) => (

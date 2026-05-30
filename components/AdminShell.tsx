@@ -7,6 +7,8 @@ import { getAdminNav } from "./admin-nav";
 import { createClient } from "@/lib/supabase-client";
 import { t } from "@/lib/i18n";
 import { useUiLanguage } from "@/lib/use-ui-language";
+import { useRealtimeInvoices } from "@/lib/hooks/use-realtime-invoices";
+import { ErrorBoundary } from "./ErrorBoundary";
 
 const toTitle = (pathname: string, labels: ReturnType<typeof getAdminNav>) => {
   const match = labels.find((item) =>
@@ -27,6 +29,9 @@ export default function AdminShell({ children }: { children: ReactNode }) {
     () => toTitle(pathname, navItems) ?? t(locale, "nav_dashboard"),
     [locale, pathname, navItems]
   );
+  
+  useRealtimeInvoices();
+
   const crumbs = [
     { label: "Apartment Flow", href: "/" },
     { label: pageTitle, href: pathname },
@@ -115,7 +120,9 @@ export default function AdminShell({ children }: { children: ReactNode }) {
           </div>
         </header>
         <main className="mx-auto w-full max-w-[1600px] px-4 py-5 md:px-8 md:py-7 animate-fade-in-up">
-          {children}
+          <ErrorBoundary>
+            {children}
+          </ErrorBoundary>
         </main>
       </div>
     </div>

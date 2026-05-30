@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { toast } from "sonner";
 
 type LiffProfile = {
   userId: string;
@@ -16,7 +17,6 @@ export default function MeterStaffRegisterPage() {
   const [staffNote, setStaffNote] = useState("");
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
-  const [status, setStatus] = useState<string | null>(null);
   const [registered, setRegistered] = useState(false);
 
   useEffect(() => {
@@ -35,7 +35,7 @@ export default function MeterStaffRegisterPage() {
         const { default: liff } = await import("@line/liff");
         const liffId = process.env.NEXT_PUBLIC_METER_STAFF_REGISTER_LIFF_ID;
         if (!liffId) {
-          setStatus("ไม่พบ NEXT_PUBLIC_METER_STAFF_REGISTER_LIFF_ID ใน .env");
+          toast.error("ไม่พบ NEXT_PUBLIC_METER_STAFF_REGISTER_LIFF_ID ใน .env");
           setLoading(false);
           return;
         }
@@ -57,7 +57,7 @@ export default function MeterStaffRegisterPage() {
         setAccessToken(liff.getAccessToken() || "");
         setLoading(false);
       } catch (error: any) {
-        setStatus(error?.message ?? "เริ่มต้น LINE LIFF ไม่สำเร็จ");
+        toast.error(error?.message ?? "เริ่มต้น LINE LIFF ไม่สำเร็จ");
         setLoading(false);
       }
     };
@@ -67,12 +67,12 @@ export default function MeterStaffRegisterPage() {
 
   const handleRegister = async () => {
     if (!accessToken) {
-      setStatus("Session หมดอายุ กรุณาเข้าใหม่อีกครั้ง");
+      toast.error("Session หมดอายุ กรุณาเข้าใหม่อีกครั้ง");
       return;
     }
 
     setSubmitting(true);
-    setStatus(null);
+
 
     try {
       const response = await fetch("/api/meter-staff/register", {
@@ -88,9 +88,9 @@ export default function MeterStaffRegisterPage() {
         throw new Error(data?.error ?? "ลงทะเบียนไม่สำเร็จ");
       }
       setRegistered(true);
-      setStatus(data?.message ?? "ลงทะเบียนสำเร็จ");
+      toast.success(data?.message ?? "ลงทะเบียนสำเร็จ");
     } catch (error: any) {
-      setStatus(error?.message ?? "ลงทะเบียนไม่สำเร็จ");
+      toast.error(error?.message ?? "ลงทะเบียนไม่สำเร็จ");
     } finally {
       setSubmitting(false);
     }
@@ -151,17 +151,10 @@ export default function MeterStaffRegisterPage() {
             )}
           </div>
         ) : (
-          <p className="mt-6 text-sm text-red-600">{status ?? "ไม่สามารถเชื่อมต่อ LINE ได้"}</p>
+          <p className="mt-6 text-sm text-red-600">ไม่สามารถเชื่อมต่อ LINE ได้</p>
         )}
 
-        {status && (
-          <p
-            className={`mt-4 text-sm ${registered ? "text-emerald-700" : "text-slate-600"}`}
-            role="status"
-          >
-            {status}
-          </p>
-        )}
+
       </div>
     </div>
   );
