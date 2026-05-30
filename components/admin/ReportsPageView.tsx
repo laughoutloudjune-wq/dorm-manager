@@ -930,7 +930,7 @@ export default function ReportsPageView() {
                         <td className="px-3 py-2 text-right">{formatMoney(selectedIncomeInvoice.late_fee_amount)}</td>
                       </tr>
                     )}
-                    {Array.isArray(selectedIncomeInvoice.additional_fees_breakdown) && selectedIncomeInvoice.additional_fees_breakdown.map((fee, idx) => (
+                    {Array.isArray(selectedIncomeInvoice.additional_fees_breakdown) && selectedIncomeInvoice.additional_fees_breakdown.map((fee: any, idx: number) => (
                       <tr key={idx} className="border-b border-slate-100">
                         <td className="px-3 py-2">ค่าอื่นๆ ({fee.detail || fee.label || '-'})</td>
                         <td className="px-3 py-2 text-right">{formatMoney(fee.amount || fee.total_amount)}</td>
