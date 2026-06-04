@@ -655,7 +655,7 @@ export function useInvoicesState() {
   const openSlipViewer = (invoice: InvoiceRecord) => {
     const urls = extractAllSlipUrls(invoice);
     if (urls.length === 0) return;
-    setSlipModalTitle(สลิปการชำระเงิน - ห้อง );
+    setSlipModalTitle(`สลิปการชำระเงิน - ห้อง ${invoice.room_number}`);
     setSlipModalUrl(urls);
     setSlipModalOpen(true);
   };
