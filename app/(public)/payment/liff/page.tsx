@@ -33,6 +33,7 @@ type TenantInfo = {
   full_name: string;
   room_number: string;
   has_corporate_receipt?: boolean;
+  policy_accepted?: boolean;
 };
 
 type MoveOutRequest = {
@@ -156,6 +157,7 @@ export default function PaymentLiffPage() {
   const [moveOutDate, setMoveOutDate] = useState(() => addDaysBangkok(bangkokYmd(), 30));
   const [moveOutNote, setMoveOutNote] = useState("");
   const [moveOutSubmitting, setMoveOutSubmitting] = useState(false);
+  const [isAcceptingPolicy, setIsAcceptingPolicy] = useState(false);
 
   useEffect(() => {
     const boot = async () => {
@@ -383,6 +385,33 @@ export default function PaymentLiffPage() {
     }
   };
 
+  const handleAcceptPolicy = async () => {
+    if (!accessToken) return;
+    setIsAcceptingPolicy(true);
+    setMessage(null);
+    try {
+      const response = await fetch("/api/payment-liff/accept-policy", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "ngrok-skip-browser-warning": "true",
+        },
+        body: JSON.stringify({ accessToken, policyVersion: "v1.0" }),
+      });
+
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data?.error ?? "ยอมรับเงื่อนไขไม่สำเร็จ");
+      }
+
+      setTenant((prev) => prev ? { ...prev, policy_accepted: true } : null);
+    } catch (error: any) {
+      setMessage(error?.message ?? "ยอมรับเงื่อนไขไม่สำเร็จ");
+    } finally {
+      setIsAcceptingPolicy(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-slate-50 px-4 py-8">
       <div className="mx-auto w-full max-w-md space-y-4">
@@ -414,13 +443,36 @@ export default function PaymentLiffPage() {
               <div className="rounded-xl bg-slate-100 p-3 text-sm text-slate-700">{message}</div>
             )}
 
-            {submitted && (
-              <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
-                ส่งข้อมูลชำระเงินเรียบร้อยแล้ว ระบบกำลังรอตรวจสอบสลิปของคุณ
+            {tenant && !tenant.policy_accepted ? (
+              <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+                <h2 className="text-lg font-semibold text-slate-900">เงื่อนไขและข้อตกลงการใช้งาน</h2>
+                <div className="mt-4 max-h-[40vh] overflow-y-auto rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+                  <p className="font-semibold text-slate-800">นโยบายความเป็นส่วนตัว (Privacy Policy)</p>
+                  <p className="mt-2">1. การจัดเก็บข้อมูล: หอพักจะจัดเก็บข้อมูลส่วนบุคคลของท่าน ได้แก่ ชื่อ เบอร์โทรศัพท์ และข้อมูลที่เกี่ยวข้องกับการเช่า เพื่อใช้ในการบริหารจัดการหอพัก</p>
+                  <p className="mt-2">2. การใช้ข้อมูล: ข้อมูลของท่านจะถูกใช้เพื่อการออกบิล ติดต่อสื่อสาร และการจัดการที่เกี่ยวข้องกับหอพักเท่านั้น ไม่มีการนำไปเปิดเผยให้บุคคลที่สามโดยไม่ได้รับอนุญาต</p>
+                  <p className="mt-2 font-semibold text-slate-800">ข้อตกลงการชำระเงินและการใช้งาน</p>
+                  <p className="mt-2">3. การชำระเงิน: ผู้เช่าตกลงที่จะชำระค่าเช่าและค่าใช้จ่ายอื่นๆ ตามที่ระบุในใบแจ้งหนี้ ภายในวันที่กำหนด หากเกินกำหนดอาจมีค่าปรับตามสัญญา</p>
+                  <p className="mt-2">4. การตรวจสอบ: เมื่อผู้เช่าแนบสลิปผ่านระบบ จะต้องรอการตรวจสอบจากผู้ดูแลหอพัก การชำระเงินจะสมบูรณ์เมื่อได้รับการยืนยันแล้วเท่านั้น</p>
+                  <p className="mt-2">5. ความถูกต้องของข้อมูล: ผู้เช่าขอรับรองว่าข้อมูลสลิปและข้อมูลอื่นๆ ที่ส่งผ่านระบบเป็นความจริงทุกประการ</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void handleAcceptPolicy()}
+                  disabled={isAcceptingPolicy}
+                  className="mt-6 w-full rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+                >
+                  {isAcceptingPolicy ? "กำลังบันทึก..." : "ยอมรับเงื่อนไขและเข้าสู่ระบบ"}
+                </button>
               </div>
-            )}
+            ) : (
+              <>
+                {submitted && (
+                  <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
+                    ส่งข้อมูลชำระเงินเรียบร้อยแล้ว ระบบกำลังรอตรวจสอบสลิปของคุณ
+                  </div>
+                )}
 
-            {tenant && (
+                {tenant && (
               <div className="rounded-2xl border border-orange-200 bg-white p-4 shadow-sm">
                 <div className="flex items-start justify-between gap-3">
                   <div>
@@ -678,6 +730,8 @@ export default function PaymentLiffPage() {
                   ))}
                 </div>
               </div>
+            )}
+            </>
             )}
 
             {showRegisterButton && (

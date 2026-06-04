@@ -1,4 +1,4 @@
-﻿import { NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase-admin";
 
 const toNumber = (value: unknown) => {
@@ -30,7 +30,7 @@ export async function POST(req: Request) {
 
     const { data: tenant, error: tenantError } = await supabase
       .from("tenants")
-      .select("id,room_id,full_name,custom_receipt_profile,rooms(room_number)")
+      .select("id,room_id,full_name,custom_receipt_profile,policy_accepted,rooms(room_number)")
       .eq("line_user_id", lineUserId)
       .maybeSingle();
 
@@ -156,6 +156,7 @@ export async function POST(req: Request) {
         full_name: (tenant as any).full_name,
         room_number: roomRel?.room_number ?? "-",
         has_corporate_receipt: !!(tenant as any)?.custom_receipt_profile,
+        policy_accepted: !!(tenant as any)?.policy_accepted,
       },
       invoices: visiblePendingInvoices.map((invoice: any) => ({
         ...invoice,

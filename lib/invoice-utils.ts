@@ -53,6 +53,16 @@ export const formatPeriodLabel = (dateString: string | null | undefined) => {
   return `${month}/${year}`;
 };
 
+export const extractAllSlipUrls = (invoice: { slip_url?: string | null; payment_history?: any[] | null }): string[] => {
+  const urls = new Set<string>();
+  if (invoice.slip_url) urls.add(invoice.slip_url);
+  const history = Array.isArray(invoice.payment_history) ? invoice.payment_history : [];
+  for (const item of history) {
+    if (item?.slip_url) urls.add(item.slip_url);
+  }
+  return Array.from(urls);
+};
+
 export const parseMoneyString = (value: string | null | undefined) => {
   const cleaned = String(value ?? "")
     .replace(/[^\d.-]/g, "")

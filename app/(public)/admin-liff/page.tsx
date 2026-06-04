@@ -365,25 +365,44 @@ export default function AdminLiffPage() {
                         </div>
                       </div>
                     )}
-                    {selectedInvoice.slip_url ? (
-                      <a
-                        href={selectedInvoice.slip_url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="block overflow-hidden rounded-lg border border-slate-200"
-                      >
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img
-                          src={selectedInvoice.slip_url}
-                          alt="payment slip"
-                          className="h-52 w-full object-cover"
-                        />
-                      </a>
-                    ) : (
-                      <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
-                        ไม่มีสลิปชำระเงิน
-                      </div>
-                    )}
+                    {(() => {
+                      const urls = selectedInvoice ? Array.from(new Set([
+                        ...(selectedInvoice.slip_url ? [selectedInvoice.slip_url] : []),
+                        ...(Array.isArray(selectedInvoice.payment_history) ? selectedInvoice.payment_history.map((h: any) => h.slip_url).filter(Boolean) : [])
+                      ])) : [];
+                      
+                      if (urls.length === 0) {
+                        return (
+                          <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
+                            ไม่มีสลิปชำระเงิน
+                          </div>
+                        );
+                      }
+                      
+                      return (
+                        <div className="space-y-2">
+                          <p className="text-xs font-semibold text-slate-600">สลิปชำระเงิน ({urls.length})</p>
+                          <div className="flex overflow-x-auto gap-2 pb-2">
+                            {urls.map((url, idx) => (
+                              <a
+                                key={idx}
+                                href={url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="block shrink-0 overflow-hidden rounded-lg border border-slate-200 w-48 h-52"
+                              >
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img
+                                  src={url}
+                                  alt={`payment slip ${idx + 1}`}
+                                  className="h-full w-full object-cover"
+                                />
+                              </a>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })()}
                     <input
                       type="date"
                       value={paymentDate}

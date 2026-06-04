@@ -53,6 +53,7 @@ import {
   parsePaymentMethodText,
   invoiceDisplayOutstanding,
   calculateInvoiceTransferRentProration,
+  extractAllSlipUrls,
   type FeeLineItem,
   type CarryForwardItem,
   type LateFeeLineItem,
@@ -100,7 +101,7 @@ export function useInvoicesState() {
   const [selectedMonth, setSelectedMonth] = useState(() => new Date().toISOString().slice(0, 7));
   const [useProrateInModal, setUseProrateInModal] = useState(false);
   const [slipModalOpen, setSlipModalOpen] = useState(false);
-  const [slipModalUrl, setSlipModalUrl] = useState<string | null>(null);
+  const [slipModalUrl, setSlipModalUrl] = useState<string | string[] | null>(null);
   const [slipModalTitle, setSlipModalTitle] = useState<string>("");
 
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
@@ -652,9 +653,10 @@ export function useInvoicesState() {
   };
 
   const openSlipViewer = (invoice: InvoiceRecord) => {
-    if (!invoice.slip_url) return;
-    setSlipModalTitle(`สลิปการชำระเงิน - ห้อง ${invoice.room_number}`);
-    setSlipModalUrl(invoice.slip_url);
+    const urls = extractAllSlipUrls(invoice);
+    if (urls.length === 0) return;
+    setSlipModalTitle(สลิปการชำระเงิน - ห้อง );
+    setSlipModalUrl(urls);
     setSlipModalOpen(true);
   };
 
@@ -3168,3 +3170,4 @@ export function useInvoicesState() {
     modalProrateSummary,
   };
 }
+

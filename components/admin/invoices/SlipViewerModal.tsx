@@ -172,13 +172,15 @@ export function SlipViewerModal() {
             title={slipModalTitle || "สลิปการชำระเงิน"}
             size="lg"
           >
-            {slipModalUrl ? (
-              <div className="space-y-3">
-                <img src={slipModalUrl} alt="สลิปการชำระเงิน" className="w-full rounded-xl border border-slate-200" />
-                <div className="flex justify-end">
+            {slipModalUrl && (Array.isArray(slipModalUrl) ? slipModalUrl.length > 0 : true) ? (
+              <div className="space-y-3 max-h-[80vh] overflow-y-auto pr-2">
+                {(Array.isArray(slipModalUrl) ? slipModalUrl : [slipModalUrl]).map((url, idx) => (
+                  <img key={idx} src={url} alt={`สลิปการชำระเงิน ${idx + 1}`} className="w-full rounded-xl border border-slate-200" />
+                ))}
+                <div className="flex justify-end sticky bottom-0 bg-white/90 p-2 backdrop-blur-sm rounded-xl">
                   <button
                     onClick={() => setSlipModalOpen(false)}
-                    className="rounded-xl border border-slate-200 px-4 py-2 text-sm text-slate-600"
+                    className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm text-slate-600 shadow-sm"
                   >
                     ปิด
                   </button>
