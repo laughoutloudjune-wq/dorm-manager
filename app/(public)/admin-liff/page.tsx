@@ -25,6 +25,7 @@ type AdminLiffInvoice = {
   discount_amount?: number | null;
   additional_fees_breakdown?: any[] | null;
   discount_breakdown?: any[] | null;
+  payment_history?: any[] | null;
   slip_url?: string | null;
   tenants?:
     | { full_name?: string | null; line_user_id?: string | null }
