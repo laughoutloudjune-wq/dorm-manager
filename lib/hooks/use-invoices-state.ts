@@ -7,7 +7,12 @@ import { Input } from "@/components/ui/Input";
 import { ConfirmActionModal } from "@/components/ui/ConfirmActionModal";
 import { createClient } from "@/lib/supabase-client";
 import { usePermissions } from "@/lib/use-permissions";
-import { getCarryForwardCandidatesForTarget } from "@/lib/invoice-ledger";
+import {
+  getCarryForwardCandidatesForTarget,
+  calculateLateFeeAmount,
+  toDateOnly,
+  dayDiffInclusive,
+} from "@/lib/invoice-ledger";
 import {
   toNumber,
   roundTo2,
@@ -2798,7 +2803,7 @@ export function useInvoicesState() {
         ? await supabase
             .from("invoices")
             .select(
-              "id,tenant_id,start_date,due_date,total_amount,paid_amount,status,late_fee_amount",
+              "id,tenant_id,start_date,due_date,total_amount,paid_amount,status,late_fee_amount,late_fee_per_day,late_fee_start_date,waived_late_fee_amount,locked_late_fee_amount",
             )
             .in("tenant_id", tenantIdsToGenerate)
             .lt("start_date", toLocalDateString(startDate))
@@ -2872,12 +2877,38 @@ export function useInvoicesState() {
       const generationDateText = issueDateText;
       const tenantId = String(row.tenant_id ?? "");
       if (!tenantId) continue;
+
+      // Calculate the accrued late fee on this source invoice as of the generation date.
+      // If the invoice already has a locked_late_fee_amount, use that (already frozen).
+      const snapshotLateFee = calculateLateFeeAmount(
+        {
+          late_fee_start_date: row.late_fee_start_date ?? null,
+          late_fee_per_day: row.late_fee_per_day ?? 0,
+          waived_late_fee_amount: row.waived_late_fee_amount ?? 0,
+          locked_late_fee_amount: row.locked_late_fee_amount ?? null,
+        },
+        generationDateText,
+      );
+
+      // Calculate days overdue for display
+      const lateFeeStartDate = row.late_fee_start_date
+        ? toDateOnly(row.late_fee_start_date)
+        : null;
+      const generationDate = toDateOnly(generationDateText);
+      const daysOverdue =
+        lateFeeStartDate && generationDate >= lateFeeStartDate
+          ? dayDiffInclusive(lateFeeStartDate, generationDate)
+          : 0;
+
       const currentRows = carryForwardByTenant.get(tenantId) ?? [];
       currentRows.push({
         ...row,
         outstanding_amount: outstanding,
         base_outstanding_amount: outstanding,
         snapshot_as_of: generationDateText,
+        snapshot_late_fee_amount: snapshotLateFee,
+        snapshot_days_overdue: daysOverdue,
+        snapshot_daily_rate: toNumber(row.late_fee_per_day ?? 0),
       });
       carryForwardByTenant.set(tenantId, currentRows);
     }
@@ -3026,6 +3057,29 @@ export function useInvoicesState() {
         amount: toNumber(row.base_outstanding_amount),
       }));
 
+      // Carried late fees — one line item per source invoice that has an accrued late fee
+      const lateFeeBreakdown = carryForwardRows
+        .filter((row: any) => toNumber(row.snapshot_late_fee_amount) > 0)
+        .map((row: any) => ({
+          item_type: "late_fee",
+          source_invoice_id: row.id,
+          label: `ค่าปรับล่าช้างวด ${formatPeriodLabel(String(row.start_date ?? ""))} (${row.snapshot_days_overdue} วัน × ${toNumber(row.snapshot_daily_rate).toFixed(0)} บาท)`,
+          detail: `ค่าปรับล่าช้างวด ${formatPeriodLabel(String(row.start_date ?? ""))}`,
+          unit: toNumber(row.snapshot_days_overdue),
+          price_per_unit: toNumber(row.snapshot_daily_rate),
+          total_amount: toNumber(row.snapshot_late_fee_amount),
+          amount: toNumber(row.snapshot_late_fee_amount),
+          days_overdue: toNumber(row.snapshot_days_overdue),
+          daily_rate: toNumber(row.snapshot_daily_rate),
+          original_amount: toNumber(row.snapshot_late_fee_amount),
+          waived_amount: 0,
+        }));
+
+      const carriedLateFeeTotal = lateFeeBreakdown.reduce(
+        (sum: number, item: any) => sum + toNumber(item.total_amount),
+        0,
+      );
+
       const commonFee = toNumber(settings.common_fee);
       const totalAmount =
         rentAmount +
@@ -3033,7 +3087,8 @@ export function useInvoicesState() {
         elecBill +
         commonFee +
         additionalTotal +
-        carryForwardAmount -
+        carryForwardAmount +
+        carriedLateFeeTotal -
         discountAmount;
       const transferBreakdownRows = hasTransferToThisRoom
         ? serializeTransferBreakdownRows([
@@ -3087,9 +3142,10 @@ export function useInvoicesState() {
         late_fee_per_day: lateFeePerDay,
         late_fee_start_date: generatedLateFeeStartDateText,
         carry_forward_amount: carryForwardAmount,
-        additional_fees_total: additionalTotal,
+        additional_fees_total: additionalTotal + carriedLateFeeTotal,
         additional_fees_breakdown: [
           ...carryForwardBreakdown,
+          ...lateFeeBreakdown,
           ...additionalBreakdown,
           ...transferBreakdownRows,
         ],
@@ -3152,6 +3208,22 @@ export function useInvoicesState() {
             .insert(arrearsSnapshotPayload);
           if (snapshotInsertError) {
             setError(snapshotInsertError.message);
+          }
+        }
+
+        // Freeze the late fee on every source invoice that was carried forward.
+        // This stops them from accruing further — their late fee now lives in the new invoice.
+        const allSourceRows = (insertedInvoices ?? []).flatMap((row: any) =>
+          carryForwardByTenant.get(String(row.tenant_id ?? "")) ?? [],
+        );
+        for (const carryRow of allSourceRows) {
+          const freezeAmount = toNumber(carryRow.snapshot_late_fee_amount);
+          // Only freeze if the late fee isn't already locked (avoid overwriting existing lock)
+          if (carryRow.locked_late_fee_amount == null) {
+            await supabase
+              .from("invoices")
+              .update({ locked_late_fee_amount: freezeAmount })
+              .eq("id", carryRow.id);
           }
         }
       }

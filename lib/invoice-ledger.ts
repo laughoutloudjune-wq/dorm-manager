@@ -61,12 +61,12 @@ const toNumber = (value: unknown) => {
   return Number.isNaN(parsed) ? 0 : parsed;
 };
 
-const toDateOnly = (value: string) => {
+export const toDateOnly = (value: string) => {
   const [year, month, day] = String(value).split("-").map(Number);
   return new Date(year, (month || 1) - 1, day || 1);
 };
 
-const dayDiffInclusive = (left: Date, right: Date) => {
+export const dayDiffInclusive = (left: Date, right: Date) => {
   const leftUtc = Date.UTC(left.getFullYear(), left.getMonth(), left.getDate());
   const rightUtc = Date.UTC(
     right.getFullYear(),
@@ -264,6 +264,8 @@ export async function syncInvoiceLedger(
       }
     }
     // Only update late_fee_amount tracking column — never total_amount.
+    // Also skip if locked_late_fee_amount is already set (invoice has been carried forward
+    // and frozen — its late fee now lives in the next invoice).
     if (lateFeeDiff !== 0 && invoice.locked_late_fee_amount == null) {
       updatePayload.late_fee_amount = newLateFee;
     }

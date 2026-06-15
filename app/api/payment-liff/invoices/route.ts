@@ -49,7 +49,7 @@ export async function POST(req: Request) {
     const { data: pendingInvoices, error: pendingError } = await supabase
       .from("invoices")
       .select(
-        "id,public_token,issue_date,due_date,total_amount,paid_amount,status,rent_amount,water_bill,electricity_bill,common_fee,additional_fees_total,carry_forward_amount"
+        "id,public_token,issue_date,due_date,total_amount,paid_amount,status,rent_amount,water_bill,electricity_bill,common_fee,additional_fees_total,carry_forward_amount,late_fee_amount,late_fee_per_day,late_fee_start_date,waived_late_fee_amount,locked_late_fee_amount"
       )
       .eq("tenant_id", tenant.id)
       .in("status", ["pending", "partial", "overdue", "verifying"])
@@ -101,7 +101,7 @@ export async function POST(req: Request) {
 
     const { data: paidInvoices, error: paidError } = await supabase
       .from("invoices")
-      .select("id,public_token,issue_date,due_date,total_amount,paid_amount,status")
+      .select("id,public_token,issue_date,due_date,total_amount,paid_amount,status,late_fee_amount")
       .eq("tenant_id", tenant.id)
       .eq("status", "paid")
       .order("issue_date", { ascending: false })
@@ -125,29 +125,6 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: moveOutError.message }, { status: 500 });
     }
 
-    const visiblePendingInvoiceIds = visiblePendingInvoices.map((row: any) => String(row.id));
-    const { data: arrearsSnapshots, error: arrearsError } =
-      visiblePendingInvoiceIds.length > 0
-        ? await supabase
-            .from("invoice_arrears_snapshots")
-            .select(
-              "id,target_invoice_id,source_invoice_id,snapshot_as_of,late_fee_amount,days_overdue,daily_rate"
-            )
-            .in("target_invoice_id", visiblePendingInvoiceIds)
-            .order("created_at", { ascending: true })
-        : { data: [], error: null as any };
-
-    if (arrearsError) {
-      return NextResponse.json({ error: arrearsError.message }, { status: 500 });
-    }
-
-    const arrearsByInvoice = new Map<string, any[]>();
-    for (const row of arrearsSnapshots ?? []) {
-      const key = String((row as any).target_invoice_id ?? "");
-      if (!arrearsByInvoice.has(key)) arrearsByInvoice.set(key, []);
-      arrearsByInvoice.get(key)!.push(row as any);
-    }
-
     const roomRel = Array.isArray((tenant as any).rooms) ? (tenant as any).rooms[0] : (tenant as any).rooms;
 
     return NextResponse.json({
@@ -158,28 +135,8 @@ export async function POST(req: Request) {
         has_corporate_receipt: !!(tenant as any)?.custom_receipt_profile,
         policy_accepted: !!(tenant as any)?.policy_accepted,
       },
-      invoices: visiblePendingInvoices.map((invoice: any) => ({
-        ...invoice,
-        late_fee_breakdown: (arrearsByInvoice.get(String(invoice.id)) ?? []).map((row: any) => ({
-          id: String(row.id),
-          source_invoice_id: String(row.source_invoice_id),
-          snapshot_as_of: String(row.snapshot_as_of),
-          late_fee_amount: toNumber(row.late_fee_amount),
-          days_overdue: Math.round(toNumber(row.days_overdue)),
-          daily_rate: toNumber(row.daily_rate),
-        })),
-      })),
-      pending_invoices: visiblePendingInvoices.map((invoice: any) => ({
-        ...invoice,
-        late_fee_breakdown: (arrearsByInvoice.get(String(invoice.id)) ?? []).map((row: any) => ({
-          id: String(row.id),
-          source_invoice_id: String(row.source_invoice_id),
-          snapshot_as_of: String(row.snapshot_as_of),
-          late_fee_amount: toNumber(row.late_fee_amount),
-          days_overdue: Math.round(toNumber(row.days_overdue)),
-          daily_rate: toNumber(row.daily_rate),
-        })),
-      })),
+      invoices: visiblePendingInvoices,
+      pending_invoices: visiblePendingInvoices,
       paid_invoices: paidInvoices ?? [],
       move_out_request: moveOutRequest ?? null,
       message: null,
