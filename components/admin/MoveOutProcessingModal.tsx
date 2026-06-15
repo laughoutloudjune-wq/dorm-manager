@@ -53,7 +53,7 @@ export function MoveOutProcessingModal({
         .from("invoices")
         .select("*")
         .eq("tenant_id", tenantId)
-        .in("status", ["pending", "overdue", "partial", "verifying"]),
+        .in("status", ["pending", "overdue", "partial", "verifying", "draft"]),
       supabase.from("settings").select("*").single(),
       supabase
         .from("move_out_requests")

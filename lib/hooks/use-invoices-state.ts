@@ -8,7 +8,12 @@ import { ConfirmActionModal } from "@/components/ui/ConfirmActionModal";
 import { createClient } from "@/lib/supabase-client";
 import { usePermissions } from "@/lib/use-permissions";
 import { getCarryForwardCandidatesForTarget } from "@/lib/invoice-ledger";
-import { toNumber, roundTo2, formatMoney, toLocalDateString } from "@/lib/format";
+import {
+  toNumber,
+  roundTo2,
+  formatMoney,
+  toLocalDateString,
+} from "@/lib/format";
 import { roomNumberCompare } from "@/lib/tenant-utils";
 import {
   parseDateOnly,
@@ -65,7 +70,7 @@ import {
   PrintSettings,
   PaymentMethodRow,
   normalizeInvoice,
-  statusVariant
+  statusVariant,
 } from "@/lib/invoice-utils";
 import {
   CheckCircle2,
@@ -95,13 +100,19 @@ export function useInvoicesState() {
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [detailOpen, setDetailOpen] = useState(false);
-  const [activeInvoice, setActiveInvoice] = useState<InvoiceRecord | null>(null);
+  const [activeInvoice, setActiveInvoice] = useState<InvoiceRecord | null>(
+    null,
+  );
   const [slipPreview, setSlipPreview] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [selectedMonth, setSelectedMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [selectedMonth, setSelectedMonth] = useState(() =>
+    new Date().toISOString().slice(0, 7),
+  );
   const [useProrateInModal, setUseProrateInModal] = useState(false);
   const [slipModalOpen, setSlipModalOpen] = useState(false);
-  const [slipModalUrl, setSlipModalUrl] = useState<string | string[] | null>(null);
+  const [slipModalUrl, setSlipModalUrl] = useState<string | string[] | null>(
+    null,
+  );
   const [slipModalTitle, setSlipModalTitle] = useState<string>("");
 
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
@@ -110,28 +121,48 @@ export function useInvoicesState() {
   const [confirmSaveOpen, setConfirmSaveOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
-  const [previewInvoice, setPreviewInvoice] = useState<InvoiceRecord | null>(null);
-  const [previewReading, setPreviewReading] = useState<MeterReadingRow | null>(null);
-  const [previewArrearsSnapshots, setPreviewArrearsSnapshots] = useState<ArrearsSnapshotItem[]>([]);
-  const [previewDocType, setPreviewDocType] = useState<"invoice" | "receipt">("invoice");
-  const [printSettings, setPrintSettings] = useState<PrintSettings | null>(null);
-  const [defaultPaymentMethod, setDefaultPaymentMethod] = useState<PaymentMethodRow | null>(null);
+  const [previewInvoice, setPreviewInvoice] = useState<InvoiceRecord | null>(
+    null,
+  );
+  const [previewReading, setPreviewReading] = useState<MeterReadingRow | null>(
+    null,
+  );
+  const [previewArrearsSnapshots, setPreviewArrearsSnapshots] = useState<
+    ArrearsSnapshotItem[]
+  >([]);
+  const [previewDocType, setPreviewDocType] = useState<"invoice" | "receipt">(
+    "invoice",
+  );
+  const [printSettings, setPrintSettings] = useState<PrintSettings | null>(
+    null,
+  );
+  const [defaultPaymentMethod, setDefaultPaymentMethod] =
+    useState<PaymentMethodRow | null>(null);
   const [editableFeeItems, setEditableFeeItems] = useState<FeeLineItem[]>([]);
-  const [editableCarryForwardItems, setEditableCarryForwardItems] = useState<CarryForwardItem[]>([]);
-  const [editableLateFeeItems, setEditableLateFeeItems] = useState<LateFeeLineItem[]>([]);
-  const [arrearsSnapshots, setArrearsSnapshots] = useState<ArrearsSnapshotItem[]>([]);
+  const [editableCarryForwardItems, setEditableCarryForwardItems] = useState<
+    CarryForwardItem[]
+  >([]);
+  const [editableLateFeeItems, setEditableLateFeeItems] = useState<
+    LateFeeLineItem[]
+  >([]);
+  const [arrearsSnapshots, setArrearsSnapshots] = useState<
+    ArrearsSnapshotItem[]
+  >([]);
   const [carryOverCandidates, setCarryOverCandidates] = useState<any[]>([]);
-  const [carryOverCandidatesLoading, setCarryOverCandidatesLoading] = useState(false);
+  const [carryOverCandidatesLoading, setCarryOverCandidatesLoading] =
+    useState(false);
   const paymentIdempotencyKeyRef = useRef<string | null>(null);
   const [allocationResultNotice, setAllocationResultNotice] = useState<{
     batchId: string;
     lines: { invoiceId: string; label: string; amount: number }[];
     idempotentReplay?: boolean;
   } | null>(null);
-  const [editableDiscountItems, setEditableDiscountItems] = useState<FeeLineItem[]>([]);
-  const [transferBreakdownItems, setTransferBreakdownItems] = useState<TransferBreakdownItem[]>(
-    []
-  );
+  const [editableDiscountItems, setEditableDiscountItems] = useState<
+    FeeLineItem[]
+  >([]);
+  const [transferBreakdownItems, setTransferBreakdownItems] = useState<
+    TransferBreakdownItem[]
+  >([]);
   const [showPaymentForm, setShowPaymentForm] = useState(false);
   const [paymentMode, setPaymentMode] = useState<"full" | "partial">("full");
   const [paymentAmountInput, setPaymentAmountInput] = useState<string>("");
@@ -139,8 +170,12 @@ export function useInvoicesState() {
   const [paymentSlipFile, setPaymentSlipFile] = useState<File | null>(null);
   const [paymentSubmitting, setPaymentSubmitting] = useState(false);
   const [lineSendModalOpen, setLineSendModalOpen] = useState(false);
-  const [lineSendState, setLineSendState] = useState<"sending" | "success" | "error">("sending");
-  const [lineSendTitle, setLineSendTitle] = useState("กำลังส่งใบแจ้งหนี้ไป LINE");
+  const [lineSendState, setLineSendState] = useState<
+    "sending" | "success" | "error"
+  >("sending");
+  const [lineSendTitle, setLineSendTitle] = useState(
+    "กำลังส่งใบแจ้งหนี้ไป LINE",
+  );
   const [lineSendMessage, setLineSendMessage] = useState("กำลังดำเนินการ...");
   const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
   const [moveOutWarnings, setMoveOutWarnings] = useState<any[]>([]);
@@ -161,6 +196,8 @@ export function useInvoicesState() {
     late_fee_amount: 0,
     late_fee_per_day: 0,
     late_fee_start_date: "",
+    waived_late_fee_amount: 0,
+    locked_late_fee_amount: null as number | null,
     additional_fees_total: 0,
     total_amount: 0,
     paid_amount: 0,
@@ -202,7 +239,10 @@ export function useInvoicesState() {
     return () => document.removeEventListener("mousedown", onDocPointerDown);
   }, [openActionMenuId]);
 
-  const applyPendingToOverdue = async (periodStart: string, periodEnd: string) => {
+  const applyPendingToOverdue = async (
+    periodStart: string,
+    periodEnd: string,
+  ) => {
     const today = toLocalDateString(new Date());
     const { error: overdueError } = await supabase
       .from("invoices")
@@ -217,7 +257,10 @@ export function useInvoicesState() {
     }
   };
 
-  const applySlipToVerifying = async (periodStart: string, periodEnd: string) => {
+  const applySlipToVerifying = async (
+    periodStart: string,
+    periodEnd: string,
+  ) => {
     const { error: verifyingError } = await supabase
       .from("invoices")
       .update({ status: "verifying" })
@@ -249,20 +292,30 @@ export function useInvoicesState() {
     const { data: invoicesInMonth, error: invoiceError } = await supabase
       .from("invoices")
       .select(
-        "id,room_id,status,rent_amount,water_bill,electricity_bill,common_fee,late_fee_amount,carry_forward_amount,additional_fees_total,discount_amount,discount_breakdown,total_amount"
+        "id,room_id,status,rent_amount,water_bill,electricity_bill,common_fee,late_fee_amount,carry_forward_amount,additional_fees_total,discount_amount,discount_breakdown,total_amount",
       )
       .eq("start_date", periodStart)
       .eq("end_date", periodEnd);
 
-    if (invoiceError || !invoicesInMonth || invoicesInMonth.length === 0) return;
+    if (invoiceError || !invoicesInMonth || invoicesInMonth.length === 0)
+      return;
 
-    const roomIds = [...new Set(invoicesInMonth.map((row: any) => row.room_id).filter(Boolean))];
+    const roomIds = [
+      ...new Set(
+        invoicesInMonth.map((row: any) => row.room_id).filter(Boolean),
+      ),
+    ];
     const { data: readings } = await supabase
       .from("meter_readings")
       .select("room_id,electricity_usage,water_usage,usage")
       .eq("reading_month", monthKey)
-      .in("room_id", roomIds.length > 0 ? roomIds : ["00000000-0000-0000-0000-000000000000"]);
-    const readingMap = new Map((readings ?? []).map((row: any) => [row.room_id, row]));
+      .in(
+        "room_id",
+        roomIds.length > 0 ? roomIds : ["00000000-0000-0000-0000-000000000000"],
+      );
+    const readingMap = new Map(
+      (readings ?? []).map((row: any) => [row.room_id, row]),
+    );
 
     const updates = (invoicesInMonth as any[])
       .map((invoice) => {
@@ -272,8 +325,15 @@ export function useInvoicesState() {
         const reading = readingMap.get(invoice.room_id) ?? {};
         const elecUnits = toNumber(reading.electricity_usage);
         const waterUnits = toNumber(reading.water_usage ?? reading.usage);
-        const discountBreakdown = buildRuleBreakdown(discountRules, elecUnits, waterUnits);
-        const discountAmount = discountBreakdown.reduce((sum, fee) => sum + toNumber(fee.amount), 0);
+        const discountBreakdown = buildRuleBreakdown(
+          discountRules,
+          elecUnits,
+          waterUnits,
+        );
+        const discountAmount = discountBreakdown.reduce(
+          (sum, fee) => sum + toNumber(fee.amount),
+          0,
+        );
         const totalAmount =
           toNumber(invoice.rent_amount) +
           toNumber(invoice.water_bill) +
@@ -300,7 +360,12 @@ export function useInvoicesState() {
           total_amount: totalAmount,
         };
       })
-      .filter(Boolean) as { id: string; discount_amount: number; discount_breakdown: any[]; total_amount: number }[];
+      .filter(Boolean) as {
+      id: string;
+      discount_amount: number;
+      discount_breakdown: any[];
+      total_amount: number;
+    }[];
 
     if (updates.length === 0) return;
     for (const update of updates) {
@@ -339,7 +404,7 @@ export function useInvoicesState() {
     const { data, error: fetchError } = await supabase
       .from("invoices")
       .select(
-        "id,tenant_id,room_id,status,total_amount,paid_amount,payment_history,issue_date,due_date,start_date,end_date,rent_amount,water_bill,electricity_bill,common_fee,discount_amount,discount_breakdown,late_fee_amount,late_fee_per_day,late_fee_start_date,carry_forward_amount,additional_fees_total,additional_fees_breakdown,notes,public_token,slip_url,opened_count,first_opened_at,last_opened_at,tenants(full_name,phone_number,line_user_id,custom_payment_method,move_in_date,move_out_date,status),rooms(room_number,price_month,buildings(name))"
+        "id,tenant_id,room_id,status,total_amount,paid_amount,payment_history,issue_date,due_date,start_date,end_date,rent_amount,water_bill,electricity_bill,common_fee,discount_amount,discount_breakdown,late_fee_amount,late_fee_per_day,late_fee_start_date,carry_forward_amount,additional_fees_total,additional_fees_breakdown,notes,public_token,slip_url,opened_count,first_opened_at,last_opened_at,tenants(full_name,phone_number,line_user_id,custom_payment_method,move_in_date,move_out_date,status),rooms(room_number,price_month,buildings(name))",
       )
       .eq("start_date", periodStart)
       .eq("end_date", periodEnd)
@@ -353,16 +418,17 @@ export function useInvoicesState() {
 
       // Fetch all invoices for active tenants to accurately determine "new tenant" status
       const tenantIds = [...new Set(normalized.map((inv) => inv.tenant_id))];
-      const { data: allTenantInvoices } = tenantIds.length > 0 
-        ? await supabase
-          .from("invoices")
-          .select("tenant_id,start_date")
-          .in("tenant_id", tenantIds)
-          .neq("status", "cancelled")
-        : { data: [] };
+      const { data: allTenantInvoices } =
+        tenantIds.length > 0
+          ? await supabase
+              .from("invoices")
+              .select("tenant_id,start_date")
+              .in("tenant_id", tenantIds)
+              .neq("status", "cancelled")
+          : { data: [] };
 
       const invoicesByTenant = new Map<string, string[]>();
-      for (const item of (allTenantInvoices ?? [])) {
+      for (const item of allTenantInvoices ?? []) {
         if (!item?.tenant_id) continue;
         const id = String(item.tenant_id);
         if (!invoicesByTenant.has(id)) invoicesByTenant.set(id, []);
@@ -374,39 +440,53 @@ export function useInvoicesState() {
           const tenantInvoices = invoicesByTenant.get(invoice.tenant_id) ?? [];
           let earliestMonth: string | null = null;
           if (tenantInvoices.length > 0) {
-            const earliestDate = [...tenantInvoices].sort((a, b) => new Date(a).getTime() - new Date(b).getTime())[0];
-            earliestMonth = earliestDate ? String(earliestDate).slice(0, 7) : null;
+            const earliestDate = [...tenantInvoices].sort(
+              (a, b) => new Date(a).getTime() - new Date(b).getTime(),
+            )[0];
+            earliestMonth = earliestDate
+              ? String(earliestDate).slice(0, 7)
+              : null;
           }
 
-          const invoiceMonth = invoice.start_date ? String(invoice.start_date).slice(0, 7) : null;
-          const moveInDate = invoice.tenant_move_in_date ? new Date(invoice.tenant_move_in_date) : null;
-          const invoiceDate = invoice.start_date ? new Date(invoice.start_date) : null;
-          
+          const invoiceMonth = invoice.start_date
+            ? String(invoice.start_date).slice(0, 7)
+            : null;
+          const moveInDate = invoice.tenant_move_in_date
+            ? new Date(invoice.tenant_move_in_date)
+            : null;
+          const invoiceDate = invoice.start_date
+            ? new Date(invoice.start_date)
+            : null;
+
           let diffMonths = -1;
           if (moveInDate && invoiceDate) {
-            diffMonths = (invoiceDate.getFullYear() - moveInDate.getFullYear()) * 12 + (invoiceDate.getMonth() - moveInDate.getMonth());
+            diffMonths =
+              (invoiceDate.getFullYear() - moveInDate.getFullYear()) * 12 +
+              (invoiceDate.getMonth() - moveInDate.getMonth());
           }
 
           const isFirstInvoice = Boolean(
-            invoiceMonth && (
-              invoiceMonth === earliestMonth ||
+            invoiceMonth &&
+            (invoiceMonth === earliestMonth ||
               diffMonths === 0 ||
-              diffMonths === 1
-            )
+              diffMonths === 1),
           );
 
-          const isWaitingMoveOut = Boolean(invoice.tenant_move_out_date && invoice.tenant_status === "active");
+          const isWaitingMoveOut = Boolean(
+            invoice.tenant_move_out_date && invoice.tenant_status === "active",
+          );
 
           // We pass a new flag down to be used for the indicator
           const hydratedInvoice = {
             ...invoice,
             _is_first_regular_invoice: isFirstInvoice,
-            _is_waiting_for_move_out: isWaitingMoveOut
+            _is_waiting_for_move_out: isWaitingMoveOut,
           };
 
           if (hydratedInvoice.slip_url) return hydratedInvoice;
 
-          const { data: files, error: fileError } = await supabase.storage            .from("payment_slips")
+          const { data: files, error: fileError } = await supabase.storage
+            .from("payment_slips")
             .list(invoice.id, {
               limit: 1,
               sortBy: { column: "name", order: "desc" },
@@ -423,18 +503,24 @@ export function useInvoicesState() {
             ...hydratedInvoice,
             slip_url: publicData.publicUrl,
           };
-        })
+        }),
       );
 
       const sortedHydrated = [...hydrated].sort((a, b) => {
-        const byBuilding = a.building_name.localeCompare(b.building_name, undefined, {
-          numeric: true,
-          sensitivity: "base",
-        });
+        const byBuilding = a.building_name.localeCompare(
+          b.building_name,
+          undefined,
+          {
+            numeric: true,
+            sensitivity: "base",
+          },
+        );
         if (byBuilding !== 0) return byBuilding;
         const byRoom = roomNumberCompare(a.room_number, b.room_number);
         if (byRoom !== 0) return byRoom;
-        return new Date(b.issue_date).getTime() - new Date(a.issue_date).getTime();
+        return (
+          new Date(b.issue_date).getTime() - new Date(a.issue_date).getTime()
+        );
       });
       setInvoices(sortedHydrated);
     }
@@ -446,11 +532,18 @@ export function useInvoicesState() {
     void loadInvoices();
   }, [selectedMonth]);
 
-  const patchInvoiceInState = (invoiceId: string, patch: Partial<InvoiceRecord>) => {
+  const patchInvoiceInState = (
+    invoiceId: string,
+    patch: Partial<InvoiceRecord>,
+  ) => {
     setInvoices((prev) =>
-      prev.map((invoice) => (invoice.id === invoiceId ? { ...invoice, ...patch } : invoice))
+      prev.map((invoice) =>
+        invoice.id === invoiceId ? { ...invoice, ...patch } : invoice,
+      ),
     );
-    setActiveInvoice((prev) => (prev && prev.id === invoiceId ? { ...prev, ...patch } : prev));
+    setActiveInvoice((prev) =>
+      prev && prev.id === invoiceId ? { ...prev, ...patch } : prev,
+    );
   };
 
   useEffect(() => {
@@ -458,10 +551,15 @@ export function useInvoicesState() {
       .channel("invoice-settings-realtime")
       .on(
         "postgres_changes",
-        { event: "UPDATE", schema: "public", table: "settings", filter: "id=eq.1" },
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "settings",
+          filter: "id=eq.1",
+        },
         () => {
           void loadInvoices();
-        }
+        },
       )
       .on(
         "postgres_changes",
@@ -470,7 +568,8 @@ export function useInvoicesState() {
           if (payload?.eventType === "UPDATE" && payload?.new?.id) {
             const invoiceId = String(payload.new.id);
             patchInvoiceInState(invoiceId, {
-              status: (payload.new.status as keyof typeof statusVariant) ?? undefined,
+              status:
+                (payload.new.status as keyof typeof statusVariant) ?? undefined,
               paid_amount: toNumber(payload.new.paid_amount),
               total_amount: toNumber(payload.new.total_amount),
               slip_url: payload.new.slip_url ?? null,
@@ -485,15 +584,21 @@ export function useInvoicesState() {
               if (activeInvoice?.id !== invoiceId) return prev;
               return {
                 ...prev,
-                status: (payload.new.status as keyof typeof statusVariant) ?? prev.status,
-                paid_amount: toNumber(payload.new.paid_amount ?? prev.paid_amount),
-                total_amount: toNumber(payload.new.total_amount ?? prev.total_amount),
+                status:
+                  (payload.new.status as keyof typeof statusVariant) ??
+                  prev.status,
+                paid_amount: toNumber(
+                  payload.new.paid_amount ?? prev.paid_amount,
+                ),
+                total_amount: toNumber(
+                  payload.new.total_amount ?? prev.total_amount,
+                ),
               };
             });
             return;
           }
           void loadInvoices();
-        }
+        },
       )
       .subscribe();
 
@@ -510,10 +615,18 @@ export function useInvoicesState() {
     let mounted = true;
     const loadMoveOutWarnings = async () => {
       const monthStart = `${selectedMonth}-01`;
-      const monthEnd = toLocalDateString(new Date(Number(selectedMonth.slice(0, 4)), Number(selectedMonth.slice(5, 7)), 0));
+      const monthEnd = toLocalDateString(
+        new Date(
+          Number(selectedMonth.slice(0, 4)),
+          Number(selectedMonth.slice(5, 7)),
+          0,
+        ),
+      );
       const { data, error: requestError } = await supabase
         .from("move_out_requests")
-        .select("id,tenant_id,requested_move_out_date,status,tenants(full_name,rooms(room_number))")
+        .select(
+          "id,tenant_id,requested_move_out_date,status,tenants(full_name,rooms(room_number))",
+        )
         .in("status", ["requested", "approved"])
         .gte("requested_move_out_date", monthStart)
         .lte("requested_move_out_date", monthEnd)
@@ -536,8 +649,15 @@ export function useInvoicesState() {
     /** Pending move-out work: open tenant request, or active tenant with move_out_date set (manual tab). Deduped by tenant. */
     const loadPendingMoveOutCount = async () => {
       const [requestsRes, tenantsRes] = await Promise.all([
-        supabase.from("move_out_requests").select("tenant_id").eq("status", "requested"),
-        supabase.from("tenants").select("id").not("move_out_date", "is", null).eq("status", "active"),
+        supabase
+          .from("move_out_requests")
+          .select("tenant_id")
+          .eq("status", "requested"),
+        supabase
+          .from("tenants")
+          .select("id")
+          .not("move_out_date", "is", null)
+          .eq("status", "active"),
       ]);
       if (!mounted) return;
       if (requestsRes.error || tenantsRes.error) {
@@ -558,12 +678,20 @@ export function useInvoicesState() {
     void loadPendingMoveOutCount();
     const channel = supabase
       .channel("invoices-pending-move-out-badge")
-      .on("postgres_changes", { event: "*", schema: "public", table: "move_out_requests" }, () => {
-        void loadPendingMoveOutCount();
-      })
-      .on("postgres_changes", { event: "*", schema: "public", table: "tenants" }, () => {
-        void loadPendingMoveOutCount();
-      })
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "move_out_requests" },
+        () => {
+          void loadPendingMoveOutCount();
+        },
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "tenants" },
+        () => {
+          void loadPendingMoveOutCount();
+        },
+      )
       .subscribe();
     return () => {
       mounted = false;
@@ -574,7 +702,9 @@ export function useInvoicesState() {
   const loadPrintConfig = async () => {
     const { data: settingData } = await supabase
       .from("settings")
-      .select("dorm_name,dorm_address,water_rate,electricity_rate,water_min_units,water_min_price,billing_day,due_day,late_fee_start_day,additional_discounts")
+      .select(
+        "dorm_name,dorm_address,water_rate,electricity_rate,water_min_units,water_min_price,billing_day,due_day,late_fee_start_day,additional_discounts",
+      )
       .eq("id", 1)
       .maybeSingle();
     setPrintSettings((settingData as PrintSettings) ?? null);
@@ -607,14 +737,17 @@ export function useInvoicesState() {
   }, [invoices, search]);
 
   const grouped = useMemo(() => {
-    const groupedMap = filteredInvoices.reduce<Record<string, InvoiceRecord[]>>((acc, invoice) => {
-      if (!acc[invoice.building_name]) acc[invoice.building_name] = [];
-      acc[invoice.building_name].push(invoice);
-      return acc;
-    }, {});
+    const groupedMap = filteredInvoices.reduce<Record<string, InvoiceRecord[]>>(
+      (acc, invoice) => {
+        if (!acc[invoice.building_name]) acc[invoice.building_name] = [];
+        acc[invoice.building_name].push(invoice);
+        return acc;
+      },
+      {},
+    );
     for (const building of Object.keys(groupedMap)) {
       groupedMap[building] = groupedMap[building].sort((a, b) =>
-        roomNumberCompare(a.room_number, b.room_number)
+        roomNumberCompare(a.room_number, b.room_number),
       );
     }
     return groupedMap;
@@ -622,14 +755,15 @@ export function useInvoicesState() {
 
   const visibleInvoiceIds = useMemo(
     () => filteredInvoices.map((invoice) => invoice.id),
-    [filteredInvoices]
+    [filteredInvoices],
   );
   const selectedVisibleCount = useMemo(
     () => selected.filter((id) => visibleInvoiceIds.includes(id)).length,
-    [selected, visibleInvoiceIds]
+    [selected, visibleInvoiceIds],
   );
   const allVisibleSelected =
-    visibleInvoiceIds.length > 0 && selectedVisibleCount === visibleInvoiceIds.length;
+    visibleInvoiceIds.length > 0 &&
+    selectedVisibleCount === visibleInvoiceIds.length;
 
   useEffect(() => {
     setSelected((prev) => prev.filter((id) => visibleInvoiceIds.includes(id)));
@@ -637,7 +771,7 @@ export function useInvoicesState() {
 
   const toggleSelect = (id: string) => {
     setSelected((prev) =>
-      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id],
     );
   };
 
@@ -660,7 +794,10 @@ export function useInvoicesState() {
     setSlipModalOpen(true);
   };
 
-  const callInvoiceAdminAction = async (action: string, payload: Record<string, unknown>) => {
+  const callInvoiceAdminAction = async (
+    action: string,
+    payload: Record<string, unknown>,
+  ) => {
     const { data } = await supabase.auth.getSession();
     const token = data.session?.access_token;
     if (!token) {
@@ -683,7 +820,7 @@ export function useInvoicesState() {
 
   const updateInvoiceStatus = async (
     invoiceId: string,
-    status: keyof typeof statusVariant
+    status: keyof typeof statusVariant,
   ) => {
     if (!can("invoice.status.update")) {
       setError("You do not have permission to change invoice status.");
@@ -700,8 +837,13 @@ export function useInvoicesState() {
     });
 
     try {
-      const result = await callInvoiceAdminAction("update_status", { invoiceId, status });
-      const updatedInvoices = Array.isArray(result?.updatedInvoices) ? result.updatedInvoices : [];
+      const result = await callInvoiceAdminAction("update_status", {
+        invoiceId,
+        status,
+      });
+      const updatedInvoices = Array.isArray(result?.updatedInvoices)
+        ? result.updatedInvoices
+        : [];
       if (updatedInvoices.length > 0) {
         updatedInvoices.forEach((invoiceUpdate: any) => {
           patchInvoiceInState(String(invoiceUpdate.id), {
@@ -709,16 +851,21 @@ export function useInvoicesState() {
             payment_history: Array.isArray(invoiceUpdate.payment_history)
               ? invoiceUpdate.payment_history
               : undefined,
-            status: (invoiceUpdate.status as keyof typeof statusVariant) ?? undefined,
+            status:
+              (invoiceUpdate.status as keyof typeof statusVariant) ?? undefined,
             slip_url: invoiceUpdate.slip_url ?? undefined,
           });
         });
-        const activeUpdated = updatedInvoices.find((row: any) => String(row.id) === invoiceId);
+        const activeUpdated = updatedInvoices.find(
+          (row: any) => String(row.id) === invoiceId,
+        );
         if (activeUpdated && activeInvoice?.id === invoiceId) {
           setForm((prev) => ({
             ...prev,
             paid_amount: toNumber(activeUpdated.paid_amount),
-            status: (activeUpdated.status as keyof typeof statusVariant) ?? prev.status,
+            status:
+              (activeUpdated.status as keyof typeof statusVariant) ??
+              prev.status,
           }));
         }
       }
@@ -765,7 +912,9 @@ export function useInvoicesState() {
     }
 
     const amountToPay =
-      paymentMode === "full" ? remaining : Math.min(remaining, toNumber(paymentAmountInput));
+      paymentMode === "full"
+        ? remaining
+        : Math.min(remaining, toNumber(paymentAmountInput));
     if (amountToPay <= 0) {
       setError("Please enter a valid payment amount.");
       return;
@@ -801,11 +950,18 @@ export function useInvoicesState() {
           idempotency_key: idempotencyKey,
         },
       });
-      const updatedInvoices = Array.isArray(result?.updatedInvoices) ? result.updatedInvoices : [];
-      const activeUpdated = updatedInvoices.find((row: any) => row.id === activeInvoice.id);
-      const breakdown = Array.isArray(result?.allocationBreakdown) ? result.allocationBreakdown : [];
+      const updatedInvoices = Array.isArray(result?.updatedInvoices)
+        ? result.updatedInvoices
+        : [];
+      const activeUpdated = updatedInvoices.find(
+        (row: any) => row.id === activeInvoice.id,
+      );
+      const breakdown = Array.isArray(result?.allocationBreakdown)
+        ? result.allocationBreakdown
+        : [];
       const roomLabel = (invoiceId: string) =>
-        invoices.find((inv) => inv.id === invoiceId)?.room_number ?? shortInvoiceId(invoiceId);
+        invoices.find((inv) => inv.id === invoiceId)?.room_number ??
+        shortInvoiceId(invoiceId);
       if (breakdown.length > 0) {
         setAllocationResultNotice({
           batchId: String(result?.paymentBatchId ?? ""),
@@ -828,30 +984,39 @@ export function useInvoicesState() {
         setForm((prev) => ({
           ...prev,
           paid_amount: toNumber(activeUpdated.paid_amount),
-          status: (activeUpdated.status as keyof typeof statusVariant) ?? prev.status,
+          status:
+            (activeUpdated.status as keyof typeof statusVariant) ?? prev.status,
         }));
       }
       const activeNext = {
         ...activeInvoice,
-        paid_amount: toNumber(activeUpdated?.paid_amount ?? activeInvoice.paid_amount),
+        paid_amount: toNumber(
+          activeUpdated?.paid_amount ?? activeInvoice.paid_amount,
+        ),
         payment_history: Array.isArray(activeUpdated?.payment_history)
           ? activeUpdated.payment_history
           : activeInvoice.payment_history,
-        status: (activeUpdated?.status as keyof typeof statusVariant) ?? activeInvoice.status,
+        status:
+          (activeUpdated?.status as keyof typeof statusVariant) ??
+          activeInvoice.status,
         slip_url: publicUrl ?? null,
       } as InvoiceRecord;
       setActiveInvoice((prev) =>
         prev
           ? {
               ...prev,
-              paid_amount: toNumber(activeUpdated?.paid_amount ?? prev.paid_amount),
+              paid_amount: toNumber(
+                activeUpdated?.paid_amount ?? prev.paid_amount,
+              ),
               payment_history: Array.isArray(activeUpdated?.payment_history)
                 ? activeUpdated.payment_history
                 : prev.payment_history,
-              status: (activeUpdated?.status as keyof typeof statusVariant) ?? prev.status,
+              status:
+                (activeUpdated?.status as keyof typeof statusVariant) ??
+                prev.status,
               slip_url: publicUrl ?? null,
             }
-          : prev
+          : prev,
       );
       updatedInvoices.forEach((invoiceUpdate: any) => {
         patchInvoiceInState(String(invoiceUpdate.id), {
@@ -859,7 +1024,8 @@ export function useInvoicesState() {
           payment_history: Array.isArray(invoiceUpdate.payment_history)
             ? invoiceUpdate.payment_history
             : undefined,
-          status: (invoiceUpdate.status as keyof typeof statusVariant) ?? undefined,
+          status:
+            (invoiceUpdate.status as keyof typeof statusVariant) ?? undefined,
           slip_url: publicUrl ?? null,
         });
       });
@@ -887,21 +1053,34 @@ export function useInvoicesState() {
     const target = existingHistory[historyIndex] as any;
     const targetAmount = Math.max(0, toNumber(target?.amount));
     const confirmed = window.confirm(
-      `ยืนยันยกเลิกรายการชำระเงิน ${formatMoney(targetAmount)} ?`
+      `ยืนยันยกเลิกรายการชำระเงิน ${formatMoney(targetAmount)} ?`,
     );
     if (!confirmed) return;
 
     setPaymentSubmitting(true);
     try {
-      const nextHistory = existingHistory.filter((_, idx) => idx !== historyIndex);
+      const nextHistory = existingHistory.filter(
+        (_, idx) => idx !== historyIndex,
+      );
       const total = toNumber(form.total_amount || activeInvoice.total_amount);
-      const currentPaid = toNumber(form.paid_amount || activeInvoice.paid_amount);
+      const currentPaid = toNumber(
+        form.paid_amount || activeInvoice.paid_amount,
+      );
       const nextPaidAmount = Math.max(0, currentPaid - targetAmount);
-      const lastEntry = nextHistory.length > 0 ? (nextHistory[nextHistory.length - 1] as any) : null;
-      const nextSlipUrl = (lastEntry?.slip_url as string | null | undefined) ?? null;
-      const nextSlipUploadedAt = (lastEntry?.paid_at as string | null | undefined) ?? null;
+      const lastEntry =
+        nextHistory.length > 0
+          ? (nextHistory[nextHistory.length - 1] as any)
+          : null;
+      const nextSlipUrl =
+        (lastEntry?.slip_url as string | null | undefined) ?? null;
+      const nextSlipUploadedAt =
+        (lastEntry?.paid_at as string | null | undefined) ?? null;
       const nextStatus: keyof typeof statusVariant =
-        nextPaidAmount >= total ? "paid" : nextPaidAmount > 0 ? "partial" : "pending";
+        nextPaidAmount >= total
+          ? "paid"
+          : nextPaidAmount > 0
+            ? "partial"
+            : "pending";
 
       await callInvoiceAdminAction("record_payment", {
         invoiceId: activeInvoice.id,
@@ -914,7 +1093,11 @@ export function useInvoicesState() {
         },
       });
 
-      setForm((prev) => ({ ...prev, paid_amount: nextPaidAmount, status: nextStatus }));
+      setForm((prev) => ({
+        ...prev,
+        paid_amount: nextPaidAmount,
+        status: nextStatus,
+      }));
       setSlipPreview(nextSlipUrl);
       setActiveInvoice((prev) =>
         prev
@@ -925,7 +1108,7 @@ export function useInvoicesState() {
               status: nextStatus,
               slip_url: nextSlipUrl,
             }
-          : prev
+          : prev,
       );
       patchInvoiceInState(activeInvoice.id, {
         paid_amount: nextPaidAmount,
@@ -952,9 +1135,13 @@ export function useInvoicesState() {
         .from("payment_slips")
         .list(activeInvoice.id, { limit: 1000 });
       if (listError) throw new Error(listError.message);
-      const paths = (files ?? []).map((file) => `${activeInvoice.id}/${file.name}`);
+      const paths = (files ?? []).map(
+        (file) => `${activeInvoice.id}/${file.name}`,
+      );
       if (paths.length > 0) {
-        const { error: removeError } = await supabase.storage.from("payment_slips").remove(paths);
+        const { error: removeError } = await supabase.storage
+          .from("payment_slips")
+          .remove(paths);
         if (removeError) throw new Error(removeError.message);
       }
 
@@ -975,33 +1162,52 @@ export function useInvoicesState() {
   };
 
   const openInvoice = async (invoice: InvoiceRecord) => {
-    const chargeFeeRows = toChargeFeeRows(invoice.additional_fees_breakdown ?? []);
+    const chargeFeeRows = toChargeFeeRows(
+      invoice.additional_fees_breakdown ?? [],
+    );
     const feeItems = toFeeItems(chargeFeeRows);
-    const carryForwardRows = toCarryForwardRows(invoice.additional_fees_breakdown ?? []);
+    const carryForwardRows = toCarryForwardRows(
+      invoice.additional_fees_breakdown ?? [],
+    );
     const lateFeeRows = toLateFeeRows(invoice.additional_fees_breakdown ?? []);
     const carryForwardItems = toCarryForwardItems(carryForwardRows);
     const lateFeeItems = toLateFeeItems(lateFeeRows);
     const discountItems = toFeeItems(invoice.discount_breakdown ?? []);
-    const transferItems = toTransferBreakdownItems(invoice.additional_fees_breakdown ?? []);
+    const transferItems = toTransferBreakdownItems(
+      invoice.additional_fees_breakdown ?? [],
+    );
     const todayLocal = toLocalDateString(new Date());
-    const periodBaseDate = invoice.end_date || invoice.start_date || invoice.issue_date || todayLocal;
-    const dueDateFromSetting = computeDateByDayNextMonth(periodBaseDate, printSettings?.due_day);
+    const periodBaseDate =
+      invoice.end_date ||
+      invoice.start_date ||
+      invoice.issue_date ||
+      todayLocal;
+    const dueDateFromSetting = computeDateByDayNextMonth(
+      periodBaseDate,
+      printSettings?.due_day,
+    );
     const lateStartFromSetting = computeDateByDayNextMonth(
       periodBaseDate,
-      printSettings?.late_fee_start_day
+      printSettings?.late_fee_start_day,
     );
-    const monthlyRent = toNumber(invoice.room_price_month || invoice.rent_amount);
+    const monthlyRent = toNumber(
+      invoice.room_price_month || invoice.rent_amount,
+    );
     const prorateSummary = calculateProratedRentByBillingDay(
       monthlyRent,
       invoice.tenant_move_in_date,
-      printSettings?.billing_day
+      printSettings?.billing_day,
     );
     const useProrateDefault =
-      !!prorateSummary && Math.abs(toNumber(invoice.rent_amount) - prorateSummary.rentAmount) < 0.01;
+      !!prorateSummary &&
+      Math.abs(toNumber(invoice.rent_amount) - prorateSummary.rentAmount) <
+        0.01;
     setActiveInvoice(invoice);
     setUseProrateInModal(useProrateDefault);
     setEditableFeeItems(feeItems.length > 0 ? feeItems : []);
-    setEditableCarryForwardItems(carryForwardItems.length > 0 ? carryForwardItems : []);
+    setEditableCarryForwardItems(
+      carryForwardItems.length > 0 ? carryForwardItems : [],
+    );
     setEditableLateFeeItems(lateFeeItems.length > 0 ? lateFeeItems : []);
     setArrearsSnapshots([]);
     setTransferBreakdownItems(transferItems);
@@ -1009,13 +1215,22 @@ export function useInvoicesState() {
       discountItems.length > 0
         ? discountItems
         : invoice.discount_amount > 0
-          ? [{ detail: "ส่วนลด", unit: 1, price_per_unit: invoice.discount_amount, total_amount: invoice.discount_amount }]
-          : []
+          ? [
+              {
+                detail: "ส่วนลด",
+                unit: 1,
+                price_per_unit: invoice.discount_amount,
+                total_amount: invoice.discount_amount,
+              },
+            ]
+          : [],
     );
     const waterRate = toNumber(printSettings?.water_rate);
     const electricityRate = toNumber(printSettings?.electricity_rate);
     const inferredWaterUnits =
-      waterRate > 0 ? toNumber(invoice.water_bill) / waterRate : toNumber(invoice.water_bill);
+      waterRate > 0
+        ? toNumber(invoice.water_bill) / waterRate
+        : toNumber(invoice.water_bill);
     const inferredElectricityUnits =
       electricityRate > 0
         ? toNumber(invoice.electricity_bill) / electricityRate
@@ -1032,12 +1247,22 @@ export function useInvoicesState() {
       water_bill: invoice.water_bill,
       electricity_bill: invoice.electricity_bill,
       common_fee: invoice.common_fee,
-      discount_amount: discountItems.length > 0 ? feeItemsTotal(discountItems) : invoice.discount_amount,
-      late_fee_amount: lateFeeItems.length > 0 ? feeItemsTotal(lateFeeItems) : invoice.late_fee_amount,
+      discount_amount:
+        discountItems.length > 0
+          ? feeItemsTotal(discountItems)
+          : invoice.discount_amount,
+      late_fee_amount:
+        lateFeeItems.length > 0
+          ? feeItemsTotal(lateFeeItems)
+          : invoice.late_fee_amount,
       late_fee_per_day: invoice.late_fee_per_day,
-      late_fee_start_date: lateStartFromSetting,
+      late_fee_start_date: invoice.late_fee_start_date || lateStartFromSetting,
+      waived_late_fee_amount: toNumber((invoice as any).waived_late_fee_amount),
+      locked_late_fee_amount: (invoice as any).locked_late_fee_amount ?? null,
       additional_fees_total:
-        feeItems.length > 0 ? feeItemsTotal(feeItems) : invoice.additional_fees_total,
+        feeItems.length > 0
+          ? feeItemsTotal(feeItems)
+          : invoice.additional_fees_total,
       total_amount: invoice.total_amount,
       paid_amount: invoice.paid_amount,
       status: invoice.status,
@@ -1060,7 +1285,7 @@ export function useInvoicesState() {
         invoice.tenant_id,
         invoice.start_date,
         invoice.id,
-        invoice.issue_date || invoice.start_date
+        invoice.issue_date || invoice.start_date,
       )
         .then((rows) => setCarryOverCandidates(rows))
         .catch(() => setCarryOverCandidates([]))
@@ -1074,7 +1299,7 @@ export function useInvoicesState() {
       const { data: snapshotRows } = await supabase
         .from("invoice_arrears_snapshots")
         .select(
-          "id,source_invoice_id,snapshot_as_of,principal_amount,late_fee_amount,days_overdue,daily_rate"
+          "id,source_invoice_id,snapshot_as_of,principal_amount,late_fee_amount,days_overdue,daily_rate",
         )
         .eq("target_invoice_id", invoice.id)
         .order("created_at", { ascending: true });
@@ -1087,14 +1312,16 @@ export function useInvoicesState() {
           late_fee_amount: toNumber(row.late_fee_amount),
           days_overdue: Math.round(toNumber(row.days_overdue)),
           daily_rate: toNumber(row.daily_rate),
-        }))
+        })),
       );
 
-      const readingMonth = monthStartFromDate(invoice.start_date || invoice.issue_date);
+      const readingMonth = monthStartFromDate(
+        invoice.start_date || invoice.issue_date,
+      );
       const { data } = await supabase
         .from("meter_readings")
         .select(
-          "electricity_usage,water_usage,usage,previous_electricity,current_electricity,previous_water,current_water,previous_reading,current_reading"
+          "electricity_usage,water_usage,usage,previous_electricity,current_electricity,previous_water,current_water,previous_reading,current_reading",
         )
         .eq("room_id", invoice.room_id)
         .eq("reading_month", readingMonth)
@@ -1116,7 +1343,10 @@ export function useInvoicesState() {
     }
   };
 
-  const updateUtilityUnits = (field: "water_units" | "electricity_units", value: string | number) => {
+  const updateUtilityUnits = (
+    field: "water_units" | "electricity_units",
+    value: string | number,
+  ) => {
     if (activeInvoice && !isInvoiceDetailEditable(activeInvoice.status)) return;
     const units = toNumber(value);
     const waterRate = toNumber(printSettings?.water_rate);
@@ -1126,12 +1356,13 @@ export function useInvoicesState() {
 
     setForm((prev) => {
       const next = { ...prev, [field]: units } as typeof prev;
-      const nextWaterUnits = field === "water_units" ? units : toNumber(next.water_units);
+      const nextWaterUnits =
+        field === "water_units" ? units : toNumber(next.water_units);
       const nextWaterBill = calculateWaterBillWithMinimum(
         nextWaterUnits,
         waterRate,
         waterMinUnits,
-        waterMinPrice
+        waterMinPrice,
       );
       const nextElectricityBill =
         field === "electricity_units"
@@ -1144,7 +1375,7 @@ export function useInvoicesState() {
         nextElectricityBill +
         toNumber(next.common_fee) +
         toNumber(next.discount_amount) * -1 +
-        toNumber(next.late_fee_amount) +
+        calculateCurrentFormLateFee(next) +
         toNumber(next.additional_fees_total);
 
       return {
@@ -1156,24 +1387,58 @@ export function useInvoicesState() {
     });
   };
 
-  const updateForm = (field: string, value: string | number) => {
-    if (activeInvoice && !isInvoiceDetailEditable(activeInvoice.status)) return;
+  const calculateCurrentFormLateFee = (formState: typeof form) => {
+    if (formState.status === "draft") {
+      return 0;
+    }
+    if (
+      formState.locked_late_fee_amount !== null &&
+      formState.locked_late_fee_amount !== undefined
+    ) {
+      return Math.max(0, toNumber(formState.locked_late_fee_amount));
+    }
+    const todayLocal = toLocalDateString(new Date());
+    const raw = calculateLateFeePreview(
+      formState.late_fee_start_date,
+      toNumber(formState.late_fee_per_day),
+      todayLocal,
+    );
+    return Math.max(0, raw.amount - toNumber(formState.waived_late_fee_amount));
+  };
+
+  const updateForm = (
+    field: string,
+    value: string | number,
+    forceEdit = false,
+  ) => {
+    if (
+      !forceEdit &&
+      activeInvoice &&
+      !isInvoiceDetailEditable(activeInvoice.status)
+    )
+      return;
     setForm((prev) => {
       const next = { ...prev, [field]: value } as typeof prev;
-      const monthlyRent = toNumber(activeInvoice?.room_price_month ?? next.rent_amount);
+      const monthlyRent = toNumber(
+        activeInvoice?.room_price_month ?? next.rent_amount,
+      );
       const prorateSummary =
         useProrateInModal && activeInvoice
           ? calculateProratedRentByBillingDay(
               monthlyRent,
               activeInvoice.tenant_move_in_date,
-              printSettings?.billing_day
+              printSettings?.billing_day,
             )
           : null;
-      const computedRent = prorateSummary ? prorateSummary.rentAmount : toNumber(next.rent_amount);
+      const computedRent = prorateSummary
+        ? prorateSummary.rentAmount
+        : toNumber(next.rent_amount);
       const nextAdditional = feeItemsTotal(editableFeeItems);
       const nextDiscount = feeItemsTotal(editableDiscountItems);
       const nextCarry = feeItemsTotal(editableCarryForwardItems);
-      const nextLateFee = feeItemsTotal(editableLateFeeItems);
+      const nextLateFeeItems = feeItemsTotal(editableLateFeeItems);
+      const nativeLateFee = calculateCurrentFormLateFee(next);
+      const nextLateFee = nativeLateFee + nextLateFeeItems;
       const total =
         computedRent +
         toNumber(next.water_bill) +
@@ -1197,7 +1462,7 @@ export function useInvoicesState() {
   const updateCarryForwardItem = (
     index: number,
     field: keyof CarryForwardItem,
-    value: string | number
+    value: string | number,
   ) => {
     if (activeInvoice && !isInvoiceDetailEditable(activeInvoice.status)) return;
     setEditableCarryForwardItems((prev) =>
@@ -1213,14 +1478,14 @@ export function useInvoicesState() {
           price_per_unit,
           total_amount: nextTotalAmount,
         };
-      })
+      }),
     );
   };
 
   const updateLateFeeItem = (
     index: number,
     field: keyof LateFeeLineItem,
-    value: string | number
+    value: string | number,
   ) => {
     if (activeInvoice && !isInvoiceDetailEditable(activeInvoice.status)) return;
     setEditableLateFeeItems((prev) =>
@@ -1231,22 +1496,28 @@ export function useInvoicesState() {
           0,
           Math.round(
             toNumber(
-              field === "days_overdue" || field === "unit" ? value : next.days_overdue ?? next.unit
-            )
-          )
+              field === "days_overdue" || field === "unit"
+                ? value
+                : (next.days_overdue ?? next.unit),
+            ),
+          ),
         );
         const price_per_unit = Math.max(
           0,
           toNumber(
             field === "daily_rate" || field === "price_per_unit"
               ? value
-              : next.daily_rate ?? next.price_per_unit
-          )
+              : (next.daily_rate ?? next.price_per_unit),
+          ),
         );
         const manualTotal =
-          field === "original_amount" || field === "total_amount" ? Math.max(0, toNumber(value)) : null;
+          field === "original_amount" || field === "total_amount"
+            ? Math.max(0, toNumber(value))
+            : null;
         const original_amount =
-          manualTotal != null ? manualTotal : Math.max(0, unit * price_per_unit);
+          manualTotal != null
+            ? manualTotal
+            : Math.max(0, unit * price_per_unit);
         const waived_amount = 0;
         const total_amount = original_amount;
         return {
@@ -1259,13 +1530,13 @@ export function useInvoicesState() {
           waived_amount,
           total_amount,
         };
-      })
+      }),
     );
   };
 
   const updateTransferBreakdownAmount = (
     index: number,
-    value: string | number
+    value: string | number,
   ) => {
     if (activeInvoice && !isInvoiceDetailEditable(activeInvoice.status)) return;
     setTransferBreakdownItems((prev) =>
@@ -1276,8 +1547,8 @@ export function useInvoicesState() {
               amount: toNumber(value),
               value: formatMoney(toNumber(value)),
             }
-          : item
-      )
+          : item,
+      ),
     );
   };
 
@@ -1298,7 +1569,8 @@ export function useInvoicesState() {
 
     setEditableDiscountItems((prev) => {
       const existingIndex = prev.findIndex(
-        (item) => String(item.detail ?? "").trim() === ROUND_DOWN_DISCOUNT_LABEL
+        (item) =>
+          String(item.detail ?? "").trim() === ROUND_DOWN_DISCOUNT_LABEL,
       );
       if (existingIndex >= 0) {
         return prev.map((item, index) =>
@@ -1309,7 +1581,7 @@ export function useInvoicesState() {
                 price_per_unit: roundDownAmount,
                 total_amount: roundDownAmount,
               }
-            : item
+            : item,
         );
       }
       return [
@@ -1326,14 +1598,18 @@ export function useInvoicesState() {
 
   const recalculateTransferBreakdown = async () => {
     if (!activeInvoice) return;
-    const transferDateRow = transferBreakdownItems.find((item) => item.label.includes("วันที่ย้ายห้อง"));
+    const transferDateRow = transferBreakdownItems.find((item) =>
+      item.label.includes("วันที่ย้ายห้อง"),
+    );
     const transferDate = String(transferDateRow?.value ?? "").trim();
     if (!transferDate) {
       setError("ไม่พบวันที่ย้ายห้องในใบแจ้งหนี้นี้");
       return;
     }
 
-    const billingMonth = monthStartFromDate(activeInvoice.start_date || activeInvoice.issue_date);
+    const billingMonth = monthStartFromDate(
+      activeInvoice.start_date || activeInvoice.issue_date,
+    );
     const { data: transferRows, error: transferError } = await supabase
       .from("tenant_room_transfers")
       .select("from_room_id,to_room_id,transfer_date,billing_month")
@@ -1368,19 +1644,29 @@ export function useInvoicesState() {
     }
 
     const oldRoomRate = toNumber(
-      roomRows?.find((room: any) => String(room.id) === String(transferRow.from_room_id))
-        ?.price_month
+      roomRows?.find(
+        (room: any) => String(room.id) === String(transferRow.from_room_id),
+      )?.price_month,
     );
     const newRoomRate = toNumber(
-      roomRows?.find((room: any) => String(room.id) === String(transferRow.to_room_id))?.price_month
+      roomRows?.find(
+        (room: any) => String(room.id) === String(transferRow.to_room_id),
+      )?.price_month,
     );
     const recalculated = calculateInvoiceTransferRentProration(
       activeInvoice.start_date || billingMonth,
-      activeInvoice.end_date || toLocalDateString(new Date(parseDateOnly(billingMonth).getFullYear(), parseDateOnly(billingMonth).getMonth() + 1, 0)),
+      activeInvoice.end_date ||
+        toLocalDateString(
+          new Date(
+            parseDateOnly(billingMonth).getFullYear(),
+            parseDateOnly(billingMonth).getMonth() + 1,
+            0,
+          ),
+        ),
       transferRow.transfer_date,
       activeInvoice.tenant_move_in_date,
       oldRoomRate,
-      newRoomRate
+      newRoomRate,
     );
 
     setTransferBreakdownItems((prev) =>
@@ -1400,14 +1686,14 @@ export function useInvoicesState() {
           };
         }
         return item;
-      })
+      }),
     );
     setError(null);
   };
 
   const recalculateCurrentInvoiceArrears = async (
     carryOverride?: CarryForwardItem[],
-    lateOverride?: LateFeeLineItem[]
+    lateOverride?: LateFeeLineItem[],
   ) => {
     if (!activeInvoice) return;
     const carry = carryOverride ?? editableCarryForwardItems;
@@ -1419,10 +1705,12 @@ export function useInvoicesState() {
     late.forEach((item) => {
       if (item.source_invoice_id) sourceIds.add(String(item.source_invoice_id));
     });
-    const useSnapshotIds = carryOverride === undefined && lateOverride === undefined;
+    const useSnapshotIds =
+      carryOverride === undefined && lateOverride === undefined;
     if (useSnapshotIds) {
       arrearsSnapshots.forEach((item) => {
-        if (item.source_invoice_id) sourceIds.add(String(item.source_invoice_id));
+        if (item.source_invoice_id)
+          sourceIds.add(String(item.source_invoice_id));
       });
     }
 
@@ -1435,73 +1723,75 @@ export function useInvoicesState() {
 
     setSaving(true);
     try {
-      const { data: sourceInvoices, error: sourceError } = await supabase
-        .from("invoices")
-        .select("id,start_date,due_date,total_amount,paid_amount")
-        .in("id", sourceInvoiceIds);
+      const candidates = await getCarryForwardCandidatesForTarget(
+        supabase,
+        activeInvoice.tenant_id,
+        activeInvoice.start_date,
+        activeInvoice.id,
+        activeInvoice.issue_date || activeInvoice.start_date,
+      );
 
-      if (sourceError) throw new Error(sourceError.message);
+      const filteredCandidates = candidates.filter((c) =>
+        sourceInvoiceIds.includes(String(c.id)),
+      );
 
-      const { data: priorSnapshots, error: snapshotError } = await supabase
-        .from("invoice_arrears_snapshots")
-        .select("source_invoice_id,snapshot_as_of,target_invoice_id")
-        .in("source_invoice_id", sourceInvoiceIds)
-        .neq("target_invoice_id", activeInvoice.id)
-        .order("snapshot_as_of", { ascending: false });
-
-      if (snapshotError) throw new Error(snapshotError.message);
-
-      const lastSnapshotBySource = new Map<string, string>();
-      for (const row of (priorSnapshots ?? []) as any[]) {
-        const sourceId = String(row.source_invoice_id ?? "");
-        const snapshotAsOf = String(row.snapshot_as_of ?? "");
-        if (!sourceId || !snapshotAsOf || lastSnapshotBySource.has(sourceId)) continue;
-        lastSnapshotBySource.set(sourceId, snapshotAsOf);
-      }
-
-      const issueDate = parseDateOnly(form.issue_date || activeInvoice.issue_date);
-      const dailyRate = Math.max(0, toNumber(form.late_fee_per_day));
       const nextCarryItems: CarryForwardItem[] = [];
-      const nextLateFeeItems: LateFeeLineItem[] = [];
 
-      for (const row of (sourceInvoices ?? []) as any[]) {
-        const outstanding = Math.max(0, toNumber(row.total_amount) - toNumber(row.paid_amount));
+      for (const row of filteredCandidates) {
+        const outstanding = row.outstanding_amount;
         if (outstanding > 0) {
-          nextCarryItems.push({
-            detail: `ยอดค้างชำระงวด ${formatPeriodLabel(String(row.start_date ?? ""))}`,
-            unit: 1,
-            price_per_unit: outstanding,
-            total_amount: outstanding,
-            source_invoice_id: String(row.id),
-          });
-        }
+          const sourceLateFee = toNumber(row.late_fee_snapshot_amount);
+          const actualLateFee = Math.min(outstanding, sourceLateFee);
+          const actualRent = outstanding - actualLateFee;
 
-        if (dailyRate <= 0 || !row.due_date) continue;
-        const dueBasedStart = addDays(parseDateOnly(String(row.due_date)), 1);
-        const lastSnapshotAsOf = lastSnapshotBySource.get(String(row.id));
-        const incrementalStart = lastSnapshotAsOf ? addDays(parseDateOnly(lastSnapshotAsOf), 1) : null;
-        const start =
-          incrementalStart && incrementalStart > dueBasedStart ? incrementalStart : dueBasedStart;
-        if (issueDate < start) continue;
-        const days = diffDaysInclusive(start, issueDate);
-        const amount = Math.max(0, days * dailyRate);
-        if (amount <= 0) continue;
-        nextLateFeeItems.push({
-          detail: `ค่าปรับล่าช้างวด ${formatPeriodLabel(String(row.start_date ?? ""))}`,
-          unit: days,
-          price_per_unit: dailyRate,
-          total_amount: amount,
-          source_invoice_id: String(row.id),
-          snapshot_as_of: form.issue_date || activeInvoice.issue_date,
-          days_overdue: days,
-          daily_rate: dailyRate,
-          original_amount: amount,
-          waived_amount: 0,
-        });
+          if (actualRent > 0) {
+            nextCarryItems.push({
+              detail: `ยอดค้างชำระงวด ${formatPeriodLabel(String(row.start_date ?? ""))}`,
+              unit: 1,
+              price_per_unit: actualRent,
+              total_amount: actualRent,
+              source_invoice_id: String(row.id),
+            });
+          }
+
+          if (actualLateFee > 0) {
+            nextCarryItems.push({
+              detail: `ค่าปรับล่าช้างวด ${formatPeriodLabel(String(row.start_date ?? ""))}`,
+              unit: 1,
+              price_per_unit: actualLateFee,
+              total_amount: actualLateFee,
+              source_invoice_id: String(row.id),
+            });
+          }
+        }
       }
 
       setEditableCarryForwardItems(nextCarryItems);
-      setEditableLateFeeItems(nextLateFeeItems);
+      // We no longer attach static snapshot late fees to the new invoice.
+      // Late fees belong dynamically to the source invoice.
+      setEditableLateFeeItems([]);
+
+      setForm((prev) => {
+        const nextCarry = feeItemsTotal(nextCarryItems);
+        const nextLateFee = calculateCurrentFormLateFee(prev);
+        const nextAdditional = feeItemsTotal(editableFeeItems);
+        const nextDiscount = feeItemsTotal(editableDiscountItems);
+        const total =
+          toNumber(prev.rent_amount) +
+          toNumber(prev.water_bill) +
+          toNumber(prev.electricity_bill) +
+          toNumber(prev.common_fee) +
+          nextDiscount * -1 +
+          nextLateFee +
+          nextAdditional +
+          nextCarry;
+        return {
+          ...prev,
+          late_fee_amount: nextLateFee,
+          total_amount: total,
+        };
+      });
+
       setError(null);
     } catch (error: any) {
       setError(error?.message ?? "Recalculate invoice failed.");
@@ -1510,13 +1800,22 @@ export function useInvoicesState() {
     }
   };
 
-  const toggleCarryOverFromCandidate = async (candidate: any, checked: boolean) => {
-    if (!activeInvoice || !isInvoiceDetailEditable(activeInvoice.status)) return;
+  const toggleCarryOverFromCandidate = async (
+    candidate: any,
+    checked: boolean,
+  ) => {
+    if (!activeInvoice || !isInvoiceDetailEditable(activeInvoice.status))
+      return;
     const cid = String(candidate?.id ?? "");
     if (!cid) return;
 
     if (checked) {
-      if (editableCarryForwardItems.some((x) => String(x.source_invoice_id) === cid)) return;
+      if (
+        editableCarryForwardItems.some(
+          (x) => String(x.source_invoice_id) === cid,
+        )
+      )
+        return;
       const outstanding = Math.max(0, toNumber(candidate.outstanding_amount));
       const newRow: CarryForwardItem = {
         detail: `ยอดค้างชำระงวด ${formatPeriodLabel(String(candidate.start_date ?? ""))}`,
@@ -1527,13 +1826,17 @@ export function useInvoicesState() {
       };
       await recalculateCurrentInvoiceArrears(
         [...editableCarryForwardItems, newRow],
-        editableLateFeeItems
+        editableLateFeeItems,
       );
       return;
     }
 
-    const nextCarry = editableCarryForwardItems.filter((x) => String(x.source_invoice_id) !== cid);
-    const nextLate = editableLateFeeItems.filter((x) => String(x.source_invoice_id) !== cid);
+    const nextCarry = editableCarryForwardItems.filter(
+      (x) => String(x.source_invoice_id) !== cid,
+    );
+    const nextLate = editableLateFeeItems.filter(
+      (x) => String(x.source_invoice_id) !== cid,
+    );
     await recalculateCurrentInvoiceArrears(nextCarry, nextLate);
   };
 
@@ -1542,17 +1845,20 @@ export function useInvoicesState() {
     setUseProrateInModal(enabled);
     setForm((prev) => {
       if (!activeInvoice) return prev;
-      const monthlyRent = toNumber(activeInvoice.room_price_month || prev.rent_amount);
+      const monthlyRent = toNumber(
+        activeInvoice.room_price_month || prev.rent_amount,
+      );
       const prorateSummary = calculateProratedRentByBillingDay(
         monthlyRent,
         activeInvoice.tenant_move_in_date,
-        printSettings?.billing_day
+        printSettings?.billing_day,
       );
-      const nextRent = enabled && prorateSummary ? prorateSummary.rentAmount : monthlyRent;
+      const nextRent =
+        enabled && prorateSummary ? prorateSummary.rentAmount : monthlyRent;
       const nextAdditional = feeItemsTotal(editableFeeItems);
       const nextDiscount = feeItemsTotal(editableDiscountItems);
       const nextCarry = feeItemsTotal(editableCarryForwardItems);
-      const nextLateFee = feeItemsTotal(editableLateFeeItems);
+      const nextLateFee = calculateCurrentFormLateFee(prev);
       const total =
         nextRent +
         toNumber(prev.water_bill) +
@@ -1569,12 +1875,12 @@ export function useInvoicesState() {
   const updateFeeItem = (
     index: number,
     field: keyof FeeLineItem,
-    value: string | number
+    value: string | number,
   ) => {
     if (activeInvoice && !isInvoiceDetailEditable(activeInvoice.status)) return;
     setEditableFeeItems((prev) => {
       const next = prev.map((item, idx) =>
-        idx === index ? { ...item, [field]: value } : item
+        idx === index ? { ...item, [field]: value } : item,
       );
       const normalized = next.map((item) => {
         const unit = toNumber(item.unit);
@@ -1589,8 +1895,8 @@ export function useInvoicesState() {
       const nextAdditional = feeItemsTotal(normalized);
       const nextDiscount = feeItemsTotal(editableDiscountItems);
       const nextCarry = feeItemsTotal(editableCarryForwardItems);
-      const nextLateFee = feeItemsTotal(editableLateFeeItems);
       setForm((formPrev) => {
+        const nextLateFee = calculateCurrentFormLateFee(formPrev);
         const total =
           toNumber(formPrev.rent_amount) +
           toNumber(formPrev.water_bill) +
@@ -1615,12 +1921,12 @@ export function useInvoicesState() {
   const updateDiscountItem = (
     index: number,
     field: keyof FeeLineItem,
-    value: string | number
+    value: string | number,
   ) => {
     if (activeInvoice && !isInvoiceDetailEditable(activeInvoice.status)) return;
     setEditableDiscountItems((prev) => {
       const next = prev.map((item, idx) =>
-        idx === index ? { ...item, [field]: value } : item
+        idx === index ? { ...item, [field]: value } : item,
       );
       const normalized = next.map((item) => {
         const unit = toNumber(item.unit);
@@ -1635,8 +1941,8 @@ export function useInvoicesState() {
       const nextAdditional = feeItemsTotal(editableFeeItems);
       const nextDiscount = feeItemsTotal(normalized);
       const nextCarry = feeItemsTotal(editableCarryForwardItems);
-      const nextLateFee = feeItemsTotal(editableLateFeeItems);
       setForm((formPrev) => {
+        const nextLateFee = calculateCurrentFormLateFee(formPrev);
         const total =
           toNumber(formPrev.rent_amount) +
           toNumber(formPrev.water_bill) +
@@ -1687,9 +1993,10 @@ export function useInvoicesState() {
         amount: toNumber(item.total_amount),
         label: item.detail,
       })),
-      late_fee_amount: feeItemsTotal(editableLateFeeItems),
-      late_fee_per_day: editableLateFeeItems.length === 0 ? 0 : toNumber(form.late_fee_per_day),
-      late_fee_start_date: editableLateFeeItems.length === 0 ? null : (form.late_fee_start_date || null),
+      late_fee_amount: toNumber(form.late_fee_amount),
+      late_fee_per_day: toNumber(form.late_fee_per_day),
+      late_fee_start_date: form.late_fee_start_date || null,
+      waived_late_fee_amount: toNumber(form.waived_late_fee_amount),
       carry_forward_amount: feeItemsTotal(editableCarryForwardItems),
       additional_fees_total: feeItemsTotal(editableFeeItems),
       additional_fees_breakdown: [
@@ -1707,11 +2014,20 @@ export function useInvoicesState() {
           item_type: "late_fee_line",
           source_invoice_id: item.source_invoice_id ?? null,
           snapshot_as_of: item.snapshot_as_of ?? null,
-          days_overdue: Math.max(0, Math.round(toNumber(item.days_overdue ?? item.unit))),
-          daily_rate: Math.max(0, toNumber(item.daily_rate ?? item.price_per_unit)),
+          days_overdue: Math.max(
+            0,
+            Math.round(toNumber(item.days_overdue ?? item.unit)),
+          ),
+          daily_rate: Math.max(
+            0,
+            toNumber(item.daily_rate ?? item.price_per_unit),
+          ),
           original_amount: Math.max(
             0,
-            toNumber(item.original_amount ?? toNumber(item.unit) * toNumber(item.price_per_unit))
+            toNumber(
+              item.original_amount ??
+                toNumber(item.unit) * toNumber(item.price_per_unit),
+            ),
           ),
           waived_amount: Math.max(0, toNumber(item.waived_amount)),
           detail: item.detail,
@@ -1731,16 +2047,24 @@ export function useInvoicesState() {
         })),
         ...serializeTransferBreakdownRows(transferBreakdownItems),
       ],
+      // Bug #3 fix: form.late_fee_amount already includes both:
+      //   - native late fee for this invoice (from late_fee_start_date × rate - waived)
+      //   - editableLateFeeItems (carry-forward late fees from other invoices)
+      // (set together by updateForm via nativeLateFee + nextLateFeeItems)
+      // So we must NOT add editableLateFeeItems again here.
       total_amount:
         toNumber(form.rent_amount) +
         toNumber(form.water_bill) +
         toNumber(form.electricity_bill) +
         toNumber(form.common_fee) +
+        toNumber(form.late_fee_amount) +
         feeItemsTotal(editableCarryForwardItems) +
-        feeItemsTotal(editableLateFeeItems) +
         feeItemsTotal(editableFeeItems) -
         feeItemsTotal(editableDiscountItems),
-      paid_amount: Math.min(toNumber(form.paid_amount), toNumber(form.total_amount)),
+      paid_amount: Math.min(
+        toNumber(form.paid_amount),
+        toNumber(form.total_amount),
+      ),
       status: form.status,
       notes: form.notes,
     };
@@ -1760,7 +2084,9 @@ export function useInvoicesState() {
     setSaving(false);
     setConfirmSaveOpen(false);
     patchInvoiceInState(activeInvoice.id, payload as Partial<InvoiceRecord>);
-    setActiveInvoice((prev) => (prev ? ({ ...prev, ...(payload as any) } as InvoiceRecord) : prev));
+    setActiveInvoice((prev) =>
+      prev ? ({ ...prev, ...(payload as any) } as InvoiceRecord) : prev,
+    );
     setDetailOpen(false);
   };
 
@@ -1771,10 +2097,16 @@ export function useInvoicesState() {
     }
     if (invoiceIds.length === 0) return;
 
-    const targetInvoices = invoices.filter((invoice) => invoiceIds.includes(invoice.id));
+    const targetInvoices = invoices.filter((invoice) =>
+      invoiceIds.includes(invoice.id),
+    );
     const blocked = targetInvoices.filter((invoice) => {
       if (invoice.status === "draft") return false;
-      return !!invoice.slip_url || invoice.status === "verifying" || invoice.status === "paid";
+      return (
+        !!invoice.slip_url ||
+        invoice.status === "verifying" ||
+        invoice.status === "paid"
+      );
     });
 
     if (blocked.length > 0) {
@@ -1789,7 +2121,7 @@ export function useInvoicesState() {
         })
         .join(" | ");
       setError(
-        `ไม่สามารถลบใบแจ้งหนี้ได้ กรุณาลบสลิปการชำระเงินหรือเปลี่ยนสถานะก่อน ${details}`
+        `ไม่สามารถลบใบแจ้งหนี้ได้ กรุณาลบสลิปการชำระเงินหรือเปลี่ยนสถานะก่อน ${details}`,
       );
       return;
     }
@@ -1830,7 +2162,11 @@ export function useInvoicesState() {
 
     if (!response.ok) {
       const data = await response.json();
-      const detail = [data?.error, data?.lineStatus && `LINE ${data.lineStatus}`, data?.lineMessage]
+      const detail = [
+        data?.error,
+        data?.lineStatus && `LINE ${data.lineStatus}`,
+        data?.lineMessage,
+      ]
         .filter(Boolean)
         .join(" | ");
       throw new Error(detail || "ส่งข้อความ LINE ไม่สำเร็จ");
@@ -1844,12 +2180,16 @@ export function useInvoicesState() {
     setLineSendModalOpen(true);
     setLineSendState("sending");
     setLineSendTitle("กำลังส่งใบแจ้งหนี้ไป LINE");
-    setLineSendMessage(`กำลังส่งห้อง ${invoice.room_number} (${invoice.tenant_name})`);
+    setLineSendMessage(
+      `กำลังส่งห้อง ${invoice.room_number} (${invoice.tenant_name})`,
+    );
     try {
       await sendInvoiceToLineRequest(invoice);
       setLineSendState("success");
       setLineSendTitle("ส่งใบแจ้งหนี้สำเร็จ");
-      setLineSendMessage(`ส่งไปยัง ${invoice.tenant_name} (ห้อง ${invoice.room_number}) เรียบร้อย`);
+      setLineSendMessage(
+        `ส่งไปยัง ${invoice.tenant_name} (ห้อง ${invoice.room_number}) เรียบร้อย`,
+      );
     } catch (error: any) {
       setLineSendState("error");
       setLineSendTitle("ส่งใบแจ้งหนี้ไม่สำเร็จ");
@@ -1876,7 +2216,7 @@ export function useInvoicesState() {
     for (let i = 0; i < selectedInvoices.length; i += 1) {
       const invoice = selectedInvoices[i];
       setLineSendMessage(
-        `กำลังส่ง ${i + 1}/${selectedInvoices.length}: ห้อง ${invoice.room_number} (${invoice.tenant_name})`
+        `กำลังส่ง ${i + 1}/${selectedInvoices.length}: ห้อง ${invoice.room_number} (${invoice.tenant_name})`,
       );
 
       if (!invoice.tenant_line_user_id) {
@@ -1890,11 +2230,15 @@ export function useInvoicesState() {
         sentCount += 1;
       } catch (error: any) {
         failedCount += 1;
-        failedRooms.push(`${invoice.room_number}: ${error?.message ?? "ส่งไม่สำเร็จ"}`);
+        failedRooms.push(
+          `${invoice.room_number}: ${error?.message ?? "ส่งไม่สำเร็จ"}`,
+        );
       }
     }
 
-    const summaryParts = [`ส่งสำเร็จ ${sentCount}/${selectedInvoices.length} รายการ`];
+    const summaryParts = [
+      `ส่งสำเร็จ ${sentCount}/${selectedInvoices.length} รายการ`,
+    ];
     if (skippedCount > 0) {
       summaryParts.push(`ข้าม ${skippedCount} รายการ (ยังไม่เชื่อม LINE)`);
     }
@@ -1912,7 +2256,7 @@ export function useInvoicesState() {
           failedRooms.length > 0 ? failedRooms.slice(0, 3).join(" | ") : "",
         ]
           .filter(Boolean)
-          .join("\n")
+          .join("\n"),
       );
       setError(summaryParts.join(" · "));
     } else if (failedCount > 0 || skippedCount > 0) {
@@ -1928,16 +2272,18 @@ export function useInvoicesState() {
 
   const getInvoicePrintDetail = async (
     invoice: InvoiceRecord,
-    docType: "invoice" | "receipt" = "invoice"
+    docType: "invoice" | "receipt" = "invoice",
   ) => {
     setPreviewLoading(true);
     setPreviewDocType(docType);
     setPreviewInvoice(invoice);
-    const readingMonth = monthStartFromDate(invoice.start_date || invoice.issue_date);
+    const readingMonth = monthStartFromDate(
+      invoice.start_date || invoice.issue_date,
+    );
     const { data } = await supabase
       .from("meter_readings")
       .select(
-        "electricity_usage,water_usage,usage,previous_electricity,current_electricity,previous_water,current_water,previous_reading,current_reading"
+        "electricity_usage,water_usage,usage,previous_electricity,current_electricity,previous_water,current_water,previous_reading,current_reading",
       )
       .eq("room_id", invoice.room_id)
       .eq("reading_month", readingMonth)
@@ -1945,7 +2291,7 @@ export function useInvoicesState() {
     const { data: snapshotRows } = await supabase
       .from("invoice_arrears_snapshots")
       .select(
-        "id,source_invoice_id,snapshot_as_of,principal_amount,late_fee_amount,days_overdue,daily_rate"
+        "id,source_invoice_id,snapshot_as_of,principal_amount,late_fee_amount,days_overdue,daily_rate",
       )
       .eq("target_invoice_id", invoice.id)
       .order("created_at", { ascending: true });
@@ -1959,7 +2305,7 @@ export function useInvoicesState() {
         late_fee_amount: toNumber(row.late_fee_amount),
         days_overdue: Math.round(toNumber(row.days_overdue)),
         daily_rate: toNumber(row.daily_rate),
-      }))
+      })),
     );
     setPreviewLoading(false);
     setPreviewOpen(true);
@@ -1983,7 +2329,7 @@ export function useInvoicesState() {
     invoice: InvoiceRecord,
     reading: MeterReadingRow | null,
     docType: "invoice" | "receipt" = "invoice",
-    arrearsSnapshotRows: ArrearsSnapshotItem[] = []
+    arrearsSnapshotRows: ArrearsSnapshotItem[] = [],
   ) => {
     const dormName = printSettings?.dorm_name || "หอพัก";
     const dormAddress = printSettings?.dorm_address || "-";
@@ -1995,24 +2341,36 @@ export function useInvoicesState() {
     const prorateSummary = calculateProratedRentByBillingDay(
       toNumber(invoice.room_price_month || invoice.rent_amount),
       invoice.tenant_move_in_date,
-      printSettings?.billing_day
+      printSettings?.billing_day,
     );
     const showProrateFormula =
-      !!prorateSummary && Math.abs(toNumber(invoice.rent_amount) - prorateSummary.rentAmount) < 0.01;
-    const transferRows = toTransferBreakdownItems(invoice.additional_fees_breakdown ?? []);
-    const carryForwardRows = toCarryForwardRows(invoice.additional_fees_breakdown ?? []);
-    const lateFeeRows = toLateFeeItems(toLateFeeRows(invoice.additional_fees_breakdown ?? []));
-    const additionalRows = toChargeFeeRows(invoice.additional_fees_breakdown ?? [])
+      !!prorateSummary &&
+      Math.abs(toNumber(invoice.rent_amount) - prorateSummary.rentAmount) <
+        0.01;
+    const transferRows = toTransferBreakdownItems(
+      invoice.additional_fees_breakdown ?? [],
+    );
+    const carryForwardRows = toCarryForwardRows(
+      invoice.additional_fees_breakdown ?? [],
+    );
+    const lateFeeRows = toLateFeeItems(
+      toLateFeeRows(invoice.additional_fees_breakdown ?? []),
+    );
+    const additionalRows = toChargeFeeRows(
+      invoice.additional_fees_breakdown ?? [],
+    )
       .map(
         (fee: any) => `
           <tr>
             <td>ค่าธรรมเนียมเพิ่มเติม - ${fee.detail ?? fee.label ?? "-"}</td>
             <td class="text-right">${toNumber(fee.unit).toLocaleString("th-TH") || "-"}</td>
             <td class="text-right">${formatMoney(
-              toNumber(fee.price_per_unit ?? fee.rate ?? fee.value ?? fee.amount)
+              toNumber(
+                fee.price_per_unit ?? fee.rate ?? fee.value ?? fee.amount,
+              ),
             )}</td>
             <td class="text-right">${formatMoney(toNumber(fee.total_amount ?? fee.amount))}</td>
-          </tr>`
+          </tr>`,
       )
       .join("");
     const carryForwardHtml = carryForwardRows
@@ -2022,10 +2380,12 @@ export function useInvoicesState() {
             <td>ยอดค้างยกมา - ${fee.detail ?? fee.label ?? "-"}</td>
             <td class="text-right">${toNumber(fee.unit).toLocaleString("th-TH") || "-"}</td>
             <td class="text-right">${formatMoney(
-              toNumber(fee.price_per_unit ?? fee.rate ?? fee.value ?? fee.amount)
+              toNumber(
+                fee.price_per_unit ?? fee.rate ?? fee.value ?? fee.amount,
+              ),
             )}</td>
             <td class="text-right">${formatMoney(toNumber(fee.total_amount ?? fee.amount))}</td>
-          </tr>`
+          </tr>`,
       )
       .join("");
     const transferBreakdownRows = transferRows
@@ -2034,14 +2394,22 @@ export function useInvoicesState() {
           <tr>
             <td>${row.label}</td>
             <td class="text-right" colspan="3">${row.value}</td>
-          </tr>`
+          </tr>`,
       )
       .join("");
     const normalizedDiscountRows =
-      Array.isArray(invoice.discount_breakdown) && invoice.discount_breakdown.length > 0
+      Array.isArray(invoice.discount_breakdown) &&
+      invoice.discount_breakdown.length > 0
         ? invoice.discount_breakdown
         : invoice.discount_amount > 0
-          ? [{ detail: "ส่วนลด", unit: 1, total_amount: invoice.discount_amount, price_per_unit: invoice.discount_amount }]
+          ? [
+              {
+                detail: "ส่วนลด",
+                unit: 1,
+                total_amount: invoice.discount_amount,
+                price_per_unit: invoice.discount_amount,
+              },
+            ]
           : [];
     const discountRows = normalizedDiscountRows
       .map(
@@ -2050,10 +2418,12 @@ export function useInvoicesState() {
             <td>ส่วนลด - ${fee.detail ?? fee.label ?? "-"}</td>
             <td class="text-right">${toNumber(fee.unit).toLocaleString("th-TH") || "-"}</td>
             <td class="text-right">${formatMoney(
-              toNumber(fee.price_per_unit ?? fee.rate ?? fee.value ?? fee.amount)
+              toNumber(
+                fee.price_per_unit ?? fee.rate ?? fee.value ?? fee.amount,
+              ),
             )}</td>
             <td class="text-right">-${formatMoney(toNumber(fee.total_amount ?? fee.amount))}</td>
-          </tr>`
+          </tr>`,
       )
       .join("");
     const lateFeeRowsHtml =
@@ -2066,7 +2436,7 @@ export function useInvoicesState() {
                   <td class="text-right">${toNumber(row.days_overdue ?? row.unit).toLocaleString("th-TH")} วัน</td>
                   <td class="text-right">${formatMoney(toNumber(row.daily_rate ?? row.price_per_unit))}</td>
                   <td class="text-right">${formatMoney(row.total_amount)}</td>
-                </tr>`
+                </tr>`,
             )
             .join("")
         : arrearsSnapshotRows.length > 0
@@ -2078,20 +2448,21 @@ export function useInvoicesState() {
                     <td class="text-right">${row.days_overdue.toLocaleString("th-TH")} วัน</td>
                     <td class="text-right">${formatMoney(row.daily_rate)}</td>
                     <td class="text-right">${formatMoney(row.late_fee_amount)}</td>
-                  </tr>`
+                  </tr>`,
               )
               .join("")
           : invoice.late_fee_amount > 0
-          ? `
+            ? `
               <tr>
                 <td>ค่าปรับล่าช้า</td>
                 <td class="text-right">-</td>
                 <td class="text-right">-</td>
                 <td class="text-right">${formatMoney(invoice.late_fee_amount)}</td>
               </tr>`
-          : "";
+            : "";
 
-    const documentTitle = docType === "receipt" ? "ใบเสร็จรับเงิน" : "ใบแจ้งหนี้";
+    const documentTitle =
+      docType === "receipt" ? "ใบเสร็จรับเงิน" : "ใบแจ้งหนี้";
 
     return `
       <html>
@@ -2213,11 +2584,13 @@ export function useInvoicesState() {
     invoice: InvoiceRecord,
     reading: MeterReadingRow | null,
     docType: "invoice" | "receipt" = "invoice",
-    arrearsSnapshotRows: ArrearsSnapshotItem[] = []
+    arrearsSnapshotRows: ArrearsSnapshotItem[] = [],
   ) => {
     const win = window.open("", "_blank");
     if (!win) return;
-    win.document.write(buildPrintHtml(invoice, reading, docType, arrearsSnapshotRows));
+    win.document.write(
+      buildPrintHtml(invoice, reading, docType, arrearsSnapshotRows),
+    );
 
     win.document.close();
     win.focus();
@@ -2240,7 +2613,7 @@ export function useInvoicesState() {
     const { data: settings, error: settingsError } = await supabase
       .from("settings")
       .select(
-        "water_rate,electricity_rate,common_fee,water_min_units,water_min_price,additional_fees,additional_discounts,billing_day,due_day,late_fee_start_day,late_fee_per_day"
+        "water_rate,electricity_rate,common_fee,water_min_units,water_min_price,additional_fees,additional_discounts,billing_day,due_day,late_fee_start_day,late_fee_per_day",
       )
       .eq("id", 1)
       .single();
@@ -2256,10 +2629,16 @@ export function useInvoicesState() {
     const dueDay = clampDay((settings as any).due_day ?? 5);
     const lateFeeStartDay = clampDay((settings as any).late_fee_start_day ?? 6);
     const lateFeePerDay = toNumber((settings as any).late_fee_per_day ?? 0);
-    const issueDateText = toLocalDateString(new Date(year, month - 1, billingDay));
+    const issueDateText = toLocalDateString(
+      new Date(year, month - 1, billingDay),
+    );
     // Invoice period is the selected month, but due date / late fee start belong to the next month.
-    const generatedDueDateText = toLocalDateString(new Date(year, month, dueDay));
-    const generatedLateFeeStartDateText = toLocalDateString(new Date(year, month, lateFeeStartDay));
+    const generatedDueDateText = toLocalDateString(
+      new Date(year, month, dueDay),
+    );
+    const generatedLateFeeStartDateText = toLocalDateString(
+      new Date(year, month, lateFeeStartDay),
+    );
 
     const { data: occupiedRooms, error: roomError } = await supabase
       .from("rooms")
@@ -2297,10 +2676,13 @@ export function useInvoicesState() {
 
     const tenantByRoom = new Map<string, any>();
     for (const tenant of activeTenants ?? []) {
-      if (!tenantByRoom.has(tenant.room_id)) tenantByRoom.set(tenant.room_id, tenant);
+      if (!tenantByRoom.has(tenant.room_id))
+        tenantByRoom.set(tenant.room_id, tenant);
     }
 
-    const missingTenantRooms = occupiedRooms.filter((room: any) => !tenantByRoom.has(room.id));
+    const missingTenantRooms = occupiedRooms.filter(
+      (room: any) => !tenantByRoom.has(room.id),
+    );
 
     const billingTenants = occupiedRooms
       .map((room: any) => {
@@ -2324,7 +2706,7 @@ export function useInvoicesState() {
       const { data: transfers } = await supabase
         .from("tenant_room_transfers")
         .select(
-          "tenant_id,from_room_id,to_room_id,transfer_date,billing_month,old_electric_usage,old_water_usage,old_rent_amount,new_rent_amount"
+          "tenant_id,from_room_id,to_room_id,transfer_date,billing_month,old_electric_usage,old_water_usage,old_rent_amount,new_rent_amount",
         )
         .eq("billing_month", toLocalDateString(startDate))
         .in("tenant_id", tenantIds);
@@ -2343,21 +2725,25 @@ export function useInvoicesState() {
 
     const transferRoomRateMap = new Map<string, number>();
     for (const room of occupiedRooms ?? []) {
-      transferRoomRateMap.set(String((room as any).id), toNumber((room as any).price_month));
+      transferRoomRateMap.set(
+        String((room as any).id),
+        toNumber((room as any).price_month),
+      );
     }
     const missingTransferRoomIds = Array.from(
       new Set(
         Array.from(transferByTenant.values()).flatMap((row: any) => [
           String(row?.from_room_id ?? ""),
           String(row?.to_room_id ?? ""),
-        ])
-      )
+        ]),
+      ),
     ).filter((roomId) => roomId && !transferRoomRateMap.has(roomId));
     if (missingTransferRoomIds.length > 0) {
-      const { data: extraTransferRooms, error: extraTransferRoomsError } = await supabase
-        .from("rooms")
-        .select("id,price_month")
-        .in("id", missingTransferRoomIds);
+      const { data: extraTransferRooms, error: extraTransferRoomsError } =
+        await supabase
+          .from("rooms")
+          .select("id,price_month")
+          .in("id", missingTransferRoomIds);
       if (extraTransferRoomsError) {
         setSaving(false);
         setConfirmGenerateOpen(false);
@@ -2365,7 +2751,10 @@ export function useInvoicesState() {
         return;
       }
       for (const room of extraTransferRooms ?? []) {
-        transferRoomRateMap.set(String((room as any).id), toNumber((room as any).price_month));
+        transferRoomRateMap.set(
+          String((room as any).id),
+          toNumber((room as any).price_month),
+        );
       }
     }
 
@@ -2383,9 +2772,11 @@ export function useInvoicesState() {
       return;
     }
 
-    const existingRoomIds = new Set((existingInvoices ?? []).map((row: any) => row.room_id));
+    const existingRoomIds = new Set(
+      (existingInvoices ?? []).map((row: any) => row.room_id),
+    );
     const tenantsToGenerate = billingTenants.filter(
-      (tenant: any) => !existingRoomIds.has(tenant.room_id)
+      (tenant: any) => !existingRoomIds.has(tenant.room_id),
     );
 
     try {
@@ -2399,12 +2790,16 @@ export function useInvoicesState() {
       return;
     }
 
-    const tenantIdsToGenerate = tenantsToGenerate.map((tenant: any) => String(tenant.id));
+    const tenantIdsToGenerate = tenantsToGenerate.map((tenant: any) =>
+      String(tenant.id),
+    );
     const { data: previousUnpaidInvoices, error: previousUnpaidError } =
       tenantIdsToGenerate.length > 0
         ? await supabase
             .from("invoices")
-            .select("id,tenant_id,start_date,due_date,total_amount,paid_amount,status,late_fee_amount")
+            .select(
+              "id,tenant_id,start_date,due_date,total_amount,paid_amount,status,late_fee_amount",
+            )
             .in("tenant_id", tenantIdsToGenerate)
             .lt("start_date", toLocalDateString(startDate))
             .in("status", ["pending", "partial", "overdue", "verifying"])
@@ -2418,7 +2813,9 @@ export function useInvoicesState() {
       return;
     }
 
-    const sourceInvoiceIds = ((previousUnpaidInvoices ?? []) as any[]).map((row) => String(row.id));
+    const sourceInvoiceIds = ((previousUnpaidInvoices ?? []) as any[]).map(
+      (row) => String(row.id),
+    );
     const { data: priorLateFeeSnapshots, error: priorSnapshotError } =
       sourceInvoiceIds.length > 0
         ? await supabase
@@ -2439,7 +2836,8 @@ export function useInvoicesState() {
     for (const row of (priorLateFeeSnapshots ?? []) as any[]) {
       const sourceId = String(row.source_invoice_id ?? "");
       const snapshotAsOf = String(row.snapshot_as_of ?? "");
-      if (!sourceId || !snapshotAsOf || lastSnapshotBySource.has(sourceId)) continue;
+      if (!sourceId || !snapshotAsOf || lastSnapshotBySource.has(sourceId))
+        continue;
       lastSnapshotBySource.set(sourceId, snapshotAsOf);
     }
 
@@ -2459,44 +2857,19 @@ export function useInvoicesState() {
     }
 
     const carriedInvoiceIds = new Set(
-      ((existingCarryForwards ?? []) as any[]).map((row) => String(row.source_invoice_id))
+      ((existingCarryForwards ?? []) as any[]).map((row) =>
+        String(row.source_invoice_id),
+      ),
     );
     const carryForwardByTenant = new Map<string, any[]>();
     for (const row of (previousUnpaidInvoices ?? []) as any[]) {
       if (carriedInvoiceIds.has(String(row.id))) continue;
       const outstanding = Math.max(
         0,
-        toNumber(row.total_amount) - toNumber(row.paid_amount)
+        toNumber(row.total_amount) - toNumber(row.paid_amount),
       );
       if (outstanding <= 0) continue;
       const generationDateText = issueDateText;
-      const dailyRate = Math.max(0, lateFeePerDay);
-      let snapshotLateFee = 0;
-      let daysOverdue = 0;
-      if (dailyRate > 0) {
-        const asOf = parseDateOnly(generationDateText);
-        const fallbackStart = row.start_date
-          ? new Date(
-              parseDateOnly(String(row.start_date)).getFullYear(),
-              parseDateOnly(String(row.start_date)).getMonth() + 1,
-              lateFeeStartDay
-            )
-          : null;
-        const dueBasedStart = row.due_date ? addDays(parseDateOnly(String(row.due_date)), 1) : null;
-        const lastSnapshotAsOf = lastSnapshotBySource.get(String(row.id));
-        const lastCalculatedNextDate = lastSnapshotAsOf
-          ? addDays(parseDateOnly(lastSnapshotAsOf), 1)
-          : null;
-        const start =
-          dueBasedStart && lastCalculatedNextDate
-            ? new Date(Math.max(dueBasedStart.getTime(), lastCalculatedNextDate.getTime()))
-            : dueBasedStart ?? lastCalculatedNextDate ?? fallbackStart;
-
-        if (start && asOf >= start) {
-          daysOverdue = diffDaysInclusive(start, asOf);
-          snapshotLateFee = daysOverdue * dailyRate;
-        }
-      }
       const tenantId = String(row.tenant_id ?? "");
       if (!tenantId) continue;
       const currentRows = carryForwardByTenant.get(tenantId) ?? [];
@@ -2504,9 +2877,6 @@ export function useInvoicesState() {
         ...row,
         outstanding_amount: outstanding,
         base_outstanding_amount: outstanding,
-        snapshot_late_fee_amount: snapshotLateFee,
-        snapshot_days_overdue: daysOverdue,
-        snapshot_daily_rate: dailyRate,
         snapshot_as_of: generationDateText,
       });
       carryForwardByTenant.set(tenantId, currentRows);
@@ -2516,9 +2886,14 @@ export function useInvoicesState() {
       .from("meter_readings")
       .select("room_id,electricity_usage,water_usage,usage")
       .eq("reading_month", monthKey)
-      .in("room_id", roomIds.length ? roomIds : ["00000000-0000-0000-0000-000000000000"]);
+      .in(
+        "room_id",
+        roomIds.length ? roomIds : ["00000000-0000-0000-0000-000000000000"],
+      );
 
-    const readingMap = new Map((readings ?? []).map((row: any) => [row.room_id, row]));
+    const readingMap = new Map(
+      (readings ?? []).map((row: any) => [row.room_id, row]),
+    );
 
     const additionalFees = Array.isArray(settings.additional_fees)
       ? (settings.additional_fees as AdditionalFee[])
@@ -2527,18 +2902,24 @@ export function useInvoicesState() {
       ? ((settings as any).additional_discounts as AdditionalFee[])
       : [];
 
-    const insertPayload = tenantsToGenerate
-      .map((tenant: any) => {
-      const roomRel = Array.isArray(tenant.rooms) ? tenant.rooms[0] : tenant.rooms;
+    const insertPayload = tenantsToGenerate.map((tenant: any) => {
+      const roomRel = Array.isArray(tenant.rooms)
+        ? tenant.rooms[0]
+        : tenant.rooms;
       const reading = readingMap.get(tenant.room_id) ?? {};
       const transfer = transferByTenant.get(String(tenant.id));
       const hasTransferToThisRoom =
-        !!transfer && String((transfer as any).to_room_id ?? "") === String(tenant.room_id);
+        !!transfer &&
+        String((transfer as any).to_room_id ?? "") === String(tenant.room_id);
 
       const newRoomElecUnits = toNumber(reading.electricity_usage);
       const newRoomWaterUnits = toNumber(reading.water_usage ?? reading.usage);
-      const oldRoomElecUnits = hasTransferToThisRoom ? toNumber((transfer as any).old_electric_usage) : 0;
-      const oldRoomWaterUnits = hasTransferToThisRoom ? toNumber((transfer as any).old_water_usage) : 0;
+      const oldRoomElecUnits = hasTransferToThisRoom
+        ? toNumber((transfer as any).old_electric_usage)
+        : 0;
+      const oldRoomWaterUnits = hasTransferToThisRoom
+        ? toNumber((transfer as any).old_water_usage)
+        : 0;
       const elecUnits = oldRoomElecUnits + newRoomElecUnits;
       const waterUnits = oldRoomWaterUnits + newRoomWaterUnits;
 
@@ -2548,12 +2929,21 @@ export function useInvoicesState() {
             toLocalDateString(endDate),
             String((transfer as any).transfer_date ?? issueDateText),
             tenant.move_in_date,
-            toNumber(transferRoomRateMap.get(String((transfer as any).from_room_id ?? ""))),
-            toNumber(transferRoomRateMap.get(String((transfer as any).to_room_id ?? "")))
+            toNumber(
+              transferRoomRateMap.get(
+                String((transfer as any).from_room_id ?? ""),
+              ),
+            ),
+            toNumber(
+              transferRoomRateMap.get(
+                String((transfer as any).to_room_id ?? ""),
+              ),
+            ),
           )
         : null;
       const rentAmount = transferRentBreakdown
-        ? transferRentBreakdown.oldRentAmount + transferRentBreakdown.newRentAmount
+        ? transferRentBreakdown.oldRentAmount +
+          transferRentBreakdown.newRentAmount
         : toNumber(roomRel?.price_month);
 
       const elecBill = elecUnits * toNumber(settings.electricity_rate);
@@ -2561,7 +2951,7 @@ export function useInvoicesState() {
         waterUnits,
         toNumber(settings.water_rate),
         toNumber(settings.water_min_units),
-        toNumber(settings.water_min_price)
+        toNumber(settings.water_min_price),
       );
 
       const additionalBreakdown = additionalFees.map((fee) => {
@@ -2590,7 +2980,7 @@ export function useInvoicesState() {
 
       const additionalTotal = additionalBreakdown.reduce(
         (sum, fee) => sum + toNumber(fee.amount),
-        0
+        0,
       );
       const discountBreakdown = discountRules.map((fee) => {
         const rate = toNumber(fee.value);
@@ -2617,16 +3007,13 @@ export function useInvoicesState() {
       });
       const discountAmount = discountBreakdown.reduce(
         (sum, fee) => sum + toNumber(fee.amount),
-        0
+        0,
       );
-      const carryForwardRows = carryForwardByTenant.get(String(tenant.id)) ?? [];
+      const carryForwardRows =
+        carryForwardByTenant.get(String(tenant.id)) ?? [];
       const carryForwardAmount = carryForwardRows.reduce(
         (sum, row) => sum + toNumber(row.base_outstanding_amount),
-        0
-      );
-      const carryForwardLateFeeAmount = carryForwardRows.reduce(
-        (sum, row) => sum + toNumber(row.snapshot_late_fee_amount),
-        0
+        0,
       );
       const carryForwardBreakdown = carryForwardRows.map((row) => ({
         item_type: "carry_forward",
@@ -2636,36 +3023,17 @@ export function useInvoicesState() {
         unit: 1,
         price_per_unit: toNumber(row.base_outstanding_amount),
         total_amount: toNumber(row.base_outstanding_amount),
-          amount: toNumber(row.base_outstanding_amount),
-        }));
-      const lateFeeBreakdown = carryForwardRows
-        .filter((row) => toNumber(row.snapshot_late_fee_amount) > 0)
-        .map((row) => ({
-          item_type: "late_fee_line",
-          source_invoice_id: row.id,
-          snapshot_as_of: row.snapshot_as_of,
-          days_overdue: Math.round(toNumber(row.snapshot_days_overdue)),
-          daily_rate: toNumber(row.snapshot_daily_rate),
-          original_amount: toNumber(row.snapshot_late_fee_amount),
-          waived_amount: 0,
-          label: `ค่าปรับล่าช้างวด ${formatPeriodLabel(String(row.start_date ?? ""))}`,
-          detail: `ค่าปรับล่าช้างวด ${formatPeriodLabel(String(row.start_date ?? ""))}`,
-          unit: Math.round(toNumber(row.snapshot_days_overdue)),
-          price_per_unit: toNumber(row.snapshot_daily_rate),
-          total_amount: toNumber(row.snapshot_late_fee_amount),
-          amount: toNumber(row.snapshot_late_fee_amount),
-        }));
+        amount: toNumber(row.base_outstanding_amount),
+      }));
 
       const commonFee = toNumber(settings.common_fee);
-      const lateFeeAmount = carryForwardLateFeeAmount;
       const totalAmount =
         rentAmount +
         waterBill +
         elecBill +
         commonFee +
         additionalTotal +
-        carryForwardAmount +
-        lateFeeAmount -
+        carryForwardAmount -
         discountAmount;
       const transferBreakdownRows = hasTransferToThisRoom
         ? serializeTransferBreakdownRows([
@@ -2675,14 +3043,18 @@ export function useInvoicesState() {
             },
             {
               label: "ค่าเช่าห้องเดิม",
-              value: formatMoney(toNumber(transferRentBreakdown?.oldRentAmount)),
+              value: formatMoney(
+                toNumber(transferRentBreakdown?.oldRentAmount),
+              ),
               amount: toNumber(transferRentBreakdown?.oldRentAmount),
               editable: true,
               kind: "old_rent",
             },
             {
               label: "ค่าเช่าห้องใหม่",
-              value: formatMoney(toNumber(transferRentBreakdown?.newRentAmount)),
+              value: formatMoney(
+                toNumber(transferRentBreakdown?.newRentAmount),
+              ),
               amount: toNumber(transferRentBreakdown?.newRentAmount),
               editable: true,
               kind: "new_rent",
@@ -2711,14 +3083,13 @@ export function useInvoicesState() {
         common_fee: commonFee,
         discount_amount: discountAmount,
         discount_breakdown: discountBreakdown,
-        late_fee_amount: lateFeeAmount,
+        late_fee_amount: 0,
         late_fee_per_day: lateFeePerDay,
         late_fee_start_date: generatedLateFeeStartDateText,
         carry_forward_amount: carryForwardAmount,
         additional_fees_total: additionalTotal,
         additional_fees_breakdown: [
           ...carryForwardBreakdown,
-          ...lateFeeBreakdown,
           ...additionalBreakdown,
           ...transferBreakdownRows,
         ],
@@ -2728,7 +3099,9 @@ export function useInvoicesState() {
       };
     }) as any[];
 
-    const generatedRoomIds = new Set(insertPayload.map((row: any) => row.room_id));
+    const generatedRoomIds = new Set(
+      insertPayload.map((row: any) => row.room_id),
+    );
     if (insertPayload.length > 0) {
       const { data: insertedInvoices, error: insertError } = await supabase
         .from("invoices")
@@ -2737,26 +3110,34 @@ export function useInvoicesState() {
       if (insertError) {
         setError(insertError.message);
       } else if ((insertedInvoices ?? []).length > 0) {
-        const carryForwardInsertPayload = (insertedInvoices ?? []).flatMap((row: any) => {
-          const carryRows = carryForwardByTenant.get(String(row.tenant_id ?? "")) ?? [];
-          return carryRows.map((carryRow) => ({
-            source_invoice_id: carryRow.id,
-            target_invoice_id: row.id,
-            amount: toNumber(carryRow.outstanding_amount),
-          }));
-        });
-        const arrearsSnapshotPayload = (insertedInvoices ?? []).flatMap((row: any) => {
-          const carryRows = carryForwardByTenant.get(String(row.tenant_id ?? "")) ?? [];
-          return carryRows.map((carryRow) => ({
-            source_invoice_id: carryRow.id,
-            target_invoice_id: row.id,
-            snapshot_as_of: carryRow.snapshot_as_of,
-            principal_amount: toNumber(carryRow.base_outstanding_amount),
-            late_fee_amount: toNumber(carryRow.snapshot_late_fee_amount),
-            days_overdue: Math.round(toNumber(carryRow.snapshot_days_overdue)),
-            daily_rate: toNumber(carryRow.snapshot_daily_rate),
-          }));
-        });
+        const carryForwardInsertPayload = (insertedInvoices ?? []).flatMap(
+          (row: any) => {
+            const carryRows =
+              carryForwardByTenant.get(String(row.tenant_id ?? "")) ?? [];
+            return carryRows.map((carryRow) => ({
+              source_invoice_id: carryRow.id,
+              target_invoice_id: row.id,
+              amount: toNumber(carryRow.outstanding_amount),
+            }));
+          },
+        );
+        const arrearsSnapshotPayload = (insertedInvoices ?? []).flatMap(
+          (row: any) => {
+            const carryRows =
+              carryForwardByTenant.get(String(row.tenant_id ?? "")) ?? [];
+            return carryRows.map((carryRow) => ({
+              source_invoice_id: carryRow.id,
+              target_invoice_id: row.id,
+              snapshot_as_of: carryRow.snapshot_as_of,
+              principal_amount: toNumber(carryRow.base_outstanding_amount),
+              late_fee_amount: toNumber(carryRow.snapshot_late_fee_amount),
+              days_overdue: Math.round(
+                toNumber(carryRow.snapshot_days_overdue),
+              ),
+              daily_rate: toNumber(carryRow.snapshot_daily_rate),
+            }));
+          },
+        );
         if (carryForwardInsertPayload.length > 0) {
           const { error: carryInsertError } = await supabase
             .from("invoice_carry_forwards")
@@ -2775,31 +3156,42 @@ export function useInvoicesState() {
         }
       }
     } else {
-      setError("No new invoices generated. All rooms already have invoices for this period.");
+      setError(
+        "No new invoices generated. All rooms already have invoices for this period.",
+      );
     }
 
     const occupiedRoomIds = new Set(occupiedRooms.map((room: any) => room.id));
-    const billedRoomIds = new Set<string>([...existingRoomIds, ...generatedRoomIds]);
+    const billedRoomIds = new Set<string>([
+      ...existingRoomIds,
+      ...generatedRoomIds,
+    ]);
     const roomNumberById = new Map<string, string>(
-      occupiedRooms.map((room: any) => [room.id, room.room_number])
+      occupiedRooms.map((room: any) => [room.id, room.room_number]),
     );
-    const notBilledRoomIds = [...occupiedRoomIds].filter((roomId) => !billedRoomIds.has(roomId));
+    const notBilledRoomIds = [...occupiedRoomIds].filter(
+      (roomId) => !billedRoomIds.has(roomId),
+    );
 
     const alerts: string[] = [];
     if (existingRoomIds.size > 0 && insertPayload.length > 0) {
       alerts.push(
-        `สร้างใบแจ้งหนี้ ${insertPayload.length} รายการแล้ว และข้าม ${existingRoomIds.size} ห้องที่มีใบแจ้งหนี้ในงวดนี้อยู่แล้ว`
+        `สร้างใบแจ้งหนี้ ${insertPayload.length} รายการแล้ว และข้าม ${existingRoomIds.size} ห้องที่มีใบแจ้งหนี้ในงวดนี้อยู่แล้ว`,
       );
     }
     if (missingTenantRooms.length > 0) {
-      const rooms = missingTenantRooms.map((room: any) => room.room_number).join(", ");
+      const rooms = missingTenantRooms
+        .map((room: any) => room.room_number)
+        .join(", ");
       alerts.push(`Occupied room(s) missing active tenant: ${rooms}`);
     }
     if (notBilledRoomIds.length > 0) {
       const rooms = notBilledRoomIds
         .map((roomId) => roomNumberById.get(roomId) ?? roomId)
         .join(", ");
-      alerts.push(`Billing audit failed. Occupied room(s) without invoice: ${rooms}`);
+      alerts.push(
+        `Billing audit failed. Occupied room(s) without invoice: ${rooms}`,
+      );
     }
     if (alerts.length > 0) {
       setError(alerts.join(" | "));
@@ -2815,7 +3207,7 @@ export function useInvoicesState() {
       ? calculateProratedRentByBillingDay(
           toNumber(activeInvoice.room_price_month || form.rent_amount),
           activeInvoice.tenant_move_in_date,
-          printSettings?.billing_day
+          printSettings?.billing_day,
         )
       : null;
   const livePreviewRows = useMemo(() => {
@@ -2828,7 +3220,7 @@ export function useInvoicesState() {
     }> = [];
 
     const transferRentItems = transferBreakdownItems.filter(
-      (item) => item.editable && toNumber(item.amount) > 0
+      (item) => item.editable && toNumber(item.amount) > 0,
     );
 
     if (transferRentItems.length > 0) {
@@ -2854,8 +3246,12 @@ export function useInvoicesState() {
       const units = toNumber(form.water_units);
       rows.push({
         detail: "ค่าน้ำ",
-        unitLabel: units > 0 ? `${units.toLocaleString("th-TH")} หน่วย` : "1 รายการ",
-        pricePerUnit: units > 0 ? roundTo2(toNumber(form.water_bill) / units) : toNumber(form.water_bill),
+        unitLabel:
+          units > 0 ? `${units.toLocaleString("th-TH")} หน่วย` : "1 รายการ",
+        pricePerUnit:
+          units > 0
+            ? roundTo2(toNumber(form.water_bill) / units)
+            : toNumber(form.water_bill),
         total: toNumber(form.water_bill),
       });
     }
@@ -2864,9 +3260,12 @@ export function useInvoicesState() {
       const units = toNumber(form.electricity_units);
       rows.push({
         detail: "ค่าไฟฟ้า",
-        unitLabel: units > 0 ? `${units.toLocaleString("th-TH")} หน่วย` : "1 รายการ",
+        unitLabel:
+          units > 0 ? `${units.toLocaleString("th-TH")} หน่วย` : "1 รายการ",
         pricePerUnit:
-          units > 0 ? roundTo2(toNumber(form.electricity_bill) / units) : toNumber(form.electricity_bill),
+          units > 0
+            ? roundTo2(toNumber(form.electricity_bill) / units)
+            : toNumber(form.electricity_bill),
         total: toNumber(form.electricity_bill),
       });
     }
@@ -2941,8 +3340,12 @@ export function useInvoicesState() {
     form.water_units,
     transferBreakdownItems,
   ]);
-  const canEditDetails = activeInvoice ? isInvoiceDetailEditable(activeInvoice.status) : false;
-  const hasEditableTransferRent = transferBreakdownItems.some((item) => item.editable);
+  const canEditDetails = activeInvoice
+    ? isInvoiceDetailEditable(activeInvoice.status)
+    : false;
+  const hasEditableTransferRent = transferBreakdownItems.some(
+    (item) => item.editable,
+  );
   const canCreateInvoice = can("invoice.create");
   const canEditInvoice = can("invoice.edit");
   const canDeleteInvoice = can("invoice.delete");
@@ -2954,7 +3357,9 @@ export function useInvoicesState() {
       const nextAdditional = feeItemsTotal(editableFeeItems);
       const nextDiscount = feeItemsTotal(editableDiscountItems);
       const nextCarry = feeItemsTotal(editableCarryForwardItems);
-      const nextLateFee = feeItemsTotal(editableLateFeeItems);
+      const nextLateFeeItems = feeItemsTotal(editableLateFeeItems);
+      const nativeLateFee = calculateCurrentFormLateFee(prev);
+      const nextLateFee = nativeLateFee + nextLateFeeItems;
       const total =
         toNumber(prev.rent_amount) +
         toNumber(prev.water_bill) +
@@ -2973,20 +3378,29 @@ export function useInvoicesState() {
         paid_amount: Math.min(toNumber(prev.paid_amount), total),
       };
     });
-  }, [editableFeeItems, editableDiscountItems, editableCarryForwardItems, editableLateFeeItems]);
+  }, [
+    editableFeeItems,
+    editableDiscountItems,
+    editableCarryForwardItems,
+    editableLateFeeItems,
+  ]);
 
   useEffect(() => {
-    const transferRentItems = transferBreakdownItems.filter((item) => item.editable);
+    const transferRentItems = transferBreakdownItems.filter(
+      (item) => item.editable,
+    );
     if (transferRentItems.length === 0) return;
     const transferRentTotal = transferRentItems.reduce(
       (sum, item) => sum + toNumber(item.amount),
-      0
+      0,
     );
     const nextCarry = feeItemsTotal(editableCarryForwardItems);
-    const nextLateFee = feeItemsTotal(editableLateFeeItems);
+    const nextLateFeeItems = feeItemsTotal(editableLateFeeItems);
     const nextAdditional = feeItemsTotal(editableFeeItems);
     const nextDiscount = feeItemsTotal(editableDiscountItems);
     setForm((prev) => {
+      const nativeLateFee = calculateCurrentFormLateFee(prev);
+      const nextLateFee = nativeLateFee + nextLateFeeItems;
       const total =
         transferRentTotal +
         toNumber(prev.water_bill) +
@@ -3013,7 +3427,6 @@ export function useInvoicesState() {
     editableLateFeeItems,
     transferBreakdownItems,
   ]);
-
 
   return {
     supabase,
@@ -3170,4 +3583,3 @@ export function useInvoicesState() {
     modalProrateSummary,
   };
 }
-

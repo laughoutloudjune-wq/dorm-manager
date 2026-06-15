@@ -1,6 +1,11 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-export const OPEN_INVOICE_STATUSES = ["pending", "partial", "overdue", "verifying"] as const;
+export const OPEN_INVOICE_STATUSES = [
+  "pending",
+  "partial",
+  "overdue",
+  "verifying",
+] as const;
 
 type InvoiceLike = {
   id: string;
@@ -15,6 +20,8 @@ type InvoiceLike = {
   late_fee_per_day?: number | null;
   late_fee_start_date?: string | null;
   due_date?: string | null;
+  waived_late_fee_amount?: number | null;
+  locked_late_fee_amount?: number | null;
 };
 
 export type SyncLedgerOptions = {
@@ -61,34 +68,58 @@ const toDateOnly = (value: string) => {
 
 const dayDiffInclusive = (left: Date, right: Date) => {
   const leftUtc = Date.UTC(left.getFullYear(), left.getMonth(), left.getDate());
-  const rightUtc = Date.UTC(right.getFullYear(), right.getMonth(), right.getDate());
+  const rightUtc = Date.UTC(
+    right.getFullYear(),
+    right.getMonth(),
+    right.getDate(),
+  );
   return Math.floor((rightUtc - leftUtc) / 86400000) + 1;
 };
 
-export const getInvoiceOutstanding = (invoice: Pick<InvoiceLike, "total_amount" | "paid_amount">) =>
+export const getInvoiceOutstanding = (
+  invoice: Pick<InvoiceLike, "total_amount" | "paid_amount">,
+) =>
   Math.max(0, toNumber(invoice.total_amount) - toNumber(invoice.paid_amount));
 
 export const calculateLateFeeAmount = (
-  invoice: Pick<InvoiceLike, "late_fee_start_date" | "late_fee_per_day">,
-  asOfDateText: string
+  invoice: Pick<
+    InvoiceLike,
+    | "late_fee_start_date"
+    | "late_fee_per_day"
+    | "waived_late_fee_amount"
+    | "locked_late_fee_amount"
+  >,
+  asOfDateText: string,
 ) => {
+  if (
+    invoice.locked_late_fee_amount !== null &&
+    invoice.locked_late_fee_amount !== undefined
+  ) {
+    return Math.max(0, toNumber(invoice.locked_late_fee_amount));
+  }
   if (!invoice.late_fee_start_date) return 0;
   const rate = Math.max(0, toNumber(invoice.late_fee_per_day));
   if (rate <= 0) return 0;
   const startDate = toDateOnly(invoice.late_fee_start_date);
   const asOfDate = toDateOnly(asOfDateText);
   if (asOfDate < startDate) return 0;
-  return dayDiffInclusive(startDate, asOfDate) * rate;
+
+  const rawLateFee = dayDiffInclusive(startDate, asOfDate) * rate;
+  const waived = Math.max(0, toNumber(invoice.waived_late_fee_amount));
+  return Math.max(0, rawLateFee - waived);
 };
 
 export const resolveInvoiceStatus = (
   invoice: Pick<InvoiceLike, "total_amount" | "paid_amount" | "due_date">,
-  asOfDateText: string
+  asOfDateText: string,
 ) => {
   const outstanding = getInvoiceOutstanding(invoice);
   if (outstanding <= 0) return "paid";
   const paidAmount = toNumber(invoice.paid_amount);
-  if (invoice.due_date && toDateOnly(asOfDateText) > toDateOnly(invoice.due_date)) {
+  if (
+    invoice.due_date &&
+    toDateOnly(asOfDateText) > toDateOnly(invoice.due_date)
+  ) {
     return paidAmount > 0 ? "partial" : "overdue";
   }
   return paidAmount > 0 ? "partial" : "pending";
@@ -105,7 +136,7 @@ type InvoiceRowSnapshot = {
 async function findIdempotentPaymentResult(
   supabase: SupabaseClient,
   triggerInvoiceId: string,
-  idempotencyKey: string
+  idempotencyKey: string,
 ): Promise<ApplyPaymentResult | null> {
   const { data: inv, error } = await supabase
     .from("invoices")
@@ -113,7 +144,9 @@ async function findIdempotentPaymentResult(
     .eq("id", triggerInvoiceId)
     .maybeSingle();
   if (error || !inv) return null;
-  const history = Array.isArray((inv as any).payment_history) ? (inv as any).payment_history : [];
+  const history = Array.isArray((inv as any).payment_history)
+    ? (inv as any).payment_history
+    : [];
   const entry = history.find((e: any) => e?.idempotency_key === idempotencyKey);
   const batchId = entry?.payment_batch_id ? String(entry.payment_batch_id) : "";
   if (!batchId) return null;
@@ -124,27 +157,38 @@ async function findIdempotentPaymentResult(
     .eq("payment_batch_id", batchId);
   if (allocError) return null;
 
-  const appliedAmount = (allocRows ?? []).reduce((sum, row: any) => sum + toNumber(row.amount), 0);
-  const invoiceIds = [...new Set((allocRows ?? []).map((r: any) => String(r.invoice_id)))];
+  const appliedAmount = (allocRows ?? []).reduce(
+    (sum, row: any) => sum + toNumber(row.amount),
+    0,
+  );
+  const invoiceIds = [
+    ...new Set((allocRows ?? []).map((r: any) => String(r.invoice_id))),
+  ];
   if (invoiceIds.length === 0) return null;
 
   const { data: updatedInvoices, error: invError } = await supabase
     .from("invoices")
-    .select("id,paid_amount,status,payment_history,slip_url,slip_uploaded_at,total_amount")
+    .select(
+      "id,paid_amount,status,payment_history,slip_url,slip_uploaded_at,total_amount",
+    )
     .in("id", invoiceIds);
   if (invError) return null;
 
-  const byId = new Map((updatedInvoices ?? []).map((u: any) => [String(u.id), u]));
-  const breakdown: AllocationBreakdownRow[] = (allocRows ?? []).map((row: any) => {
-    const id = String(row.invoice_id);
-    const inv = byId.get(id) as any;
-    return {
-      invoiceId: id,
-      allocatedAmount: toNumber(row.amount),
-      newPaidAmount: toNumber(inv?.paid_amount),
-      newStatus: String(inv?.status ?? ""),
-    };
-  });
+  const byId = new Map(
+    (updatedInvoices ?? []).map((u: any) => [String(u.id), u]),
+  );
+  const breakdown: AllocationBreakdownRow[] = (allocRows ?? []).map(
+    (row: any) => {
+      const id = String(row.invoice_id);
+      const inv = byId.get(id) as any;
+      return {
+        invoiceId: id,
+        allocatedAmount: toNumber(row.amount),
+        newPaidAmount: toNumber(inv?.paid_amount),
+        newStatus: String(inv?.status ?? ""),
+      };
+    },
+  );
 
   return {
     paymentBatchId: batchId,
@@ -157,12 +201,12 @@ async function findIdempotentPaymentResult(
 
 export async function syncInvoiceLedger(
   supabase: SupabaseClient,
-  options: SyncLedgerOptions = {}
+  options: SyncLedgerOptions = {},
 ) {
   let query = supabase
     .from("invoices")
     .select(
-      "id,tenant_id,total_amount,paid_amount,status,payment_history,slip_url,slip_uploaded_at,late_fee_amount,late_fee_per_day,late_fee_start_date,due_date,start_date"
+      "id,tenant_id,total_amount,paid_amount,status,payment_history,slip_url,slip_uploaded_at,late_fee_amount,late_fee_per_day,late_fee_start_date,due_date,start_date,waived_late_fee_amount,locked_late_fee_amount",
     )
     .not("status", "in", '("draft","paid","cancelled")');
 
@@ -189,27 +233,39 @@ export async function syncInvoiceLedger(
       continue;
     }
 
-    const currentLateFee = toNumber(invoice.late_fee_amount);
+    // Bug #1 fix: syncInvoiceLedger should NEVER touch total_amount.
+    // total_amount is owned by the admin — set when they save the invoice.
+    // We only update late_fee_amount (running tally) and status here.
     const newLateFee = calculateLateFeeAmount(invoice, todayText);
+    const currentLateFee = toNumber(invoice.late_fee_amount);
     const lateFeeDiff = newLateFee - currentLateFee;
-    const nextTotalAmount = toNumber(invoice.total_amount) + lateFeeDiff;
 
+    // For status resolution, use the stored total_amount as-is.
     const nextStatus = resolveInvoiceStatus(
       {
-        total_amount: nextTotalAmount,
+        total_amount: invoice.total_amount,
         paid_amount: invoice.paid_amount,
         due_date: invoice.due_date ?? null,
       },
-      todayText
+      todayText,
     );
 
     const updatePayload: any = {};
     if (nextStatus !== String(invoice.status ?? "")) {
       updatePayload.status = nextStatus;
+      if (nextStatus === "paid") {
+        updatePayload.locked_late_fee_amount = newLateFee;
+      } else if (
+        nextStatus === "partial" ||
+        nextStatus === "overdue" ||
+        nextStatus === "pending"
+      ) {
+        updatePayload.locked_late_fee_amount = null;
+      }
     }
-    if (lateFeeDiff !== 0) {
+    // Only update late_fee_amount tracking column — never total_amount.
+    if (lateFeeDiff !== 0 && invoice.locked_late_fee_amount == null) {
       updatePayload.late_fee_amount = newLateFee;
-      updatePayload.total_amount = nextTotalAmount;
     }
 
     if (Object.keys(updatePayload).length > 0) {
@@ -236,16 +292,19 @@ export async function getCarryForwardCandidatesForTarget(
   tenantId: string,
   beforeStartDate: string,
   targetInvoiceId?: string | null,
-  valuationDateForLateFee?: string | null
+  valuationDateForLateFee?: string | null,
 ) {
   await syncInvoiceLedger(supabase, { tenantIds: [tenantId], beforeStartDate });
 
-  const asOfLateFee = String(valuationDateForLateFee || beforeStartDate).slice(0, 10);
+  const asOfLateFee = String(valuationDateForLateFee || beforeStartDate).slice(
+    0,
+    10,
+  );
 
   const { data: invoices, error } = await supabase
     .from("invoices")
     .select(
-      "id,tenant_id,start_date,due_date,total_amount,paid_amount,status,late_fee_amount,late_fee_per_day,late_fee_start_date"
+      "id,tenant_id,start_date,due_date,total_amount,paid_amount,status,late_fee_amount,late_fee_per_day,late_fee_start_date,waived_late_fee_amount,locked_late_fee_amount",
     )
     .eq("tenant_id", tenantId)
     .lt("start_date", beforeStartDate)
@@ -262,36 +321,62 @@ export async function getCarryForwardCandidatesForTarget(
     .in("source_invoice_id", candidateIds);
   if (carryError) throw new Error(carryError.message);
 
-  const carriedToOtherTarget = new Set<string>();
+  // Build a set of which source invoices are already linked to a DIFFERENT target invoice.
+  // (If linked to the current targetInvoiceId, we keep them visible so admin can uncheck.)
+  const linkedElsewhere = new Set<string>();
   for (const row of existingCarryRows ?? []) {
     const sid = String((row as any).source_invoice_id ?? "");
     const tid = String((row as any).target_invoice_id ?? "");
-    if (!sid) continue;
+    if (!sid || !tid) continue;
     if (targetInvoiceId && tid === String(targetInvoiceId)) continue;
-    carriedToOtherTarget.add(sid);
+    linkedElsewhere.add(sid);
   }
 
-  return (invoices ?? [])
-    .filter((row: any) => !carriedToOtherTarget.has(String(row.id)))
-    .map((row: any) => ({
+  // Bug #2 fix: Each invoice's outstanding is computed directly from its own
+  // total_amount vs paid_amount. We do NOT subtract sources from targets —
+  // that was causing 4/2026 to appear as 0 when 3/2026 was already carried into it.
+  // An invoice should appear as a candidate as long as it has an unpaid balance,
+  // regardless of whether it was previously carried forward into another invoice.
+  const candidates = (invoices ?? []).map((row: any) => {
+    let snapshotDays = 0;
+    if (row.late_fee_start_date) {
+      const startDate = toDateOnly(row.late_fee_start_date);
+      const asOfDate = toDateOnly(asOfLateFee);
+      if (asOfDate >= startDate) {
+        snapshotDays = dayDiffInclusive(startDate, asOfDate);
+      }
+    }
+    const snapshotLateFee = calculateLateFeeAmount(row, asOfLateFee);
+    const outstanding = getInvoiceOutstanding(row);
+    return {
       ...row,
-      outstanding_amount: getInvoiceOutstanding(row),
-      late_fee_snapshot_amount: calculateLateFeeAmount(row, asOfLateFee),
-    }))
-    .filter((row: any) => row.outstanding_amount > 0);
+      outstanding_amount: outstanding,
+      late_fee_snapshot_amount: snapshotLateFee,
+      late_fee_snapshot_days: snapshotDays,
+    };
+  });
+
+  return candidates.filter(
+    (row: any) => row.outstanding_amount > 0 && !linkedElsewhere.has(String(row.id)),
+  );
 }
 
 export async function getCarryForwardCandidates(
   supabase: SupabaseClient,
   tenantId: string,
-  beforeStartDate: string
+  beforeStartDate: string,
 ) {
-  return getCarryForwardCandidatesForTarget(supabase, tenantId, beforeStartDate, null);
+  return getCarryForwardCandidatesForTarget(
+    supabase,
+    tenantId,
+    beforeStartDate,
+    null,
+  );
 }
 
 export async function applyInvoicePaymentAllocation(
   supabase: SupabaseClient,
-  options: ApplyPaymentOptions
+  options: ApplyPaymentOptions,
 ): Promise<ApplyPaymentResult> {
   const {
     invoiceId,
@@ -309,14 +394,18 @@ export async function applyInvoicePaymentAllocation(
 
   const trimmedIdem = idempotencyKey?.trim() || null;
   if (trimmedIdem) {
-    const existing = await findIdempotentPaymentResult(supabase, invoiceId, trimmedIdem);
+    const existing = await findIdempotentPaymentResult(
+      supabase,
+      invoiceId,
+      trimmedIdem,
+    );
     if (existing) return existing;
   }
 
   const { data: targetInvoice, error: targetError } = await supabase
     .from("invoices")
     .select(
-      "id,tenant_id,total_amount,paid_amount,status,payment_history,slip_url,slip_uploaded_at,late_fee_amount,late_fee_per_day,late_fee_start_date,due_date"
+      "id,tenant_id,total_amount,paid_amount,status,payment_history,slip_url,slip_uploaded_at,late_fee_amount,late_fee_per_day,late_fee_start_date,due_date",
     )
     .eq("id", invoiceId)
     .single();
@@ -332,7 +421,9 @@ export async function applyInvoicePaymentAllocation(
     .eq("target_invoice_id", invoiceId);
   if (carryError) throw new Error(carryError.message);
 
-  const sourceInvoiceIds = (carryRows ?? []).map((row: any) => String(row.source_invoice_id));
+  const sourceInvoiceIds = (carryRows ?? []).map((row: any) =>
+    String(row.source_invoice_id),
+  );
   if (sourceInvoiceIds.length > 0) {
     await syncInvoiceLedger(supabase, { invoiceIds: sourceInvoiceIds });
   }
@@ -342,7 +433,7 @@ export async function applyInvoicePaymentAllocation(
     const { data: sourceInvoices, error: sourceError } = await supabase
       .from("invoices")
       .select(
-        "id,tenant_id,total_amount,paid_amount,status,payment_history,slip_url,slip_uploaded_at,late_fee_amount,late_fee_per_day,late_fee_start_date,due_date,start_date"
+        "id,tenant_id,total_amount,paid_amount,status,payment_history,slip_url,slip_uploaded_at,late_fee_amount,late_fee_per_day,late_fee_start_date,due_date,start_date",
       )
       .in("id", sourceInvoiceIds)
       .order("start_date", { ascending: true });
@@ -353,7 +444,7 @@ export async function applyInvoicePaymentAllocation(
   const { data: freshTargetInvoice, error: refreshError } = await supabase
     .from("invoices")
     .select(
-      "id,tenant_id,total_amount,paid_amount,status,payment_history,slip_url,slip_uploaded_at,late_fee_amount,late_fee_per_day,late_fee_start_date,due_date,start_date"
+      "id,tenant_id,total_amount,paid_amount,status,payment_history,slip_url,slip_uploaded_at,late_fee_amount,late_fee_per_day,late_fee_start_date,due_date,start_date",
     )
     .eq("id", invoiceId)
     .single();
@@ -364,7 +455,7 @@ export async function applyInvoicePaymentAllocation(
 
   const totalOutstanding = paymentTargets.reduce(
     (sum, invoice) => sum + getInvoiceOutstanding(invoice as InvoiceLike),
-    0
+    0,
   );
   if (totalOutstanding <= 0) {
     throw new Error("This invoice chain is already fully paid.");
@@ -387,32 +478,33 @@ export async function applyInvoicePaymentAllocation(
     const id = String(invoice.id);
     revertSnapshots.set(id, {
       paid_amount: toNumber(invoice.paid_amount),
-      payment_history: Array.isArray(invoice.payment_history) ? invoice.payment_history : [],
+      payment_history: Array.isArray(invoice.payment_history)
+        ? invoice.payment_history
+        : [],
       status: String(invoice.status ?? ""),
       slip_url: (invoice as any).slip_url ?? null,
       slip_uploaded_at: (invoice as any).slip_uploaded_at ?? null,
     });
   }
 
-  let sourceAllocatedTotal = 0;
-
+  // Bug #4 fix: Each invoice gets exactly its own allocated share.
+  // No accumulation of source allocations onto the trigger invoice — that was
+  // causing the trigger invoice to appear over-paid.
   for (const invoice of paymentTargets) {
     const outstanding = getInvoiceOutstanding(invoice as InvoiceLike);
     if (outstanding <= 0 || remaining <= 0) continue;
 
     const allocated = Math.min(outstanding, remaining);
-    
-    let effectiveAllocated = allocated;
-    if (String(invoice.id) !== String(invoiceId)) {
-      sourceAllocatedTotal += allocated;
-    } else {
-      effectiveAllocated = allocated + sourceAllocatedTotal;
-    }
 
-    const nextPaidAmount = Math.min(toNumber(invoice.total_amount), toNumber(invoice.paid_amount) + effectiveAllocated);
-    const paymentHistory = Array.isArray(invoice.payment_history) ? invoice.payment_history : [];
+    const nextPaidAmount = Math.min(
+      toNumber(invoice.total_amount),
+      toNumber(invoice.paid_amount) + allocated,
+    );
+    const paymentHistory = Array.isArray(invoice.payment_history)
+      ? invoice.payment_history
+      : [];
     const paymentEntry: Record<string, unknown> = {
-      amount: effectiveAllocated,
+      amount: allocated,
       mode,
       paid_at: paidAt,
       slip_url: slipUrl,
@@ -425,8 +517,12 @@ export async function applyInvoicePaymentAllocation(
       paymentEntry.idempotency_key = trimmedIdem;
     }
     const nextStatus = resolveInvoiceStatus(
-      { total_amount: invoice.total_amount, paid_amount: nextPaidAmount, due_date: invoice.due_date },
-      paidAt.slice(0, 10)
+      {
+        total_amount: invoice.total_amount,
+        paid_amount: nextPaidAmount,
+        due_date: invoice.due_date,
+      },
+      paidAt.slice(0, 10),
     );
 
     updates.push({
@@ -485,7 +581,11 @@ export async function applyInvoicePaymentAllocation(
         })
         .eq("id", id);
       if (revertError) {
-        console.error("[invoice-ledger] Failed to revert invoice after allocation error:", id, revertError);
+        console.error(
+          "[invoice-ledger] Failed to revert invoice after allocation error:",
+          id,
+          revertError,
+        );
       }
     }
     throw err;
@@ -494,7 +594,9 @@ export async function applyInvoicePaymentAllocation(
   const updatedInvoiceIds = updates.map((item) => item.invoiceId);
   const { data: updatedInvoices, error: updatedError } = await supabase
     .from("invoices")
-    .select("id,paid_amount,status,payment_history,slip_url,slip_uploaded_at,total_amount")
+    .select(
+      "id,paid_amount,status,payment_history,slip_url,slip_uploaded_at,total_amount",
+    )
     .in("id", updatedInvoiceIds);
   if (updatedError) throw new Error(updatedError.message);
 

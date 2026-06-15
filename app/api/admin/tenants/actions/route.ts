@@ -319,14 +319,112 @@ export async function POST(req: Request) {
       }
 
       if (requestStatus === "approved" && approvedMoveOutDate) {
+        const tenantId = String(requestRow.tenant_id);
+
         const { error: updateTenantError } = await auth.supabase
           .from("tenants")
           .update({ move_out_date: approvedMoveOutDate })
-          .eq("id", String(requestRow.tenant_id));
+          .eq("id", tenantId);
 
         if (updateTenantError) {
           return NextResponse.json({ error: updateTenantError.message }, { status: 500 });
         }
+
+        // --- Auto-generate prorated move-out invoice ---
+        // Fetch tenant + room info and settings billing_day
+        const [tenantRes, settingsRes] = await Promise.all([
+          auth.supabase
+            .from("tenants")
+            .select("id,room_id,rooms(id,price_month,room_number)")
+            .eq("id", tenantId)
+            .maybeSingle(),
+          auth.supabase.from("settings").select("billing_day,due_day").maybeSingle(),
+        ]);
+
+        const tenant = tenantRes.data as any;
+        const settings = settingsRes.data as any;
+
+        if (tenant?.room_id && settings?.billing_day) {
+          const billingDay = Math.max(1, Math.min(28, Number(settings.billing_day) || 25));
+          const dueDay = Math.max(1, Math.min(28, Number(settings.due_day) || 10));
+
+          const moveOutDateObj = new Date(approvedMoveOutDate);
+          const moveOutYear = moveOutDateObj.getFullYear();
+          const moveOutMonth = moveOutDateObj.getMonth(); // 0-indexed
+          const moveOutDay = moveOutDateObj.getDate();
+
+          // Find billing period end = most recent billing day <= move-out date
+          let billingPeriodEnd: Date;
+          if (moveOutDay >= billingDay) {
+            // Billing day already passed this month — billing period ended on billing day this month
+            billingPeriodEnd = new Date(moveOutYear, moveOutMonth, billingDay);
+          } else {
+            // Billing day hasn't come yet — billing period ended on billing day last month
+            billingPeriodEnd = new Date(moveOutYear, moveOutMonth - 1, billingDay);
+          }
+
+          // Only create prorate if move-out is AFTER the billing period end
+          if (moveOutDateObj > billingPeriodEnd) {
+            const prorateStartObj = new Date(billingPeriodEnd);
+            prorateStartObj.setDate(prorateStartObj.getDate() + 1); // day after billing period end
+
+            const toYmd = (d: Date) => d.toISOString().slice(0, 10);
+            const prorateStart = toYmd(prorateStartObj);
+            const prorateEnd = approvedMoveOutDate;
+
+            // Inclusive day count
+            const msPerDay = 86400000;
+            const prorateStartUtc = Date.UTC(prorateStartObj.getFullYear(), prorateStartObj.getMonth(), prorateStartObj.getDate());
+            const prorateEndUtc = Date.UTC(moveOutDateObj.getFullYear(), moveOutDateObj.getMonth(), moveOutDateObj.getDate());
+            const proratedDays = Math.floor((prorateEndUtc - prorateStartUtc) / msPerDay) + 1;
+
+            const roomRel = Array.isArray(tenant.rooms) ? tenant.rooms[0] : tenant.rooms;
+            const priceMonth = toNumber(roomRel?.price_month ?? 0);
+            const dailyRate = priceMonth / 30;
+            const proratedRent = roundTo2(dailyRate * proratedDays);
+
+            // Issue date = today, due date = next dueDay after move-out
+            const issueDateStr = nowIso.slice(0, 10);
+            const dueDateObj = new Date(moveOutDateObj.getFullYear(), moveOutDateObj.getMonth() + 1, dueDay);
+            const dueDateStr = toYmd(dueDateObj);
+
+            // Skip if a draft prorate invoice already exists for this period
+            const { data: existingProrate } = await auth.supabase
+              .from("invoices")
+              .select("id")
+              .eq("tenant_id", tenantId)
+              .eq("start_date", prorateStart)
+              .eq("end_date", prorateEnd)
+              .eq("status", "draft")
+              .maybeSingle();
+
+            if (!existingProrate?.id && proratedRent > 0) {
+              await auth.supabase.from("invoices").insert({
+                id: crypto.randomUUID(),
+                tenant_id: tenantId,
+                room_id: tenant.room_id,
+                status: "draft",
+                start_date: prorateStart,
+                end_date: prorateEnd,
+                issue_date: issueDateStr,
+                due_date: dueDateStr,
+                rent_amount: proratedRent,
+                water_bill: 0,
+                electricity_bill: 0,
+                common_fee: 0,
+                discount_amount: 0,
+                late_fee_amount: 0,
+                carry_forward_amount: 0,
+                additional_fees_total: 0,
+                total_amount: proratedRent,
+                paid_amount: 0,
+                notes: `ค่าเช่าส่วนเกิน (Prorated Move-Out) ${proratedDays} วัน × ${dailyRate.toFixed(2)} บาท/วัน`,
+                created_at: nowIso,
+              });
+            }
+          }
+        }
+        // --- End prorated invoice ---
       }
 
       return NextResponse.json({ success: true });
@@ -373,6 +471,14 @@ export async function POST(req: Request) {
         event_type: "move_out",
         created_at: new Date().toISOString(),
       });
+
+      // Finalize any draft prorated move-out invoice to "pending"
+      await auth.supabase
+        .from("invoices")
+        .update({ status: "pending" })
+        .eq("tenant_id", tenantId)
+        .eq("status", "draft")
+        .eq("end_date", moveOutDate);
 
       const { error: requestsError } = await auth.supabase
         .from("move_out_requests")
@@ -432,6 +538,13 @@ export async function POST(req: Request) {
       if (cancelRequestsError) {
         return NextResponse.json({ error: cancelRequestsError.message }, { status: 500 });
       }
+
+      // Cancel any draft prorated move-out invoice that was auto-created on approval
+      await auth.supabase
+        .from("invoices")
+        .update({ status: "cancelled", updated_at: nowIso })
+        .eq("tenant_id", tenantId)
+        .eq("status", "draft");
 
       return NextResponse.json({ success: true });
     }
