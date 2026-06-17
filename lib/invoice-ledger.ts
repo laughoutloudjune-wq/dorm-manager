@@ -233,12 +233,9 @@ export async function syncInvoiceLedger(
       continue;
     }
 
-    // Bug #1 fix: syncInvoiceLedger should NEVER touch total_amount.
-    // total_amount is owned by the admin — set when they save the invoice.
-    // We only update late_fee_amount (running tally) and status here.
-    const newLateFee = calculateLateFeeAmount(invoice, todayText);
-    const currentLateFee = toNumber(invoice.late_fee_amount);
-    const lateFeeDiff = newLateFee - currentLateFee;
+    // The new logic requires that the current month's invoice DOES NOT dynamically increment its late fee.
+    // Late fees are only calculated at the end of the month and applied to the NEXT month's invoice as a line item.
+    // Therefore, we do not update `late_fee_amount` here.
 
     // For status resolution, use the stored total_amount as-is.
     const nextStatus = resolveInvoiceStatus(
@@ -253,8 +250,11 @@ export async function syncInvoiceLedger(
     const updatePayload: any = {};
     if (nextStatus !== String(invoice.status ?? "")) {
       updatePayload.status = nextStatus;
+      
+      // If the invoice is fully paid, we lock the late fee so it doesn't get carried forward anymore.
+      // Since it's no longer dynamically accumulating, we just lock it to its current static value.
       if (nextStatus === "paid") {
-        updatePayload.locked_late_fee_amount = newLateFee;
+        updatePayload.locked_late_fee_amount = toNumber(invoice.late_fee_amount);
       } else if (
         nextStatus === "partial" ||
         nextStatus === "overdue" ||
@@ -262,12 +262,6 @@ export async function syncInvoiceLedger(
       ) {
         updatePayload.locked_late_fee_amount = null;
       }
-    }
-    // Only update late_fee_amount tracking column — never total_amount.
-    // Also skip if locked_late_fee_amount is already set (invoice has been carried forward
-    // and frozen — its late fee now lives in the next invoice).
-    if (lateFeeDiff !== 0 && invoice.locked_late_fee_amount == null) {
-      updatePayload.late_fee_amount = newLateFee;
     }
 
     if (Object.keys(updatePayload).length > 0) {
