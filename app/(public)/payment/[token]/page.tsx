@@ -46,6 +46,7 @@ type InvoiceData = {
     late_fee_amount: number;
     days_overdue: number;
     daily_rate: number;
+    source_start_date?: string | null;
   }>;
 };
 
@@ -344,7 +345,7 @@ export default function PaymentTokenPage() {
       const { data: arrearsRows } = await supabase
         .from("invoice_arrears_snapshots")
         .select(
-          "id,source_invoice_id,snapshot_as_of,late_fee_amount,days_overdue,daily_rate"
+          "id,source_invoice_id,snapshot_as_of,late_fee_amount,days_overdue,daily_rate,source_invoice:source_invoice_id(start_date)"
         )
         .eq("target_invoice_id", normalized.id)
         .order("created_at", { ascending: true });
@@ -356,6 +357,7 @@ export default function PaymentTokenPage() {
             late_fee_amount: toNumber(row.late_fee_amount),
             days_overdue: Math.round(toNumber(row.days_overdue)),
             daily_rate: toNumber(row.daily_rate),
+            source_start_date: typeof row.source_invoice === 'object' && row.source_invoice ? String((row.source_invoice as any).start_date) : null,
           }))
         : [];
       setInvoice(normalized);
@@ -528,7 +530,7 @@ export default function PaymentTokenPage() {
           )}
           {invoice.status !== "paid" && (
             <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-              ชำระได้ไม่เกินวันที่ 10 ของเดือนถัดไป ถ้าหากเกินกำหนดชำระ มีค่าปรับ 100 บาท/วัน
+              หากเกินกำหนดชำระอาจมีค่าปรับตามนโยบายหอพัก
             </div>
           )}
         </header>
@@ -605,7 +607,7 @@ export default function PaymentTokenPage() {
                   className="flex items-center justify-between rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900"
                 >
                   <span>
-                    ค่าปรับล่าช้า - บิล {row.source_invoice_id.slice(0, 8).toUpperCase()}
+                    ค่าปรับล่าช้า - งวด {new Date(row.source_start_date ?? row.snapshot_as_of).toLocaleDateString("th-TH", { month: "long", year: "numeric" })}
                     <span className="block text-[11px] font-normal text-amber-800">
                       {row.days_overdue.toLocaleString("th-TH")} วัน x ฿{formatBaht(row.daily_rate)}
                       /วัน

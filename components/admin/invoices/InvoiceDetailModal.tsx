@@ -886,24 +886,6 @@ export function InvoiceDetailModal() {
                               <p className="text-[11px] text-green-600 text-right font-medium">
                                 ✓ ล็อกค่าปรับแล้วเนื่องจากชำระเงิน
                               </p>
-                            ) : form.late_fee_start_date ? (
-                              (() => {
-                                const preview = calculateLateFeePreview(
-                                  form.late_fee_start_date,
-                                  toNumber(form.late_fee_per_day),
-                                  toLocalDateString(new Date()),
-                                );
-                                return (
-                                  <p className="text-[11px] text-slate-500 text-right">
-                                    (คิดจาก {preview.days} วัน อัตรา{" "}
-                                    {form.late_fee_per_day} บาท/วัน เริ่มตั้งแต่{" "}
-                                    {new Date(
-                                      form.late_fee_start_date,
-                                    ).toLocaleDateString("th-TH")}
-                                    )
-                                  </p>
-                                );
-                              })()
                             ) : null}
                           </div>
                         </td>

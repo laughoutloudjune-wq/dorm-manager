@@ -1402,13 +1402,17 @@ export function useInvoicesState() {
     ) {
       return Math.max(0, toNumber(formState.locked_late_fee_amount));
     }
-    const todayLocal = toLocalDateString(new Date());
-    const raw = calculateLateFeePreview(
-      formState.late_fee_start_date,
-      toNumber(formState.late_fee_per_day),
-      todayLocal,
-    );
-    return Math.max(0, raw.amount - toNumber(formState.waived_late_fee_amount));
+    
+    // Static calculation based on the database state
+    const dbTotalLateFee = toNumber(activeInvoice?.late_fee_amount);
+    const dbCarryForwardLateFees = activeInvoice ? feeItemsTotal(toLateFeeItems(toLateFeeRows(activeInvoice.additional_fees_breakdown ?? []))) : 0;
+    const dbNativeLateFee = Math.max(0, dbTotalLateFee - dbCarryForwardLateFees);
+    const dbWaived = toNumber((activeInvoice as any)?.waived_late_fee_amount);
+    
+    // The "raw" late fee before any waivers were applied in the DB
+    const staticRawAmount = dbNativeLateFee + dbWaived;
+
+    return Math.max(0, staticRawAmount - toNumber(formState.waived_late_fee_amount));
   };
 
   const updateForm = (
@@ -2668,8 +2672,9 @@ export function useInvoicesState() {
 
     const { data: activeTenants, error: tenantError } = await supabase
       .from("tenants")
-      .select("id,room_id,full_name,move_in_date")
+      .select("id,room_id,full_name,move_in_date,move_out_date")
       .eq("status", "active")
+      .is("move_out_date", null)
       .in("room_id", roomIds);
 
     if (tenantError) {

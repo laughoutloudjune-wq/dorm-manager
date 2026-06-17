@@ -50,6 +50,9 @@ export async function POST(req: Request) {
       if ("status" in payload) {
         const authStatus = await requireAdminPermission(req, "invoice.status.update");
         if ("error" in authStatus) return authStatus.error;
+        if (!["paid", "verifying", "cancelled"].includes(String(payload.status))) {
+          payload.locked_late_fee_amount = null;
+        }
       }
       const { error } = await authEdit.supabase.from("invoices").update(payload).eq("id", invoiceId);
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });

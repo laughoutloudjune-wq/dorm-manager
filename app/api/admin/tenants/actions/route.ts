@@ -330,101 +330,6 @@ export async function POST(req: Request) {
           return NextResponse.json({ error: updateTenantError.message }, { status: 500 });
         }
 
-        // --- Auto-generate prorated move-out invoice ---
-        // Fetch tenant + room info and settings billing_day
-        const [tenantRes, settingsRes] = await Promise.all([
-          auth.supabase
-            .from("tenants")
-            .select("id,room_id,rooms(id,price_month,room_number)")
-            .eq("id", tenantId)
-            .maybeSingle(),
-          auth.supabase.from("settings").select("billing_day,due_day").maybeSingle(),
-        ]);
-
-        const tenant = tenantRes.data as any;
-        const settings = settingsRes.data as any;
-
-        if (tenant?.room_id && settings?.billing_day) {
-          const billingDay = Math.max(1, Math.min(28, Number(settings.billing_day) || 25));
-          const dueDay = Math.max(1, Math.min(28, Number(settings.due_day) || 10));
-
-          const moveOutDateObj = new Date(approvedMoveOutDate);
-          const moveOutYear = moveOutDateObj.getFullYear();
-          const moveOutMonth = moveOutDateObj.getMonth(); // 0-indexed
-          const moveOutDay = moveOutDateObj.getDate();
-
-          // Find billing period end = most recent billing day <= move-out date
-          let billingPeriodEnd: Date;
-          if (moveOutDay >= billingDay) {
-            // Billing day already passed this month — billing period ended on billing day this month
-            billingPeriodEnd = new Date(moveOutYear, moveOutMonth, billingDay);
-          } else {
-            // Billing day hasn't come yet — billing period ended on billing day last month
-            billingPeriodEnd = new Date(moveOutYear, moveOutMonth - 1, billingDay);
-          }
-
-          // Only create prorate if move-out is AFTER the billing period end
-          if (moveOutDateObj > billingPeriodEnd) {
-            const prorateStartObj = new Date(billingPeriodEnd);
-            prorateStartObj.setDate(prorateStartObj.getDate() + 1); // day after billing period end
-
-            const toYmd = (d: Date) => d.toISOString().slice(0, 10);
-            const prorateStart = toYmd(prorateStartObj);
-            const prorateEnd = approvedMoveOutDate;
-
-            // Inclusive day count
-            const msPerDay = 86400000;
-            const prorateStartUtc = Date.UTC(prorateStartObj.getFullYear(), prorateStartObj.getMonth(), prorateStartObj.getDate());
-            const prorateEndUtc = Date.UTC(moveOutDateObj.getFullYear(), moveOutDateObj.getMonth(), moveOutDateObj.getDate());
-            const proratedDays = Math.floor((prorateEndUtc - prorateStartUtc) / msPerDay) + 1;
-
-            const roomRel = Array.isArray(tenant.rooms) ? tenant.rooms[0] : tenant.rooms;
-            const priceMonth = toNumber(roomRel?.price_month ?? 0);
-            const dailyRate = priceMonth / 30;
-            const proratedRent = roundTo2(dailyRate * proratedDays);
-
-            // Issue date = today, due date = next dueDay after move-out
-            const issueDateStr = nowIso.slice(0, 10);
-            const dueDateObj = new Date(moveOutDateObj.getFullYear(), moveOutDateObj.getMonth() + 1, dueDay);
-            const dueDateStr = toYmd(dueDateObj);
-
-            // Skip if a draft prorate invoice already exists for this period
-            const { data: existingProrate } = await auth.supabase
-              .from("invoices")
-              .select("id")
-              .eq("tenant_id", tenantId)
-              .eq("start_date", prorateStart)
-              .eq("end_date", prorateEnd)
-              .eq("status", "draft")
-              .maybeSingle();
-
-            if (!existingProrate?.id && proratedRent > 0) {
-              await auth.supabase.from("invoices").insert({
-                id: crypto.randomUUID(),
-                tenant_id: tenantId,
-                room_id: tenant.room_id,
-                status: "draft",
-                start_date: prorateStart,
-                end_date: prorateEnd,
-                issue_date: issueDateStr,
-                due_date: dueDateStr,
-                rent_amount: proratedRent,
-                water_bill: 0,
-                electricity_bill: 0,
-                common_fee: 0,
-                discount_amount: 0,
-                late_fee_amount: 0,
-                carry_forward_amount: 0,
-                additional_fees_total: 0,
-                total_amount: proratedRent,
-                paid_amount: 0,
-                notes: `ค่าเช่าส่วนเกิน (Prorated Move-Out) ${proratedDays} วัน × ${dailyRate.toFixed(2)} บาท/วัน`,
-                created_at: nowIso,
-              });
-            }
-          }
-        }
-        // --- End prorated invoice ---
       }
 
       return NextResponse.json({ success: true });
@@ -472,13 +377,127 @@ export async function POST(req: Request) {
         created_at: new Date().toISOString(),
       });
 
-      // Finalize any draft prorated move-out invoice to "pending"
-      await auth.supabase
+      const { data: settings } = await auth.supabase.from("settings").select("*").maybeSingle();
+      const billingDay = Math.max(1, Math.min(28, Number(settings?.billing_day) || 25));
+      const dueDay = Math.max(1, Math.min(28, Number(settings?.due_day) || 10));
+
+      const { data: tenant } = await auth.supabase
+        .from("tenants")
+        .select("id,room_id,advance_rent_amount,security_deposit_amount,rooms(id,price_month,room_number)")
+        .eq("id", tenantId)
+        .maybeSingle();
+
+      const { data: lastInvoice } = await auth.supabase
         .from("invoices")
-        .update({ status: "pending" })
+        .select("end_date")
         .eq("tenant_id", tenantId)
-        .eq("status", "draft")
-        .eq("end_date", moveOutDate);
+        .neq("status", "draft")
+        .order("start_date", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      const moveOutDateObj = new Date(moveOutDate);
+      let masterStartDateObj = lastInvoice?.end_date ? new Date(lastInvoice.end_date) : new Date(moveOutDateObj.getFullYear(), moveOutDateObj.getMonth() - 1, billingDay);
+      
+      // Calculate full months and prorate days
+      // E.g., start: May 25, moveOut: June 28 -> 1 full month + 3 days
+      // or start: June 25, moveOut: June 28 -> 0 full month + 3 days
+      let currentEnd = new Date(masterStartDateObj);
+      currentEnd.setMonth(currentEnd.getMonth() + 1);
+      
+      let fullMonths = 0;
+      let tempStart = new Date(masterStartDateObj);
+      while (currentEnd <= moveOutDateObj) {
+        fullMonths++;
+        tempStart = new Date(currentEnd);
+        currentEnd.setMonth(currentEnd.getMonth() + 1);
+      }
+      
+      // Calculate remaining prorate days
+      const msPerDay = 86400000;
+      const tempStartUtc = Date.UTC(tempStart.getFullYear(), tempStart.getMonth(), tempStart.getDate());
+      const moveOutUtc = Date.UTC(moveOutDateObj.getFullYear(), moveOutDateObj.getMonth(), moveOutDateObj.getDate());
+      const prorateDays = Math.floor((moveOutUtc - tempStartUtc) / msPerDay); // Exclusive of start date
+
+      const roomRel = Array.isArray(tenant?.rooms) ? tenant?.rooms[0] : tenant?.rooms;
+      const priceMonth = toNumber(roomRel?.price_month ?? 0);
+      const dailyRate = priceMonth / 30;
+      
+      const baseRent = priceMonth * fullMonths;
+      const proratedRent = roundTo2(dailyRate * prorateDays);
+      const totalRent = baseRent + proratedRent;
+
+      // Utilities
+      const meterData = payload?.meterData ?? {};
+      const electricityUsage = Math.max(toNumber(meterData.final_electricity) - toNumber(meterData.initial_electricity), 0);
+      const waterUsage = Math.max(toNumber(meterData.final_water) - toNumber(meterData.initial_water), 0);
+      
+      const elecRate = toNumber(settings?.electricity_rate ?? 0);
+      const waterRate = toNumber(settings?.water_rate ?? 0);
+      const electricityBill = electricityUsage * elecRate;
+      const waterBill = waterUsage * waterRate;
+
+      // Additional Fees
+      const moveOutFeeLines = Array.isArray(payload?.moveOutFeeLines) ? payload.moveOutFeeLines : [];
+      let additionalFeesTotal = 0;
+      const additionalBreakdown = moveOutFeeLines.map((line: any) => {
+        const amt = toNumber(line.amount);
+        additionalFeesTotal += amt;
+        return {
+          item_type: "custom",
+          label: line.label || "ค่าใช้จ่ายเพิ่มเติม",
+          amount: amt,
+        };
+      });
+
+      if (proratedRent > 0) {
+        additionalBreakdown.unshift({
+          item_type: "prorate_rent",
+          label: `ค่าเช่าส่วนเกิน ${prorateDays} วัน (Pro-rate)`,
+          amount: proratedRent,
+        });
+        additionalFeesTotal += proratedRent;
+      }
+
+      // Deductions
+      const forfeitDeposit = Boolean(payload?.forfeitDeposit);
+      const depositRefund = forfeitDeposit ? 0 : toNumber(tenant?.security_deposit_amount ?? 0);
+      const advanceRentRefund = toNumber(tenant?.advance_rent_amount ?? 0);
+      const totalDiscount = depositRefund + advanceRentRefund;
+
+      const totalAmount = baseRent + waterBill + electricityBill + additionalFeesTotal - totalDiscount;
+
+      const toYmd = (d: Date) => d.toISOString().slice(0, 10);
+      const dueDateObj = new Date(moveOutDateObj.getFullYear(), moveOutDateObj.getMonth(), moveOutDateObj.getDate() + 7);
+
+      // Save the Master Final Invoice
+      await auth.supabase.from("invoices").insert({
+        id: crypto.randomUUID(),
+        tenant_id: tenantId,
+        room_id: tenant?.room_id,
+        status: "pending",
+        start_date: toYmd(masterStartDateObj),
+        end_date: moveOutDate,
+        issue_date: new Date().toISOString().slice(0, 10),
+        due_date: toYmd(dueDateObj),
+        rent_amount: baseRent,
+        water_bill: waterBill,
+        electricity_bill: electricityBill,
+        common_fee: 0,
+        discount_amount: totalDiscount,
+        late_fee_amount: 0,
+        carry_forward_amount: 0,
+        additional_fees_total: additionalFeesTotal,
+        additional_fees_breakdown: additionalBreakdown,
+        total_amount: totalAmount,
+        paid_amount: 0,
+        electricity_reading_start: toNumber(meterData.initial_electricity),
+        electricity_reading_end: toNumber(meterData.final_electricity),
+        water_reading_start: toNumber(meterData.initial_water),
+        water_reading_end: toNumber(meterData.final_water),
+        notes: forfeitDeposit ? "ย้ายออก (ริบเงินประกัน)" : "ย้ายออก (Final Statement)",
+        created_at: new Date().toISOString(),
+      });
 
       const { error: requestsError } = await auth.supabase
         .from("move_out_requests")

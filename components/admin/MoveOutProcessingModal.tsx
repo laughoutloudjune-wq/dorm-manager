@@ -8,6 +8,7 @@ import { createClient } from "@/lib/supabase-client";
 import { MoveOutTab } from "./MoveOutTab";
 import type { MoveOutTabForm, TenantSnapshot } from "./MoveOutTab";
 import type { MoveOutFeeLine } from "@/types";
+import { toNumber } from "@/lib/format";
 
 type MoveOutProcessingModalProps = {
   isOpen: boolean;
@@ -143,15 +144,18 @@ export function MoveOutProcessingModal({
     const moveOutDate = form.final_move_out_date || new Date().toISOString().slice(0, 10);
     try {
       // Calculate meter data and deductions to send to action
+      const prevElec = data?.invoiceHistory?.[0]?.electricity_reading_end ?? data?.tenant?.initial_electricity_reading ?? 0;
+      const prevWater = data?.invoiceHistory?.[0]?.water_reading_end ?? data?.tenant?.initial_water_reading ?? 0;
+      
       const meterData = {
-        initial_electricity: data?.tenant?.initial_electricity_reading ?? 0,
-        initial_water: data?.tenant?.initial_water_reading ?? 0,
+        initial_electricity: prevElec,
+        initial_water: prevWater,
         final_electricity: form.final_electricity_reading,
         final_water: form.final_water_reading,
       };
       
-      const electricityUsage = Math.max(form.final_electricity_reading - (data?.tenant?.initial_electricity_reading ?? 0), 0);
-      const waterUsage = Math.max(form.final_water_reading - (data?.tenant?.initial_water_reading ?? 0), 0);
+      const electricityUsage = Math.max(form.final_electricity_reading - prevElec, 0);
+      const waterUsage = Math.max(form.final_water_reading - prevWater, 0);
       const utilityTotal = (electricityUsage * data!.rates.electricity_rate) + (waterUsage * data!.rates.water_rate);
       
       const unpaidInvoicesSubtotal = data?.unpaidInvoices?.reduce((sum: number, inv: any) => sum + Math.max(0, inv.total_amount - (inv.paid_amount || 0)), 0) || 0;
@@ -165,6 +169,7 @@ export function MoveOutProcessingModal({
         forfeitDeposit,
         moveOutDate,
         meterData,
+        moveOutFeeLines,
         totalDeductions,
         finalRefund,
         abandon: false,
@@ -229,14 +234,55 @@ export function MoveOutProcessingModal({
             setMoveOutFeeLines={setMoveOutFeeLines}
             useProrate={useProrate}
             setUseProrate={setUseProrate}
-            latestPrevElectricity={data.tenant.initial_electricity_reading || 0}
-            latestPrevWater={data.tenant.initial_water_reading || 0}
+            latestPrevElectricity={
+              data.invoiceHistory?.[0]?.electricity_reading_end ??
+              data.tenant.initial_electricity_reading ?? 0
+            }
+            latestPrevWater={
+              data.invoiceHistory?.[0]?.water_reading_end ??
+              data.tenant.initial_water_reading ?? 0
+            }
             tenantInvoiceHistory={data.invoiceHistory}
             outstandingMoveOutInvoices={data.unpaidInvoices}
             unpaidInvoicesSubtotal={data.unpaidInvoices?.reduce((sum: number, inv: any) => sum + Math.max(0, inv.total_amount - (inv.paid_amount || 0)), 0) || 0}
-            latestBilledEndYmd={null} // Simplified for now
-            tailDaysAfterBilledPeriod={0}
-            appliedMoveOutRentBase={0}
+            latestBilledEndYmd={(() => {
+              const lastNormal = data.invoiceHistory?.find((inv: any) => inv.status !== "draft");
+              return lastNormal?.end_date ? String(lastNormal.end_date).slice(0, 10) : null;
+            })()}
+            tailDaysAfterBilledPeriod={(() => {
+              const moveOutDateObj = form.final_move_out_date ? new Date(form.final_move_out_date) : new Date();
+              const billingDay = Math.max(1, Math.min(28, Number(data.rates.billing_day) || 25));
+              const lastNormal = data.invoiceHistory?.find((inv: any) => inv.status !== "draft");
+              const masterStartDateObj = lastNormal?.end_date ? new Date(lastNormal.end_date) : new Date(moveOutDateObj.getFullYear(), moveOutDateObj.getMonth() - 1, billingDay);
+              
+              let currentEnd = new Date(masterStartDateObj);
+              currentEnd.setMonth(currentEnd.getMonth() + 1);
+              let tempStart = new Date(masterStartDateObj);
+              while (currentEnd <= moveOutDateObj) {
+                tempStart = new Date(currentEnd);
+                currentEnd.setMonth(currentEnd.getMonth() + 1);
+              }
+              const msPerDay = 86400000;
+              const tempStartUtc = Date.UTC(tempStart.getFullYear(), tempStart.getMonth(), tempStart.getDate());
+              const moveOutUtc = Date.UTC(moveOutDateObj.getFullYear(), moveOutDateObj.getMonth(), moveOutDateObj.getDate());
+              return Math.floor((moveOutUtc - tempStartUtc) / msPerDay);
+            })()}
+            appliedMoveOutRentBase={(() => {
+              const moveOutDateObj = form.final_move_out_date ? new Date(form.final_move_out_date) : new Date();
+              const billingDay = Math.max(1, Math.min(28, Number(data.rates.billing_day) || 25));
+              const lastNormal = data.invoiceHistory?.find((inv: any) => inv.status !== "draft");
+              const masterStartDateObj = lastNormal?.end_date ? new Date(lastNormal.end_date) : new Date(moveOutDateObj.getFullYear(), moveOutDateObj.getMonth() - 1, billingDay);
+              
+              let currentEnd = new Date(masterStartDateObj);
+              currentEnd.setMonth(currentEnd.getMonth() + 1);
+              let fullMonths = 0;
+              while (currentEnd <= moveOutDateObj) {
+                fullMonths++;
+                currentEnd.setMonth(currentEnd.getMonth() + 1);
+              }
+              const roomPrice = Array.isArray(data.tenant.rooms) ? toNumber(data.tenant.rooms[0]?.price_month) : toNumber(data.tenant.rooms?.price_month);
+              return roomPrice * fullMonths;
+            })()}
             roomNumber={Array.isArray(data.tenant.rooms) ? data.tenant.rooms[0]?.room_number : data.tenant.rooms?.room_number || ""}
             canEditTenant={true}
             isSavingTenant={false}

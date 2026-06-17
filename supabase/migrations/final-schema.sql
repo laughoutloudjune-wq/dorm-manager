@@ -1,4 +1,4 @@
-﻿-- DormManager Full Reset Schema
+-- DormManager Full Reset Schema
 -- This script drops existing objects and recreates the complete schema from scratch.
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
@@ -181,6 +181,8 @@ CREATE TABLE public.invoices (
   late_fee_amount NUMERIC(10,2) DEFAULT 0.00,
   late_fee_per_day NUMERIC(10,2) DEFAULT 0.00,
   late_fee_start_date DATE,
+  waived_late_fee_amount NUMERIC(10,2) DEFAULT 0.00,
+  locked_late_fee_amount NUMERIC(10,2) DEFAULT NULL,
   carry_forward_amount NUMERIC(10,2) DEFAULT 0.00,
   other_fees JSONB,
   additional_fees_total NUMERIC DEFAULT 0,

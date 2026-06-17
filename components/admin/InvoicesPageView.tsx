@@ -85,8 +85,10 @@ import { SlipViewerModal } from "./invoices/SlipViewerModal";
 import { LineSendModal } from "./invoices/LineSendModal";
 import { InvoicePreviewModal } from "./invoices/InvoicePreviewModal";
 import { InvoiceDetailModal } from "./invoices/InvoiceDetailModal";
+import { OverdueRoomsTab } from "./invoices/OverdueRoomsTab";
 
 export default function InvoicesPage() {
+  const [viewMode, setViewMode] = useState<"monthly" | "overdue">("monthly");
   const state = useInvoicesState();
   const {
 
@@ -248,8 +250,35 @@ export default function InvoicesPage() {
   return (
     <InvoiceProvider state={state}>
     <div className="space-y-6">
-      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-        {pendingMoveOutCount > 0 && (
+      <div className="flex space-x-1 rounded-xl bg-slate-100 p-1 w-full max-w-sm">
+        <button
+          onClick={() => setViewMode("monthly")}
+          className={`flex-1 rounded-lg py-2 text-sm font-semibold transition-all ${
+            viewMode === "monthly"
+              ? "bg-white text-slate-900 shadow-sm"
+              : "text-slate-500 hover:text-slate-700"
+          }`}
+        >
+          รายการบิล (รายเดือน)
+        </button>
+        <button
+          onClick={() => setViewMode("overdue")}
+          className={`flex-1 rounded-lg py-2 text-sm font-semibold transition-all ${
+            viewMode === "overdue"
+              ? "bg-white text-rose-700 shadow-sm"
+              : "text-slate-500 hover:text-rose-600"
+          }`}
+        >
+          สรุปห้องค้างชำระ
+        </button>
+      </div>
+
+      {viewMode === "overdue" ? (
+        <OverdueRoomsTab />
+      ) : (
+        <>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            {pendingMoveOutCount > 0 && (
           <div className="mb-3">
             <Badge variant="warning" className="text-xs font-semibold sm:text-sm">
               รอดำเนินการย้ายออก {pendingMoveOutCount} รายการ
@@ -600,6 +629,8 @@ export default function InvoicesPage() {
           </div>
         </div>
       )}
+      </>
+    )}
 
         <InvoiceDetailModal />
 

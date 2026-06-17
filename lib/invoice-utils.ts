@@ -90,7 +90,8 @@ export const statusLabelThai = (status: string) => {
   return status;
 };
 
-export const isInvoiceDetailEditable = (status: string) => status === "draft";
+export const isInvoiceDetailEditable = (status: string) => 
+  ["draft", "pending", "partial", "overdue"].includes(status);
 
 export const statusPillClass = (status: string) => {
   if (status === "draft") return "bg-slate-100 text-slate-700 border-slate-300";

@@ -21,7 +21,7 @@ export async function POST(req: Request) {
     let query = supabase
       .from("invoices")
       .select(
-        "id,public_token,status,issue_date,due_date,total_amount,paid_amount,slip_url,payment_history,rent_amount,water_bill,electricity_bill,common_fee,additional_fees_total,carry_forward_amount,late_fee_amount,discount_amount,additional_fees_breakdown,discount_breakdown,tenants(full_name,phone_number),rooms(room_number,buildings(name))"
+        "id,public_token,status,issue_date,due_date,total_amount,paid_amount,slip_url,payment_history,rent_amount,water_bill,electricity_bill,common_fee,additional_fees_total,carry_forward_amount,late_fee_amount,late_fee_per_day,late_fee_start_date,waived_late_fee_amount,locked_late_fee_amount,discount_amount,additional_fees_breakdown,discount_breakdown,tenants(full_name,phone_number),rooms(room_number,buildings(name))"
       )
       .in("status", validStatuses);
 
@@ -40,9 +40,35 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
+    const toNumber = (value: unknown) => {
+      const parsed = Number(value ?? 0);
+      return Number.isNaN(parsed) ? 0 : parsed;
+    };
+
+    const finalInvoices = (invoices ?? []).map((invoice: any) => {
+      let late_fee_amount = toNumber(invoice.late_fee_amount);
+      if (invoice.locked_late_fee_amount !== null && invoice.locked_late_fee_amount !== undefined) {
+        late_fee_amount = Math.max(0, toNumber(invoice.locked_late_fee_amount));
+      } else if (invoice.late_fee_start_date && invoice.late_fee_per_day > 0) {
+        const startDate = new Date(invoice.late_fee_start_date);
+        const today = new Date();
+        const asOfDate = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+        if (asOfDate >= startDate) {
+          const days = Math.floor((asOfDate.getTime() - startDate.getTime()) / 86400000) + 1;
+          const rawLateFee = days * invoice.late_fee_per_day;
+          late_fee_amount = Math.max(0, rawLateFee - toNumber(invoice.waived_late_fee_amount));
+        }
+      }
+      return {
+        ...invoice,
+        late_fee_amount,
+        late_fee_breakdown: [], // No longer used
+      };
+    });
+
     return NextResponse.json({
       profile,
-      invoices: invoices ?? [],
+      invoices: finalInvoices,
     });
   } catch (error: any) {
     return NextResponse.json(

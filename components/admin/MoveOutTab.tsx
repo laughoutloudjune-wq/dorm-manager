@@ -186,22 +186,12 @@ export function MoveOutTab({
   }, [activeTenant]);
 
   const dailyRent = roomPrice > 0 ? roomPrice / 30 : 0;
-  const advanceCoveredDays =
-    dailyRent > 0 && toNumber(form.advance_rent_amount) > 0
-      ? Math.max(1, Math.round(toNumber(form.advance_rent_amount) / dailyRent))
-      : 0;
-  const moveOutRequestDate = form.move_out_request_date ? new Date(form.move_out_request_date) : null;
-  const advanceCoveredEnd = moveOutRequestDate
-    ? new Date(moveOutRequestDate.getTime() + advanceCoveredDays * 86400000)
-    : null;
-  const actualMoveOutDate = form.final_move_out_date ? new Date(form.final_move_out_date) : null;
-  const overstayDays =
-    useProrate && advanceCoveredEnd && actualMoveOutDate
-      ? Math.max(0, Math.floor((actualMoveOutDate.getTime() - advanceCoveredEnd.getTime()) / 86400000))
-      : 0;
-  const overstayRentCharge = overstayDays * dailyRent;
+  const overstayDays = tailDaysAfterBilledPeriod;
+  const overstayRentCharge = Math.round((overstayDays * dailyRent + Number.EPSILON) * 100) / 100;
+  
   const additionalFeesTotal = moveOutFeeLines.reduce((s, l) => s + toNumber(l.amount), 0);
   const totalCost = unpaidInvoicesSubtotal + appliedMoveOutRentBase + utilityTotal + overstayRentCharge + additionalFeesTotal;
+  
   const refundableDeposit = forfeitDeposit ? 0 : toNumber(form.security_deposit_amount);
   const forfeitedDepositAmount = forfeitDeposit ? toNumber(form.security_deposit_amount) : 0;
   const prepaid = refundableDeposit + toNumber(form.advance_rent_amount);
@@ -224,11 +214,9 @@ export function MoveOutTab({
   const setField = <K extends keyof MoveOutTabForm>(key: K, value: MoveOutTabForm[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }));
 
-  const rentLabel = !useProrate
-    ? "ค่าเช่า (ปิด Pro-rate — ไม่นำมาหัก)"
-    : latestBilledEndYmd
-      ? `ค่าเช่า Pro-rate หลังบิล (สิ้นสุด ${latestBilledEndYmd}${tailDaysAfterBilledPeriod > 0 ? ` — ${tailDaysAfterBilledPeriod} วัน` : ""})`
-      : "ค่าเช่าห้อง (ไม่มีบิล — ใช้งวดเต็ม)";
+  const rentLabel = latestBilledEndYmd
+    ? `ค่าเช่าห้องแบบเต็มเดือน (ตั้งแต่วันสิ้นสุดบิลล่าสุด: ${latestBilledEndYmd})`
+    : "ค่าเช่าห้องแบบเต็มเดือน";
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -362,15 +350,7 @@ export function MoveOutTab({
 
       {/* ── 6. CHECKBOXES ── */}
       <div className="space-y-3">
-        <label className="inline-flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={useProrate}
-            onChange={(e) => setUseProrate(e.target.checked)}
-            className="h-4 w-4 accent-blue-600"
-          />
-          ใช้การคำนวณ Pro-rate (ช่วงหลังบิลล่าสุด และวันที่เกินจากค่าเช่าล่วงหน้า)
-        </label>
+        {/* Removed useProrate checkbox as Prorate is now hardcoded correctly by the Master Invoice */}
 
         {/* Forfeit deposit */}
         <label className="flex items-start gap-3 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 cursor-pointer">
@@ -481,7 +461,7 @@ export function MoveOutTab({
           </p>
           {overstayRentCharge > 0 && (
             <p className="flex justify-between">
-              <span>ค่าเช่า Pro-rate จากวันที่เกินค่าเช่าล่วงหน้า ({overstayDays} วัน)</span>
+              <span>ค่าเช่า Pro-rate ส่วนเกิน ({overstayDays} วัน)</span>
               <span>฿{formatMoney(overstayRentCharge)}</span>
             </p>
           )}
