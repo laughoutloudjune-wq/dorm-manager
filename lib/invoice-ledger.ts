@@ -297,25 +297,43 @@ export async function getCarryForwardCandidatesForTarget(
     10,
   );
 
-  // We MUST fetch all invoices (excluding draft/cancelled) to compute the full chronological ledger
   const { data: invoices, error } = await supabase
     .from("invoices")
     .select(
-      "id,tenant_id,start_date,due_date,total_amount,paid_amount,status,late_fee_amount,late_fee_per_day,late_fee_start_date,waived_late_fee_amount,locked_late_fee_amount,additional_fees_breakdown",
+      "id,tenant_id,start_date,due_date,total_amount,paid_amount,status,late_fee_amount,late_fee_per_day,late_fee_start_date,waived_late_fee_amount,locked_late_fee_amount",
     )
     .eq("tenant_id", tenantId)
     .lt("start_date", beforeStartDate)
-    .not("status", "in", '("draft","cancelled")')
+    .in("status", [...OPEN_INVOICE_STATUSES])
     .order("start_date", { ascending: true });
   if (error) throw new Error(error.message);
 
-  let totalPayments = 0;
-  for (const row of invoices ?? []) {
-    totalPayments += toNumber(row.paid_amount);
+  const candidateIds = (invoices ?? []).map((row: any) => String(row.id));
+  if (candidateIds.length === 0) return [];
+
+  const { data: existingCarryRows, error: carryError } = await supabase
+    .from("invoice_carry_forwards")
+    .select("source_invoice_id,target_invoice_id")
+    .in("source_invoice_id", candidateIds);
+  if (carryError) throw new Error(carryError.message);
+
+  // Build a set of which source invoices are already linked to a DIFFERENT target invoice.
+  // (If linked to the current targetInvoiceId, we keep them visible so admin can uncheck.)
+  const linkedElsewhere = new Set<string>();
+  for (const row of existingCarryRows ?? []) {
+    const sid = String((row as any).source_invoice_id ?? "");
+    const tid = String((row as any).target_invoice_id ?? "");
+    if (!sid || !tid) continue;
+    if (targetInvoiceId && tid === String(targetInvoiceId)) continue;
+    linkedElsewhere.add(sid);
   }
 
-  const candidates = [];
-  for (const row of invoices ?? []) {
+  // Bug #2 fix: Each invoice's outstanding is computed directly from its own
+  // total_amount vs paid_amount. We do NOT subtract sources from targets —
+  // that was causing 4/2026 to appear as 0 when 3/2026 was already carried into it.
+  // An invoice should appear as a candidate as long as it has an unpaid balance,
+  // regardless of whether it was previously carried forward into another invoice.
+  const candidates = (invoices ?? []).map((row: any) => {
     let snapshotDays = 0;
     if (row.late_fee_start_date) {
       const startDate = toDateOnly(row.late_fee_start_date);
@@ -325,39 +343,18 @@ export async function getCarryForwardCandidatesForTarget(
       }
     }
     const snapshotLateFee = calculateLateFeeAmount(row, asOfLateFee);
-    
-    // Sum up everything that was carried INTO this invoice from previous invoices
-    const carriedInAmount = (row.additional_fees_breakdown ?? []).reduce((sum: number, item: any) => {
-      if (item.source_invoice_id) {
-         return sum + toNumber(item.total_amount);
-      }
-      return sum;
-    }, 0);
+    const outstanding = getInvoiceOutstanding(row);
+    return {
+      ...row,
+      outstanding_amount: outstanding,
+      late_fee_snapshot_amount: snapshotLateFee,
+      late_fee_snapshot_days: snapshotDays,
+    };
+  });
 
-    // The base charges for THIS specific month (excluding carry forwards)
-    const baseCharges = Math.max(0, toNumber(row.total_amount) - carriedInAmount);
-    
-    // Distribute total payments chronologically
-    let baseOutstanding = baseCharges;
-    if (totalPayments >= baseOutstanding) {
-        totalPayments -= baseOutstanding;
-        baseOutstanding = 0;
-    } else {
-        baseOutstanding -= totalPayments;
-        totalPayments = 0;
-    }
-
-    if (baseOutstanding > 0.01) {
-      candidates.push({
-        ...row,
-        outstanding_amount: baseOutstanding,
-        late_fee_snapshot_amount: snapshotLateFee,
-        late_fee_snapshot_days: snapshotDays,
-      });
-    }
-  }
-
-  return candidates;
+  return candidates.filter(
+    (row: any) => row.outstanding_amount > 0,
+  );
 }
 
 export async function getCarryForwardCandidates(
