@@ -17,6 +17,7 @@ export default function TenantsPage() {
   
   const [search, setSearch] = useState("");
   const [buildingFilter, setBuildingFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("active");
   
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [activeTenant, setActiveTenant] = useState<TenantRow | null>(null);
@@ -47,6 +48,9 @@ export default function TenantsPage() {
   const filtered = useMemo(() => {
     if (!canViewTenants) return [];
     return tenants.filter((tenant) => {
+      if (statusFilter === "active" && tenant.status !== "active") return false;
+      if (statusFilter === "moved_out" && tenant.status !== "moved_out") return false;
+
       const room = roomsById.get(String(tenant.room_id));
       const building = Array.isArray(room?.buildings)
         ? room?.buildings[0]?.name
@@ -59,7 +63,7 @@ export default function TenantsPage() {
         (room?.room_number ?? "").toLowerCase().includes(s);
       return passBuilding && passSearch;
     });
-  }, [tenants, roomsById, buildingFilter, search, canViewTenants]);
+  }, [tenants, roomsById, buildingFilter, search, statusFilter, canViewTenants]);
 
   const groupedTenants = useMemo(() => {
     const g: Record<string, TenantRow[]> = {};
@@ -110,6 +114,15 @@ export default function TenantsPage() {
               ))}
             </select>
           )}
+          <select
+            value={statusFilter}
+            onChange={(event) => setStatusFilter(event.target.value)}
+            className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-base shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-600/40 md:w-48"
+          >
+            <option value="all">สถานะทั้งหมด</option>
+            <option value="active">กำลังพักอาศัย</option>
+            <option value="moved_out">ย้ายออกแล้ว</option>
+          </select>
         </div>
         <button
           onClick={() => void openModal()}

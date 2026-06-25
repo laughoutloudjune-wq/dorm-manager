@@ -75,10 +75,10 @@ type Props = {
   canEditTenant: boolean;
   isMovingOut: boolean;
   isCancellingMoveOut: boolean;
-  onApprove: () => void;
-  onDecline: () => void;
-  onCancelMoveOut: () => void;
-  onConfirmMoveOut: () => void;
+  onApprove: () => Promise<void> | void;
+  onDecline: () => Promise<void> | void;
+  onCancelMoveOut: () => Promise<void> | void;
+  onConfirmMoveOut: () => Promise<void> | void;
   onAbandonRoom: (forfeitDeposit: boolean, moveOutDate: string) => Promise<void>;
 };
 
@@ -174,12 +174,14 @@ function Step1RequestReview({
   isCancellingMoveOut: boolean;
   outstandingMoveOutInvoices: InvoiceHistoryRow[];
   unpaidInvoicesSubtotal: number;
-  onApprove: () => void;
-  onDecline: () => void;
-  onCancelMoveOut: () => void;
+  onApprove: () => Promise<void> | void;
+  onDecline: () => Promise<void> | void;
+  onCancelMoveOut: () => Promise<void> | void;
   onNext: () => void;
 }) {
   const [confirmCancelOpen, setConfirmCancelOpen] = useState(false);
+  const [isApproving, setIsApproving] = useState(false);
+  const [isDeclining, setIsDeclining] = useState(false);
 
   const noticeYmd = useMemo(() => {
     if (!activeMoveOutRequest) return "";
@@ -200,6 +202,24 @@ function Step1RequestReview({
 
   const setField = <K extends keyof MoveOutWizardForm>(key: K, value: MoveOutWizardForm[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }));
+
+  const handleApprove = async () => {
+    setIsApproving(true);
+    try {
+      await onApprove();
+    } finally {
+      setIsApproving(false);
+    }
+  };
+
+  const handleDecline = async () => {
+    setIsDeclining(true);
+    try {
+      await onDecline();
+    } finally {
+      setIsDeclining(false);
+    }
+  };
 
   return (
     <div className="space-y-5 animate-fade-in-up">
@@ -273,17 +293,21 @@ function Step1RequestReview({
             <div className="flex flex-wrap gap-2 mt-1">
               <button
                 type="button"
-                onClick={onApprove}
-                className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 transition-colors"
+                onClick={handleApprove}
+                disabled={isApproving || isDeclining}
+                className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 transition-colors disabled:opacity-50"
               >
-                <CheckCircle2 className="h-4 w-4" /> อนุมัติคำขอ
+                {isApproving ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                {isApproving ? "กำลังอนุมัติ..." : "อนุมัติคำขอ"}
               </button>
               <button
                 type="button"
-                onClick={onDecline}
-                className="inline-flex items-center gap-2 rounded-xl border border-red-200 bg-white px-4 py-2 text-sm font-semibold text-red-600 hover:bg-red-50 transition-colors"
+                onClick={handleDecline}
+                disabled={isApproving || isDeclining}
+                className="inline-flex items-center gap-2 rounded-xl border border-red-200 bg-white px-4 py-2 text-sm font-semibold text-red-600 hover:bg-red-50 transition-colors disabled:opacity-50"
               >
-                <XCircle className="h-4 w-4" /> ปฏิเสธ
+                {isDeclining ? <Loader2 className="h-4 w-4 animate-spin" /> : <XCircle className="h-4 w-4" />}
+                {isDeclining ? "กำลังปฏิเสธ..." : "ปฏิเสธ"}
               </button>
             </div>
           )}
@@ -783,9 +807,9 @@ function Step4Confirm({
   canEditTenant: boolean;
   activeTenant: any;
   onBack: () => void;
-  onConfirmMoveOut: () => void;
+  onConfirmMoveOut: () => Promise<void> | void;
   onAbandonRoom: (forfeit: boolean, date: string) => Promise<void>;
-  onCancelMoveOut: () => void;
+  onCancelMoveOut: () => Promise<void> | void;
 }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [abandonOpen, setAbandonOpen] = useState(false);
@@ -1042,7 +1066,18 @@ export function MoveOutWizard({
 }: Props) {
   const [step, setStep] = useState(1);
 
-  const goTo = (s: number) => setStep(Math.max(1, Math.min(STEPS.length, s)));
+  const goTo = (s: number) => {
+    if (s >= 1 && s <= STEPS.length) {
+      setStep(s);
+      try {
+        if (typeof window !== "undefined" && window.scrollTo) {
+          window.scrollTo({ top: 0, behavior: "smooth" });
+        }
+      } catch (e) {
+        // Ignore scrollTo errors on older browsers
+      }
+    }
+  };
 
   return (
     <div className="flex gap-0 min-h-[480px]">

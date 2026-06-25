@@ -1489,11 +1489,20 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
           setConfirmCancelMoveOutOpen(false);
         }}
       />
-    
+
+      {moveRoomWizardOpen && activeTenant && (
+        <MoveRoomWizardModal
+          isOpen={moveRoomWizardOpen}
+          onClose={() => setMoveRoomWizardOpen(false)}
+          activeTenant={activeTenant}
+          rooms={rooms}
+          rates={rates}
+          onSuccess={async () => {
+            await loadTenants();
+            setMoveRoomWizardOpen(false);
+          }}
+        />
+      )}
     </>
   );
 }
-
-
-
-

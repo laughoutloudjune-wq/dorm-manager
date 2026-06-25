@@ -111,9 +111,16 @@ export function MoveOutProcessingModal({
   // ── API helpers ───────────────────────────────────────────────────────────
 
   const callTenantsAction = async (action: string, body: any = {}) => {
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
+    if (!token) throw new Error("เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่");
+
     const res = await fetch("/api/admin/tenants/actions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
       body: JSON.stringify({ action, ...body }),
     });
     if (!res.ok) {
