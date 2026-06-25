@@ -351,13 +351,12 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
         deposit_slip_url: tenant.deposit_slip_url ?? "",
         final_electricity_reading: toNumber(tenant.final_electricity_reading ?? 0),
         final_water_reading: toNumber(tenant.final_water_reading ?? 0),
-        move_out_request_date:
-          moveOutRequestDate ?? new Date().toISOString().slice(0, 10),
+        move_out_request_date: moveOutRequestDate ?? "",
         final_move_out_date:
           tenant.move_out_date ??
           approvedMoveOutDate ??
           moveOutRequestDate ??
-          new Date().toISOString().slice(0, 10),
+          "",
       });
       setDepositSlipUrls(parseDepositSlipUrls(tenant.deposit_slip_url));
       setMoveOutFeeLines([]);
@@ -414,8 +413,8 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
         deposit_slip_url: "",
         final_electricity_reading: 0,
         final_water_reading: 0,
-        move_out_request_date: new Date().toISOString().slice(0, 10),
-        final_move_out_date: new Date().toISOString().slice(0, 10),
+        move_out_request_date: "",
+        final_move_out_date: "",
       });
       setDepositSlipUrls([]);
       setMoveOutFeeLines([]);
