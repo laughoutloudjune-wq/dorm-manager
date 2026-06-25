@@ -1623,7 +1623,9 @@ export function useInvoicesState() {
     );
     const { data: transferRows, error: transferError } = await supabase
       .from("tenant_room_transfers")
-      .select("from_room_id,to_room_id,transfer_date,billing_month")
+      .select(
+        "from_room_id,to_room_id,transfer_date,billing_month,old_electric_usage,old_water_usage,new_prev_electricity,new_prev_water",
+      )
       .eq("to_room_id", activeInvoice.room_id)
       .eq("billing_month", billingMonth)
       .eq("transfer_date", transferDate)
@@ -1636,7 +1638,15 @@ export function useInvoicesState() {
     }
 
     const transferRow = (transferRows ?? [])[0] as
-      | { from_room_id: string; to_room_id: string; transfer_date: string }
+      | {
+          from_room_id: string;
+          to_room_id: string;
+          transfer_date: string;
+          old_electric_usage?: number;
+          old_water_usage?: number;
+          new_prev_electricity?: number;
+          new_prev_water?: number;
+        }
       | undefined;
     if (!transferRow) {
       setError("ไม่พบข้อมูลย้ายห้องของงวดนี้สำหรับคำนวณใหม่");
@@ -1680,27 +1690,85 @@ export function useInvoicesState() {
       newRoomRate,
     );
 
-    setTransferBreakdownItems((prev) =>
-      prev.map((item) => {
-        if (item.kind === "old_rent") {
-          return {
-            ...item,
-            amount: recalculated.oldRentAmount,
-            value: formatMoney(recalculated.oldRentAmount),
-          };
-        }
-        if (item.kind === "new_rent") {
-          return {
-            ...item,
-            amount: recalculated.newRentAmount,
-            value: formatMoney(recalculated.newRentAmount),
-          };
-        }
-        return item;
-      }),
-    );
+    // Fetch current meter reading for new room to compute new room units
+    const { data: readingRows } = await supabase
+      .from("meter_readings")
+      .select("current_electricity,current_water,electricity_usage,water_usage")
+      .eq("room_id", activeInvoice.room_id)
+      .eq("billing_month", billingMonth)
+      .limit(1);
+    const reading = (readingRows ?? [])[0] as any;
+
+    const electricityRate = toNumber(printSettings?.electricity_rate);
+    const waterRate = toNumber(printSettings?.water_rate);
+    const waterMinUnits = toNumber(printSettings?.water_min_units);
+    const waterMinPrice = toNumber(printSettings?.water_min_price);
+
+    const oldElecUnits = toNumber(transferRow.old_electric_usage ?? 0);
+    const oldWaterUnits = toNumber(transferRow.old_water_usage ?? 0);
+
+    const newPrevElec = toNumber(transferRow.new_prev_electricity ?? 0);
+    const newPrevWater = toNumber(transferRow.new_prev_water ?? 0);
+    const newElecUnits =
+      newPrevElec > 0 && reading?.current_electricity != null
+        ? Math.max(0, toNumber(reading.current_electricity) - newPrevElec)
+        : toNumber(reading?.electricity_usage ?? 0);
+    const newWaterUnits =
+      newPrevWater > 0 && reading?.current_water != null
+        ? Math.max(0, toNumber(reading.current_water) - newPrevWater)
+        : toNumber(reading?.water_usage ?? 0);
+
+    const oldElecBill = oldElecUnits * electricityRate;
+    const oldWaterBill = calculateWaterBillWithMinimum(oldWaterUnits, waterRate, waterMinUnits, waterMinPrice);
+    const newElecBill = newElecUnits * electricityRate;
+    const newWaterBill = calculateWaterBillWithMinimum(newWaterUnits, waterRate, waterMinUnits, waterMinPrice);
+
+    // Rebuild the full transfer breakdown with per-room utility rows
+    const newItems = serializeTransferBreakdownRows([
+      { label: "วันที่ย้ายห้อง", value: transferDate },
+      {
+        label: "ค่าเช่าห้องเดิม",
+        value: formatMoney(recalculated.oldRentAmount),
+        amount: recalculated.oldRentAmount,
+        editable: true,
+        kind: "old_rent",
+      },
+      {
+        label: "ค่าเช่าห้องใหม่",
+        value: formatMoney(recalculated.newRentAmount),
+        amount: recalculated.newRentAmount,
+        editable: true,
+        kind: "new_rent",
+      },
+      {
+        label: `ค่าน้ำห้องเดิม (${oldWaterUnits} หน่วย)`,
+        value: `${oldWaterUnits} หน่วย × ${formatMoney(waterRate)} = ${formatMoney(oldWaterBill)}`,
+        amount: oldWaterBill,
+        kind: "old_water",
+      },
+      {
+        label: `ค่าน้ำห้องใหม่ (${newWaterUnits} หน่วย)`,
+        value: `${newWaterUnits} หน่วย × ${formatMoney(waterRate)} = ${formatMoney(newWaterBill)}`,
+        amount: newWaterBill,
+        kind: "new_water",
+      },
+      {
+        label: `ค่าไฟห้องเดิม (${oldElecUnits} หน่วย)`,
+        value: `${oldElecUnits} หน่วย × ${formatMoney(electricityRate)} = ${formatMoney(oldElecBill)}`,
+        amount: oldElecBill,
+        kind: "old_elec",
+      },
+      {
+        label: `ค่าไฟห้องใหม่ (${newElecUnits} หน่วย)`,
+        value: `${newElecUnits} หน่วย × ${formatMoney(electricityRate)} = ${formatMoney(newElecBill)}`,
+        amount: newElecBill,
+        kind: "new_elec",
+      },
+    ]);
+    setTransferBreakdownItems(toTransferBreakdownItems(newItems));
     setError(null);
   };
+
 
   const recalculateCurrentInvoiceArrears = async (
     carryOverride?: CarryForwardItem[],
