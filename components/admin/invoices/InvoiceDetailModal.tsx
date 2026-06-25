@@ -221,7 +221,7 @@ export function InvoiceDetailModal() {
           ? `ใบแจ้งหนี้ ${shortInvoiceId(activeInvoice.id)}`
           : "รายละเอียดใบแจ้งหนี้"
       }
-      size="5xl"
+      size="4xl"
     >
       {activeInvoice && (
         <div className="flex flex-col lg:flex-row h-full max-h-[85vh] bg-white overflow-hidden rounded-xl">
