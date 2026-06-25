@@ -610,7 +610,13 @@ export function InvoiceDetailModal() {
             {/* TAB: FEES */}
             {activeTab === 'fees' && (
               <div className="max-w-4xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                <h3 className="text-2xl font-bold text-slate-900">ค่าปรับและรายการอื่นๆ</h3>
+                <div className="flex justify-between items-center bg-white p-6 rounded-3xl border border-slate-200 shadow-sm">
+                  <h3 className="text-2xl font-bold text-slate-900">ค่าปรับและรายการอื่นๆ</h3>
+                  <div className="text-right">
+                    <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">ยอดรวมทั้งสิ้น (Grand Total)</p>
+                    <p className="text-3xl font-black text-emerald-600 tracking-tighter">{formatMoney(form.total_amount)}</p>
+                  </div>
+                </div>
                 
                 <fieldset disabled={!(canEditDetails && canEditInvoice)} className={!(canEditDetails && canEditInvoice) ? "opacity-70" : ""}>
                   
@@ -663,9 +669,6 @@ export function InvoiceDetailModal() {
                                   </span>
                                   <span className="mt-1 block text-xs font-semibold text-slate-500">
                                     ค้าง {formatMoney(toNumber(c.outstanding_amount))} 
-                                    {toNumber(c.late_fee_snapshot_amount) > 0 && 
-                                      <span className="text-rose-500"> · ค่าปรับโดยประมาณ {formatMoney(toNumber(c.late_fee_snapshot_amount))} (คิดจาก {c.late_fee_snapshot_days} วัน)</span>
-                                    }
                                   </span>
                                 </div>
                               </label>

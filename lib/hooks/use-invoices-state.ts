@@ -918,14 +918,17 @@ export function useInvoicesState() {
       return;
     }
 
-    const amountToPay =
-      paymentMode === "full"
-        ? remaining
-        : Math.min(remaining, toNumber(paymentAmountInput));
+    const inputAmount = toNumber(paymentAmountInput);
+    const amountToPay = inputAmount > 0 
+      ? Math.min(remaining, inputAmount) 
+      : remaining;
+      
     if (amountToPay <= 0) {
       setError("Please enter a valid payment amount.");
       return;
     }
+    
+    const finalPaymentMode = amountToPay >= remaining ? "full" : "partial";
 
     if (!paymentDate) {
       setError("Please select payment date.");
@@ -950,7 +953,7 @@ export function useInvoicesState() {
         invoiceId: activeInvoice.id,
         payment: {
           amount: amountToPay,
-          mode: paymentMode,
+          mode: finalPaymentMode,
           paid_at: paidAtIso,
           slip_url: publicUrl ?? null,
           source: "admin_webapp",
@@ -985,7 +988,6 @@ export function useInvoicesState() {
       setSlipPreview(publicUrl ?? null);
       setShowPaymentForm(false);
       setPaymentMode("full");
-      setPaymentAmountInput("");
       setPaymentSlipFile(null);
       if (activeUpdated) {
         setForm((prev) => ({
@@ -995,10 +997,12 @@ export function useInvoicesState() {
             (activeUpdated.status as keyof typeof statusVariant) ?? prev.status,
         }));
       }
+      
       const activeNext = {
         ...activeInvoice,
         paid_amount: toNumber(
-          activeUpdated?.paid_amount ?? activeInvoice.paid_amount,
+          activeUpdated?.paid_amount ??
+            toNumber(activeInvoice.paid_amount) + amountToPay,
         ),
         payment_history: Array.isArray(activeUpdated?.payment_history)
           ? activeUpdated.payment_history
@@ -1008,6 +1012,13 @@ export function useInvoicesState() {
           activeInvoice.status,
         slip_url: publicUrl ?? null,
       } as InvoiceRecord;
+      
+      const newRemaining = invoiceDisplayOutstanding({
+        total_amount: toNumber(form.total_amount || activeInvoice.total_amount),
+        paid_amount: activeNext.paid_amount,
+      });
+      setPaymentAmountInput(newRemaining > 0 ? String(newRemaining) : "");
+
       setActiveInvoice((prev) =>
         prev
           ? {
@@ -1277,8 +1288,14 @@ export function useInvoicesState() {
     });
     setShowPaymentForm(false);
     setPaymentMode("full");
-    setPaymentAmountInput("");
-    setPaymentDate(todayLocal);
+    
+    const remaining = invoiceDisplayOutstanding({
+      total_amount: invoice.total_amount,
+      paid_amount: invoice.paid_amount,
+    });
+    setPaymentAmountInput(remaining > 0 ? String(remaining) : "");
+    
+    setPaymentDate(new Date().toISOString().slice(0, 10));
     setPaymentSlipFile(null);
     setSlipPreview(invoice.slip_url);
     setDetailOpen(true);
@@ -1450,6 +1467,7 @@ export function useInvoicesState() {
       const nextAdditional = feeItemsTotal(editableFeeItems);
       const nextDiscount = feeItemsTotal(editableDiscountItems);
       const nextLateFeeItems = feeItemsTotal(editableLateFeeItems);
+      const nextCarry = feeItemsTotal(editableCarryForwardItems);
       const nativeLateFee = calculateCurrentFormLateFee(next);
       const nextLateFee = nativeLateFee + nextLateFeeItems;
       const total =
@@ -1459,7 +1477,8 @@ export function useInvoicesState() {
         toNumber(next.common_fee) +
         nextDiscount * -1 +
         nextLateFee +
-        nextAdditional;
+        nextAdditional +
+        nextCarry;
       return {
         ...next,
         rent_amount: computedRent,
@@ -1572,7 +1591,8 @@ export function useInvoicesState() {
       toNumber(form.electricity_bill) +
       toNumber(form.common_fee) +
       feeItemsTotal(editableLateFeeItems) +
-      feeItemsTotal(editableFeeItems) -
+      feeItemsTotal(editableFeeItems) +
+      feeItemsTotal(editableCarryForwardItems) -
       feeItemsTotal(editableDiscountItems);
     const roundedTotal = Math.floor(currentTotal);
     const roundDownAmount = Number((currentTotal - roundedTotal).toFixed(2));
@@ -1819,9 +1839,7 @@ export function useInvoicesState() {
       for (const row of filteredCandidates) {
         const outstanding = row.outstanding_amount;
         if (outstanding > 0) {
-          const sourceLateFee = toNumber(row.late_fee_snapshot_amount);
-          const actualLateFee = Math.min(outstanding, sourceLateFee);
-          const actualRent = outstanding - actualLateFee;
+          const actualRent = outstanding;
 
           if (actualRent > 0) {
             nextCarryItems.push({
@@ -1832,23 +1850,16 @@ export function useInvoicesState() {
               source_invoice_id: String(row.id),
             });
           }
-
-          if (actualLateFee > 0) {
-            nextCarryItems.push({
-              detail: `ค่าปรับล่าช้างวด ${formatPeriodLabel(String(row.start_date ?? ""))}`,
-              unit: 1,
-              price_per_unit: actualLateFee,
-              total_amount: actualLateFee,
-              source_invoice_id: String(row.id),
-            });
-          }
         }
       }
 
-      setEditableCarryForwardItems(nextCarryItems);
-      // We no longer attach static snapshot late fees to the new invoice.
-      // Late fees belong dynamically to the source invoice.
-      setEditableLateFeeItems([]);
+      // Preserve manual carry forward items (ones without a source_invoice_id)
+      const manualCarryItems = carry.filter((item) => !item.source_invoice_id);
+      setEditableCarryForwardItems([...nextCarryItems, ...manualCarryItems]);
+      
+      // Preserve manual late fee items
+      const manualLateFeeItems = late.filter((item) => !item.source_invoice_id);
+      setEditableLateFeeItems(manualLateFeeItems);
 
       setForm((prev) => {
         const nextLateFee = calculateCurrentFormLateFee(prev);
@@ -2132,7 +2143,8 @@ export function useInvoicesState() {
         toNumber(form.common_fee) +
         toNumber(form.late_fee_amount) +
         feeItemsTotal(editableFeeItems) -
-        feeItemsTotal(editableDiscountItems),
+        feeItemsTotal(editableDiscountItems) +
+        feeItemsTotal(editableCarryForwardItems),
       paid_amount: Math.min(
         toNumber(form.paid_amount),
         toNumber(form.total_amount),
@@ -3204,7 +3216,8 @@ export function useInvoicesState() {
         elecBill +
         commonFee +
         additionalTotal +
-        carriedLateFeeTotal -
+        carriedLateFeeTotal +
+        carryForwardAmount -
         discountAmount;
       // Per-room utility breakdown for mid-month transfers
       const electricityRate = toNumber(settings.electricity_rate);
@@ -3624,7 +3637,8 @@ export function useInvoicesState() {
         toNumber(prev.electricity_bill) +
         toNumber(prev.common_fee) +
         nextLateFee +
-        nextAdditional -
+        nextAdditional +
+        nextCarry -
         nextDiscount;
       return {
         ...prev,

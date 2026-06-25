@@ -343,7 +343,14 @@ export async function getCarryForwardCandidatesForTarget(
       }
     }
     const snapshotLateFee = calculateLateFeeAmount(row, asOfLateFee);
-    const outstanding = getInvoiceOutstanding(row);
+    
+    let outstanding = getInvoiceOutstanding(row);
+    // Unbundle carry forwards: user wants each month's base debt separated
+    const carryAmt = toNumber(row.carry_forward_amount);
+    if (carryAmt > 0) {
+      outstanding = Math.max(0, outstanding - carryAmt);
+    }
+    
     return {
       ...row,
       outstanding_amount: outstanding,
