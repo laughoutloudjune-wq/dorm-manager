@@ -477,19 +477,19 @@ export function InvoiceDetailModal() {
                           <div className="mt-4 grid grid-cols-2 gap-4 text-sm text-indigo-800">
                             <div className="bg-white/50 p-4 rounded-2xl">
                               <span className="block text-xs font-bold uppercase tracking-widest opacity-60">วันที่เข้าพัก</span>
-                              <span className="block mt-1 font-black text-lg">{formatDateThai(activeInvoice.tenant_move_in_date)}</span>
+                              <span className="block mt-1 font-black text-lg">{activeInvoice.tenant_move_in_date ? formatDateThai(activeInvoice.tenant_move_in_date) : "-"}</span>
                             </div>
                             <div className="bg-white/50 p-4 rounded-2xl">
                               <span className="block text-xs font-bold uppercase tracking-widest opacity-60">วันตัดรอบบิล</span>
-                              <span className="block mt-1 font-black text-lg">{printSettings.billing_day || 1}</span>
+                              <span className="block mt-1 font-black text-lg">{printSettings?.billing_day || 1}</span>
                             </div>
                             <div className="bg-white/50 p-4 rounded-2xl">
                               <span className="block text-xs font-bold uppercase tracking-widest opacity-60">จำนวนวัน</span>
-                              <span className="block mt-1 font-black text-lg">{modalProrateSummary.proratedDays} / {modalProrateSummary.daysInMonth} วัน</span>
+                              <span className="block mt-1 font-black text-lg">{modalProrateSummary.occupiedDays} / 30 วัน</span>
                             </div>
                             <div className="bg-indigo-100 p-4 rounded-2xl shadow-sm">
                               <span className="block text-xs font-bold uppercase tracking-widest opacity-70">ค่าเช่าเฉลี่ย</span>
-                              <span className="block mt-1 font-black text-2xl tracking-tighter">{formatMoney(modalProrateSummary.proratedAmount)}</span>
+                              <span className="block mt-1 font-black text-2xl tracking-tighter">{formatMoney(modalProrateSummary.rentAmount)}</span>
                             </div>
                           </div>
                         )}
@@ -508,27 +508,27 @@ export function InvoiceDetailModal() {
                       </div>
                       <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-2">
-                          <label className="text-xs font-bold text-amber-800 uppercase tracking-widest">เลขครั้งก่อน</label>
+                          <label className="text-xs font-bold text-amber-800 uppercase tracking-widest">หน่วยที่ใช้</label>
                           <input
                             type="number"
-                            value={form.electricity_meter_prev}
-                            onChange={(e) => updateUtilityUnits("electricity", "prev", e.target.value)}
+                            value={form.electricity_units}
+                            onChange={(e) => updateUtilityUnits("electricity_units", e.target.value)}
                             className="w-full rounded-xl border border-amber-200 bg-white px-4 py-3 text-sm text-right font-bold shadow-sm transition focus:border-amber-500 focus:ring-1 focus:ring-amber-500"
                           />
                         </div>
                         <div className="space-y-2">
-                          <label className="text-xs font-bold text-amber-800 uppercase tracking-widest">เลขครั้งนี้</label>
+                          <label className="text-xs font-bold text-amber-800 uppercase tracking-widest">ยอดรวม</label>
                           <input
                             type="number"
-                            value={form.electricity_meter_curr}
-                            onChange={(e) => updateUtilityUnits("electricity", "curr", e.target.value)}
+                            value={form.electricity_bill}
+                            onChange={(e) => updateForm("electricity_bill", e.target.value)}
                             className="w-full rounded-xl border border-amber-300 bg-white px-4 py-3 text-sm text-right font-black shadow-sm transition focus:border-amber-500 focus:ring-1 focus:ring-amber-500"
                           />
                         </div>
                       </div>
                       <div className="flex justify-between text-sm font-bold text-amber-800 pt-3 border-t border-amber-200/50">
-                        <span>ใช้ไป: {form.electricity_units} หน่วย</span>
-                        <span>เรท: {form.electricity_rate}/หน่วย</span>
+                        <span></span>
+                        <span>เรท: {printSettings?.electricity_rate || 0}/หน่วย</span>
                       </div>
                     </div>
 
@@ -542,27 +542,27 @@ export function InvoiceDetailModal() {
                       </div>
                       <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-2">
-                          <label className="text-xs font-bold text-sky-800 uppercase tracking-widest">เลขครั้งก่อน</label>
+                          <label className="text-xs font-bold text-sky-800 uppercase tracking-widest">หน่วยที่ใช้</label>
                           <input
                             type="number"
-                            value={form.water_meter_prev}
-                            onChange={(e) => updateUtilityUnits("water", "prev", e.target.value)}
+                            value={form.water_units}
+                            onChange={(e) => updateUtilityUnits("water_units", e.target.value)}
                             className="w-full rounded-xl border border-sky-200 bg-white px-4 py-3 text-sm text-right font-bold shadow-sm transition focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
                           />
                         </div>
                         <div className="space-y-2">
-                          <label className="text-xs font-bold text-sky-800 uppercase tracking-widest">เลขครั้งนี้</label>
+                          <label className="text-xs font-bold text-sky-800 uppercase tracking-widest">ยอดรวม</label>
                           <input
                             type="number"
-                            value={form.water_meter_curr}
-                            onChange={(e) => updateUtilityUnits("water", "curr", e.target.value)}
+                            value={form.water_bill}
+                            onChange={(e) => updateForm("water_bill", e.target.value)}
                             className="w-full rounded-xl border border-sky-300 bg-white px-4 py-3 text-sm text-right font-black shadow-sm transition focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
                           />
                         </div>
                       </div>
                       <div className="flex justify-between text-sm font-bold text-sky-800 pt-3 border-t border-sky-200/50">
-                        <span>ใช้ไป: {form.water_units} หน่วย</span>
-                        <span>เรท: {form.water_rate}/หน่วย</span>
+                        <span></span>
+                        <span>เรท: {printSettings?.water_rate || 0}/หน่วย</span>
                       </div>
                     </div>
                   </div>
