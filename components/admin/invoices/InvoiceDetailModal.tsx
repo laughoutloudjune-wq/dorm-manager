@@ -215,7 +215,9 @@ export function InvoiceDetailModal() {
       size="4xl"
     >
       {activeInvoice && (
-        <div className="space-y-6">
+        <div className="flex flex-col xl:flex-row gap-6 h-full max-h-[85vh]">
+          {/* --- LEFT COLUMN: Overview & Actions --- */}
+          <div className="w-full xl:w-[420px] shrink-0 flex flex-col gap-5 overflow-y-auto pr-2 pb-4">
           {!isInvoiceDetailEditable(activeInvoice.status) && (
             <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
               ปิดการแก้ไขรายละเอียดสำหรับสถานะ{" "}
@@ -629,7 +631,75 @@ export function InvoiceDetailModal() {
             </div>
           </div>
 
-          <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(300px,440px)] xl:grid-cols-[minmax(0,1.05fr)_minmax(420px,0.95fr)]">
+          <div className="space-y-3">
+            <p className="text-sm font-semibold text-slate-700">เมนูด่วน</p>
+            <button
+              onClick={() => void getInvoicePrintDetail(activeInvoice)}
+              className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-4 py-2 text-sm text-slate-600"
+            >
+              <Printer size={16} />
+              พรีวิวก่อนพิมพ์
+            </button>
+            <button
+              onClick={() =>
+                void getInvoicePrintDetail(activeInvoice, "receipt")
+              }
+              disabled={
+                !(
+                  activeInvoice.status === "verifying" ||
+                  activeInvoice.status === "paid"
+                )
+              }
+              className="inline-flex items-center gap-2 rounded-xl border border-emerald-200 px-4 py-2 text-sm text-emerald-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+            >
+              <FileText size={16} />
+              พิมพ์ใบเสร็จ
+            </button>
+            <button
+              onClick={() => sendToLine(activeInvoice)}
+              className="inline-flex items-center gap-2 rounded-xl bg-green-600 px-4 py-2 text-sm text-white"
+            >
+              <Send size={16} />
+              Send to LINE
+            </button>
+            <button
+              onClick={() => {
+                setDeleteTargetIds([activeInvoice.id]);
+                setConfirmDeleteOpen(true);
+              }}
+              disabled={!canDeleteInvoice}
+              title={!canDeleteInvoice ? "ไม่มีสิทธิ์ลบใบแจ้งหนี้" : undefined}
+              className="inline-flex items-center gap-2 rounded-xl border border-red-200 px-4 py-2 text-sm text-red-600 disabled:cursor-not-allowed disabled:text-red-300"
+            >
+              <Trash2 size={16} />
+              ลบใบแจ้งหนี้
+            </button>
+          </div>
+
+          <div className="flex items-center justify-end gap-3">
+            <button
+              onClick={() => setDetailOpen(false)}
+              className="rounded-xl border border-slate-200 px-4 py-2 text-sm text-slate-600"
+            >
+              ยกเลิก
+            </button>
+            <button
+              onClick={() => setConfirmSaveOpen(true)}
+              disabled={!(canEditDetails && canEditInvoice)}
+              title={
+                !(canEditDetails && canEditInvoice)
+                  ? "ไม่มีสิทธิ์แก้ไขรายละเอียดใบแจ้งหนี้"
+                  : undefined
+              }
+              className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+            >
+              บันทึกการเปลี่ยนแปลง
+            </button>
+          </div>
+
+          {/* --- RIGHT COLUMN: Detailed Breakdown --- */}
+          <div className="flex-1 min-w-0 flex flex-col gap-6">
+            <div className="grid items-start gap-6 xl:grid-cols-1 2xl:grid-cols-[1fr_400px]">
             <fieldset
               disabled={!(canEditDetails && canEditInvoice)}
               className={`min-w-0 ${!(canEditDetails && canEditInvoice) ? "cursor-not-allowed opacity-70" : ""}`}
@@ -1609,70 +1679,7 @@ export function InvoiceDetailModal() {
             </div>
           </div>
 
-          <div className="space-y-3">
-            <p className="text-sm font-semibold text-slate-700">เมนูด่วน</p>
-            <button
-              onClick={() => void getInvoicePrintDetail(activeInvoice)}
-              className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-4 py-2 text-sm text-slate-600"
-            >
-              <Printer size={16} />
-              พรีวิวก่อนพิมพ์
-            </button>
-            <button
-              onClick={() =>
-                void getInvoicePrintDetail(activeInvoice, "receipt")
-              }
-              disabled={
-                !(
-                  activeInvoice.status === "verifying" ||
-                  activeInvoice.status === "paid"
-                )
-              }
-              className="inline-flex items-center gap-2 rounded-xl border border-emerald-200 px-4 py-2 text-sm text-emerald-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
-            >
-              <FileText size={16} />
-              พิมพ์ใบเสร็จ
-            </button>
-            <button
-              onClick={() => sendToLine(activeInvoice)}
-              className="inline-flex items-center gap-2 rounded-xl bg-green-600 px-4 py-2 text-sm text-white"
-            >
-              <Send size={16} />
-              Send to LINE
-            </button>
-            <button
-              onClick={() => {
-                setDeleteTargetIds([activeInvoice.id]);
-                setConfirmDeleteOpen(true);
-              }}
-              disabled={!canDeleteInvoice}
-              title={!canDeleteInvoice ? "ไม่มีสิทธิ์ลบใบแจ้งหนี้" : undefined}
-              className="inline-flex items-center gap-2 rounded-xl border border-red-200 px-4 py-2 text-sm text-red-600 disabled:cursor-not-allowed disabled:text-red-300"
-            >
-              <Trash2 size={16} />
-              ลบใบแจ้งหนี้
-            </button>
-          </div>
-
-          <div className="flex items-center justify-end gap-3">
-            <button
-              onClick={() => setDetailOpen(false)}
-              className="rounded-xl border border-slate-200 px-4 py-2 text-sm text-slate-600"
-            >
-              ยกเลิก
-            </button>
-            <button
-              onClick={() => setConfirmSaveOpen(true)}
-              disabled={!(canEditDetails && canEditInvoice)}
-              title={
-                !(canEditDetails && canEditInvoice)
-                  ? "ไม่มีสิทธิ์แก้ไขรายละเอียดใบแจ้งหนี้"
-                  : undefined
-              }
-              className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
-            >
-              บันทึกการเปลี่ยนแปลง
-            </button>
+            </div>
           </div>
         </div>
       )}

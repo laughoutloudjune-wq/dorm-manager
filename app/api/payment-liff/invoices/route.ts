@@ -59,45 +59,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: pendingError.message }, { status: 500 });
     }
 
-    const pendingInvoiceIds = (pendingInvoices ?? []).map((row: any) => String(row.id));
-    const { data: carryRows, error: carryError } =
-      pendingInvoiceIds.length > 0
-        ? await supabase
-            .from("invoice_carry_forwards")
-            .select("source_invoice_id,target_invoice_id")
-            .in("source_invoice_id", pendingInvoiceIds)
-        : { data: [], error: null as any };
-
-    if (carryError) {
-      return NextResponse.json({ error: carryError.message }, { status: 500 });
-    }
-
-    const carryTargetIds = [...new Set((carryRows ?? []).map((row: any) => String(row.target_invoice_id)).filter(Boolean))];
-    const { data: carryTargets, error: carryTargetError } =
-      carryTargetIds.length > 0
-        ? await supabase
-            .from("invoices")
-            .select("id,status")
-            .in("id", carryTargetIds)
-        : { data: [], error: null as any };
-
-    if (carryTargetError) {
-      return NextResponse.json({ error: carryTargetError.message }, { status: 500 });
-    }
-
-    const openTargetIds = new Set(
-      (carryTargets ?? [])
-        .filter((row: any) => ["pending", "partial", "overdue", "verifying"].includes(String(row.status)))
-        .map((row: any) => String(row.id))
-    );
-    const hiddenSourceIds = new Set(
-      (carryRows ?? [])
-        .filter((row: any) => openTargetIds.has(String(row.target_invoice_id)))
-        .map((row: any) => String(row.source_invoice_id))
-    );
-    const visiblePendingInvoices = (pendingInvoices ?? []).filter(
-      (invoice: any) => !hiddenSourceIds.has(String(invoice.id))
-    );
+    const visiblePendingInvoices = pendingInvoices ?? [];
 
     const { data: paidInvoices, error: paidError } = await supabase
       .from("invoices")

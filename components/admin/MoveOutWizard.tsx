@@ -1,0 +1,1131 @@
+"use client";
+
+import { useMemo, useState } from "react";
+import Link from "next/link";
+import { toast } from "sonner";
+import type { MoveOutRequestRow, SettingsRates, MoveOutFeeLine } from "@/types";
+import { toNumber, formatMoney } from "@/lib/format";
+import { getInvoiceOutstanding } from "@/lib/invoice-ledger";
+import { bangkokYmd, meets30DayMoveOutNotice } from "@/lib/move-out-notice";
+import { ConfirmActionModal } from "@/components/ui/ConfirmActionModal";
+import {
+  CheckCircle2,
+  XCircle,
+  Ban,
+  Loader2,
+  Plus,
+  Trash2,
+  AlertTriangle,
+  ClipboardList,
+  Zap,
+  Droplets,
+  ChevronRight,
+  ChevronLeft,
+  Home,
+  FileText,
+  Calculator,
+  Flag,
+  TrendingDown,
+  TrendingUp,
+  ReceiptText,
+} from "lucide-react";
+
+// ─── Types ─────────────────────────────────────────────────────────────────────
+
+export type MoveOutWizardForm = {
+  full_name: string;
+  advance_rent_amount: number;
+  security_deposit_amount: number;
+  final_electricity_reading: number;
+  final_water_reading: number;
+  move_out_request_date: string;
+  final_move_out_date: string;
+};
+
+type InvoiceHistoryRow = {
+  id: string;
+  start_date: string;
+  end_date: string;
+  total_amount: number | null;
+  paid_amount: number | null;
+  status: string;
+  electricity_reading_end?: number | null;
+  water_reading_end?: number | null;
+};
+
+type Props = {
+  activeTenant: any | null;
+  activeMoveOutRequest: MoveOutRequestRow | null;
+  rates: SettingsRates;
+  form: MoveOutWizardForm;
+  setForm: (updater: (prev: MoveOutWizardForm) => MoveOutWizardForm) => void;
+  forfeitDeposit: boolean;
+  setForfeitDeposit: (v: boolean) => void;
+  moveOutFeeLines: MoveOutFeeLine[];
+  setMoveOutFeeLines: React.Dispatch<React.SetStateAction<MoveOutFeeLine[]>>;
+  latestPrevElectricity: number;
+  latestPrevWater: number;
+  tenantInvoiceHistory: InvoiceHistoryRow[];
+  outstandingMoveOutInvoices: InvoiceHistoryRow[];
+  unpaidInvoicesSubtotal: number;
+  latestBilledEndYmd: string | null;
+  tailDaysAfterBilledPeriod: number;
+  appliedMoveOutRentBase: number;
+  roomNumber: string;
+  canEditTenant: boolean;
+  isMovingOut: boolean;
+  isCancellingMoveOut: boolean;
+  onApprove: () => void;
+  onDecline: () => void;
+  onCancelMoveOut: () => void;
+  onConfirmMoveOut: () => void;
+  onAbandonRoom: (forfeitDeposit: boolean, moveOutDate: string) => Promise<void>;
+};
+
+// ─── Step Definitions ──────────────────────────────────────────────────────────
+
+const STEPS = [
+  { id: 1, label: "คำขอย้ายออก", icon: ClipboardList },
+  { id: 2, label: "มิเตอร์", icon: Zap },
+  { id: 3, label: "สรุปค่าใช้จ่าย", icon: Calculator },
+  { id: 4, label: "ยืนยัน", icon: Flag },
+] as const;
+
+// ─── Sub-components ────────────────────────────────────────────────────────────
+
+function StepRail({ currentStep, onStepClick }: { currentStep: number; onStepClick: (s: number) => void }) {
+  return (
+    <div className="flex flex-col gap-1 py-2">
+      {STEPS.map((step, idx) => {
+        const Icon = step.icon;
+        const isActive = currentStep === step.id;
+        const isDone = currentStep > step.id;
+        return (
+          <div key={step.id} className="relative">
+            <button
+              type="button"
+              onClick={() => onStepClick(step.id)}
+              className={`
+                group flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-all duration-200
+                ${isActive
+                  ? "bg-violet-600 text-white shadow-md shadow-violet-200"
+                  : isDone
+                    ? "bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                    : "text-slate-400 hover:bg-slate-50 hover:text-slate-600"
+                }
+              `}
+            >
+              <span className={`
+                flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-xs font-bold transition-all
+                ${isActive ? "bg-white/20" : isDone ? "bg-emerald-100" : "bg-slate-100"}
+              `}>
+                {isDone ? <CheckCircle2 className="h-4 w-4 text-emerald-600" /> : <Icon className="h-3.5 w-3.5" />}
+              </span>
+              <span className="text-sm font-semibold leading-tight">{step.label}</span>
+              {isActive && <ChevronRight className="ml-auto h-4 w-4 opacity-60" />}
+            </button>
+            {idx < STEPS.length - 1 && (
+              <div className={`ml-[22px] mt-0.5 mb-0.5 h-4 w-0.5 ${isDone ? "bg-emerald-200" : "bg-slate-100"}`} />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function SectionCard({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+  return (
+    <div className={`rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm ${className}`}>
+      {children}
+    </div>
+  );
+}
+
+function LineItem({ label, value, sub, className = "" }: { label: string; value: string; sub?: string; className?: string }) {
+  return (
+    <div className={`flex items-start justify-between gap-4 ${className}`}>
+      <div>
+        <span className="text-sm text-slate-600">{label}</span>
+        {sub && <p className="text-xs text-slate-400">{sub}</p>}
+      </div>
+      <span className="shrink-0 text-sm font-semibold text-slate-800 tabular-nums">{value}</span>
+    </div>
+  );
+}
+
+// ─── Step 1: Request Review ─────────────────────────────────────────────────────
+
+function Step1RequestReview({
+  activeMoveOutRequest,
+  form,
+  setForm,
+  isCancellingMoveOut,
+  outstandingMoveOutInvoices,
+  unpaidInvoicesSubtotal,
+  onApprove,
+  onDecline,
+  onCancelMoveOut,
+  onNext,
+}: {
+  activeMoveOutRequest: MoveOutRequestRow | null;
+  form: MoveOutWizardForm;
+  setForm: Props["setForm"];
+  isCancellingMoveOut: boolean;
+  outstandingMoveOutInvoices: InvoiceHistoryRow[];
+  unpaidInvoicesSubtotal: number;
+  onApprove: () => void;
+  onDecline: () => void;
+  onCancelMoveOut: () => void;
+  onNext: () => void;
+}) {
+  const [confirmCancelOpen, setConfirmCancelOpen] = useState(false);
+
+  const noticeYmd = useMemo(() => {
+    if (!activeMoveOutRequest) return "";
+    if (activeMoveOutRequest.notice_date) return String(activeMoveOutRequest.notice_date).slice(0, 10);
+    if (activeMoveOutRequest.created_at) return bangkokYmd(new Date(activeMoveOutRequest.created_at));
+    return "";
+  }, [activeMoveOutRequest]);
+
+  const shortNotice =
+    Boolean(activeMoveOutRequest && noticeYmd && activeMoveOutRequest.requested_move_out_date) &&
+    !meets30DayMoveOutNotice(
+      noticeYmd,
+      String(activeMoveOutRequest?.requested_move_out_date ?? "").slice(0, 10)
+    );
+
+  const isPending = activeMoveOutRequest?.status === "requested";
+  const isApproved = activeMoveOutRequest?.status === "approved";
+
+  const setField = <K extends keyof MoveOutWizardForm>(key: K, value: MoveOutWizardForm[K]) =>
+    setForm((prev) => ({ ...prev, [key]: value }));
+
+  return (
+    <div className="space-y-5 animate-fade-in-up">
+      <div>
+        <h2 className="text-xl font-bold text-slate-900">คำขอย้ายออก</h2>
+        <p className="mt-1 text-sm text-slate-500">ตรวจสอบรายละเอียดคำขอและกำหนดวันย้ายออก</p>
+      </div>
+
+      {/* No request — admin-set date or fresh */}
+      {!activeMoveOutRequest && (
+        <SectionCard className="border-dashed border-slate-200">
+          <div className="flex items-center gap-3 text-slate-400">
+            <ClipboardList className="h-5 w-5 shrink-0" />
+            <div>
+              <p className="text-sm font-medium text-slate-600">ไม่มีคำขอย้ายออกจากผู้เช่า</p>
+              <p className="text-xs text-slate-400 mt-0.5">แอดมินตั้งวันย้ายออกโดยตรง หรือยังไม่มีคำขอ</p>
+            </div>
+          </div>
+        </SectionCard>
+      )}
+
+      {/* Pending Request */}
+      {activeMoveOutRequest && (
+        <SectionCard className={isPending ? "border-amber-200 bg-amber-50/60" : isApproved ? "border-emerald-200 bg-emerald-50/60" : "border-slate-200"}>
+          <div className="flex items-start justify-between gap-3 mb-4">
+            <div className="flex items-center gap-2">
+              <ClipboardList className={`h-4 w-4 ${isPending ? "text-amber-600" : isApproved ? "text-emerald-600" : "text-slate-500"}`} />
+              <p className="font-semibold text-slate-900 text-sm">คำขอย้ายออกจากผู้เช่า</p>
+            </div>
+            <span className={`
+              inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold
+              ${isPending ? "bg-amber-100 text-amber-800" : isApproved ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-600"}
+            `}>
+              {isPending ? "รอตรวจสอบ" : isApproved ? "อนุมัติแล้ว" : activeMoveOutRequest.status}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 text-sm mb-4">
+            <div className="rounded-xl bg-white/70 px-3 py-2.5 border border-white">
+              <p className="text-xs text-slate-400 mb-1">วันที่แจ้ง</p>
+              <p className="font-semibold text-slate-800">{noticeYmd || "—"}</p>
+            </div>
+            <div className="rounded-xl bg-white/70 px-3 py-2.5 border border-white">
+              <p className="text-xs text-slate-400 mb-1">ต้องการย้ายออก</p>
+              <p className="font-semibold text-slate-800">{String(activeMoveOutRequest.requested_move_out_date || "—")}</p>
+            </div>
+            {activeMoveOutRequest.approved_move_out_date && (
+              <div className="col-span-2 rounded-xl bg-emerald-100/70 px-3 py-2.5 border border-emerald-200">
+                <p className="text-xs text-emerald-600 mb-1">วันที่อนุมัติ</p>
+                <p className="font-semibold text-emerald-800">{String(activeMoveOutRequest.approved_move_out_date)}</p>
+              </div>
+            )}
+          </div>
+
+          {shortNotice && (
+            <div className="flex items-start gap-2 rounded-xl bg-amber-100 px-3 py-2.5 text-xs text-amber-800 mb-4">
+              <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+              <span>วันย้ายออกตามคำขอใกล้กว่า 30 วันจากวันที่แจ้ง — ตรวจสอบเงินประกันตามสัญญา</span>
+            </div>
+          )}
+
+          {activeMoveOutRequest.request_note && (
+            <div className="rounded-xl bg-white/70 border border-slate-100 px-3 py-2.5 mb-4">
+              <p className="text-xs text-slate-400 mb-1">หมายเหตุจากผู้เช่า</p>
+              <p className="text-sm text-slate-700">{activeMoveOutRequest.request_note}</p>
+            </div>
+          )}
+
+          {/* Approve / Decline buttons for pending */}
+          {isPending && (
+            <div className="flex flex-wrap gap-2 mt-1">
+              <button
+                type="button"
+                onClick={onApprove}
+                className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 transition-colors"
+              >
+                <CheckCircle2 className="h-4 w-4" /> อนุมัติคำขอ
+              </button>
+              <button
+                type="button"
+                onClick={onDecline}
+                className="inline-flex items-center gap-2 rounded-xl border border-red-200 bg-white px-4 py-2 text-sm font-semibold text-red-600 hover:bg-red-50 transition-colors"
+              >
+                <XCircle className="h-4 w-4" /> ปฏิเสธ
+              </button>
+            </div>
+          )}
+        </SectionCard>
+      )}
+
+      {/* Date inputs */}
+      <SectionCard>
+        <p className="text-sm font-semibold text-slate-800 mb-3 flex items-center gap-2">
+          <Home className="h-4 w-4 text-violet-500" />
+          กำหนดวันย้ายออก
+        </p>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label className="block text-xs font-medium text-slate-500 mb-1.5">วันที่ย้ายออกตามคำขอ (อ้างอิง)</label>
+            <input
+              type="date"
+              value={form.move_out_request_date}
+              onChange={(e) => setField("move_out_request_date", e.target.value)}
+              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 focus:border-violet-400 focus:outline-none focus:ring-2 focus:ring-violet-200"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-500 mb-1.5">วันที่ย้ายออกจริง</label>
+            <input
+              type="date"
+              value={form.final_move_out_date}
+              onChange={(e) => setField("final_move_out_date", e.target.value)}
+              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 focus:border-violet-400 focus:outline-none focus:ring-2 focus:ring-violet-200"
+            />
+          </div>
+        </div>
+      </SectionCard>
+
+      {/* Outstanding invoices */}
+      {outstandingMoveOutInvoices.length > 0 && (
+        <SectionCard className="border-amber-200 bg-amber-50/50">
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-sm font-semibold text-amber-900 flex items-center gap-2">
+              <ReceiptText className="h-4 w-4" />
+              บิลค้างชำระ ({outstandingMoveOutInvoices.length} รายการ)
+            </p>
+            <Link href="/invoices" className="text-xs font-medium text-amber-700 underline hover:text-amber-600">
+              ดูใบแจ้งหนี้
+            </Link>
+          </div>
+          <div className="space-y-2">
+            {outstandingMoveOutInvoices.map((inv) => (
+              <div key={inv.id} className="flex justify-between items-center rounded-xl bg-white/70 px-3 py-2 border border-amber-100/80">
+                <span className="text-xs text-slate-600">
+                  {String(inv.start_date ?? "").slice(0, 10)} → {String(inv.end_date ?? "").slice(0, 10)}
+                  <span className="ml-1.5 rounded-md bg-amber-100 px-1.5 py-0.5 text-amber-700 font-medium">{inv.status}</span>
+                </span>
+                <span className="text-sm font-bold text-amber-900">฿{formatMoney(getInvoiceOutstanding(inv))}</span>
+              </div>
+            ))}
+          </div>
+          <div className="mt-3 flex items-center justify-between rounded-xl bg-amber-100 px-3 py-2">
+            <span className="text-xs font-medium text-amber-800">รวมยอดค้าง</span>
+            <span className="text-sm font-bold text-amber-900">฿{formatMoney(unpaidInvoicesSubtotal)}</span>
+          </div>
+        </SectionCard>
+      )}
+
+      {/* Cancel move-out */}
+      {activeMoveOutRequest && (
+        <button
+          type="button"
+          onClick={() => setConfirmCancelOpen(true)}
+          disabled={isCancellingMoveOut}
+          className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors disabled:opacity-50"
+        >
+          <Ban className="h-4 w-4" />
+          {isCancellingMoveOut ? "กำลังดำเนินการ…" : "ยกเลิกกระบวนการย้ายออก"}
+        </button>
+      )}
+
+      {/* Next */}
+      <div className="flex justify-end pt-2">
+        <button
+          type="button"
+          onClick={onNext}
+          className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-6 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 shadow-sm hover:shadow-violet-200 shadow-violet-100 transition-all"
+        >
+          ถัดไป: มิเตอร์ <ChevronRight className="h-4 w-4" />
+        </button>
+      </div>
+
+      <ConfirmActionModal
+        isOpen={confirmCancelOpen}
+        onCancel={() => setConfirmCancelOpen(false)}
+        onConfirm={() => { setConfirmCancelOpen(false); onCancelMoveOut(); }}
+        title="ยืนยันการยกเลิกย้ายออก"
+        message="ระบบจะล้างวันย้ายออกและยกเลิกคำขอที่รอ/อนุมัติแล้ว ผู้เช่าจะยังพักอยู่ตามปกติ"
+        confirmLabel="ยืนยันการยกเลิก"
+      />
+    </div>
+  );
+}
+
+// ─── Step 2: Meter Readings ─────────────────────────────────────────────────────
+
+function Step2MeterReadings({
+  form,
+  setForm,
+  latestPrevElectricity,
+  latestPrevWater,
+  rates,
+  onBack,
+  onNext,
+}: {
+  form: MoveOutWizardForm;
+  setForm: Props["setForm"];
+  latestPrevElectricity: number;
+  latestPrevWater: number;
+  rates: SettingsRates;
+  onBack: () => void;
+  onNext: () => void;
+}) {
+  const setField = <K extends keyof MoveOutWizardForm>(key: K, value: MoveOutWizardForm[K]) =>
+    setForm((prev) => ({ ...prev, [key]: value }));
+
+  const elecUsage = Math.max(toNumber(form.final_electricity_reading) - latestPrevElectricity, 0);
+  const waterUsage = Math.max(toNumber(form.final_water_reading) - latestPrevWater, 0);
+  const elecCost = elecUsage * rates.electricity_rate;
+  const waterCost = waterUsage * rates.water_rate;
+
+  return (
+    <div className="space-y-5 animate-fade-in-up">
+      <div>
+        <h2 className="text-xl font-bold text-slate-900">มิเตอร์ ณ วันย้ายออก</h2>
+        <p className="mt-1 text-sm text-slate-500">กรอกเลขมิเตอร์ที่อ่านได้วันย้ายออก เพื่อคำนวณค่าสาธารณูปโภค</p>
+      </div>
+
+      {/* Electricity */}
+      <SectionCard className="border-yellow-200 bg-gradient-to-br from-yellow-50/60 to-orange-50/40">
+        <div className="flex items-center gap-2 mb-4">
+          <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-yellow-100">
+            <Zap className="h-4 w-4 text-yellow-600" />
+          </div>
+          <p className="font-semibold text-slate-800">ไฟฟ้า</p>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2 mb-4">
+          <div>
+            <label className="block text-xs font-medium text-slate-500 mb-1.5">เลขมิเตอร์ครั้งก่อน</label>
+            <div className="flex h-11 items-center rounded-xl border border-slate-200 bg-white/80 px-3 text-sm text-slate-700 select-none">
+              <span className="text-slate-400 mr-2">อ่านล่าสุด:</span>
+              <span className="font-mono font-semibold">{latestPrevElectricity}</span>
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-500 mb-1.5">เลขมิเตอร์ปัจจุบัน (ย้ายออก)</label>
+            <input
+              type="number"
+              min={latestPrevElectricity}
+              value={form.final_electricity_reading}
+              onChange={(e) => setField("final_electricity_reading", toNumber(e.target.value))}
+              className="w-full rounded-xl border border-yellow-200 bg-white px-3 py-2.5 text-sm font-mono text-slate-800 focus:border-yellow-400 focus:outline-none focus:ring-2 focus:ring-yellow-100"
+              placeholder={String(latestPrevElectricity)}
+            />
+          </div>
+        </div>
+        <div className="flex items-center justify-between rounded-xl bg-yellow-100/80 px-4 py-3">
+          <span className="text-sm text-yellow-800">
+            การใช้: <span className="font-bold font-mono">{elecUsage}</span> หน่วย × ฿{rates.electricity_rate}
+          </span>
+          <span className="text-base font-bold text-yellow-900">฿{formatMoney(elecCost)}</span>
+        </div>
+      </SectionCard>
+
+      {/* Water */}
+      <SectionCard className="border-blue-200 bg-gradient-to-br from-blue-50/60 to-cyan-50/40">
+        <div className="flex items-center gap-2 mb-4">
+          <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-blue-100">
+            <Droplets className="h-4 w-4 text-blue-600" />
+          </div>
+          <p className="font-semibold text-slate-800">น้ำประปา</p>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2 mb-4">
+          <div>
+            <label className="block text-xs font-medium text-slate-500 mb-1.5">เลขมิเตอร์ครั้งก่อน</label>
+            <div className="flex h-11 items-center rounded-xl border border-slate-200 bg-white/80 px-3 text-sm text-slate-700 select-none">
+              <span className="text-slate-400 mr-2">อ่านล่าสุด:</span>
+              <span className="font-mono font-semibold">{latestPrevWater}</span>
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-500 mb-1.5">เลขมิเตอร์ปัจจุบัน (ย้ายออก)</label>
+            <input
+              type="number"
+              min={latestPrevWater}
+              value={form.final_water_reading}
+              onChange={(e) => setField("final_water_reading", toNumber(e.target.value))}
+              className="w-full rounded-xl border border-blue-200 bg-white px-3 py-2.5 text-sm font-mono text-slate-800 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100"
+              placeholder={String(latestPrevWater)}
+            />
+          </div>
+        </div>
+        <div className="flex items-center justify-between rounded-xl bg-blue-100/80 px-4 py-3">
+          <span className="text-sm text-blue-800">
+            การใช้: <span className="font-bold font-mono">{waterUsage}</span> หน่วย × ฿{rates.water_rate}
+          </span>
+          <span className="text-base font-bold text-blue-900">฿{formatMoney(waterCost)}</span>
+        </div>
+      </SectionCard>
+
+      {/* Mini summary */}
+      <SectionCard>
+        <p className="text-sm font-semibold text-slate-700 mb-3">รวมค่าสาธารณูปโภค</p>
+        <div className="space-y-2">
+          <LineItem label="ค่าไฟฟ้า" value={`฿${formatMoney(elecCost)}`} sub={`${elecUsage} หน่วย`} />
+          <LineItem label="ค่าน้ำประปา" value={`฿${formatMoney(waterCost)}`} sub={`${waterUsage} หน่วย`} />
+          <div className="pt-2 border-t border-dashed border-slate-200">
+            <LineItem label="รวม" value={`฿${formatMoney(elecCost + waterCost)}`} className="font-semibold" />
+          </div>
+        </div>
+      </SectionCard>
+
+      <div className="flex justify-between pt-2">
+        <button
+          type="button"
+          onClick={onBack}
+          className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-5 py-2.5 text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-colors"
+        >
+          <ChevronLeft className="h-4 w-4" /> ย้อนกลับ
+        </button>
+        <button
+          type="button"
+          onClick={onNext}
+          className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-6 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 shadow-sm transition-all"
+        >
+          ถัดไป: สรุปค่าใช้จ่าย <ChevronRight className="h-4 w-4" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Step 3: Financial Summary ─────────────────────────────────────────────────
+
+function Step3FinancialSummary({
+  form,
+  setForm,
+  forfeitDeposit,
+  setForfeitDeposit,
+  moveOutFeeLines,
+  setMoveOutFeeLines,
+  rates,
+  latestPrevElectricity,
+  latestPrevWater,
+  unpaidInvoicesSubtotal,
+  outstandingMoveOutInvoices,
+  appliedMoveOutRentBase,
+  tailDaysAfterBilledPeriod,
+  latestBilledEndYmd,
+  roomNumber,
+  activeMoveOutRequest,
+  onBack,
+  onNext,
+}: {
+  form: MoveOutWizardForm;
+  setForm: Props["setForm"];
+  forfeitDeposit: boolean;
+  setForfeitDeposit: (v: boolean) => void;
+  moveOutFeeLines: MoveOutFeeLine[];
+  setMoveOutFeeLines: React.Dispatch<React.SetStateAction<MoveOutFeeLine[]>>;
+  rates: SettingsRates;
+  latestPrevElectricity: number;
+  latestPrevWater: number;
+  unpaidInvoicesSubtotal: number;
+  outstandingMoveOutInvoices: InvoiceHistoryRow[];
+  appliedMoveOutRentBase: number;
+  tailDaysAfterBilledPeriod: number;
+  latestBilledEndYmd: string | null;
+  roomNumber: string;
+  activeMoveOutRequest: MoveOutRequestRow | null;
+  onBack: () => void;
+  onNext: () => void;
+}) {
+  const elecUsage = Math.max(toNumber(form.final_electricity_reading) - latestPrevElectricity, 0);
+  const waterUsage = Math.max(toNumber(form.final_water_reading) - latestPrevWater, 0);
+  const elecCost = elecUsage * rates.electricity_rate;
+  const waterCost = waterUsage * rates.water_rate;
+  const additionalFeesTotal = moveOutFeeLines.reduce((s, l) => s + toNumber(l.amount), 0);
+
+  const overstayDays = tailDaysAfterBilledPeriod;
+  const roomPrice = useMemo(() => {
+    if (!form) return 0;
+    return 0; // price is baked into appliedMoveOutRentBase
+  }, [form]);
+  const overstayRentCharge = 0; // included in appliedMoveOutRentBase from parent
+
+  const totalCost = unpaidInvoicesSubtotal + appliedMoveOutRentBase + elecCost + waterCost + additionalFeesTotal;
+  const refundableDeposit = forfeitDeposit ? 0 : toNumber(form.security_deposit_amount);
+  const forfeitedDepositAmount = forfeitDeposit ? toNumber(form.security_deposit_amount) : 0;
+  const prepaid = refundableDeposit + toNumber(form.advance_rent_amount);
+  const net = prepaid - totalCost;
+
+  const createFeeLine = (): MoveOutFeeLine => ({ id: crypto.randomUUID(), label: "", amount: 0 });
+
+  return (
+    <div className="space-y-5 animate-fade-in-up">
+      <div>
+        <h2 className="text-xl font-bold text-slate-900">สรุปค่าใช้จ่าย</h2>
+        <p className="mt-1 text-sm text-slate-500">ตรวจสอบและปรับแต่งรายการค่าใช้จ่ายก่อนยืนยัน</p>
+      </div>
+
+      {/* Charges breakdown */}
+      <SectionCard>
+        <p className="text-sm font-semibold text-slate-700 mb-4 flex items-center gap-2">
+          <TrendingUp className="h-4 w-4 text-red-400" />
+          รายการค่าใช้จ่าย
+        </p>
+        <div className="space-y-2.5">
+          {unpaidInvoicesSubtotal > 0 && (
+            <LineItem
+              label={`บิลค้างชำระ (${outstandingMoveOutInvoices.length} รายการ)`}
+              value={`฿${formatMoney(unpaidInvoicesSubtotal)}`}
+              className="text-amber-700"
+            />
+          )}
+          <LineItem
+            label={latestBilledEndYmd
+              ? `ค่าเช่า (หลังบิล ${latestBilledEndYmd})`
+              : "ค่าเช่าห้อง"}
+            value={`฿${formatMoney(appliedMoveOutRentBase)}`}
+          />
+          <LineItem
+            label={`ค่าไฟฟ้า (${elecUsage} หน่วย)`}
+            value={`฿${formatMoney(elecCost)}`}
+          />
+          <LineItem
+            label={`ค่าน้ำ (${waterUsage} หน่วย)`}
+            value={`฿${formatMoney(waterCost)}`}
+          />
+          {moveOutFeeLines.filter(l => l.label.trim() && toNumber(l.amount) > 0).map(l => (
+            <LineItem key={l.id} label={l.label.trim()} value={`฿${formatMoney(toNumber(l.amount))}`} />
+          ))}
+          <div className="pt-2 mt-1 border-t border-dashed border-slate-200">
+            <LineItem
+              label="รวมค่าใช้จ่ายทั้งหมด"
+              value={`฿${formatMoney(totalCost)}`}
+              className="font-bold text-slate-900 text-base"
+            />
+          </div>
+        </div>
+      </SectionCard>
+
+      {/* Additional fees */}
+      <SectionCard>
+        <div className="flex items-center justify-between mb-4">
+          <p className="text-sm font-semibold text-slate-700 flex items-center gap-2">
+            <Plus className="h-4 w-4 text-slate-400" />
+            ค่าใช้จ่ายเพิ่มเติม
+          </p>
+          <button
+            type="button"
+            onClick={() => setMoveOutFeeLines(prev => [...prev, createFeeLine()])}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50 px-3 py-1.5 text-xs font-medium text-violet-700 hover:bg-violet-100 transition-colors"
+          >
+            <Plus className="h-3.5 w-3.5" /> เพิ่มรายการ
+          </button>
+        </div>
+        {moveOutFeeLines.length === 0 && (
+          <p className="text-sm text-slate-400 text-center py-3">ยังไม่มีค่าใช้จ่ายเพิ่มเติม</p>
+        )}
+        <div className="space-y-2">
+          {moveOutFeeLines.map(line => (
+            <div key={line.id} className="flex gap-2 items-start">
+              <input
+                type="text"
+                placeholder="รายการ (เช่น ค่าซ่อมแซม)"
+                value={line.label}
+                onChange={e => setMoveOutFeeLines(prev => prev.map(item => item.id === line.id ? { ...item, label: e.target.value } : item))}
+                className="flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm focus:border-violet-300 focus:outline-none focus:ring-2 focus:ring-violet-100"
+              />
+              <input
+                type="number"
+                placeholder="จำนวน"
+                value={line.amount}
+                onChange={e => setMoveOutFeeLines(prev => prev.map(item => item.id === line.id ? { ...item, amount: toNumber(e.target.value) } : item))}
+                className="w-28 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-mono focus:border-violet-300 focus:outline-none focus:ring-2 focus:ring-violet-100"
+              />
+              <button
+                type="button"
+                onClick={() => setMoveOutFeeLines(prev => prev.filter(item => item.id !== line.id))}
+                className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-red-100 text-red-400 hover:border-red-200 hover:bg-red-50 hover:text-red-600 transition-colors"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      </SectionCard>
+
+      {/* Credits & Deposit */}
+      <SectionCard>
+        <p className="text-sm font-semibold text-slate-700 mb-4 flex items-center gap-2">
+          <TrendingDown className="h-4 w-4 text-emerald-500" />
+          เครดิต / การหักคืน
+        </p>
+        <div className="space-y-2.5">
+          <LineItem
+            label="ค่าเช่าล่วงหน้า"
+            value={`฿${formatMoney(toNumber(form.advance_rent_amount))}`}
+            className="text-emerald-700"
+          />
+          <LineItem
+            label={forfeitDeposit ? "เงินประกัน (ริบ — ไม่คืน)" : "เงินประกัน"}
+            value={forfeitDeposit ? `−฿${formatMoney(toNumber(form.security_deposit_amount))}` : `฿${formatMoney(toNumber(form.security_deposit_amount))}`}
+            className={forfeitDeposit ? "text-red-500 line-through" : "text-emerald-700"}
+          />
+          <div className="pt-2 mt-1 border-t border-dashed border-slate-200">
+            <LineItem
+              label="รวมเครดิต"
+              value={`฿${formatMoney(prepaid)}`}
+              className="font-bold text-emerald-700 text-base"
+            />
+          </div>
+        </div>
+      </SectionCard>
+
+      {/* Forfeit deposit toggle */}
+      <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-red-200 bg-red-50/60 px-4 py-4">
+        <div className="relative mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center">
+          <input
+            type="checkbox"
+            checked={forfeitDeposit}
+            onChange={e => setForfeitDeposit(e.target.checked)}
+            className="peer sr-only"
+          />
+          <div className="h-5 w-5 rounded-md border-2 border-red-300 bg-white peer-checked:border-red-600 peer-checked:bg-red-600 transition-all" />
+          {forfeitDeposit && (
+            <CheckCircle2 className="absolute h-3.5 w-3.5 text-white pointer-events-none" />
+          )}
+        </div>
+        <div>
+          <p className="text-sm font-semibold text-red-800">ริบเงินประกัน (ไม่คืนเงินประกัน)</p>
+          <p className="mt-0.5 text-xs text-red-600">ใช้กรณีผู้เช่าไม่แจ้งล่วงหน้า หรือย้ายออกก่อนครบสัญญา ระบบจะไม่นำเงินประกันมาเป็นเครดิตในสรุปย้ายออก</p>
+        </div>
+      </label>
+
+      <div className="flex justify-between pt-2">
+        <button
+          type="button"
+          onClick={onBack}
+          className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-5 py-2.5 text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-colors"
+        >
+          <ChevronLeft className="h-4 w-4" /> ย้อนกลับ
+        </button>
+        <button
+          type="button"
+          onClick={onNext}
+          className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-6 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 shadow-sm transition-all"
+        >
+          ถัดไป: ยืนยัน <ChevronRight className="h-4 w-4" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Step 4: Confirmation ──────────────────────────────────────────────────────
+
+function Step4Confirm({
+  form,
+  forfeitDeposit,
+  moveOutFeeLines,
+  rates,
+  latestPrevElectricity,
+  latestPrevWater,
+  unpaidInvoicesSubtotal,
+  appliedMoveOutRentBase,
+  roomNumber,
+  activeMoveOutRequest,
+  isMovingOut,
+  isCancellingMoveOut,
+  canEditTenant,
+  activeTenant,
+  onBack,
+  onConfirmMoveOut,
+  onAbandonRoom,
+  onCancelMoveOut,
+}: {
+  form: MoveOutWizardForm;
+  forfeitDeposit: boolean;
+  moveOutFeeLines: MoveOutFeeLine[];
+  rates: SettingsRates;
+  latestPrevElectricity: number;
+  latestPrevWater: number;
+  unpaidInvoicesSubtotal: number;
+  appliedMoveOutRentBase: number;
+  roomNumber: string;
+  activeMoveOutRequest: MoveOutRequestRow | null;
+  isMovingOut: boolean;
+  isCancellingMoveOut: boolean;
+  canEditTenant: boolean;
+  activeTenant: any;
+  onBack: () => void;
+  onConfirmMoveOut: () => void;
+  onAbandonRoom: (forfeit: boolean, date: string) => Promise<void>;
+  onCancelMoveOut: () => void;
+}) {
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [abandonOpen, setAbandonOpen] = useState(false);
+  const [abandonMode, setAbandonMode] = useState(false);
+  const [confirmCancelOpen, setConfirmCancelOpen] = useState(false);
+  const [isAbandoning, setIsAbandoning] = useState(false);
+
+  const elecUsage = Math.max(toNumber(form.final_electricity_reading) - latestPrevElectricity, 0);
+  const waterUsage = Math.max(toNumber(form.final_water_reading) - latestPrevWater, 0);
+  const elecCost = elecUsage * rates.electricity_rate;
+  const waterCost = waterUsage * rates.water_rate;
+  const additionalFeesTotal = moveOutFeeLines.reduce((s, l) => s + toNumber(l.amount), 0);
+  const totalCost = unpaidInvoicesSubtotal + appliedMoveOutRentBase + elecCost + waterCost + additionalFeesTotal;
+  const refundableDeposit = forfeitDeposit ? 0 : toNumber(form.security_deposit_amount);
+  const prepaid = refundableDeposit + toNumber(form.advance_rent_amount);
+  const net = prepaid - totalCost;
+  const isRefund = net >= 0;
+
+  const moveOutDate = form.final_move_out_date || new Date().toISOString().slice(0, 10);
+
+  const handleAbandonment = async () => {
+    setIsAbandoning(true);
+    try {
+      await onAbandonRoom(forfeitDeposit, moveOutDate);
+    } finally {
+      setIsAbandoning(false);
+      setAbandonOpen(false);
+    }
+  };
+
+  return (
+    <div className="space-y-5 animate-fade-in-up">
+      <div>
+        <h2 className="text-xl font-bold text-slate-900">ยืนยันการย้ายออก</h2>
+        <p className="mt-1 text-sm text-slate-500">ตรวจสอบข้อมูลสุดท้ายก่อนบันทึก</p>
+      </div>
+
+      {/* Tenant info card */}
+      <SectionCard>
+        <div className="grid grid-cols-2 gap-3 text-sm">
+          <div>
+            <p className="text-xs text-slate-400 mb-0.5">ผู้เช่า</p>
+            <p className="font-semibold text-slate-800">{form.full_name || "—"}</p>
+          </div>
+          <div>
+            <p className="text-xs text-slate-400 mb-0.5">ห้อง</p>
+            <p className="font-semibold text-slate-800">{roomNumber || "—"}</p>
+          </div>
+          <div>
+            <p className="text-xs text-slate-400 mb-0.5">วันที่ย้ายออกจริง</p>
+            <p className="font-semibold text-slate-800">{moveOutDate}</p>
+          </div>
+          <div>
+            <p className="text-xs text-slate-400 mb-0.5">สถานะเงินประกัน</p>
+            <p className={`font-semibold ${forfeitDeposit ? "text-red-600" : "text-emerald-700"}`}>
+              {forfeitDeposit ? "ริบ (ไม่คืน)" : "คืนเต็มจำนวน"}
+            </p>
+          </div>
+        </div>
+      </SectionCard>
+
+      {/* Net amount — hero display */}
+      <div className={`
+        relative overflow-hidden rounded-2xl px-6 py-6 text-center
+        ${isRefund
+          ? "bg-gradient-to-br from-emerald-500 to-teal-600"
+          : "bg-gradient-to-br from-red-500 to-rose-600"
+        }
+      `}>
+        <div className="absolute inset-0 opacity-10">
+          <div className="absolute -top-4 -right-4 h-24 w-24 rounded-full bg-white" />
+          <div className="absolute -bottom-6 -left-6 h-32 w-32 rounded-full bg-white" />
+        </div>
+        <p className="relative text-sm font-medium text-white/80 mb-1">
+          {isRefund ? "คืนเงินให้ผู้เช่า" : "ผู้เช่าต้องชำระเพิ่ม"}
+        </p>
+        <p className="relative text-4xl font-black text-white tracking-tight">
+          ฿{formatMoney(Math.abs(net))}
+        </p>
+        <div className="relative mt-3 flex justify-center gap-6 text-xs text-white/70">
+          <span>ค่าใช้จ่ายรวม ฿{formatMoney(totalCost)}</span>
+          <span>เครดิต ฿{formatMoney(prepaid)}</span>
+        </div>
+      </div>
+
+      {/* Cost summary table */}
+      <SectionCard>
+        <p className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">รายละเอียดทั้งหมด</p>
+        <div className="space-y-2 text-sm">
+          {unpaidInvoicesSubtotal > 0 && (
+            <div className="flex justify-between text-amber-700">
+              <span>บิลค้างชำระ</span>
+              <span className="font-semibold tabular-nums">฿{formatMoney(unpaidInvoicesSubtotal)}</span>
+            </div>
+          )}
+          <div className="flex justify-between text-slate-600">
+            <span>ค่าเช่า</span>
+            <span className="font-semibold tabular-nums">฿{formatMoney(appliedMoveOutRentBase)}</span>
+          </div>
+          <div className="flex justify-between text-slate-600">
+            <span>ค่าไฟ + น้ำ</span>
+            <span className="font-semibold tabular-nums">฿{formatMoney(elecCost + waterCost)}</span>
+          </div>
+          {additionalFeesTotal > 0 && (
+            <div className="flex justify-between text-slate-600">
+              <span>ค่าใช้จ่ายอื่น</span>
+              <span className="font-semibold tabular-nums">฿{formatMoney(additionalFeesTotal)}</span>
+            </div>
+          )}
+          <div className="pt-2 border-t border-dashed border-slate-200 flex justify-between font-bold text-slate-900">
+            <span>รวมค่าใช้จ่าย</span>
+            <span className="tabular-nums">฿{formatMoney(totalCost)}</span>
+          </div>
+          <div className="flex justify-between text-emerald-700">
+            <span>ค่าเช่าล่วงหน้า</span>
+            <span className="font-semibold tabular-nums">−฿{formatMoney(toNumber(form.advance_rent_amount))}</span>
+          </div>
+          <div className={`flex justify-between ${forfeitDeposit ? "text-red-400 line-through" : "text-emerald-700"}`}>
+            <span>เงินประกัน</span>
+            <span className="font-semibold tabular-nums">−฿{formatMoney(toNumber(form.security_deposit_amount))}</span>
+          </div>
+        </div>
+      </SectionCard>
+
+      {/* Abandon room toggle */}
+      <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-orange-200 bg-orange-50/60 px-4 py-4">
+        <div className="relative mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center">
+          <input
+            type="checkbox"
+            checked={abandonMode}
+            onChange={e => setAbandonMode(e.target.checked)}
+            className="peer sr-only"
+          />
+          <div className="h-5 w-5 rounded-md border-2 border-orange-300 bg-white peer-checked:border-orange-600 peer-checked:bg-orange-600 transition-all" />
+          {abandonMode && (
+            <CheckCircle2 className="absolute h-3.5 w-3.5 text-white pointer-events-none" />
+          )}
+        </div>
+        <div>
+          <p className="text-sm font-semibold text-orange-900">ผู้เช่าทิ้งห้อง</p>
+          <p className="mt-0.5 text-xs text-orange-700">
+            ระบบจะใช้เครดิต (ค่าเช่าล่วงหน้า{!forfeitDeposit ? " + เงินประกัน" : ""}) หักบิลค้างชำระตามลำดับ
+            บิลที่เหลือจะถูกยกเลิก และผู้เช่าถูกย้ายออกทันที (ไม่สร้างใบแจ้งหนี้สุดท้าย)
+          </p>
+        </div>
+      </label>
+
+      {/* Action buttons */}
+      <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-100">
+        <button
+          type="button"
+          onClick={onBack}
+          className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-5 py-2.5 text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-colors"
+        >
+          <ChevronLeft className="h-4 w-4" /> ย้อนกลับ
+        </button>
+
+        <div className="flex flex-wrap gap-2">
+          {(activeTenant?.move_out_date || activeMoveOutRequest) && (
+            <button
+              type="button"
+              onClick={() => setConfirmCancelOpen(true)}
+              disabled={isCancellingMoveOut}
+              className="inline-flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm font-semibold text-amber-800 hover:bg-amber-100 transition-colors disabled:opacity-50"
+            >
+              <Ban className="h-4 w-4" />
+              {isCancellingMoveOut ? "กำลังยกเลิก…" : "ยกเลิกการย้ายออก"}
+            </button>
+          )}
+
+          {abandonMode ? (
+            <button
+              type="button"
+              onClick={() => setAbandonOpen(true)}
+              disabled={!canEditTenant || isAbandoning}
+              className="inline-flex items-center gap-2 rounded-xl bg-orange-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-orange-700 shadow-sm transition-all disabled:opacity-50"
+            >
+              {isAbandoning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Ban className="h-4 w-4" />}
+              {isAbandoning ? "กำลังดำเนินการ…" : "ยืนยันทิ้งห้อง"}
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setConfirmOpen(true)}
+              disabled={!canEditTenant || isMovingOut}
+              className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 shadow-sm shadow-violet-200 transition-all disabled:opacity-50"
+            >
+              {isMovingOut ? <Loader2 className="h-4 w-4 animate-spin" /> : <Flag className="h-4 w-4" />}
+              {isMovingOut ? "กำลังบันทึก…" : "ยืนยันการย้ายออก"}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Confirm modals */}
+      <ConfirmActionModal
+        isOpen={confirmOpen}
+        onCancel={() => setConfirmOpen(false)}
+        onConfirm={() => { setConfirmOpen(false); onConfirmMoveOut(); }}
+        title="ยืนยันการย้ายออก"
+        message={`ยืนยันการย้ายออกของ "${form.full_name || "ผู้เช่า"}" จากห้อง ${roomNumber}? ระบบจะสร้างใบแจ้งหนี้สุดท้าย เปลี่ยนสถานะผู้เช่าเป็น "ย้ายออกแล้ว" และเปลี่ยนสถานะห้องเป็น "ว่าง"`}
+        confirmLabel="ยืนยันการย้ายออก"
+      />
+      <ConfirmActionModal
+        isOpen={abandonOpen}
+        onCancel={() => setAbandonOpen(false)}
+        onConfirm={handleAbandonment}
+        title="ยืนยันผู้เช่าทิ้งห้อง"
+        message={`ยืนยันว่า "${form.full_name || "ผู้เช่า"}" ทิ้งห้อง ${roomNumber}? ระบบจะใช้เครดิต ฿${formatMoney(prepaid)} หักบิลค้างชำระตามลำดับ บิลที่เหลือถูกยกเลิก และผู้เช่าถูกย้ายออกทันที การดำเนินการนี้ไม่สามารถย้อนกลับได้`}
+        confirmLabel="ยืนยันทิ้งห้อง"
+        loading={isAbandoning}
+      />
+      <ConfirmActionModal
+        isOpen={confirmCancelOpen}
+        onCancel={() => setConfirmCancelOpen(false)}
+        onConfirm={() => { setConfirmCancelOpen(false); onCancelMoveOut(); }}
+        title="ยืนยันการยกเลิกย้ายออก"
+        message="ระบบจะล้างวันย้ายออกและยกเลิกคำขอที่รอ/อนุมัติแล้ว ผู้เช่าจะยังพักอยู่ตามปกติ"
+        confirmLabel="ยืนยันการยกเลิก"
+      />
+    </div>
+  );
+}
+
+// ─── Main Wizard Component ─────────────────────────────────────────────────────
+
+export function MoveOutWizard({
+  activeTenant,
+  activeMoveOutRequest,
+  rates,
+  form,
+  setForm,
+  forfeitDeposit,
+  setForfeitDeposit,
+  moveOutFeeLines,
+  setMoveOutFeeLines,
+  latestPrevElectricity,
+  latestPrevWater,
+  tenantInvoiceHistory,
+  outstandingMoveOutInvoices,
+  unpaidInvoicesSubtotal,
+  latestBilledEndYmd,
+  tailDaysAfterBilledPeriod,
+  appliedMoveOutRentBase,
+  roomNumber,
+  canEditTenant,
+  isMovingOut,
+  isCancellingMoveOut,
+  onApprove,
+  onDecline,
+  onCancelMoveOut,
+  onConfirmMoveOut,
+  onAbandonRoom,
+}: Props) {
+  const [step, setStep] = useState(1);
+
+  const goTo = (s: number) => setStep(Math.max(1, Math.min(STEPS.length, s)));
+
+  return (
+    <div className="flex gap-0 min-h-[480px]">
+      {/* Left rail */}
+      <div className="w-44 shrink-0 border-r border-slate-100 pr-4 pt-1">
+        <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-3 px-3">ขั้นตอน</p>
+        <StepRail currentStep={step} onStepClick={goTo} />
+      </div>
+
+      {/* Right content */}
+      <div className="flex-1 min-w-0 pl-6 pt-1">
+        <fieldset disabled={!canEditTenant} className="disabled:cursor-not-allowed disabled:opacity-70">
+          {step === 1 && (
+            <Step1RequestReview
+              activeMoveOutRequest={activeMoveOutRequest}
+              form={form}
+              setForm={setForm}
+              isCancellingMoveOut={isCancellingMoveOut}
+              outstandingMoveOutInvoices={outstandingMoveOutInvoices}
+              unpaidInvoicesSubtotal={unpaidInvoicesSubtotal}
+              onApprove={onApprove}
+              onDecline={onDecline}
+              onCancelMoveOut={onCancelMoveOut}
+              onNext={() => goTo(2)}
+            />
+          )}
+          {step === 2 && (
+            <Step2MeterReadings
+              form={form}
+              setForm={setForm}
+              latestPrevElectricity={latestPrevElectricity}
+              latestPrevWater={latestPrevWater}
+              rates={rates}
+              onBack={() => goTo(1)}
+              onNext={() => goTo(3)}
+            />
+          )}
+          {step === 3 && (
+            <Step3FinancialSummary
+              form={form}
+              setForm={setForm}
+              forfeitDeposit={forfeitDeposit}
+              setForfeitDeposit={setForfeitDeposit}
+              moveOutFeeLines={moveOutFeeLines}
+              setMoveOutFeeLines={setMoveOutFeeLines}
+              rates={rates}
+              latestPrevElectricity={latestPrevElectricity}
+              latestPrevWater={latestPrevWater}
+              unpaidInvoicesSubtotal={unpaidInvoicesSubtotal}
+              outstandingMoveOutInvoices={outstandingMoveOutInvoices}
+              appliedMoveOutRentBase={appliedMoveOutRentBase}
+              tailDaysAfterBilledPeriod={tailDaysAfterBilledPeriod}
+              latestBilledEndYmd={latestBilledEndYmd}
+              roomNumber={roomNumber}
+              activeMoveOutRequest={activeMoveOutRequest}
+              onBack={() => goTo(2)}
+              onNext={() => goTo(4)}
+            />
+          )}
+          {step === 4 && (
+            <Step4Confirm
+              form={form}
+              forfeitDeposit={forfeitDeposit}
+              moveOutFeeLines={moveOutFeeLines}
+              rates={rates}
+              latestPrevElectricity={latestPrevElectricity}
+              latestPrevWater={latestPrevWater}
+              unpaidInvoicesSubtotal={unpaidInvoicesSubtotal}
+              appliedMoveOutRentBase={appliedMoveOutRentBase}
+              roomNumber={roomNumber}
+              activeMoveOutRequest={activeMoveOutRequest}
+              isMovingOut={isMovingOut}
+              isCancellingMoveOut={isCancellingMoveOut}
+              canEditTenant={canEditTenant}
+              activeTenant={activeTenant}
+              onBack={() => goTo(3)}
+              onConfirmMoveOut={onConfirmMoveOut}
+              onAbandonRoom={onAbandonRoom}
+              onCancelMoveOut={onCancelMoveOut}
+            />
+          )}
+        </fieldset>
+      </div>
+    </div>
+  );
+}

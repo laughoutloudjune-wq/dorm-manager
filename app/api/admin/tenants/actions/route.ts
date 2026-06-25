@@ -568,6 +568,146 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: true });
     }
 
+    if (action === "abandon_room") {
+      const auth = await requireAdminPermission(req, "tenant.edit");
+      if ("error" in auth) return auth.error;
+      const roomAuth = await requireAdminPermission(req, "room.edit");
+      if ("error" in roomAuth) return roomAuth.error;
+
+      const tenantId = String(body?.tenantId ?? "");
+      const forfeitDeposit = Boolean(body?.forfeitDeposit);
+      const moveOutDate = body?.moveOutDate
+        ? String(body.moveOutDate)
+        : new Date().toISOString().slice(0, 10);
+
+      if (!tenantId) {
+        return NextResponse.json({ error: "Missing tenantId." }, { status: 400 });
+      }
+
+      // Fetch tenant with room info
+      const { data: tenant, error: tenantErr } = await auth.supabase
+        .from("tenants")
+        .select("id,room_id,advance_rent_amount,security_deposit_amount,status,rooms(id,price_month,room_number)")
+        .eq("id", tenantId)
+        .maybeSingle();
+
+      if (tenantErr) return NextResponse.json({ error: tenantErr.message }, { status: 500 });
+      if (!tenant?.id) return NextResponse.json({ error: "Tenant not found." }, { status: 404 });
+      if (String(tenant.status) !== "active") {
+        return NextResponse.json({ error: "ผู้เช่าไม่ได้อยู่ในสถานะ active" }, { status: 400 });
+      }
+
+      const nowIso = new Date().toISOString();
+
+      // Build available credit pool
+      let remainingCredit = toNumber(tenant.advance_rent_amount ?? 0);
+      if (!forfeitDeposit) {
+        remainingCredit += toNumber(tenant.security_deposit_amount ?? 0);
+      }
+
+      // Fetch all unpaid invoices for this tenant ordered by due_date asc
+      const { data: unpaidInvoices, error: invErr } = await auth.supabase
+        .from("invoices")
+        .select("id,total_amount,paid_amount,status")
+        .eq("tenant_id", tenantId)
+        .in("status", ["pending", "overdue", "partial", "verifying", "draft"])
+        .order("due_date", { ascending: true });
+
+      if (invErr) return NextResponse.json({ error: invErr.message }, { status: 500 });
+
+      // Apply credit to invoices in order
+      for (const inv of unpaidInvoices ?? []) {
+        const outstanding = Math.max(0, toNumber(inv.total_amount) - toNumber(inv.paid_amount));
+        if (outstanding <= 0) continue;
+
+        if (remainingCredit >= outstanding) {
+          // Fully pay this invoice
+          remainingCredit -= outstanding;
+          await auth.supabase
+            .from("invoices")
+            .update({
+              paid_amount: toNumber(inv.total_amount),
+              status: "paid",
+              updated_at: nowIso,
+              notes: "ชำระโดยเครดิตจากการทิ้งห้อง (Abandon Room)",
+            })
+            .eq("id", inv.id);
+        } else if (remainingCredit > 0) {
+          // Partially pay then cancel remainder
+          const newPaid = toNumber(inv.paid_amount) + remainingCredit;
+          remainingCredit = 0;
+          await auth.supabase
+            .from("invoices")
+            .update({
+              paid_amount: newPaid,
+              status: "cancelled",
+              updated_at: nowIso,
+              notes: "ชำระบางส่วนโดยเครดิตจากการทิ้งห้อง แล้วยกเลิกส่วนที่เหลือ",
+            })
+            .eq("id", inv.id);
+        } else {
+          // No credit left — cancel the invoice
+          await auth.supabase
+            .from("invoices")
+            .update({
+              status: "cancelled",
+              updated_at: nowIso,
+              notes: "ยกเลิกเนื่องจากผู้เช่าทิ้งห้อง (Abandon Room)",
+            })
+            .eq("id", inv.id);
+        }
+      }
+
+      // Mark tenant inactive and clear room
+      await auth.supabase
+        .from("tenants")
+        .update({
+          status: "inactive",
+          move_out_date: moveOutDate,
+          forfeit_security_deposit: forfeitDeposit,
+          room_id: null,
+          updated_at: nowIso,
+        })
+        .eq("id", tenantId);
+
+      // Close the open room_tenant_log
+      const roomId = String(tenant.room_id ?? "");
+      if (roomId) {
+        const { data: openLog } = await auth.supabase
+          .from("room_tenant_logs")
+          .select("id")
+          .eq("room_id", roomId)
+          .eq("tenant_id", tenantId)
+          .is("move_out_date", null)
+          .order("move_in_date", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (openLog?.id) {
+          await auth.supabase
+            .from("room_tenant_logs")
+            .update({ move_out_date: moveOutDate, updated_at: nowIso })
+            .eq("id", openLog.id);
+        }
+
+        // Free the room and log the event
+        await roomAuth.supabase.from("rooms").update({ status: "available" }).eq("id", roomId);
+        await roomAuth.supabase.from("room_logs").insert({
+          room_id: roomId,
+          event_type: "move_out",
+          created_at: nowIso,
+        });
+      }
+
+      // Mark any pending move-out requests as completed
+      await auth.supabase
+        .from("move_out_requests")
+        .update({ status: "completed", updated_at: nowIso, actual_move_out_date: moveOutDate })
+        .eq("tenant_id", tenantId)
+        .in("status", ["requested", "approved"]);
+
+      return NextResponse.json({ success: true });
+    }
+
     return NextResponse.json({ error: "Unknown action." }, { status: 400 });
   } catch (error: any) {
     return NextResponse.json({ error: error?.message ?? "Unexpected server error." }, { status: 500 });

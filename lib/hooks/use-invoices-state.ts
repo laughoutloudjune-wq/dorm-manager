@@ -344,7 +344,6 @@ export function useInvoicesState() {
           toNumber(invoice.water_bill) +
           toNumber(invoice.electricity_bill) +
           toNumber(invoice.common_fee) +
-          toNumber(invoice.carry_forward_amount) +
           toNumber(invoice.additional_fees_total) +
           toNumber(invoice.late_fee_amount) -
           discountAmount;
@@ -1444,7 +1443,6 @@ export function useInvoicesState() {
         : toNumber(next.rent_amount);
       const nextAdditional = feeItemsTotal(editableFeeItems);
       const nextDiscount = feeItemsTotal(editableDiscountItems);
-      const nextCarry = feeItemsTotal(editableCarryForwardItems);
       const nextLateFeeItems = feeItemsTotal(editableLateFeeItems);
       const nativeLateFee = calculateCurrentFormLateFee(next);
       const nextLateFee = nativeLateFee + nextLateFeeItems;
@@ -1455,8 +1453,7 @@ export function useInvoicesState() {
         toNumber(next.common_fee) +
         nextDiscount * -1 +
         nextLateFee +
-        nextAdditional +
-        nextCarry;
+        nextAdditional;
       return {
         ...next,
         rent_amount: computedRent,
@@ -1568,7 +1565,6 @@ export function useInvoicesState() {
       toNumber(form.water_bill) +
       toNumber(form.electricity_bill) +
       toNumber(form.common_fee) +
-      feeItemsTotal(editableCarryForwardItems) +
       feeItemsTotal(editableLateFeeItems) +
       feeItemsTotal(editableFeeItems) -
       feeItemsTotal(editableDiscountItems);
@@ -1781,7 +1777,6 @@ export function useInvoicesState() {
       setEditableLateFeeItems([]);
 
       setForm((prev) => {
-        const nextCarry = feeItemsTotal(nextCarryItems);
         const nextLateFee = calculateCurrentFormLateFee(prev);
         const nextAdditional = feeItemsTotal(editableFeeItems);
         const nextDiscount = feeItemsTotal(editableDiscountItems);
@@ -1792,8 +1787,7 @@ export function useInvoicesState() {
           toNumber(prev.common_fee) +
           nextDiscount * -1 +
           nextLateFee +
-          nextAdditional +
-          nextCarry;
+          nextAdditional;
         return {
           ...prev,
           late_fee_amount: nextLateFee,
@@ -1866,7 +1860,6 @@ export function useInvoicesState() {
         enabled && prorateSummary ? prorateSummary.rentAmount : monthlyRent;
       const nextAdditional = feeItemsTotal(editableFeeItems);
       const nextDiscount = feeItemsTotal(editableDiscountItems);
-      const nextCarry = feeItemsTotal(editableCarryForwardItems);
       const nextLateFee = calculateCurrentFormLateFee(prev);
       const total =
         nextRent +
@@ -1875,8 +1868,7 @@ export function useInvoicesState() {
         toNumber(prev.common_fee) +
         nextDiscount * -1 +
         nextLateFee +
-        nextAdditional +
-        nextCarry;
+        nextAdditional;
       return { ...prev, rent_amount: nextRent, total_amount: total };
     });
   };
@@ -1903,7 +1895,6 @@ export function useInvoicesState() {
       });
       const nextAdditional = feeItemsTotal(normalized);
       const nextDiscount = feeItemsTotal(editableDiscountItems);
-      const nextCarry = feeItemsTotal(editableCarryForwardItems);
       setForm((formPrev) => {
         const nextLateFee = calculateCurrentFormLateFee(formPrev);
         const total =
@@ -1913,8 +1904,7 @@ export function useInvoicesState() {
           toNumber(formPrev.common_fee) +
           nextDiscount * -1 +
           nextLateFee +
-          nextAdditional +
-          nextCarry;
+          nextAdditional;
         return {
           ...formPrev,
           additional_fees_total: nextAdditional,
@@ -1949,7 +1939,6 @@ export function useInvoicesState() {
       });
       const nextAdditional = feeItemsTotal(editableFeeItems);
       const nextDiscount = feeItemsTotal(normalized);
-      const nextCarry = feeItemsTotal(editableCarryForwardItems);
       setForm((formPrev) => {
         const nextLateFee = calculateCurrentFormLateFee(formPrev);
         const total =
@@ -1959,8 +1948,7 @@ export function useInvoicesState() {
           toNumber(formPrev.common_fee) +
           nextDiscount * -1 +
           nextLateFee +
-          nextAdditional +
-          nextCarry;
+          nextAdditional;
         return {
           ...formPrev,
           discount_amount: nextDiscount,
@@ -2067,7 +2055,6 @@ export function useInvoicesState() {
         toNumber(form.electricity_bill) +
         toNumber(form.common_fee) +
         toNumber(form.late_fee_amount) +
-        feeItemsTotal(editableCarryForwardItems) +
         feeItemsTotal(editableFeeItems) -
         feeItemsTotal(editableDiscountItems),
       paid_amount: Math.min(
@@ -2873,7 +2860,7 @@ export function useInvoicesState() {
     );
     const carryForwardByTenant = new Map<string, any[]>();
     for (const row of (previousUnpaidInvoices ?? []) as any[]) {
-      if (carriedInvoiceIds.has(String(row.id))) continue;
+      // Do not skip carried invoices so they all appear in the checklist
       const outstanding = Math.max(
         0,
         toNumber(row.total_amount) - toNumber(row.paid_amount),
@@ -3092,7 +3079,6 @@ export function useInvoicesState() {
         elecBill +
         commonFee +
         additionalTotal +
-        carryForwardAmount +
         carriedLateFeeTotal -
         discountAmount;
       const transferBreakdownRows = hasTransferToThisRoom
@@ -3444,8 +3430,7 @@ export function useInvoicesState() {
         toNumber(prev.common_fee) +
         nextLateFee +
         nextAdditional -
-        nextDiscount +
-        nextCarry;
+        nextDiscount;
       return {
         ...prev,
         additional_fees_total: nextAdditional,

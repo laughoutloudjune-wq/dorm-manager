@@ -331,7 +331,7 @@ export default function PaymentTokenPage() {
       const { data, error: fetchError } = await supabase
         .from("invoices")
         .select(
-          "id,room_id,start_date,total_amount,paid_amount,late_fee_amount,payment_history,rent_amount,water_bill,electricity_bill,common_fee,additional_fees_total,additional_fees_breakdown,status,slip_url,tenants(full_name,custom_payment_method,move_in_date),rooms(room_number,price_month)"
+          "id,room_id,start_date,total_amount,paid_amount,carry_forward_amount,late_fee_amount,payment_history,rent_amount,water_bill,electricity_bill,common_fee,additional_fees_total,additional_fees_breakdown,status,slip_url,tenants(full_name,custom_payment_method,move_in_date),rooms(room_number,price_month)"
         )
         .eq("public_token", token)
         .single();
@@ -511,7 +511,7 @@ export default function PaymentTokenPage() {
             </div>
             <div className="text-right">
               <p className="text-xs uppercase tracking-[0.2em] text-slate-400">TOTAL</p>
-              <p className="text-3xl font-semibold text-green-600">฿{formatBaht(invoice.total_amount)}</p>
+              <p className="text-3xl font-semibold text-green-600">฿{formatBaht(toNumber(invoice.total_amount))}</p>
               <p className="mt-1 text-xs text-slate-500">ชำระแล้ว: ฿{formatBaht(invoice.paid_amount)}</p>
               <p className="text-xs text-rose-600">
                 คงเหลือ: ฿{formatBaht(Math.max(0, toNumber(invoice.total_amount) - toNumber(invoice.paid_amount)))}

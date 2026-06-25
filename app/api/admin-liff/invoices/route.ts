@@ -49,15 +49,6 @@ export async function POST(req: Request) {
       let late_fee_amount = toNumber(invoice.late_fee_amount);
       if (invoice.locked_late_fee_amount !== null && invoice.locked_late_fee_amount !== undefined) {
         late_fee_amount = Math.max(0, toNumber(invoice.locked_late_fee_amount));
-      } else if (invoice.late_fee_start_date && invoice.late_fee_per_day > 0) {
-        const startDate = new Date(invoice.late_fee_start_date);
-        const today = new Date();
-        const asOfDate = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-        if (asOfDate >= startDate) {
-          const days = Math.floor((asOfDate.getTime() - startDate.getTime()) / 86400000) + 1;
-          const rawLateFee = days * invoice.late_fee_per_day;
-          late_fee_amount = Math.max(0, rawLateFee - toNumber(invoice.waived_late_fee_amount));
-        }
       }
       return {
         ...invoice,
