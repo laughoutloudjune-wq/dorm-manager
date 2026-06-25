@@ -1,208 +1,3 @@
-"use client";
-import React from "react";
-
-import { Modal } from "@/components/ui/Modal";
-import { useInvoiceContext } from "./InvoiceContext";
-import { Input } from "@/components/ui/Input";
-import { Badge } from "@/components/ui/Badge";
-import {
-  Loader2,
-  Plus,
-  Printer,
-  Save,
-  Search,
-  Trash2,
-  UploadCloud,
-  Mail,
-  CheckCircle2,
-  FileText,
-  MailOpen,
-  AlertCircle,
-  Send,
-} from "lucide-react";
-import { formatMoney, toLocalDateString, toNumber } from "@/lib/format";
-import {
-  isInvoiceDetailEditable,
-  formatPeriodLabel,
-  formatDateThai,
-  shortInvoiceId,
-  statusLabelThai,
-  feeItemsTotal,
-  invoiceDisplayOutstanding,
-  statusVariant,
-  statusPillClass,
-  emptyLateFeeItem,
-  emptyCarryForwardItem,
-  emptyFeeItem,
-  calculateProratedRentByBillingDay,
-  calculateLateFeePreview,
-} from "@/lib/invoice-utils";
-
-export function InvoiceDetailModal() {
-  const {
-    supabase,
-    invoices,
-    setInvoices,
-    loading,
-    setLoading,
-    error,
-    setError,
-    search,
-    setSearch,
-    selected,
-    setSelected,
-    detailOpen,
-    setDetailOpen,
-    activeInvoice,
-    setActiveInvoice,
-    slipPreview,
-    setSlipPreview,
-    saving,
-    setSaving,
-    selectedMonth,
-    setSelectedMonth,
-    useProrateInModal,
-    setUseProrateInModal,
-    slipModalOpen,
-    setSlipModalOpen,
-    slipModalUrl,
-    setSlipModalUrl,
-    slipModalTitle,
-    setSlipModalTitle,
-    confirmDeleteOpen,
-    setConfirmDeleteOpen,
-    deleteTargetIds,
-    setDeleteTargetIds,
-    confirmGenerateOpen,
-    setConfirmGenerateOpen,
-    confirmSaveOpen,
-    setConfirmSaveOpen,
-    previewOpen,
-    setPreviewOpen,
-    previewLoading,
-    setPreviewLoading,
-    previewInvoice,
-    setPreviewInvoice,
-    previewReading,
-    setPreviewReading,
-    previewArrearsSnapshots,
-    setPreviewArrearsSnapshots,
-    previewDocType,
-    setPreviewDocType,
-    printSettings,
-    setPrintSettings,
-    defaultPaymentMethod,
-    setDefaultPaymentMethod,
-    editableFeeItems,
-    setEditableFeeItems,
-    editableCarryForwardItems,
-    setEditableCarryForwardItems,
-    editableLateFeeItems,
-    setEditableLateFeeItems,
-    arrearsSnapshots,
-    setArrearsSnapshots,
-    carryOverCandidates,
-    setCarryOverCandidates,
-    carryOverCandidatesLoading,
-    setCarryOverCandidatesLoading,
-    paymentIdempotencyKeyRef,
-    allocationResultNotice,
-    setAllocationResultNotice,
-    editableDiscountItems,
-    setEditableDiscountItems,
-    transferBreakdownItems,
-    setTransferBreakdownItems,
-    showPaymentForm,
-    setShowPaymentForm,
-    paymentMode,
-    setPaymentMode,
-    paymentAmountInput,
-    setPaymentAmountInput,
-    paymentDate,
-    setPaymentDate,
-    paymentSlipFile,
-    setPaymentSlipFile,
-    paymentSubmitting,
-    setPaymentSubmitting,
-    lineSendModalOpen,
-    setLineSendModalOpen,
-    lineSendState,
-    setLineSendState,
-    lineSendTitle,
-    setLineSendTitle,
-    lineSendMessage,
-    setLineSendMessage,
-    openActionMenuId,
-    setOpenActionMenuId,
-    moveOutWarnings,
-    setMoveOutWarnings,
-    pendingMoveOutCount,
-    setPendingMoveOutCount,
-    form,
-    setForm,
-    applyPendingToOverdue,
-    applySlipToVerifying,
-    syncMonthInvoicesWithSettings,
-    loadInvoices,
-    patchInvoiceInState,
-    loadPrintConfig,
-    filteredInvoices,
-    grouped,
-    visibleInvoiceIds,
-    selectedVisibleCount,
-    toggleSelect,
-    toggleSelectAllVisible,
-    openSlipViewer,
-    callInvoiceAdminAction,
-    updateInvoiceStatus,
-    uploadSlipFile,
-    submitPayment,
-    cancelPaymentEntry,
-    deletePaymentSlip,
-    openInvoice,
-    updateUtilityUnits,
-    updateForm,
-    updateCarryForwardItem,
-    updateLateFeeItem,
-    updateTransferBreakdownAmount,
-    applyRoundDownTotal,
-    recalculateTransferBreakdown,
-    recalculateCurrentInvoiceArrears,
-    toggleCarryOverFromCandidate,
-    toggleProrateInModal,
-    updateFeeItem,
-    updateDiscountItem,
-    saveInvoice,
-    deleteInvoices,
-    sendInvoiceToLineRequest,
-    sendToLine,
-    sendSelectedToLine,
-    getInvoicePrintDetail,
-    getPaymentMethodLabel,
-    buildPrintHtml,
-    printInvoice,
-    generateInvoices,
-    livePreviewRows,
-    canEditDetails,
-    hasEditableTransferRent,
-    canCreateInvoice,
-    canEditInvoice,
-    canDeleteInvoice,
-    canUpdateInvoiceStatus,
-    canRecordInvoicePayment,
-  } = useInvoiceContext();
-
-  const modalProrateSummary = React.useMemo(() => {
-    if (!activeInvoice || !activeInvoice.tenant_move_in_date || !printSettings)
-      return null;
-    return calculateProratedRentByBillingDay(
-      activeInvoice.room_price_month,
-
-      activeInvoice.tenant_move_in_date,
-      printSettings.billing_day || 1,
-    );
-  }, [activeInvoice, printSettings]);
-
   const [activeTab, setActiveTab] = React.useState('preview');
 
   const TABS = [
@@ -235,23 +30,17 @@ export function InvoiceDetailModal() {
                 ห้อง {activeInvoice.room_number}
               </h2>
               <div className="mt-2">
-                <select
-                  value={form.status}
-                  onChange={(event) => {
-                    const nextStatus = event.target.value as keyof typeof statusVariant;
-                    setForm((prev) => ({ ...prev, status: nextStatus }));
-                    void updateInvoiceStatus(activeInvoice.id, nextStatus);
-                  }}
-                  disabled={!canUpdateInvoiceStatus}
-                  title={!canUpdateInvoiceStatus ? "ไม่มีสิทธิ์เปลี่ยนสถานะใบแจ้งหนี้" : undefined}
-                  className={`w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-bold capitalize transition focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-70 ${statusPillClass(form.status)}`}
+                <Badge
+                  variant={
+                    form.status === "verifying"
+                      ? "info"
+                      : form.status === "paid"
+                        ? "success"
+                        : "warning"
+                  }
                 >
-                  {Object.keys(statusVariant).map((status) => (
-                    <option key={status} value={status}>
-                      {statusLabelThai(status)}
-                    </option>
-                  ))}
-                </select>
+                  {form.status === "verifying" ? "รอตรวจสอบ" : form.status === "paid" ? "ชำระแล้ว" : "รอชำระ"}
+                </Badge>
               </div>
             </div>
             
@@ -833,24 +622,7 @@ export function InvoiceDetailModal() {
                             <p className="font-black text-slate-900 text-lg">
                               {payment.amount === toNumber(activeInvoice.total_amount) ? "ชำระเต็มจำนวน" : "ชำระบางส่วน"}
                             </p>
-                            <div className="flex items-center gap-3 mt-1">
-                              <p className="text-sm font-semibold text-slate-500">วันที่ชำระ: {payment.paid_at ? formatDateThai(payment.paid_at) : "-"}</p>
-                              {payment.slip_url && (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setSlipModalTitle(
-                                      `สลิปการชำระเงิน - จำนวน ${formatMoney(payment.amount)}`,
-                                    );
-                                    setSlipModalUrl(payment.slip_url);
-                                    setSlipModalOpen(true);
-                                  }}
-                                  className="rounded-lg border border-blue-200 px-3 py-1 text-xs font-bold text-blue-600 hover:bg-blue-50 transition"
-                                >
-                                  ดูสลิป
-                                </button>
-                              )}
-                            </div>
+                            <p className="text-sm font-semibold text-slate-500 mt-1">วันที่ชำระ: {payment.paid_at ? formatDateThai(payment.paid_at) : "-"}</p>
                           </div>
                         </div>
                         <div className="text-right">
@@ -901,55 +673,6 @@ export function InvoiceDetailModal() {
                           onChange={(e) => setPaymentSlipFile(e.target.files?.[0] ?? null)}
                           className="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm bg-slate-50 file:border-0 file:bg-white file:px-4 file:py-2 file:rounded-xl file:mr-4 file:text-sm file:font-bold shadow-inner"
                         />
-                        {slipPreview && (
-                          <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 shadow-sm">
-                            <div className="flex items-center justify-between gap-4 mb-3">
-                              <p className="text-sm font-bold text-slate-700">สลิปปัจจุบัน</p>
-                              <div className="flex items-center gap-2">
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    if (!slipPreview) return;
-                                    setSlipModalTitle(
-                                      `สลิปการชำระเงิน - ห้อง ${activeInvoice?.room_number ?? "-"}`,
-                                    );
-                                    setSlipModalUrl(slipPreview);
-                                    setSlipModalOpen(true);
-                                  }}
-                                  className="rounded-lg border border-blue-200 bg-white px-3 py-1.5 text-xs font-bold text-blue-600 hover:bg-blue-50 transition shadow-sm"
-                                >
-                                  เปิดภาพเต็ม
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => void deletePaymentSlip()}
-                                  disabled={!canRecordInvoicePayment || paymentSubmitting}
-                                  className="rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-bold text-red-600 hover:bg-red-50 disabled:opacity-50 transition shadow-sm"
-                                >
-                                  ลบสลิป
-                                </button>
-                              </div>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (!slipPreview) return;
-                                setSlipModalTitle(
-                                  `สลิปการชำระเงิน - ห้อง ${activeInvoice?.room_number ?? "-"}`,
-                                );
-                                setSlipModalUrl(slipPreview);
-                                setSlipModalOpen(true);
-                              }}
-                              className="block w-full overflow-hidden rounded-xl border border-slate-200 bg-white hover:border-blue-300 transition"
-                            >
-                              <img
-                                src={slipPreview}
-                                alt="สลิป"
-                                className="max-h-64 w-full object-contain p-2"
-                              />
-                            </button>
-                          </div>
-                        )}
                       </div>
                     </div>
 
