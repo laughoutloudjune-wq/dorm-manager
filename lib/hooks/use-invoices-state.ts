@@ -2703,7 +2703,7 @@ export function useInvoicesState() {
       const { data: transfers } = await supabase
         .from("tenant_room_transfers")
         .select(
-          "tenant_id,from_room_id,to_room_id,transfer_date,billing_month,old_electric_usage,old_water_usage,old_rent_amount,new_rent_amount",
+          "tenant_id,from_room_id,to_room_id,transfer_date,billing_month,old_electric_usage,old_water_usage,old_rent_amount,new_rent_amount,new_prev_electricity,new_prev_water",
         )
         .eq("billing_month", toLocalDateString(startDate))
         .in("tenant_id", tenantIds);
@@ -2907,7 +2907,7 @@ export function useInvoicesState() {
 
     const { data: readings } = await supabase
       .from("meter_readings")
-      .select("room_id,electricity_usage,water_usage,usage")
+      .select("room_id,electricity_usage,water_usage,usage,current_electricity,current_water")
       .eq("reading_month", monthKey)
       .in(
         "room_id",
@@ -2935,8 +2935,12 @@ export function useInvoicesState() {
         !!transfer &&
         String((transfer as any).to_room_id ?? "") === String(tenant.room_id);
 
-      const newRoomElecUnits = toNumber(reading.electricity_usage);
-      const newRoomWaterUnits = toNumber(reading.water_usage ?? reading.usage);
+      const newRoomElecUnits = hasTransferToThisRoom && toNumber((transfer as any).new_prev_electricity) > 0
+        ? Math.max(0, toNumber(reading.current_electricity) - toNumber((transfer as any).new_prev_electricity))
+        : toNumber(reading.electricity_usage);
+      const newRoomWaterUnits = hasTransferToThisRoom && toNumber((transfer as any).new_prev_water) > 0
+        ? Math.max(0, toNumber(reading.current_water) - toNumber((transfer as any).new_prev_water))
+        : toNumber(reading.water_usage ?? reading.usage);
       const oldRoomElecUnits = hasTransferToThisRoom
         ? toNumber((transfer as any).old_electric_usage)
         : 0;
