@@ -161,7 +161,7 @@ export type TransferBreakdownItem = {
   value: string;
   amount?: number | null;
   editable?: boolean;
-  kind?: "old_rent" | "new_rent" | null;
+  kind?: "old_rent" | "new_rent" | "old_water" | "new_water" | "old_elec" | "new_elec" | null;
 };
 
 export const emptyFeeItem = (): FeeLineItem => ({
@@ -298,22 +298,27 @@ export const toTransferBreakdownItems = (rows: any[]): TransferBreakdownItem[] =
     .map((row) => {
       const label = String(row?.label ?? row?.detail ?? "").trim();
       const transferKindRaw = String(row?.transfer_kind ?? "").toLowerCase();
+      const utilityKinds = ["old_water", "new_water", "old_elec", "new_elec"] as const;
       const inferredKind: TransferBreakdownItem["kind"] =
         transferKindRaw === "old_rent" || label.includes("ค่าเช่าห้องเดิม")
           ? "old_rent"
           : transferKindRaw === "new_rent" || label.includes("ค่าเช่าห้องใหม่")
             ? "new_rent"
-            : null;
+            : (utilityKinds as readonly string[]).includes(transferKindRaw)
+              ? (transferKindRaw as "old_water" | "new_water" | "old_elec" | "new_elec")
+              : null;
+      const isEditable = inferredKind === "old_rent" || inferredKind === "new_rent";
+      const hasStoredAmount = row?.amount_value != null;
       return {
         label,
         value: String(row?.value ?? "").trim(),
         amount:
-          row?.amount_value != null
+          hasStoredAmount
             ? toNumber(row.amount_value)
-            : inferredKind
+            : isEditable
               ? parseMoneyString(String(row?.value ?? ""))
               : null,
-        editable: inferredKind === "old_rent" || inferredKind === "new_rent",
+        editable: isEditable,
         kind: inferredKind,
       };
     })
@@ -466,7 +471,7 @@ export const serializeTransferBreakdownRows = (items: TransferBreakdownItem[]) =
       ? `฿${formatMoney(toNumber(item.amount))}`
       : item.value,
     transfer_kind: item.kind ?? null,
-    amount_value: item.editable ? toNumber(item.amount) : null,
+    amount_value: item.amount != null ? toNumber(item.amount) : null,
     unit: 0,
     price_per_unit: 0,
     total_amount: 0,

@@ -108,6 +108,9 @@ export function useInvoicesState() {
   const [activeInvoice, setActiveInvoice] = useState<InvoiceRecord | null>(
     null,
   );
+  const [activeReading, setActiveReading] = useState<MeterReadingRow | null>(
+    null,
+  );
   const [slipPreview, setSlipPreview] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [selectedMonth, setSelectedMonth] = useState(() =>
@@ -1212,7 +1215,7 @@ export function useInvoicesState() {
     setEditableCarryForwardItems(
       carryForwardItems.length > 0 ? carryForwardItems : [],
     );
-    setEditableLateFeeItems(lateFeeItems.length > 0 ? lateFeeItems : []);
+    setEditableLateFeeItems(lateFeeItems.length > 0 ? lateFeeItems : [],);
     setArrearsSnapshots([]);
     setTransferBreakdownItems(transferItems);
     setEditableDiscountItems(
@@ -1282,7 +1285,8 @@ export function useInvoicesState() {
     setAllocationResultNotice(null);
     paymentIdempotencyKeyRef.current = null;
     setCarryOverCandidates([]);
-    if (invoice.status === "draft" && invoice.tenant_id) {
+    setActiveReading(null);
+    if (isInvoiceDetailEditable(String(invoice.status ?? "")) && invoice.tenant_id) {
       setCarryOverCandidatesLoading(true);
       void getCarryForwardCandidatesForTarget(
         supabase,
@@ -1333,6 +1337,8 @@ export function useInvoicesState() {
 
       const reading = (data as MeterReadingRow | null) ?? null;
       if (!reading) return;
+
+      setActiveReading(reading);
 
       setForm((prev) => ({
         ...prev,
@@ -1408,7 +1414,7 @@ export function useInvoicesState() {
     const dbNativeLateFee = Math.max(0, dbTotalLateFee - dbCarryForwardLateFees);
     const dbWaived = toNumber((activeInvoice as any)?.waived_late_fee_amount);
     
-    // The "raw" late fee before any waivers were applied in the DB
+    // The \"raw\" late fee before any waivers were applied in the DB
     const staticRawAmount = dbNativeLateFee + dbWaived;
 
     return Math.max(0, staticRawAmount - toNumber(formState.waived_late_fee_amount));
@@ -1780,6 +1786,7 @@ export function useInvoicesState() {
         const nextLateFee = calculateCurrentFormLateFee(prev);
         const nextAdditional = feeItemsTotal(editableFeeItems);
         const nextDiscount = feeItemsTotal(editableDiscountItems);
+        const nextCarry = feeItemsTotal(nextCarryItems);
         const total =
           toNumber(prev.rent_amount) +
           toNumber(prev.water_bill) +
@@ -1787,6 +1794,7 @@ export function useInvoicesState() {
           toNumber(prev.common_fee) +
           nextDiscount * -1 +
           nextLateFee +
+          nextCarry +
           nextAdditional;
         return {
           ...prev,
@@ -2331,6 +2339,8 @@ export function useInvoicesState() {
     const dormAddress = printSettings?.dorm_address || "-";
     const elecRate = toNumber(printSettings?.electricity_rate);
     const waterRate = toNumber(printSettings?.water_rate);
+    const waterMinUnits = toNumber(printSettings?.water_min_units);
+    const waterMinPrice = toNumber(printSettings?.water_min_price);
     const elecUnits = resolveElectricityUsage(reading);
     const waterUnits = resolveWaterUsage(reading);
     const paymentText = getPaymentMethodLabel(invoice);
@@ -2526,18 +2536,61 @@ export function useInvoicesState() {
               </tr>`
                   : ""
               }
-              <tr>
-                <td>ค่าน้ำ</td>
-                <td class="text-right">${waterUnits.toLocaleString("th-TH")} หน่วย</td>
-                <td class="text-right">${formatMoney(waterRate)}</td>
-                <td class="text-right">${formatMoney(invoice.water_bill)}</td>
-              </tr>
-              <tr>
-                <td>ค่าไฟ</td>
-                <td class="text-right">${elecUnits.toLocaleString("th-TH")} หน่วย</td>
-                <td class="text-right">${formatMoney(elecRate)}</td>
-                <td class="text-right">${formatMoney(invoice.electricity_bill)}</td>
-              </tr>
+              ${(() => {
+                const utilityKinds = ["old_water", "new_water", "old_elec", "new_elec"];
+                const utilityTransferItems = transferRows.filter((r) => utilityKinds.includes(r.kind ?? ""));
+                if (utilityTransferItems.length > 0) {
+                  // Per-room utility breakdown for mid-month transfer
+                  const order = ["old_water", "old_elec", "new_water", "new_elec"];
+                  return order.map((kind) => {
+                    const item = utilityTransferItems.find((r) => r.kind === kind);
+                    if (!item || toNumber(item.amount) == null) return "";
+                    const amt = toNumber(item.amount ?? 0);
+                    const match = item.label.match(/\((\d+)\s*หน่วย\)/);
+                    const units = match ? parseInt(match[1], 10) : 0;
+                    const rate = units > 0 ? amt / units : 0;
+                    const isOld = kind.startsWith("old_");
+                    return `<tr style="background:${isOld ? '#f0f9ff' : '#f0fdf4'}">
+                      <td>${item.label}</td>
+                      <td class="text-right">${units > 0 ? units + " หน่วย" : "-"}</td>
+                      <td class="text-right">${units > 0 ? formatMoney(rate) : "-"}</td>
+                      <td class="text-right">${formatMoney(amt)}</td>
+                    </tr>`;
+                  }).join("");
+                }
+                // Normal (non-transfer) water + electricity rows
+                return `
+                  <tr>
+                    <td>ค่าน้ำ</td>
+                    <td class="text-right">${
+                      reading?.previous_water != null && reading?.current_water != null
+                        ? `${reading.previous_water} - ${reading.current_water} = ${waterUnits.toLocaleString("th-TH")}`
+                        : waterUnits.toLocaleString("th-TH")
+                    } หน่วย</td>
+                    <td class="text-right">${
+                      waterUnits > 0 && waterUnits <= waterMinUnits && invoice.water_bill === waterMinPrice
+                        ? `${formatMoney(waterRate)} <br><span style='font-size:11px;color:#64748b'>(ขั้นต่ำ ${waterMinUnits} หน่วย)</span>`
+                        : waterUnits > 0
+                        ? formatMoney(invoice.water_bill / waterUnits)
+                        : formatMoney(waterRate)
+                    }</td>
+                    <td class="text-right">${formatMoney(invoice.water_bill)}</td>
+                  </tr>
+                  <tr>
+                    <td>ค่าไฟ</td>
+                    <td class="text-right">${
+                      reading?.previous_electricity != null && reading?.current_electricity != null
+                        ? `${reading.previous_electricity} - ${reading.current_electricity} = ${elecUnits.toLocaleString("th-TH")}`
+                        : elecUnits.toLocaleString("th-TH")
+                    } หน่วย</td>
+                    <td class="text-right">${
+                      elecUnits > 0
+                      ? formatMoney(invoice.electricity_bill / elecUnits)
+                      : formatMoney(elecRate)
+                    }</td>
+                    <td class="text-right">${formatMoney(invoice.electricity_bill)}</td>
+                  </tr>`;
+              })()}
               <tr>
                 <td>ค่าส่วนกลาง</td>
                 <td class="text-right">-</td>
@@ -3085,6 +3138,20 @@ export function useInvoicesState() {
         additionalTotal +
         carriedLateFeeTotal -
         discountAmount;
+      // Per-room utility breakdown for mid-month transfers
+      const electricityRate = toNumber(settings.electricity_rate);
+      const waterRate = toNumber(settings.water_rate);
+      const waterMinUnits = toNumber(settings.water_min_units);
+      const waterMinPrice = toNumber(settings.water_min_price);
+      const oldElecBill = hasTransferToThisRoom ? oldRoomElecUnits * electricityRate : 0;
+      const oldWaterBill = hasTransferToThisRoom
+        ? calculateWaterBillWithMinimum(oldRoomWaterUnits, waterRate, waterMinUnits, waterMinPrice)
+        : 0;
+      const newElecBill = hasTransferToThisRoom ? newRoomElecUnits * electricityRate : 0;
+      const newWaterBill = hasTransferToThisRoom
+        ? calculateWaterBillWithMinimum(newRoomWaterUnits, waterRate, waterMinUnits, waterMinPrice)
+        : 0;
+
       const transferBreakdownRows = hasTransferToThisRoom
         ? serializeTransferBreakdownRows([
             {
@@ -3093,29 +3160,41 @@ export function useInvoicesState() {
             },
             {
               label: "ค่าเช่าห้องเดิม",
-              value: formatMoney(
-                toNumber(transferRentBreakdown?.oldRentAmount),
-              ),
+              value: formatMoney(toNumber(transferRentBreakdown?.oldRentAmount)),
               amount: toNumber(transferRentBreakdown?.oldRentAmount),
               editable: true,
               kind: "old_rent",
             },
             {
               label: "ค่าเช่าห้องใหม่",
-              value: formatMoney(
-                toNumber(transferRentBreakdown?.newRentAmount),
-              ),
+              value: formatMoney(toNumber(transferRentBreakdown?.newRentAmount)),
               amount: toNumber(transferRentBreakdown?.newRentAmount),
               editable: true,
               kind: "new_rent",
             },
             {
-              label: "หน่วยไฟฟ้า",
-              value: `ห้องเดิม ${oldRoomElecUnits} + ห้องใหม่ ${newRoomElecUnits} = ${elecUnits} หน่วย`,
+              label: `ค่าน้ำห้องเดิม (${oldRoomWaterUnits} หน่วย)`,
+              value: `${oldRoomWaterUnits} หน่วย × ${formatMoney(waterRate)} = ${formatMoney(oldWaterBill)}`,
+              amount: oldWaterBill,
+              kind: "old_water",
             },
             {
-              label: "หน่วยน้ำ",
-              value: `ห้องเดิม ${oldRoomWaterUnits} + ห้องใหม่ ${newRoomWaterUnits} = ${waterUnits} หน่วย`,
+              label: `ค่าน้ำห้องใหม่ (${newRoomWaterUnits} หน่วย)`,
+              value: `${newRoomWaterUnits} หน่วย × ${formatMoney(waterRate)} = ${formatMoney(newWaterBill)}`,
+              amount: newWaterBill,
+              kind: "new_water",
+            },
+            {
+              label: `ค่าไฟห้องเดิม (${oldRoomElecUnits} หน่วย)`,
+              value: `${oldRoomElecUnits} หน่วย × ${formatMoney(electricityRate)} = ${formatMoney(oldElecBill)}`,
+              amount: oldElecBill,
+              kind: "old_elec",
+            },
+            {
+              label: `ค่าไฟห้องใหม่ (${newRoomElecUnits} หน่วย)`,
+              value: `${newRoomElecUnits} หน่วย × ${formatMoney(electricityRate)} = ${formatMoney(newElecBill)}`,
+              amount: newElecBill,
+              kind: "new_elec",
             },
           ])
         : [];
@@ -3309,32 +3388,74 @@ export function useInvoicesState() {
       });
     }
 
-    if (toNumber(form.water_bill) > 0) {
-      const units = toNumber(form.water_units);
-      rows.push({
-        detail: "ค่าน้ำ",
-        unitLabel:
-          units > 0 ? `${units.toLocaleString("th-TH")} หน่วย` : "1 รายการ",
-        pricePerUnit:
-          units > 0
-            ? roundTo2(toNumber(form.water_bill) / units)
-            : toNumber(form.water_bill),
-        total: toNumber(form.water_bill),
-      });
-    }
+    const transferUtilityKinds = ["old_water", "new_water", "old_elec", "new_elec"];
+    const transferUtilityItems = transferBreakdownItems.filter(
+      (item) => transferUtilityKinds.includes(item.kind ?? ""),
+    );
+    const hasTransferUtilityBreakdown = transferUtilityItems.length > 0;
 
-    if (toNumber(form.electricity_bill) > 0) {
-      const units = toNumber(form.electricity_units);
-      rows.push({
-        detail: "ค่าไฟฟ้า",
-        unitLabel:
-          units > 0 ? `${units.toLocaleString("th-TH")} หน่วย` : "1 รายการ",
-        pricePerUnit:
-          units > 0
-            ? roundTo2(toNumber(form.electricity_bill) / units)
-            : toNumber(form.electricity_bill),
-        total: toNumber(form.electricity_bill),
+    if (hasTransferUtilityBreakdown) {
+      // Render per-room utility rows from the stored transfer breakdown
+      const utilityOrder = ["old_water", "old_elec", "new_water", "new_elec"];
+      const toneByKind: Record<string, string> = {
+        old_water: "sky", old_elec: "sky", new_water: "sky", new_elec: "sky",
+      };
+      utilityOrder.forEach((kind) => {
+        const item = transferUtilityItems.find((i) => i.kind === kind);
+        if (item && toNumber(item.amount) >= 0) {
+          const units = (() => {
+            const match = item.label.match(/\((\d+)\s*หน่วย\)/);
+            return match ? parseInt(match[1], 10) : 0;
+          })();
+          rows.push({
+            detail: item.label,
+            unitLabel: units > 0 ? `${units} หน่วย` : "1 รายการ",
+            pricePerUnit: units > 0 ? roundTo2(toNumber(item.amount) / units) : toNumber(item.amount),
+            total: toNumber(item.amount),
+            tone: toneByKind[kind],
+          });
+        }
       });
+    } else {
+      if (toNumber(form.water_bill) > 0) {
+        const units = toNumber(form.water_units);
+        const isMinCharge = units > 0 && units <= toNumber(printSettings?.water_min_units) && toNumber(form.water_bill) === toNumber(printSettings?.water_min_price);
+        rows.push({
+          detail: "ค่าน้ำ" + (isMinCharge ? ` (เหมาจ่ายขั้นต่ำ ${formatMoney(toNumber(printSettings?.water_min_price))} บาท)` : ""),
+          unitLabel:
+            units > 0 && activeReading?.previous_water != null && activeReading?.current_water != null
+              ? `${activeReading.previous_water} - ${activeReading.current_water} = ${units.toLocaleString("th-TH")} หน่วย`
+              : units > 0
+              ? `${units.toLocaleString("th-TH")} หน่วย`
+              : "1 รายการ",
+          pricePerUnit:
+            isMinCharge
+              ? toNumber(printSettings?.water_rate)
+              : units > 0
+              ? roundTo2(toNumber(form.water_bill) / units)
+              : toNumber(form.water_bill),
+          total: toNumber(form.water_bill),
+          tone: isMinCharge ? "sky" : undefined,
+        });
+      }
+
+      if (toNumber(form.electricity_bill) > 0) {
+        const units = toNumber(form.electricity_units);
+        rows.push({
+          detail: "ค่าไฟฟ้า",
+          unitLabel:
+            units > 0 && activeReading?.previous_electricity != null && activeReading?.current_electricity != null
+              ? `${activeReading.previous_electricity} - ${activeReading.current_electricity} = ${units.toLocaleString("th-TH")} หน่วย`
+              : units > 0
+              ? `${units.toLocaleString("th-TH")} หน่วย`
+              : "1 รายการ",
+          pricePerUnit:
+            units > 0
+              ? roundTo2(toNumber(form.electricity_bill) / units)
+              : toNumber(form.electricity_bill),
+          total: toNumber(form.electricity_bill),
+        });
+      }
     }
 
     if (toNumber(form.common_fee) > 0) {
@@ -3406,6 +3527,8 @@ export function useInvoicesState() {
     form.water_bill,
     form.water_units,
     transferBreakdownItems,
+    activeReading,
+    printSettings,
   ]);
   const canEditDetails = activeInvoice
     ? isInvoiceDetailEditable(activeInvoice.status)
@@ -3510,6 +3633,7 @@ export function useInvoicesState() {
     setDetailOpen,
     activeInvoice,
     setActiveInvoice,
+    activeReading,
     slipPreview,
     setSlipPreview,
     saving,

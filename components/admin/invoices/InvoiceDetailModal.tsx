@@ -319,15 +319,23 @@ export function InvoiceDetailModal() {
                   <div className="flex gap-2">
                     <button
                       onClick={() => {
-                        setPreviewDocType(
-                          activeInvoice.status === "paid" ? "receipt" : "invoice",
-                        );
+                        setPreviewDocType("invoice");
                         setPreviewInvoice(activeInvoice);
                         setPreviewOpen(true);
                       }}
-                      className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700 hover:bg-emerald-100 transition-colors"
+                      className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
                     >
-                      <Printer size={16} /> พิมพ์
+                      <Printer size={16} /> พิมพ์ใบแจ้งหนี้
+                    </button>
+                    <button
+                      onClick={() => {
+                        setPreviewDocType("receipt");
+                        setPreviewInvoice(activeInvoice);
+                        setPreviewOpen(true);
+                      }}
+                      className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
+                    >
+                      <Printer size={16} /> พิมพ์ใบเสร็จ
                     </button>
                     <button
                       onClick={() => sendToLine(activeInvoice)}
@@ -361,6 +369,15 @@ export function InvoiceDetailModal() {
                     <span>ปิดการแก้ไขรายละเอียดสำหรับสถานะ <b>{statusLabelThai(activeInvoice.status)}</b> หากต้องการแก้ไข ให้เปลี่ยนสถานะเป็น <b>ฉบับร่าง</b></span>
                   </div>
                 )}
+                {activeInvoice.status === "verifying" && (
+                  <div className="rounded-2xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-800 flex gap-3 items-center">
+                    <AlertCircle className="shrink-0 text-blue-600" size={20} />
+                    <div className="flex-1">
+                      <b className="block text-blue-900 mb-0.5">รอตรวจสอบการชำระเงิน</b>
+                      <span>ผู้เช่าได้อัปโหลดหลักฐานการโอนเงินแล้ว กรุณาไปที่แท็บ <button onClick={() => setActiveTab('payments')} className="underline font-bold hover:text-blue-600">ประวัติการชำระเงิน</button> เพื่อตรวจสอบสลิปและยืนยัน</span>
+                    </div>
+                  </div>
+                )}
 
                 {/* THE LIVE PREVIEW CARD */}
                 <div className="overflow-hidden rounded-3xl border border-slate-200 shadow-xl bg-white mt-8">
@@ -388,6 +405,14 @@ export function InvoiceDetailModal() {
                       <div className="text-right">
                         <p className="text-xs uppercase tracking-widest text-slate-400 font-bold">ยอดรวมทั้งสิ้น</p>
                         <p className="text-5xl font-black text-emerald-600 mt-2 tracking-tighter">{formatMoney(toNumber(form.total_amount))}</p>
+                        <button
+                          type="button"
+                          onClick={applyRoundDownTotal}
+                          disabled={!canEditDetails || saving}
+                          className="text-xs font-bold text-slate-500 hover:text-slate-800 underline mt-1 transition disabled:opacity-50"
+                        >
+                          ปัดเศษลง
+                        </button>
                       </div>
                     </div>
                     
@@ -399,7 +424,7 @@ export function InvoiceDetailModal() {
                         livePreviewRows.map((row, index) => (
                           <div
                             key={`${row.detail}-${index}`}
-                            className={`flex items-center justify-between p-4 rounded-2xl transition-all hover:scale-[1.01] \${
+                            className={`flex items-center justify-between p-4 rounded-2xl transition-all hover:scale-[1.01] ${
                               row.tone === "amber"
                                 ? "border border-amber-200 bg-amber-50 text-amber-900"
                                 : row.tone === "sky"
@@ -413,7 +438,7 @@ export function InvoiceDetailModal() {
                                 {row.unitLabel} x {formatMoney(Math.abs(row.pricePerUnit))}
                               </span>
                             </span>
-                            <span className={`font-black text-xl \${row.total < 0 ? "text-emerald-600" : ""}`}>
+                            <span className={`font-black text-xl ${row.total < 0 ? "text-emerald-600" : ""}`}>
                               {row.total < 0 ? "-" : ""}
                               {formatMoney(Math.abs(row.total))}
                             </span>
@@ -433,7 +458,7 @@ export function InvoiceDetailModal() {
                 
                 <fieldset
                   disabled={!(canEditDetails && canEditInvoice)}
-                  className={`space-y-8 \${!(canEditDetails && canEditInvoice) ? "opacity-70" : ""}`}
+                  className={`space-y-8 ${!(canEditDetails && canEditInvoice) ? "opacity-70" : ""}`}
                 >
                   <div className="grid grid-cols-2 gap-6">
                     <div className="space-y-2">
@@ -601,6 +626,42 @@ export function InvoiceDetailModal() {
                       </button>
                     </div>
                     <div className="p-6 bg-amber-50/10">
+                      {carryOverCandidatesLoading ? (
+                        <p className="text-sm text-amber-700/50 text-center py-4 font-bold animate-pulse">กำลังโหลดบิลค้าง...</p>
+                      ) : carryOverCandidates.length > 0 && (
+                        <div className="mb-6 space-y-2 border-b border-amber-200/60 pb-6">
+                          <p className="text-xs font-bold text-amber-800/60 uppercase tracking-wider mb-3">ดึงยอดค้างจากเดือนก่อน</p>
+                          {carryOverCandidates.map((c: any) => {
+                            const selected = editableCarryForwardItems.some(
+                              (item) => String(item.source_invoice_id) === String(c.id),
+                            );
+                            return (
+                              <label
+                                key={String(c.id)}
+                                className={`flex cursor-pointer items-start gap-4 rounded-xl border ${selected ? 'border-amber-400 bg-amber-50/50' : 'border-amber-200 bg-white'} px-4 py-3 shadow-sm hover:border-amber-400 transition`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  className="mt-1 h-4 w-4 rounded border-amber-300 text-amber-600 focus:ring-amber-500"
+                                  checked={selected}
+                                  onChange={(event) => void toggleCarryOverFromCandidate(c, event.target.checked)}
+                                />
+                                <div className="flex-1">
+                                  <span className="font-bold text-slate-800 block text-sm">
+                                    งวด {formatPeriodLabel(String(c.start_date ?? ""))}
+                                  </span>
+                                  <span className="mt-1 block text-xs font-semibold text-slate-500">
+                                    ค้าง {formatMoney(toNumber(c.outstanding_amount))} 
+                                    {toNumber(c.late_fee_snapshot_amount) > 0 && 
+                                      <span className="text-rose-500"> · ค่าปรับโดยประมาณ {formatMoney(toNumber(c.late_fee_snapshot_amount))} (คิดจาก {c.late_fee_snapshot_days} วัน)</span>
+                                    }
+                                  </span>
+                                </div>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      )}
                       {editableCarryForwardItems.length === 0 ? (
                         <p className="text-sm text-amber-700/50 text-center py-6 font-bold">ไม่มียอดยกมา</p>
                       ) : (
@@ -656,8 +717,55 @@ export function InvoiceDetailModal() {
                       </button>
                     </div>
                     <div className="p-6 bg-rose-50/10">
+                      <div className="mb-6 space-y-2 border-b border-rose-200/60 pb-6">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <p className="text-xs font-bold text-rose-800/60 uppercase tracking-wider">ค่าปรับล่าช้าอัตโนมัติ</p>
+                            <p className="text-sm text-slate-600 mt-1">คำนวณจากยอดค้างชำระ (อัปเดตทุกวัน)</p>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="number"
+                                value={Math.max(0, toNumber(form.late_fee_amount) - feeItemsTotal(editableLateFeeItems))}
+                                readOnly
+                                className="w-28 rounded-xl border border-rose-200 bg-white px-3 py-2 text-right font-black text-rose-700 shadow-sm"
+                              />
+                              <span className="text-sm font-bold text-rose-500">บาท</span>
+                            </div>
+                            <button
+                              type="button"
+                              disabled={
+                                saving ||
+                                (Math.max(0, toNumber(form.late_fee_amount) - feeItemsTotal(editableLateFeeItems)) === 0 &&
+                                  Number(form.waived_late_fee_amount) === 0)
+                              }
+                              onClick={() => {
+                                if (Number(form.waived_late_fee_amount) > 0) {
+                                  updateForm("waived_late_fee_amount", 0, true);
+                                } else {
+                                  updateForm("waived_late_fee_amount", 999999, true);
+                                }
+                              }}
+                              className={`whitespace-nowrap rounded-xl border px-4 py-2 text-xs font-bold transition disabled:opacity-50 disabled:cursor-not-allowed ${
+                                Number(form.waived_late_fee_amount) > 0
+                                  ? "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                                  : "border-rose-200 bg-rose-50 text-rose-600 hover:bg-rose-100"
+                              }`}
+                            >
+                              {Number(form.waived_late_fee_amount) > 0 ? "เรียกเก็บตามเดิม" : "ยกเว้นค่าปรับนี้"}
+                            </button>
+                          </div>
+                        </div>
+                        {form.locked_late_fee_amount !== null && (
+                          <p className="text-[11px] text-emerald-600 font-bold mt-2">
+                            ✓ ล็อกค่าปรับแล้วเนื่องจากมีการชำระเงิน
+                          </p>
+                        )}
+                      </div>
+
                       {editableLateFeeItems.length === 0 ? (
-                        <p className="text-sm text-rose-700/50 text-center py-6 font-bold">ไม่มีค่าปรับ</p>
+                        <p className="text-sm text-rose-700/50 text-center py-6 font-bold">ไม่มีรายการค่าปรับเพิ่มเติม</p>
                       ) : (
                         <div className="space-y-4">
                           {editableLateFeeItems.map((item, index) => (
@@ -807,6 +915,46 @@ export function InvoiceDetailModal() {
                       )}
                     </div>
                   </div>
+
+                  {transferBreakdownItems.length > 0 && (
+                    <div className="rounded-3xl border border-blue-200 bg-white shadow-sm overflow-hidden mt-8">
+                      <div className="bg-blue-50 px-6 py-5 border-b border-blue-200 flex justify-between items-center">
+                        <h4 className="font-bold text-blue-900">สรุปย้ายห้องกลางเดือน</h4>
+                        <button
+                          type="button"
+                          onClick={() => void recalculateTransferBreakdown()}
+                          disabled={!canEditDetails || saving}
+                          className="text-xs font-bold text-blue-700 bg-blue-100 px-4 py-2 rounded-xl transition hover:bg-blue-200 disabled:opacity-50"
+                        >
+                          คำนวณย้ายห้องใหม่
+                        </button>
+                      </div>
+                      <div className="p-6 bg-blue-50/10">
+                        <p className="text-sm text-slate-500 mb-4">แก้ยอดค่าเช่าห้องเดิมและห้องใหม่ได้โดยตรง หากการคำนวณอัตโนมัติไม่ตรงหน้างาน</p>
+                        <div className="space-y-3">
+                          {transferBreakdownItems.map((item, index) => (
+                            <div key={index} className="flex justify-between items-center p-3 rounded-xl border border-blue-100 bg-white">
+                              <span className="text-sm font-semibold text-slate-700">{item.label}</span>
+                              {item.editable ? (
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="number"
+                                    value={toNumber(item.amount)}
+                                    onChange={(event) => updateTransferBreakdownAmount(index, event.target.value)}
+                                    className="w-32 rounded-xl border border-blue-200 px-3 py-2 text-sm text-right font-bold transition focus:border-blue-400 focus:ring-1 focus:ring-blue-400"
+                                    disabled={!canEditDetails || saving}
+                                  />
+                                  <span className="text-sm text-slate-500 font-bold">บาท</span>
+                                </div>
+                              ) : (
+                                <span className="text-sm font-bold text-slate-700">{item.value}</span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                 </fieldset>
               </div>
