@@ -297,6 +297,7 @@ export async function getCarryForwardCandidatesForTarget(
     10,
   );
 
+  // We MUST fetch all invoices (excluding draft/cancelled) to compute the full chronological ledger
   const { data: invoices, error } = await supabase
     .from("invoices")
     .select(
@@ -304,33 +305,17 @@ export async function getCarryForwardCandidatesForTarget(
     )
     .eq("tenant_id", tenantId)
     .lt("start_date", beforeStartDate)
-    .in("status", [...OPEN_INVOICE_STATUSES])
+    .not("status", "in", '("draft","cancelled")')
     .order("start_date", { ascending: true });
   if (error) throw new Error(error.message);
 
-  const candidateIds = (invoices ?? []).map((row: any) => String(row.id));
-  if (candidateIds.length === 0) return [];
-
-  const { data: existingCarryRows, error: carryError } = await supabase
-    .from("invoice_carry_forwards")
-    .select("source_invoice_id,target_invoice_id")
-    .in("source_invoice_id", candidateIds);
-  if (carryError) throw new Error(carryError.message);
-
-  // Build a set of which source invoices are already linked to a DIFFERENT target invoice.
-  // (If linked to the current targetInvoiceId, we keep them visible so admin can uncheck.)
-  const linkedElsewhere = new Set<string>();
-  for (const row of existingCarryRows ?? []) {
-    const sid = String((row as any).source_invoice_id ?? "");
-    const tid = String((row as any).target_invoice_id ?? "");
-    if (!sid || !tid) continue;
-    if (targetInvoiceId && tid === String(targetInvoiceId)) continue;
-    linkedElsewhere.add(sid);
+  let totalPayments = 0;
+  for (const row of invoices ?? []) {
+    totalPayments += toNumber(row.paid_amount);
   }
 
-  // To keep months separated, an invoice's outstanding amount must exclude
-  // any amounts that were carried INTO it from previous months.
-  const candidates = (invoices ?? []).map((row: any) => {
+  const candidates = [];
+  for (const row of invoices ?? []) {
     let snapshotDays = 0;
     if (row.late_fee_start_date) {
       const startDate = toDateOnly(row.late_fee_start_date);
@@ -340,7 +325,6 @@ export async function getCarryForwardCandidatesForTarget(
       }
     }
     const snapshotLateFee = calculateLateFeeAmount(row, asOfLateFee);
-    const rawOutstanding = getInvoiceOutstanding(row);
     
     // Sum up everything that was carried INTO this invoice from previous invoices
     const carriedInAmount = (row.additional_fees_breakdown ?? []).reduce((sum: number, item: any) => {
@@ -350,19 +334,30 @@ export async function getCarryForwardCandidatesForTarget(
       return sum;
     }, 0);
 
-    const baseOutstanding = Math.max(0, rawOutstanding - carriedInAmount);
+    // The base charges for THIS specific month (excluding carry forwards)
+    const baseCharges = Math.max(0, toNumber(row.total_amount) - carriedInAmount);
+    
+    // Distribute total payments chronologically
+    let baseOutstanding = baseCharges;
+    if (totalPayments >= baseOutstanding) {
+        totalPayments -= baseOutstanding;
+        baseOutstanding = 0;
+    } else {
+        baseOutstanding -= totalPayments;
+        totalPayments = 0;
+    }
 
-    return {
-      ...row,
-      outstanding_amount: baseOutstanding,
-      late_fee_snapshot_amount: snapshotLateFee,
-      late_fee_snapshot_days: snapshotDays,
-    };
-  });
+    if (baseOutstanding > 0.01) {
+      candidates.push({
+        ...row,
+        outstanding_amount: baseOutstanding,
+        late_fee_snapshot_amount: snapshotLateFee,
+        late_fee_snapshot_days: snapshotDays,
+      });
+    }
+  }
 
-  return candidates.filter(
-    (row: any) => row.outstanding_amount > 0.01,
-  );
+  return candidates;
 }
 
 export async function getCarryForwardCandidates(
