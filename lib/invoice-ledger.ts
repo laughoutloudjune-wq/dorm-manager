@@ -300,7 +300,7 @@ export async function getCarryForwardCandidatesForTarget(
   const { data: invoices, error } = await supabase
     .from("invoices")
     .select(
-      "id,tenant_id,start_date,due_date,total_amount,paid_amount,status,late_fee_amount,late_fee_per_day,late_fee_start_date,waived_late_fee_amount,locked_late_fee_amount",
+      "id,tenant_id,start_date,due_date,total_amount,paid_amount,status,late_fee_amount,late_fee_per_day,late_fee_start_date,waived_late_fee_amount,locked_late_fee_amount,additional_fees_breakdown",
     )
     .eq("tenant_id", tenantId)
     .lt("start_date", beforeStartDate)
@@ -328,11 +328,8 @@ export async function getCarryForwardCandidatesForTarget(
     linkedElsewhere.add(sid);
   }
 
-  // Bug #2 fix: Each invoice's outstanding is computed directly from its own
-  // total_amount vs paid_amount. We do NOT subtract sources from targets —
-  // that was causing 4/2026 to appear as 0 when 3/2026 was already carried into it.
-  // An invoice should appear as a candidate as long as it has an unpaid balance,
-  // regardless of whether it was previously carried forward into another invoice.
+  // To keep months separated, an invoice's outstanding amount must exclude
+  // any amounts that were carried INTO it from previous months.
   const candidates = (invoices ?? []).map((row: any) => {
     let snapshotDays = 0;
     if (row.late_fee_start_date) {
@@ -343,17 +340,28 @@ export async function getCarryForwardCandidatesForTarget(
       }
     }
     const snapshotLateFee = calculateLateFeeAmount(row, asOfLateFee);
-    const outstanding = getInvoiceOutstanding(row);
+    const rawOutstanding = getInvoiceOutstanding(row);
+    
+    // Sum up everything that was carried INTO this invoice from previous invoices
+    const carriedInAmount = (row.additional_fees_breakdown ?? []).reduce((sum: number, item: any) => {
+      if (item.source_invoice_id) {
+         return sum + toNumber(item.total_amount);
+      }
+      return sum;
+    }, 0);
+
+    const baseOutstanding = Math.max(0, rawOutstanding - carriedInAmount);
+
     return {
       ...row,
-      outstanding_amount: outstanding,
+      outstanding_amount: baseOutstanding,
       late_fee_snapshot_amount: snapshotLateFee,
       late_fee_snapshot_days: snapshotDays,
     };
   });
 
   return candidates.filter(
-    (row: any) => row.outstanding_amount > 0,
+    (row: any) => row.outstanding_amount > 0.01,
   );
 }
 
