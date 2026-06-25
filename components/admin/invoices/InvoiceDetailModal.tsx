@@ -19,6 +19,7 @@ import {
   MailOpen,
   AlertCircle,
   Send,
+  RefreshCw,
 } from "lucide-react";
 import { formatMoney, toLocalDateString, toNumber } from "@/lib/format";
 import {
@@ -617,13 +618,23 @@ export function InvoiceDetailModal() {
                   <div className="rounded-3xl border border-amber-200 bg-white shadow-sm overflow-hidden">
                     <div className="bg-amber-50 px-6 py-5 border-b border-amber-200 flex justify-between items-center">
                       <h4 className="font-bold text-amber-900">ยอดยกมา (ค้างชำระ)</h4>
-                      <button
-                        type="button"
-                        onClick={() => setEditableCarryForwardItems((prev) => [...prev, emptyCarryForwardItem()])}
-                        className="text-xs font-bold text-amber-700 bg-amber-100 px-4 py-2 rounded-xl transition hover:bg-amber-200"
-                      >
-                        + เพิ่มยอดยกมา
-                      </button>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => recalculateCurrentInvoiceArrears()}
+                          className="text-xs font-bold text-blue-700 bg-blue-100 px-4 py-2 rounded-xl transition hover:bg-blue-200 flex items-center gap-1"
+                        >
+                          <RefreshCw size={14} />
+                          คำนวณใหม่
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditableCarryForwardItems((prev) => [...prev, emptyCarryForwardItem()])}
+                          className="text-xs font-bold text-amber-700 bg-amber-100 px-4 py-2 rounded-xl transition hover:bg-amber-200"
+                        >
+                          + เพิ่มยอดยกมา
+                        </button>
+                      </div>
                     </div>
                     <div className="p-6 bg-amber-50/10">
                       {carryOverCandidatesLoading ? (
