@@ -202,11 +202,19 @@ export const ROUND_DOWN_DISCOUNT_LABEL = "ปัดเศษลง";
 export const isTransferBreakdownRow = (row: any) =>
   String(row?.item_type ?? row?.type ?? "").toLowerCase() === "transfer_detail";
 
-export const isCarryForwardBreakdownRow = (row: any) =>
-  String(row?.item_type ?? row?.type ?? "").toLowerCase() === "carry_forward";
+export const isCarryForwardBreakdownRow = (row: any) => {
+  const type = String(row?.item_type ?? row?.type ?? "").toLowerCase();
+  if (type === "carry_forward") return true;
+  const label = String(row?.detail ?? row?.label ?? "").toLowerCase();
+  return label.includes("ยอดยกมา") || label.includes("ค้างชำระ");
+};
 
-export const isLateFeeBreakdownRow = (row: any) =>
-  String(row?.item_type ?? row?.type ?? "").toLowerCase() === "late_fee_line";
+export const isLateFeeBreakdownRow = (row: any) => {
+  const type = String(row?.item_type ?? row?.type ?? "").toLowerCase();
+  if (type === "late_fee_line") return true;
+  const label = String(row?.detail ?? row?.label ?? "").toLowerCase();
+  return label.includes("ค่าปรับล่าช้า") || label.includes("late fee");
+};
 
 export const toChargeFeeRows = (rows: any[]) => {
   if (!Array.isArray(rows) || rows.length === 0) return [];

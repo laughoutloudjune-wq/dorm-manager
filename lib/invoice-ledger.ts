@@ -360,7 +360,7 @@ export async function getCarryForwardCandidatesForTarget(
   });
 
   return candidates.filter(
-    (row: any) => row.outstanding_amount > 0,
+    (row: any) => row.outstanding_amount > 0 && !linkedElsewhere.has(String(row.id)),
   );
 }
 
