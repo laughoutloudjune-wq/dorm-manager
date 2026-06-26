@@ -252,9 +252,19 @@ export async function syncInvoiceLedger(
       updatePayload.status = nextStatus;
       
       // If the invoice is fully paid, we lock the late fee so it doesn't get carried forward anymore.
-      // Since it's no longer dynamically accumulating, we just lock it to its current static value.
+      // We must calculate the accrued late fee up to the date it was paid.
       if (nextStatus === "paid") {
-        updatePayload.locked_late_fee_amount = toNumber(invoice.late_fee_amount);
+        const paymentHistory = Array.isArray(invoice.payment_history) ? invoice.payment_history : [];
+        let fullyPaidAt = invoice.slip_uploaded_at ? String(invoice.slip_uploaded_at) : todayText;
+        
+        if (paymentHistory.length > 0) {
+           const latestPayment = paymentHistory.sort((a: any, b: any) => new Date(b.paid_at || b.created_at).getTime() - new Date(a.paid_at || a.created_at).getTime())[0];
+           if (latestPayment && (latestPayment.paid_at || latestPayment.created_at)) {
+             fullyPaidAt = String(latestPayment.paid_at || latestPayment.created_at);
+           }
+        }
+        
+        updatePayload.locked_late_fee_amount = calculateLateFeeAmount(invoice, fullyPaidAt.slice(0, 10));
       } else if (
         nextStatus === "partial" ||
         nextStatus === "overdue" ||
@@ -360,7 +370,7 @@ export async function getCarryForwardCandidatesForTarget(
   });
 
   return candidates.filter(
-    (row: any) => row.outstanding_amount > 0 && !linkedElsewhere.has(String(row.id)),
+    (row: any) => (row.outstanding_amount > 0 || row.late_fee_snapshot_amount > 0) && !linkedElsewhere.has(String(row.id)),
   );
 }
 
