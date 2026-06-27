@@ -735,7 +735,7 @@ export function InvoiceDetailModal() {
                         <div className="flex items-center justify-between">
                           <div>
                             <p className="text-xs font-bold text-rose-800/60 uppercase tracking-wider">ค่าปรับล่าช้าอัตโนมัติ</p>
-                            <p className="text-sm text-slate-600 mt-1">คำนวณจากยอดค้างชำระ (อัปเดตทุกวัน)</p>
+                            <p className="text-sm text-slate-600 mt-1">คำนวณจากยอดค้างชำระ (สรุปยอดเมื่อออกบิลรอบถัดไป)</p>
                           </div>
                           <div className="flex items-center gap-3">
                             <div className="flex items-center gap-2">
