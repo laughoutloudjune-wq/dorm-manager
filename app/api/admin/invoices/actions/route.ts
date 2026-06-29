@@ -87,7 +87,7 @@ export async function POST(req: Request) {
         if (insertRows.length > 0) {
           const { error: insertCarryError } = await authEdit.supabase
             .from("invoice_carry_forwards")
-            .insert(insertRows);
+            .upsert(insertRows, { onConflict: "source_invoice_id,target_invoice_id" });
           if (insertCarryError) {
             return NextResponse.json({ error: insertCarryError.message }, { status: 500 });
           }

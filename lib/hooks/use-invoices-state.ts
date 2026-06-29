@@ -348,7 +348,8 @@ export function useInvoicesState() {
           toNumber(invoice.electricity_bill) +
           toNumber(invoice.common_fee) +
           toNumber(invoice.additional_fees_total) +
-          toNumber(invoice.late_fee_amount) -
+          toNumber(invoice.late_fee_amount) +
+          toNumber(invoice.carry_forward_amount) -
           discountAmount;
 
         const currentDiscount = toNumber(invoice.discount_amount);
@@ -2082,7 +2083,7 @@ export function useInvoicesState() {
       late_fee_start_date: form.late_fee_start_date || null,
       waived_late_fee_amount: toNumber(form.waived_late_fee_amount),
       carry_forward_amount: feeItemsTotal(editableCarryForwardItems),
-      additional_fees_total: feeItemsTotal(editableFeeItems),
+      additional_fees_total: feeItemsTotal(editableFeeItems) + feeItemsTotal(editableLateFeeItems),
       additional_fees_breakdown: [
         ...editableCarryForwardItems.map((item) => ({
           item_type: "carry_forward",
@@ -2147,7 +2148,15 @@ export function useInvoicesState() {
         feeItemsTotal(editableCarryForwardItems),
       paid_amount: Math.min(
         toNumber(form.paid_amount),
-        toNumber(form.total_amount),
+        toNumber(form.rent_amount) +
+          toNumber(form.water_bill) +
+          toNumber(form.electricity_bill) +
+          toNumber(form.common_fee) +
+          toNumber(form.late_fee_amount) +
+          feeItemsTotal(editableFeeItems) +
+          feeItemsTotal(editableLateFeeItems) -
+          feeItemsTotal(editableDiscountItems) +
+          feeItemsTotal(editableCarryForwardItems),
       ),
       status: form.status,
       notes: form.notes,
@@ -3352,7 +3361,7 @@ export function useInvoicesState() {
         if (carryForwardInsertPayload.length > 0) {
           const { error: carryInsertError } = await supabase
             .from("invoice_carry_forwards")
-            .insert(carryForwardInsertPayload);
+            .upsert(carryForwardInsertPayload, { onConflict: "source_invoice_id,target_invoice_id" });
           if (carryInsertError) {
             setError(carryInsertError.message);
           }
