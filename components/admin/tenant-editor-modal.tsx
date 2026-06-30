@@ -241,8 +241,17 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
       .limit(1)
       .maybeSingle();
 
-    setLatestPrevElectricity(toNumber((data as any)?.current_electricity ?? fallbackElectric));
-    setLatestPrevWater(toNumber((data as any)?.current_water ?? fallbackWater));
+    const prevElec = toNumber((data as any)?.current_electricity ?? fallbackElectric);
+    const prevWater = toNumber((data as any)?.current_water ?? fallbackWater);
+
+    setLatestPrevElectricity(prevElec);
+    setLatestPrevWater(prevWater);
+
+    setForm((prev) => ({
+      ...prev,
+      final_electricity_reading: prev.final_electricity_reading || prevElec,
+      final_water_reading: prev.final_water_reading || prevWater,
+    }));
   };
 
   const loadTenantInvoiceHistory = async (tenantId: string) => {
