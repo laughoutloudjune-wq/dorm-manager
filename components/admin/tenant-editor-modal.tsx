@@ -1010,7 +1010,7 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
   const outstandingMoveOutInvoices = useMemo(
     () =>
       tenantInvoiceHistory.filter(
-        (inv) => !["draft", "cancelled"].includes(String(inv.status)) && getInvoiceOutstanding(inv) > 0.001
+        (inv) => !["cancelled"].includes(String(inv.status)) && getInvoiceOutstanding(inv) > 0.001
       ),
     [tenantInvoiceHistory]
   );
