@@ -106,6 +106,8 @@ export function MoveOutProcessingModal({
       rates: ratesRes.data || { electricity_rate: 0, water_rate: 0 },
       moveOutRequests: requestsRes.data || [],
       invoiceHistory: invoiceHistoryRes.data || [],
+      prevElec,
+      prevWater,
     };
   };
 
@@ -233,14 +235,8 @@ export function MoveOutProcessingModal({
 
   if (!isOpen) return null;
 
-  const prevElec =
-    data?.invoiceHistory?.[0]?.electricity_reading_end ??
-    data?.tenant?.initial_electricity_reading ??
-    0;
-  const prevWater =
-    data?.invoiceHistory?.[0]?.water_reading_end ??
-    data?.tenant?.initial_water_reading ??
-    0;
+  const prevElec = data?.prevElec ?? 0;
+  const prevWater = data?.prevWater ?? 0;
 
   const billingDay = Math.max(
     1,
