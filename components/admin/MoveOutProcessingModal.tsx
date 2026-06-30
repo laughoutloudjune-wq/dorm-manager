@@ -72,13 +72,20 @@ export function MoveOutProcessingModal({
 
     const tenant = tenantRes.data;
 
-    // Initialize meter readings to previous values so usage starts at 0 (not negative)
+    const { data: meterData } = await supabase
+      .from("meter_readings")
+      .select("current_electricity,current_water")
+      .eq("room_id", tenant.room_id)
+      .order("reading_month", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
     const prevElec =
-      invoiceHistoryRes.data?.[0]?.electricity_reading_end ??
+      meterData?.current_electricity ??
       tenant.initial_electricity_reading ??
       0;
     const prevWater =
-      invoiceHistoryRes.data?.[0]?.water_reading_end ??
+      meterData?.current_water ??
       tenant.initial_water_reading ??
       0;
 
@@ -244,9 +251,7 @@ export function MoveOutProcessingModal({
     const moveOutDateObj = form.final_move_out_date
       ? new Date(form.final_move_out_date)
       : new Date();
-    const lastNormal = data?.invoiceHistory?.find(
-      (inv: any) => inv.status !== "draft"
-    );
+    const lastNormal = data?.invoiceHistory?.[0];
     const masterStartDateObj = lastNormal?.end_date
       ? new Date(lastNormal.end_date)
       : new Date(
@@ -280,9 +285,7 @@ export function MoveOutProcessingModal({
     const moveOutDateObj = form.final_move_out_date
       ? new Date(form.final_move_out_date)
       : new Date();
-    const lastNormal = data?.invoiceHistory?.find(
-      (inv: any) => inv.status !== "draft"
-    );
+    const lastNormal = data?.invoiceHistory?.[0];
     const masterStartDateObj = lastNormal?.end_date
       ? new Date(lastNormal.end_date)
       : new Date(
@@ -305,9 +308,7 @@ export function MoveOutProcessingModal({
   })();
 
   const latestBilledEndYmd = (() => {
-    const lastNormal = data?.invoiceHistory?.find(
-      (inv: any) => inv.status !== "draft"
-    );
+    const lastNormal = data?.invoiceHistory?.[0];
     return lastNormal?.end_date
       ? String(lastNormal.end_date).slice(0, 10)
       : null;
