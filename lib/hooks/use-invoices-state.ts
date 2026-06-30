@@ -514,7 +514,9 @@ export function useInvoicesState() {
         }),
       );
 
-      const sortedHydrated = [...hydrated].sort((a, b) => {
+      const sortedHydrated = [...hydrated]
+        .filter((inv) => !inv._is_waiting_for_move_out)
+        .sort((a, b) => {
         const byBuilding = a.building_name.localeCompare(
           b.building_name,
           undefined,
@@ -2803,7 +2805,6 @@ export function useInvoicesState() {
       .from("tenants")
       .select("id,room_id,full_name,move_in_date,move_out_date")
       .eq("status", "active")
-      .is("move_out_date", null)
       .in("room_id", roomIds);
 
     if (tenantError) {
