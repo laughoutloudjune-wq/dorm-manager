@@ -118,12 +118,12 @@ function StepRail({ currentStep, onStepClick }: { currentStep: number; onStepCli
               `}
             >
               <span className={`
-                flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-xs font-bold transition-all
+                flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-sm font-bold transition-all
                 ${isActive ? "bg-white/20" : isDone ? "bg-emerald-100" : "bg-slate-100"}
               `}>
                 {isDone ? <CheckCircle2 className="h-4 w-4 text-emerald-600" /> : <Icon className="h-3.5 w-3.5" />}
               </span>
-              <span className="text-sm font-semibold leading-tight">{step.label}</span>
+              <span className="text-base font-semibold leading-tight">{step.label}</span>
               {isActive && <ChevronRight className="ml-auto h-4 w-4 opacity-60" />}
             </button>
             {idx < STEPS.length - 1 && (
@@ -148,10 +148,10 @@ function LineItem({ label, value, sub, className = "" }: { label: string; value:
   return (
     <div className={`flex items-start justify-between gap-4 ${className}`}>
       <div>
-        <span className="text-sm text-slate-600">{label}</span>
-        {sub && <p className="text-xs text-slate-400">{sub}</p>}
+        <span className="text-base text-slate-600">{label}</span>
+        {sub && <p className="text-sm text-slate-400">{sub}</p>}
       </div>
-      <span className="shrink-0 text-sm font-semibold text-slate-800 tabular-nums">{value}</span>
+      <span className="shrink-0 text-base font-semibold text-slate-800 tabular-nums">{value}</span>
     </div>
   );
 }
@@ -227,7 +227,7 @@ function Step1RequestReview({
     <div className="space-y-5 animate-fade-in-up">
       <div>
         <h2 className="text-xl font-bold text-slate-900">คำขอย้ายออก</h2>
-        <p className="mt-1 text-sm text-slate-500">ตรวจสอบรายละเอียดคำขอและกำหนดวันย้ายออก</p>
+        <p className="mt-1 text-base text-slate-500">ตรวจสอบรายละเอียดคำขอและกำหนดวันย้ายออก</p>
       </div>
 
       {/* No request — admin-set date or fresh */}
@@ -236,8 +236,8 @@ function Step1RequestReview({
           <div className="flex items-center gap-3 text-slate-400">
             <ClipboardList className="h-5 w-5 shrink-0" />
             <div>
-              <p className="text-sm font-medium text-slate-600">ไม่มีคำขอย้ายออกจากผู้เช่า</p>
-              <p className="text-xs text-slate-400 mt-0.5">แอดมินตั้งวันย้ายออกโดยตรง หรือยังไม่มีคำขอ</p>
+              <p className="text-base font-medium text-slate-600">ไม่มีคำขอย้ายออกจากผู้เช่า</p>
+              <p className="text-sm text-slate-400 mt-0.5">แอดมินตั้งวันย้ายออกโดยตรง หรือยังไม่มีคำขอ</p>
             </div>
           </div>
         </SectionCard>
@@ -249,35 +249,35 @@ function Step1RequestReview({
           <div className="flex items-start justify-between gap-3 mb-4">
             <div className="flex items-center gap-2">
               <ClipboardList className={`h-4 w-4 ${isPending ? "text-amber-600" : isApproved ? "text-emerald-600" : "text-slate-500"}`} />
-              <p className="font-semibold text-slate-900 text-sm">คำขอย้ายออกจากผู้เช่า</p>
+              <p className="font-semibold text-slate-900 text-base">คำขอย้ายออกจากผู้เช่า</p>
             </div>
             <span className={`
-              inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold
+              inline-flex items-center rounded-full px-2.5 py-1 text-sm font-semibold
               ${isPending ? "bg-amber-100 text-amber-800" : isApproved ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-600"}
             `}>
               {isPending ? "รอตรวจสอบ" : isApproved ? "อนุมัติแล้ว" : activeMoveOutRequest.status}
             </span>
           </div>
 
-          <div className="grid grid-cols-2 gap-3 text-sm mb-4">
+          <div className="grid grid-cols-2 gap-3 text-base mb-4">
             <div className="rounded-xl bg-white/70 px-3 py-2.5 border border-white">
-              <p className="text-xs text-slate-400 mb-1">วันที่แจ้ง</p>
+              <p className="text-sm text-slate-400 mb-1">วันที่แจ้ง</p>
               <p className="font-semibold text-slate-800">{noticeYmd || "—"}</p>
             </div>
             <div className="rounded-xl bg-white/70 px-3 py-2.5 border border-white">
-              <p className="text-xs text-slate-400 mb-1">ต้องการย้ายออก</p>
+              <p className="text-sm text-slate-400 mb-1">ต้องการย้ายออก</p>
               <p className="font-semibold text-slate-800">{String(activeMoveOutRequest.requested_move_out_date || "—")}</p>
             </div>
             {activeMoveOutRequest.approved_move_out_date && (
               <div className="col-span-2 rounded-xl bg-emerald-100/70 px-3 py-2.5 border border-emerald-200">
-                <p className="text-xs text-emerald-600 mb-1">วันที่อนุมัติ</p>
+                <p className="text-sm text-emerald-600 mb-1">วันที่อนุมัติ</p>
                 <p className="font-semibold text-emerald-800">{String(activeMoveOutRequest.approved_move_out_date)}</p>
               </div>
             )}
           </div>
 
           {shortNotice && (
-            <div className="flex items-start gap-2 rounded-xl bg-amber-100 px-3 py-2.5 text-xs text-amber-800 mb-4">
+            <div className="flex items-start gap-2 rounded-xl bg-amber-100 px-3 py-2.5 text-sm text-amber-800 mb-4">
               <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
               <span>วันย้ายออกตามคำขอใกล้กว่า 30 วันจากวันที่แจ้ง — ตรวจสอบเงินประกันตามสัญญา</span>
             </div>
@@ -285,8 +285,8 @@ function Step1RequestReview({
 
           {activeMoveOutRequest.request_note && (
             <div className="rounded-xl bg-white/70 border border-slate-100 px-3 py-2.5 mb-4">
-              <p className="text-xs text-slate-400 mb-1">หมายเหตุจากผู้เช่า</p>
-              <p className="text-sm text-slate-700">{activeMoveOutRequest.request_note}</p>
+              <p className="text-sm text-slate-400 mb-1">หมายเหตุจากผู้เช่า</p>
+              <p className="text-base text-slate-700">{activeMoveOutRequest.request_note}</p>
             </div>
           )}
 
@@ -297,7 +297,7 @@ function Step1RequestReview({
                 type="button"
                 onClick={handleApprove}
                 disabled={isApproving || isDeclining}
-                className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 transition-colors disabled:opacity-50"
+                className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2 text-base font-semibold text-white hover:bg-emerald-700 transition-colors disabled:opacity-50"
               >
                 {isApproving ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
                 {isApproving ? "กำลังอนุมัติ..." : "อนุมัติคำขอ"}
@@ -306,7 +306,7 @@ function Step1RequestReview({
                 type="button"
                 onClick={handleDecline}
                 disabled={isApproving || isDeclining}
-                className="inline-flex items-center gap-2 rounded-xl border border-red-200 bg-white px-4 py-2 text-sm font-semibold text-red-600 hover:bg-red-50 transition-colors disabled:opacity-50"
+                className="inline-flex items-center gap-2 rounded-xl border border-red-200 bg-white px-4 py-2 text-base font-semibold text-red-600 hover:bg-red-50 transition-colors disabled:opacity-50"
               >
                 {isDeclining ? <Loader2 className="h-4 w-4 animate-spin" /> : <XCircle className="h-4 w-4" />}
                 {isDeclining ? "กำลังปฏิเสธ..." : "ปฏิเสธ"}
@@ -318,27 +318,27 @@ function Step1RequestReview({
 
       {/* Date inputs */}
       <SectionCard>
-        <p className="text-sm font-semibold text-slate-800 mb-3 flex items-center gap-2">
+        <p className="text-base font-semibold text-slate-800 mb-3 flex items-center gap-2">
           <Home className="h-4 w-4 text-violet-500" />
           กำหนดวันย้ายออก
         </p>
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
-            <label className="block text-xs font-medium text-slate-500 mb-1.5">วันที่ย้ายออกตามคำขอ (อ้างอิง)</label>
+            <label className="block text-sm font-medium text-slate-500 mb-1.5">วันที่ย้ายออกตามคำขอ (อ้างอิง)</label>
             <input
               type="date"
               value={form.move_out_request_date}
               onChange={(e) => setField("move_out_request_date", e.target.value)}
-              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 focus:border-violet-400 focus:outline-none focus:ring-2 focus:ring-violet-200"
+              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-base text-slate-800 focus:border-violet-400 focus:outline-none focus:ring-2 focus:ring-violet-200"
             />
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-500 mb-1.5">วันที่ย้ายออกจริง</label>
+            <label className="block text-sm font-medium text-slate-500 mb-1.5">วันที่ย้ายออกจริง</label>
             <input
               type="date"
               value={form.final_move_out_date}
               onChange={(e) => setField("final_move_out_date", e.target.value)}
-              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 focus:border-violet-400 focus:outline-none focus:ring-2 focus:ring-violet-200"
+              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-base text-slate-800 focus:border-violet-400 focus:outline-none focus:ring-2 focus:ring-violet-200"
             />
           </div>
         </div>
@@ -348,28 +348,28 @@ function Step1RequestReview({
       {outstandingMoveOutInvoices.length > 0 && (
         <SectionCard className="border-amber-200 bg-amber-50/50">
           <div className="flex items-center justify-between mb-3">
-            <p className="text-sm font-semibold text-amber-900 flex items-center gap-2">
+            <p className="text-base font-semibold text-amber-900 flex items-center gap-2">
               <ReceiptText className="h-4 w-4" />
               บิลค้างชำระ ({outstandingMoveOutInvoices.length} รายการ)
             </p>
-            <Link href="/invoices" className="text-xs font-medium text-amber-700 underline hover:text-amber-600">
+            <Link href="/invoices" className="text-sm font-medium text-amber-700 underline hover:text-amber-600">
               ดูใบแจ้งหนี้
             </Link>
           </div>
           <div className="space-y-2">
             {outstandingMoveOutInvoices.map((inv) => (
               <div key={inv.id} className="flex justify-between items-center rounded-xl bg-white/70 px-3 py-2 border border-amber-100/80">
-                <span className="text-xs text-slate-600">
+                <span className="text-sm text-slate-600">
                   {String(inv.start_date ?? "").slice(0, 10)} → {String(inv.end_date ?? "").slice(0, 10)}
                   <span className="ml-1.5 rounded-md bg-amber-100 px-1.5 py-0.5 text-amber-700 font-medium">{inv.status}</span>
                 </span>
-                <span className="text-sm font-bold text-amber-900">฿{formatMoney(getInvoiceOutstanding(inv))}</span>
+                <span className="text-base font-bold text-amber-900">฿{formatMoney(getInvoiceOutstanding(inv))}</span>
               </div>
             ))}
           </div>
           <div className="mt-3 flex items-center justify-between rounded-xl bg-amber-100 px-3 py-2">
-            <span className="text-xs font-medium text-amber-800">รวมยอดค้าง</span>
-            <span className="text-sm font-bold text-amber-900">฿{formatMoney(unpaidInvoicesSubtotal)}</span>
+            <span className="text-sm font-medium text-amber-800">รวมยอดค้าง</span>
+            <span className="text-base font-bold text-amber-900">฿{formatMoney(unpaidInvoicesSubtotal)}</span>
           </div>
         </SectionCard>
       )}
@@ -380,7 +380,7 @@ function Step1RequestReview({
           type="button"
           onClick={() => setConfirmCancelOpen(true)}
           disabled={isCancellingMoveOut}
-          className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors disabled:opacity-50"
+          className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-base font-medium text-slate-600 hover:bg-slate-50 transition-colors disabled:opacity-50"
         >
           <Ban className="h-4 w-4" />
           {isCancellingMoveOut ? "กำลังดำเนินการ…" : "ยกเลิกกระบวนการย้ายออก"}
@@ -392,7 +392,7 @@ function Step1RequestReview({
         <button
           type="button"
           onClick={onNext}
-          className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-6 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 shadow-sm hover:shadow-violet-200 shadow-violet-100 transition-all"
+          className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-6 py-2.5 text-base font-semibold text-white hover:bg-violet-700 shadow-sm hover:shadow-violet-200 shadow-violet-100 transition-all"
         >
           ถัดไป: มิเตอร์ <ChevronRight className="h-4 w-4" />
         </button>
@@ -441,7 +441,7 @@ function Step2MeterReadings({
     <div className="space-y-5 animate-fade-in-up">
       <div>
         <h2 className="text-xl font-bold text-slate-900">มิเตอร์ ณ วันย้ายออก</h2>
-        <p className="mt-1 text-sm text-slate-500">กรอกเลขมิเตอร์ที่อ่านได้วันย้ายออก เพื่อคำนวณค่าสาธารณูปโภค</p>
+        <p className="mt-1 text-base text-slate-500">กรอกเลขมิเตอร์ที่อ่านได้วันย้ายออก เพื่อคำนวณค่าสาธารณูปโภค</p>
       </div>
 
       {/* Electricity */}
@@ -454,26 +454,26 @@ function Step2MeterReadings({
         </div>
         <div className="grid gap-4 sm:grid-cols-2 mb-4">
           <div>
-            <label className="block text-xs font-medium text-slate-500 mb-1.5">เลขมิเตอร์ครั้งก่อน</label>
-            <div className="flex h-11 items-center rounded-xl border border-slate-200 bg-white/80 px-3 text-sm text-slate-700 select-none">
+            <label className="block text-sm font-medium text-slate-500 mb-1.5">เลขมิเตอร์ครั้งก่อน</label>
+            <div className="flex h-11 items-center rounded-xl border border-slate-200 bg-white/80 px-3 text-base text-slate-700 select-none">
               <span className="text-slate-400 mr-2">อ่านล่าสุด:</span>
               <span className="font-mono font-semibold">{latestPrevElectricity}</span>
             </div>
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-500 mb-1.5">เลขมิเตอร์ปัจจุบัน (ย้ายออก)</label>
+            <label className="block text-sm font-medium text-slate-500 mb-1.5">เลขมิเตอร์ปัจจุบัน (ย้ายออก)</label>
             <input
               type="number"
               min={latestPrevElectricity}
               value={form.final_electricity_reading}
               onChange={(e) => setField("final_electricity_reading", toNumber(e.target.value))}
-              className="w-full rounded-xl border border-yellow-200 bg-white px-3 py-2.5 text-sm font-mono text-slate-800 focus:border-yellow-400 focus:outline-none focus:ring-2 focus:ring-yellow-100"
+              className="w-full rounded-xl border border-yellow-200 bg-white px-3 py-2.5 text-base font-mono text-slate-800 focus:border-yellow-400 focus:outline-none focus:ring-2 focus:ring-yellow-100"
               placeholder={String(latestPrevElectricity)}
             />
           </div>
         </div>
         <div className="flex items-center justify-between rounded-xl bg-yellow-100/80 px-4 py-3">
-          <span className="text-sm text-yellow-800">
+          <span className="text-base text-yellow-800">
             การใช้: <span className="font-bold font-mono">{elecUsage}</span> หน่วย × ฿{rates.electricity_rate}
           </span>
           <span className="text-base font-bold text-yellow-900">฿{formatMoney(elecCost)}</span>
@@ -490,26 +490,26 @@ function Step2MeterReadings({
         </div>
         <div className="grid gap-4 sm:grid-cols-2 mb-4">
           <div>
-            <label className="block text-xs font-medium text-slate-500 mb-1.5">เลขมิเตอร์ครั้งก่อน</label>
-            <div className="flex h-11 items-center rounded-xl border border-slate-200 bg-white/80 px-3 text-sm text-slate-700 select-none">
+            <label className="block text-sm font-medium text-slate-500 mb-1.5">เลขมิเตอร์ครั้งก่อน</label>
+            <div className="flex h-11 items-center rounded-xl border border-slate-200 bg-white/80 px-3 text-base text-slate-700 select-none">
               <span className="text-slate-400 mr-2">อ่านล่าสุด:</span>
               <span className="font-mono font-semibold">{latestPrevWater}</span>
             </div>
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-500 mb-1.5">เลขมิเตอร์ปัจจุบัน (ย้ายออก)</label>
+            <label className="block text-sm font-medium text-slate-500 mb-1.5">เลขมิเตอร์ปัจจุบัน (ย้ายออก)</label>
             <input
               type="number"
               min={latestPrevWater}
               value={form.final_water_reading}
               onChange={(e) => setField("final_water_reading", toNumber(e.target.value))}
-              className="w-full rounded-xl border border-blue-200 bg-white px-3 py-2.5 text-sm font-mono text-slate-800 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100"
+              className="w-full rounded-xl border border-blue-200 bg-white px-3 py-2.5 text-base font-mono text-slate-800 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100"
               placeholder={String(latestPrevWater)}
             />
           </div>
         </div>
         <div className="flex items-center justify-between rounded-xl bg-blue-100/80 px-4 py-3">
-          <span className="text-sm text-blue-800">
+          <span className="text-base text-blue-800">
             การใช้: <span className="font-bold font-mono">{waterUsage}</span> หน่วย × ฿{rates.water_rate}
           </span>
           <span className="text-base font-bold text-blue-900">฿{formatMoney(waterCost)}</span>
@@ -518,7 +518,7 @@ function Step2MeterReadings({
 
       {/* Mini summary */}
       <SectionCard>
-        <p className="text-sm font-semibold text-slate-700 mb-3">รวมค่าสาธารณูปโภค</p>
+        <p className="text-base font-semibold text-slate-700 mb-3">รวมค่าสาธารณูปโภค</p>
         <div className="space-y-2">
           <LineItem label="ค่าไฟฟ้า" value={`฿${formatMoney(elecCost)}`} sub={`${elecUsage} หน่วย`} />
           <LineItem label="ค่าน้ำประปา" value={`฿${formatMoney(waterCost)}`} sub={`${waterUsage} หน่วย`} />
@@ -532,14 +532,14 @@ function Step2MeterReadings({
         <button
           type="button"
           onClick={onBack}
-          className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-5 py-2.5 text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-colors"
+          className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-5 py-2.5 text-base font-semibold text-slate-600 hover:bg-slate-50 transition-colors"
         >
           <ChevronLeft className="h-4 w-4" /> ย้อนกลับ
         </button>
         <button
           type="button"
           onClick={onNext}
-          className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-6 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 shadow-sm transition-all"
+          className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-6 py-2.5 text-base font-semibold text-white hover:bg-violet-700 shadow-sm transition-all"
         >
           ถัดไป: สรุปค่าใช้จ่าย <ChevronRight className="h-4 w-4" />
         </button>
@@ -618,12 +618,12 @@ function Step3FinancialSummary({
     <div className="space-y-5 animate-fade-in-up">
       <div>
         <h2 className="text-xl font-bold text-slate-900">สรุปค่าใช้จ่าย</h2>
-        <p className="mt-1 text-sm text-slate-500">ตรวจสอบและปรับแต่งรายการค่าใช้จ่ายก่อนยืนยัน</p>
+        <p className="mt-1 text-base text-slate-500">ตรวจสอบและปรับแต่งรายการค่าใช้จ่ายก่อนยืนยัน</p>
       </div>
 
       {/* Charges breakdown */}
       <SectionCard>
-        <p className="text-sm font-semibold text-slate-700 mb-4 flex items-center gap-2">
+        <p className="text-base font-semibold text-slate-700 mb-4 flex items-center gap-2">
           <TrendingUp className="h-4 w-4 text-red-400" />
           รายการค่าใช้จ่าย
         </p>
@@ -667,20 +667,20 @@ function Step3FinancialSummary({
       {/* Additional fees */}
       <SectionCard>
         <div className="flex items-center justify-between mb-4">
-          <p className="text-sm font-semibold text-slate-700 flex items-center gap-2">
+          <p className="text-base font-semibold text-slate-700 flex items-center gap-2">
             <Plus className="h-4 w-4 text-slate-400" />
             ค่าใช้จ่ายเพิ่มเติม
           </p>
           <button
             type="button"
             onClick={() => setMoveOutFeeLines(prev => [...prev, createFeeLine()])}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50 px-3 py-1.5 text-xs font-medium text-violet-700 hover:bg-violet-100 transition-colors"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50 px-3 py-1.5 text-sm font-medium text-violet-700 hover:bg-violet-100 transition-colors"
           >
             <Plus className="h-3.5 w-3.5" /> เพิ่มรายการ
           </button>
         </div>
         {moveOutFeeLines.length === 0 && (
-          <p className="text-sm text-slate-400 text-center py-3">ยังไม่มีค่าใช้จ่ายเพิ่มเติม</p>
+          <p className="text-base text-slate-400 text-center py-3">ยังไม่มีค่าใช้จ่ายเพิ่มเติม</p>
         )}
         <div className="space-y-2">
           {moveOutFeeLines.map(line => (
@@ -690,14 +690,14 @@ function Step3FinancialSummary({
                 placeholder="รายการ (เช่น ค่าซ่อมแซม)"
                 value={line.label}
                 onChange={e => setMoveOutFeeLines(prev => prev.map(item => item.id === line.id ? { ...item, label: e.target.value } : item))}
-                className="flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm focus:border-violet-300 focus:outline-none focus:ring-2 focus:ring-violet-100"
+                className="flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-base focus:border-violet-300 focus:outline-none focus:ring-2 focus:ring-violet-100"
               />
               <input
                 type="number"
                 placeholder="จำนวน"
                 value={line.amount}
                 onChange={e => setMoveOutFeeLines(prev => prev.map(item => item.id === line.id ? { ...item, amount: toNumber(e.target.value) } : item))}
-                className="w-28 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-mono focus:border-violet-300 focus:outline-none focus:ring-2 focus:ring-violet-100"
+                className="w-28 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-base font-mono focus:border-violet-300 focus:outline-none focus:ring-2 focus:ring-violet-100"
               />
               <button
                 type="button"
@@ -713,7 +713,7 @@ function Step3FinancialSummary({
 
       {/* Credits & Deposit */}
       <SectionCard>
-        <p className="text-sm font-semibold text-slate-700 mb-4 flex items-center gap-2">
+        <p className="text-base font-semibold text-slate-700 mb-4 flex items-center gap-2">
           <TrendingDown className="h-4 w-4 text-emerald-500" />
           เครดิต / การหักคืน
         </p>
@@ -754,8 +754,8 @@ function Step3FinancialSummary({
             )}
           </div>
           <div>
-            <p className="text-sm font-semibold text-red-800">ริบเงินประกัน (ไม่คืนเงินประกัน)</p>
-            <p className="mt-0.5 text-xs text-red-600">ใช้กรณีผิดสัญญา ระบบจะไม่คืนเงินประกัน</p>
+            <p className="text-base font-semibold text-red-800">ริบเงินประกัน (ไม่คืนเงินประกัน)</p>
+            <p className="mt-0.5 text-sm text-red-600">ใช้กรณีผิดสัญญา ระบบจะไม่คืนเงินประกัน</p>
           </div>
         </label>
 
@@ -773,8 +773,8 @@ function Step3FinancialSummary({
             )}
           </div>
           <div>
-            <p className="text-sm font-semibold text-slate-800">คิดค่าเช่าเฉลี่ยตามวัน (Prorate)</p>
-            <p className="mt-0.5 text-xs text-slate-500">หากปิดใช้งาน จะไม่เรียกเก็บค่าเช่าในรอบบิลสุดท้าย</p>
+            <p className="text-base font-semibold text-slate-800">คิดค่าเช่าเฉลี่ยตามวัน (Prorate)</p>
+            <p className="mt-0.5 text-sm text-slate-500">หากปิดใช้งาน จะไม่เรียกเก็บค่าเช่าในรอบบิลสุดท้าย</p>
           </div>
         </label>
       </div>
@@ -783,14 +783,14 @@ function Step3FinancialSummary({
         <button
           type="button"
           onClick={onBack}
-          className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-5 py-2.5 text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-colors"
+          className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-5 py-2.5 text-base font-semibold text-slate-600 hover:bg-slate-50 transition-colors"
         >
           <ChevronLeft className="h-4 w-4" /> ย้อนกลับ
         </button>
         <button
           type="button"
           onClick={onNext}
-          className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-6 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 shadow-sm transition-all"
+          className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-6 py-2.5 text-base font-semibold text-white hover:bg-violet-700 shadow-sm transition-all"
         >
           ถัดไป: ยืนยัน <ChevronRight className="h-4 w-4" />
         </button>
@@ -873,26 +873,26 @@ function Step4Confirm({
     <div className="space-y-5 animate-fade-in-up">
       <div>
         <h2 className="text-xl font-bold text-slate-900">ยืนยันการย้ายออก</h2>
-        <p className="mt-1 text-sm text-slate-500">ตรวจสอบข้อมูลสุดท้ายก่อนบันทึก</p>
+        <p className="mt-1 text-base text-slate-500">ตรวจสอบข้อมูลสุดท้ายก่อนบันทึก</p>
       </div>
 
       {/* Tenant info card */}
       <SectionCard>
-        <div className="grid grid-cols-2 gap-3 text-sm">
+        <div className="grid grid-cols-2 gap-3 text-base">
           <div>
-            <p className="text-xs text-slate-400 mb-0.5">ผู้เช่า</p>
+            <p className="text-sm text-slate-400 mb-0.5">ผู้เช่า</p>
             <p className="font-semibold text-slate-800">{form.full_name || "—"}</p>
           </div>
           <div>
-            <p className="text-xs text-slate-400 mb-0.5">ห้อง</p>
+            <p className="text-sm text-slate-400 mb-0.5">ห้อง</p>
             <p className="font-semibold text-slate-800">{roomNumber || "—"}</p>
           </div>
           <div>
-            <p className="text-xs text-slate-400 mb-0.5">วันที่ย้ายออกจริง</p>
+            <p className="text-sm text-slate-400 mb-0.5">วันที่ย้ายออกจริง</p>
             <p className="font-semibold text-slate-800">{moveOutDate}</p>
           </div>
           <div>
-            <p className="text-xs text-slate-400 mb-0.5">สถานะเงินประกัน</p>
+            <p className="text-sm text-slate-400 mb-0.5">สถานะเงินประกัน</p>
             <p className={`font-semibold ${forfeitDeposit ? "text-red-600" : "text-emerald-700"}`}>
               {forfeitDeposit ? "ริบ (ไม่คืน)" : "คืนเต็มจำนวน"}
             </p>
@@ -912,13 +912,13 @@ function Step4Confirm({
           <div className="absolute -top-4 -right-4 h-24 w-24 rounded-full bg-white" />
           <div className="absolute -bottom-6 -left-6 h-32 w-32 rounded-full bg-white" />
         </div>
-        <p className="relative text-sm font-medium text-white/80 mb-1">
+        <p className="relative text-base font-medium text-white/80 mb-1">
           {isRefund ? "คืนเงินให้ผู้เช่า" : "ผู้เช่าต้องชำระเพิ่ม"}
         </p>
         <p className="relative text-4xl font-black text-white tracking-tight">
           ฿{formatMoney(Math.abs(net))}
         </p>
-        <div className="relative mt-3 flex justify-center gap-6 text-xs text-white/70">
+        <div className="relative mt-3 flex justify-center gap-6 text-sm text-white/70">
           <span>ค่าใช้จ่ายรวม ฿{formatMoney(totalCost)}</span>
           <span>เครดิต ฿{formatMoney(prepaid)}</span>
         </div>
@@ -926,8 +926,8 @@ function Step4Confirm({
 
       {/* Cost summary table */}
       <SectionCard>
-        <p className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">รายละเอียดทั้งหมด</p>
-        <div className="space-y-2 text-sm">
+        <p className="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-3">รายละเอียดทั้งหมด</p>
+        <div className="space-y-2 text-base">
           {unpaidInvoicesSubtotal > 0 && (
             <div className="flex justify-between text-amber-700">
               <span>บิลค้างชำระ</span>
@@ -978,8 +978,8 @@ function Step4Confirm({
           )}
         </div>
         <div>
-          <p className="text-sm font-semibold text-orange-900">ผู้เช่าทิ้งห้อง</p>
-          <p className="mt-0.5 text-xs text-orange-700">
+          <p className="text-base font-semibold text-orange-900">ผู้เช่าทิ้งห้อง</p>
+          <p className="mt-0.5 text-sm text-orange-700">
             ระบบจะใช้เครดิต (ค่าเช่าล่วงหน้า{!forfeitDeposit ? " + เงินประกัน" : ""}) หักบิลค้างชำระตามลำดับ
             บิลที่เหลือจะถูกยกเลิก และผู้เช่าถูกย้ายออกทันที (ไม่สร้างใบแจ้งหนี้สุดท้าย)
           </p>
@@ -991,7 +991,7 @@ function Step4Confirm({
         <button
           type="button"
           onClick={onBack}
-          className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-5 py-2.5 text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-colors"
+          className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-5 py-2.5 text-base font-semibold text-slate-600 hover:bg-slate-50 transition-colors"
         >
           <ChevronLeft className="h-4 w-4" /> ย้อนกลับ
         </button>
@@ -1002,7 +1002,7 @@ function Step4Confirm({
               type="button"
               onClick={() => setConfirmCancelOpen(true)}
               disabled={isCancellingMoveOut}
-              className="inline-flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm font-semibold text-amber-800 hover:bg-amber-100 transition-colors disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-base font-semibold text-amber-800 hover:bg-amber-100 transition-colors disabled:opacity-50"
             >
               <Ban className="h-4 w-4" />
               {isCancellingMoveOut ? "กำลังยกเลิก…" : "ยกเลิกการย้ายออก"}
@@ -1014,7 +1014,7 @@ function Step4Confirm({
               type="button"
               onClick={() => setAbandonOpen(true)}
               disabled={!canEditTenant || isAbandoning}
-              className="inline-flex items-center gap-2 rounded-xl bg-orange-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-orange-700 shadow-sm transition-all disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded-xl bg-orange-600 px-5 py-2.5 text-base font-semibold text-white hover:bg-orange-700 shadow-sm transition-all disabled:opacity-50"
             >
               {isAbandoning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Ban className="h-4 w-4" />}
               {isAbandoning ? "กำลังดำเนินการ…" : "ยืนยันทิ้งห้อง"}
@@ -1024,7 +1024,7 @@ function Step4Confirm({
               type="button"
               onClick={() => setConfirmOpen(true)}
               disabled={!canEditTenant || isMovingOut}
-              className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 shadow-sm shadow-violet-200 transition-all disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-5 py-2.5 text-base font-semibold text-white hover:bg-violet-700 shadow-sm shadow-violet-200 transition-all disabled:opacity-50"
             >
               {isMovingOut ? <Loader2 className="h-4 w-4 animate-spin" /> : <Flag className="h-4 w-4" />}
               {isMovingOut ? "กำลังบันทึก…" : "ยืนยันการย้ายออก"}

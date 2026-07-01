@@ -321,7 +321,7 @@ export function MoveOutProcessingModal({
       isOpen={isOpen}
       onClose={onClose}
       title="ดำเนินการย้ายออก"
-      size="4xl"
+      size="3xl"
     >
       <div className="p-4 md:p-6">
         {isLoading && (
