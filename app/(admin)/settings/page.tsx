@@ -667,8 +667,10 @@ export default function SettingsPage() {
   const selectedAccessUser = userRoles.find((row) => row.id === selectedAccessUserId) ?? userRoles[0] ?? null;
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap gap-2">
+    <div className="flex flex-col md:flex-row gap-8 h-[calc(100vh-8rem)]">
+      {/* Sidebar Navigation */}
+      <div className="w-full md:w-64 shrink-0 space-y-1 rounded-2xl bg-white/60 p-3 shadow-sm border border-slate-200/50 backdrop-blur-xl">
+        <h2 className="mb-2 px-3 pt-2 text-xs font-bold uppercase tracking-wider text-slate-400">Settings Menu</h2>
         {tabs.map((tab) => (
           <button
             key={tab}
@@ -679,30 +681,32 @@ export default function SettingsPage() {
               }
               setActiveTab(tab);
             }}
-            className={`rounded-full px-4 py-2 text-sm font-semibold transition hover-lift animate-soft-pop ${
+            className={`w-full flex items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold transition-all ${
               activeTab === tab
-                ? "bg-blue-600 text-white"
-                : "bg-white text-slate-600 border border-slate-200 hover:border-blue-200"
-            } ${tabLocked(tab) ? "cursor-not-allowed border-red-200 text-red-600 hover:border-red-300" : ""}`}
+                ? "bg-blue-600 text-white shadow-sm"
+                : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+            } ${tabLocked(tab) ? "opacity-50 cursor-not-allowed" : ""}`}
             title={tabLocked(tab) ? "ถูกล็อก: ไม่มีสิทธิ์" : undefined}
           >
-            <span className="inline-flex items-center gap-2">
+            <span className="flex items-center gap-2">
               {tabLabel(tab)}
-              {tabLocked(tab) && <Lock size={12} />}
             </span>
+            {tabLocked(tab) && <Lock size={14} className={activeTab === tab ? "text-blue-200" : "text-red-400"} />}
           </button>
         ))}
       </div>
 
-      {statusMessage && <Badge variant="info">{statusMessage}</Badge>}
-      {tabLocked(activeTab) && (
-        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-          ส่วนนี้ถูกล็อกสำหรับสิทธิ์ของคุณ
-        </div>
-      )}
+      {/* Main Content Area */}
+      <div className="flex-1 space-y-6 min-w-0 overflow-y-auto custom-scrollbar pr-2 pb-8">
+        {statusMessage && <Badge variant="info">{statusMessage}</Badge>}
+        {tabLocked(activeTab) && (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            ส่วนนี้ถูกล็อกสำหรับสิทธิ์ของคุณ
+          </div>
+        )}
 
       {activeTab === "General" && (
-        <div className={panelClass("space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm animate-fade-in-up", "General")}>
+        <div className={panelClass("space-y-4 rounded-2xl border border-slate-200/60 bg-white/80 backdrop-blur-xl p-6 shadow-sm ring-1 ring-slate-900/5", "General")}>
           <div className="grid gap-4 md:grid-cols-2">
             <Input
               label="ชื่อหอพัก"
@@ -746,7 +750,7 @@ export default function SettingsPage() {
                 action: saveGeneral,
               })
             }
-            className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
+            className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-blue-500/20 hover:shadow-lg hover:shadow-blue-500/30 hover:-translate-y-0.5 active:scale-[0.98] transition-all"
           >
             <Save size={16} />
             บันทึกตั้งค่าทั่วไป
@@ -755,7 +759,7 @@ export default function SettingsPage() {
       )}
 
       {activeTab === "Utilities" && (
-        <div className={panelClass("space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm animate-fade-in-up", "Utilities")}>
+        <div className={panelClass("space-y-4 rounded-2xl border border-slate-200/60 bg-white/80 backdrop-blur-xl p-6 shadow-sm ring-1 ring-slate-900/5", "Utilities")}>
           <div className="grid gap-4 md:grid-cols-3">
             <Input
               label="ค่าไฟต่อหน่วย"
@@ -806,7 +810,7 @@ export default function SettingsPage() {
                 action: saveUtilities,
               })
             }
-            className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
+            className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-blue-500/20 hover:shadow-lg hover:shadow-blue-500/30 hover:-translate-y-0.5 active:scale-[0.98] transition-all"
           >
             <Save size={16} />
             บันทึกค่าน้ำ/ค่าไฟ
@@ -815,7 +819,7 @@ export default function SettingsPage() {
       )}
 
       {activeTab === "Invoice Config" && (
-        <div className={panelClass("space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm animate-fade-in-up", "Invoice Config")}>
+        <div className={panelClass("space-y-4 rounded-2xl border border-slate-200/60 bg-white/80 backdrop-blur-xl p-6 shadow-sm ring-1 ring-slate-900/5", "Invoice Config")}>
           <div className="grid gap-4 md:grid-cols-3">
             <Input
               label="ค่าส่วนกลาง"
@@ -1033,7 +1037,7 @@ export default function SettingsPage() {
                 action: saveInvoiceConfig,
               })
             }
-            className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
+            className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-blue-500/20 hover:shadow-lg hover:shadow-blue-500/30 hover:-translate-y-0.5 active:scale-[0.98] transition-all"
           >
             <Save size={16} />
             บันทึกตั้งค่าใบแจ้งหนี้
@@ -1042,7 +1046,7 @@ export default function SettingsPage() {
       )}
 
       {activeTab === "Payment Methods" && (
-        <div className={panelClass("space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm animate-fade-in-up", "Payment Methods")}>
+        <div className={panelClass("space-y-4 rounded-2xl border border-slate-200/60 bg-white/80 backdrop-blur-xl p-6 shadow-sm ring-1 ring-slate-900/5", "Payment Methods")}>
           <div className="flex items-center justify-between">
             <p className="text-sm font-semibold text-slate-800">ช่องทางชำระเงิน</p>
             <button
@@ -1153,7 +1157,7 @@ export default function SettingsPage() {
                 action: savePaymentMethods,
               })
             }
-            className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
+            className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-blue-500/20 hover:shadow-lg hover:shadow-blue-500/30 hover:-translate-y-0.5 active:scale-[0.98] transition-all"
           >
             <Save size={16} />
             บันทึกช่องทางชำระเงิน
@@ -1270,7 +1274,7 @@ export default function SettingsPage() {
       )}
 
       {activeTab === "Rooms" && (
-        <div className={panelClass("space-y-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm animate-fade-in-up", "Rooms")}>
+        <div className={panelClass("space-y-6 rounded-2xl border border-slate-200/60 bg-white/80 backdrop-blur-xl p-6 shadow-sm ring-1 ring-slate-900/5 animate-fade-in-up", "Rooms")}>
           <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
             <p className="text-sm font-semibold text-slate-800">เพิ่มอาคาร</p>
             <div className="mt-3 grid gap-3 md:grid-cols-3">
@@ -1459,7 +1463,7 @@ export default function SettingsPage() {
                 action: saveRooms,
               })
             }
-            className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
+            className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-blue-500/20 hover:shadow-lg hover:shadow-blue-500/30 hover:-translate-y-0.5 active:scale-[0.98] transition-all"
           >
             <Save size={16} />
             บันทึกการเปลี่ยนแปลงห้อง
@@ -1468,7 +1472,7 @@ export default function SettingsPage() {
       )}
 
       {activeTab === "Access Control" && (
-        <div className={panelClass("space-y-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm animate-fade-in-up", "Access Control")}>
+        <div className={panelClass("space-y-5 rounded-2xl border border-slate-200/60 bg-white/80 backdrop-blur-xl p-6 shadow-sm ring-1 ring-slate-900/5 animate-fade-in-up", "Access Control")}>
           <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
             จัดการบทบาทผู้ใช้และสิทธิ์ในหน้าเดียวกัน เมื่อคลิกผู้ใช้ ระบบจะแสดงสิทธิ์ที่ได้จากบทบาทนั้นทันที
           </div>
@@ -1661,7 +1665,7 @@ export default function SettingsPage() {
                   action: savePermissions,
                 })
               }
-              className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
+              className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-blue-500/20 hover:shadow-lg hover:shadow-blue-500/30 hover:-translate-y-0.5 active:scale-[0.98] transition-all"
             >
               <Save size={16} />
               บันทึกสิทธิ์
@@ -1692,6 +1696,7 @@ export default function SettingsPage() {
           </div>
         </div>
       </Modal>
+      </div>
     </div>
   );
 }
