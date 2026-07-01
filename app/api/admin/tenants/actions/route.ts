@@ -93,12 +93,23 @@ export async function POST(req: Request) {
         }
       }
 
-      const { error } = await auth.supabase.from("tenants").upsert(payload, { onConflict: "id" });
-      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      let tenantError = null;
+      if (previousTenant) {
+        const { error } = await auth.supabase.from("tenants").update(payload).eq("id", tenantId);
+        tenantError = error;
+      } else {
+        const { error } = await auth.supabase.from("tenants").insert(payload);
+        tenantError = error;
+      }
+      if (tenantError) return NextResponse.json({ error: tenantError.message }, { status: 500 });
 
       const effectiveTenantId = tenantId;
-      const moveInDate = payload?.move_in_date ? String(payload.move_in_date) : null;
-      const fullName = payload?.full_name ? String(payload.full_name) : null;
+      const moveInDate = payload?.move_in_date 
+        ? String(payload.move_in_date) 
+        : (previousTenant?.move_in_date ? String(previousTenant.move_in_date) : null);
+      const fullName = payload?.full_name 
+        ? String(payload.full_name) 
+        : (previousTenant?.full_name ? String(previousTenant.full_name) : null);
 
       const shouldLogMoveIn =
         !!roomId &&
@@ -179,7 +190,7 @@ export async function POST(req: Request) {
             room_id: roomId,
             tenant_id: effectiveTenantId || null,
             tenant_name: fullName,
-            move_in_date: moveInDate,
+            move_in_date: transferPayload?.transfer_date ? String(transferPayload.transfer_date) : moveInDate,
             updated_at: new Date().toISOString(),
           },
           { onConflict: "room_id,tenant_id,move_in_date" }
