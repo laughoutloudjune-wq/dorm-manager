@@ -302,7 +302,12 @@ export function MoveOutProcessingModal({
     const roomPrice = Array.isArray(data?.tenant?.rooms)
       ? toNumber(data?.tenant?.rooms[0]?.price_month)
       : toNumber(data?.tenant?.rooms?.price_month);
-    return roomPrice * fullMonths;
+    
+    let base = roomPrice * fullMonths;
+    if (useProrate && tailDaysAfterBilledPeriod > 0) {
+      base += Math.round(tailDaysAfterBilledPeriod * (roomPrice / 30));
+    }
+    return base;
   })();
 
   const latestBilledEndYmd = (() => {
@@ -321,7 +326,7 @@ export function MoveOutProcessingModal({
       isOpen={isOpen}
       onClose={onClose}
       title="ดำเนินการย้ายออก"
-      size="3xl"
+      size="2xl"
     >
       <div className="p-4 md:p-6">
         {isLoading && (

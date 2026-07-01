@@ -281,7 +281,7 @@ export default function MoveOutsPage() {
               <stat.icon className={`h-5 w-5 shrink-0 ${stat.color}`} />
               <div>
                 <p className={`text-2xl font-black tabular-nums ${stat.color}`}>{stat.value}</p>
-                <p className="text-xs text-slate-500 leading-tight">{stat.label}</p>
+                <p className="text-sm text-slate-500 leading-tight">{stat.label}</p>
               </div>
             </div>
           ))}
@@ -338,7 +338,7 @@ export default function MoveOutsPage() {
                   {tab.label}
                   {tab.count != null && tab.count > 0 && (
                     <span className={`
-                      rounded-full px-2 py-0.5 text-xs font-bold
+                      rounded-full px-2 py-0.5 text-sm font-bold
                       ${isActive ? "bg-violet-100 text-violet-700" : "bg-amber-100 text-amber-700"}
                     `}>
                       {tab.count}
@@ -352,7 +352,7 @@ export default function MoveOutsPage() {
           {/* Table */}
           <div className="overflow-x-auto">
             <table className="w-full min-w-[700px] text-left text-sm">
-              <thead className="bg-slate-50/80 text-xs font-semibold uppercase tracking-wider text-slate-400">
+              <thead className="bg-slate-50/80 text-sm font-semibold uppercase tracking-wider text-slate-400">
                 <tr>
                   <th className="px-5 py-3">สถานะ</th>
                   <th className="px-5 py-3">ผู้เช่า</th>
@@ -407,11 +407,11 @@ export default function MoveOutsPage() {
                         </td>
                         <td className="px-5 py-3.5">
                           {row.source === "tenant" ? (
-                            <span className="inline-flex items-center gap-1 rounded-lg bg-blue-50 px-2 py-1 text-xs text-blue-600">
+                            <span className="inline-flex items-center gap-1 rounded-lg bg-blue-50 px-2 py-1 text-sm text-blue-600">
                               <Smartphone className="h-3 w-3" /> แอปผู้เช่า
                             </span>
                           ) : (
-                            <span className="inline-flex items-center gap-1 rounded-lg bg-purple-50 px-2 py-1 text-xs text-purple-600">
+                            <span className="inline-flex items-center gap-1 rounded-lg bg-purple-50 px-2 py-1 text-sm text-purple-600">
                               <CalendarDays className="h-3 w-3" /> แอดมินตั้ง
                             </span>
                           )}
@@ -419,7 +419,7 @@ export default function MoveOutsPage() {
                         <td className="px-5 py-3.5">
                           <button
                             onClick={() => openModal(row.tenant_id)}
-                            className="inline-flex items-center gap-0.5 rounded-lg bg-violet-50 px-3 py-1.5 text-xs font-semibold text-violet-700 hover:bg-violet-100 transition-colors"
+                            className="inline-flex items-center gap-0.5 rounded-lg bg-violet-50 px-3 py-1.5 text-sm font-semibold text-violet-700 hover:bg-violet-100 transition-colors"
                           >
                             จัดการ <ChevronRight className="h-3.5 w-3.5" />
                           </button>

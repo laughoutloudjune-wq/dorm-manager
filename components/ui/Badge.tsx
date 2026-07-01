@@ -17,7 +17,7 @@ export function Badge({
 }: HTMLAttributes<HTMLSpanElement> & { variant?: Variant }) {
   return (
     <span
-      className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold leading-tight shadow-sm ${variantStyles[variant]} ${className}`}
+      className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-sm font-semibold leading-tight shadow-sm ${variantStyles[variant]} ${className}`}
       {...props}
     />
   );

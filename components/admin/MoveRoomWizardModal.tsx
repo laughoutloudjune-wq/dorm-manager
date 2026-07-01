@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useEffect } from "react";
 import { Modal } from "@/components/ui/Modal";
 import { Input } from "@/components/ui/Input";
 import { Loader2, ArrowRightLeft, Building2, CheckCircle2, ChevronRight, ChevronLeft, Save } from "lucide-react";
@@ -45,6 +45,61 @@ export function MoveRoomWizardModal({
     new_curr_electricity: 0,
     new_curr_water: 0,
   });
+
+  useEffect(() => {
+    if (!isOpen || !activeTenant.room_id) return;
+    let mounted = true;
+    const fetchOldMeter = async () => {
+      const supabase = createClient();
+      const { data } = await supabase
+        .from("meter_readings")
+        .select("current_electricity,current_water")
+        .eq("room_id", activeTenant.room_id)
+        .order("reading_month", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      
+      if (!mounted) return;
+      const prevElec = data?.current_electricity ?? activeTenant.initial_electricity_reading ?? 0;
+      const prevWater = data?.current_water ?? activeTenant.initial_water_reading ?? 0;
+      setForm((f) => ({
+        ...f,
+        old_prev_electricity: prevElec,
+        old_curr_electricity: prevElec, // Default to same as prev
+        old_prev_water: prevWater,
+        old_curr_water: prevWater,
+      }));
+    };
+    void fetchOldMeter();
+    return () => { mounted = false; };
+  }, [isOpen, activeTenant.room_id, activeTenant.initial_electricity_reading, activeTenant.initial_water_reading]);
+
+  useEffect(() => {
+    if (!form.new_room_id) return;
+    let mounted = true;
+    const fetchNewMeter = async () => {
+      const supabase = createClient();
+      const { data } = await supabase
+        .from("meter_readings")
+        .select("current_electricity,current_water")
+        .eq("room_id", form.new_room_id)
+        .order("reading_month", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      
+      if (!mounted) return;
+      // For new room, if it has a tenant history it might have readings, otherwise we don't have initial tenant readings yet
+      const prevElec = data?.current_electricity ?? 0;
+      const prevWater = data?.current_water ?? 0;
+      setForm((f) => ({
+        ...f,
+        new_curr_electricity: prevElec,
+        new_curr_water: prevWater,
+      }));
+    };
+    void fetchNewMeter();
+    return () => { mounted = false; };
+  }, [form.new_room_id]);
 
   const roomsById = useMemo(() => {
     const map = new Map<string, RoomRow>();

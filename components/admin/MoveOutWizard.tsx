@@ -816,6 +816,7 @@ function Step4Confirm({
   isCancellingMoveOut,
   canEditTenant,
   activeTenant,
+  outstandingMoveOutInvoices,
   onBack,
   onConfirmMoveOut,
   onAbandonRoom,
@@ -835,6 +836,7 @@ function Step4Confirm({
   isCancellingMoveOut: boolean;
   canEditTenant: boolean;
   activeTenant: any;
+  outstandingMoveOutInvoices: any[];
   onBack: () => void;
   onConfirmMoveOut: () => Promise<void> | void;
   onAbandonRoom: (forfeit: boolean, date: string) => Promise<void>;
@@ -929,18 +931,52 @@ function Step4Confirm({
         <p className="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-3">รายละเอียดทั้งหมด</p>
         <div className="space-y-2 text-base">
           {unpaidInvoicesSubtotal > 0 && (
-            <div className="flex justify-between text-amber-700">
-              <span>บิลค้างชำระ</span>
-              <span className="font-semibold tabular-nums">฿{formatMoney(unpaidInvoicesSubtotal)}</span>
+            <div className="space-y-1">
+              <div className="flex justify-between text-amber-700">
+                <span>บิลค้างชำระ ({outstandingMoveOutInvoices?.length || 0} รายการ)</span>
+                <span className="font-semibold tabular-nums">฿{formatMoney(unpaidInvoicesSubtotal)}</span>
+              </div>
+              <div className="pl-4 space-y-1 text-sm text-slate-500">
+                {outstandingMoveOutInvoices?.map((inv: any) => {
+                  const remaining = Math.max(0, inv.total_amount - (inv.paid_amount || 0));
+                  if (remaining <= 0) return null;
+                  return (
+                    <div key={inv.id} className="flex justify-between">
+                      <span>รอบบิล {inv.start_date ? String(inv.start_date).slice(0, 7) : "ไม่ระบุ"}</span>
+                      <span className="tabular-nums">฿{formatMoney(remaining)}</span>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
           <div className="flex justify-between text-slate-600">
             <span>ค่าเช่า</span>
             <span className="font-semibold tabular-nums">฿{formatMoney(appliedMoveOutRentBase)}</span>
           </div>
-          <div className="flex justify-between text-slate-600">
-            <span>ค่าไฟ + น้ำ</span>
-            <span className="font-semibold tabular-nums">฿{formatMoney(elecCost + waterCost)}</span>
+          <div className="space-y-1">
+            <div className="flex justify-between text-slate-600">
+              <span>ค่าไฟ + น้ำ</span>
+              <span className="font-semibold tabular-nums">฿{formatMoney(elecCost + waterCost)}</span>
+            </div>
+            <div className="pl-4 space-y-1 text-sm text-slate-500">
+              {elecUsage > 0 && (
+                <div className="flex justify-between">
+                  <span>
+                    ค่าไฟ ({latestPrevElectricity} → {toNumber(form.final_electricity_reading)}) = {elecUsage} หน่วย
+                  </span>
+                  <span className="tabular-nums">฿{formatMoney(elecCost)}</span>
+                </div>
+              )}
+              {waterUsage > 0 && (
+                <div className="flex justify-between">
+                  <span>
+                    ค่าน้ำ ({latestPrevWater} → {toNumber(form.final_water_reading)}) = {waterUsage} หน่วย
+                  </span>
+                  <span className="tabular-nums">฿{formatMoney(waterCost)}</span>
+                </div>
+              )}
+            </div>
           </div>
           {additionalFeesTotal > 0 && (
             <div className="flex justify-between text-slate-600">
@@ -1186,6 +1222,7 @@ export function MoveOutWizard({
               isCancellingMoveOut={isCancellingMoveOut}
               canEditTenant={canEditTenant}
               activeTenant={activeTenant}
+              outstandingMoveOutInvoices={outstandingMoveOutInvoices}
               onBack={() => goTo(3)}
               onConfirmMoveOut={onConfirmMoveOut}
               onAbandonRoom={onAbandonRoom}

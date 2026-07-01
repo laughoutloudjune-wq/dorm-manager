@@ -8,8 +8,6 @@ const config: Config = {
     "./components/**/*.{js,ts,jsx,tsx,mdx}",
     "./app/**/*.{js,ts,jsx,tsx,mdx}",
     "./lib/**/*.{js,ts,jsx,tsx,mdx}",
-    "!./app/(admin)/settings/page.tsx",
-    "!./app/(admin)/invoices/page.tsx",
   ],
   theme: {
     extend: {

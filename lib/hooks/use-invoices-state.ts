@@ -989,6 +989,7 @@ export function useInvoicesState() {
 
       setError(null);
       setSlipPreview(publicUrl ?? null);
+      toast.success("บันทึกการชำระเงินเรียบร้อยแล้ว");
       setShowPaymentForm(false);
       setPaymentMode("full");
       setPaymentSlipFile(null);
@@ -2182,7 +2183,7 @@ export function useInvoicesState() {
     setActiveInvoice((prev) =>
       prev ? ({ ...prev, ...(payload as any) } as InvoiceRecord) : prev,
     );
-    setDetailOpen(false);
+    toast.success("บันทึกข้อมูลใบแจ้งหนี้เรียบร้อยแล้ว");
   };
 
   const deleteInvoices = async (invoiceIds: string[]) => {

@@ -17,7 +17,8 @@ import {
   defaultRolePermissions,
   normalizeRolePermissions,
 } from "@/lib/permissions";
-import { Loader2, Lock, Plus, Save, Trash2, Upload } from "lucide-react";
+import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/Card";
+import { Loader2, Lock, Plus, Save, Trash2, Upload, Building2, Zap, Receipt, CreditCard, DoorOpen, ShieldCheck, Settings, Banknote, Shield, Users, RefreshCw, CheckSquare, CheckCircle2, XCircle, List } from "lucide-react";
 
 type SettingsRow = {
   id: number;
@@ -706,972 +707,1115 @@ export default function SettingsPage() {
         )}
 
       {activeTab === "General" && (
-        <div className={panelClass("space-y-4 rounded-2xl border border-slate-200/60 bg-white/80 backdrop-blur-xl p-6 shadow-sm ring-1 ring-slate-900/5", "General")}>
-          <div className="grid gap-4 md:grid-cols-2">
-            <Input
-              label="ชื่อหอพัก"
-              value={settings.dorm_name ?? ""}
-              onChange={(event) => setSettings((prev) => ({ ...prev, dorm_name: event.target.value }))}
-            />
-            <Input
-              label="เบอร์โทร"
-              value={settings.dorm_phone ?? ""}
-              onChange={(event) => setSettings((prev) => ({ ...prev, dorm_phone: event.target.value }))}
-            />
-            <label className="text-sm text-slate-600">
-              {t(locale, "ui_language")}
-              <select
-                value={settings.ui_language ?? "th"}
-                onChange={(event) =>
-                  setSettings((prev) => ({ ...prev, ui_language: event.target.value as AppLocale }))
-                }
-                className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm"
-              >
-                <option value="th">{t(locale, "thai")}</option>
-                <option value="en">{t(locale, "english")}</option>
-              </select>
-            </label>
-            <label className="md:col-span-2 text-sm text-slate-600">
-              ที่อยู่
-              <textarea
-                value={settings.dorm_address ?? ""}
-                onChange={(event) =>
-                  setSettings((prev) => ({ ...prev, dorm_address: event.target.value }))
-                }
-                className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-600/40"
+        <Card className={panelClass("overflow-hidden", "General")}>
+          <CardHeader className="bg-slate-50/50">
+            <CardTitle className="flex items-center gap-2">
+              <Settings className="h-5 w-5 text-blue-600" />
+              ตั้งค่าทั่วไป
+            </CardTitle>
+            <CardDescription>
+              ข้อมูลพื้นฐานของหอพักและภาษาที่แสดงผล
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-6 pt-6">
+            <div className="grid gap-6 md:grid-cols-2">
+              <Input
+                label="ชื่อหอพัก"
+                value={settings.dorm_name ?? ""}
+                onChange={(event) => setSettings((prev) => ({ ...prev, dorm_name: event.target.value }))}
               />
-            </label>
-          </div>
-          <button
-            onClick={() =>
-              openConfirm({
-                title: "บันทึกตั้งค่าทั่วไป",
-                message: "ยืนยันการบันทึกตั้งค่าทั่วไป?",
-                action: saveGeneral,
-              })
-            }
-            className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-blue-500/20 hover:shadow-lg hover:shadow-blue-500/30 hover:-translate-y-0.5 active:scale-[0.98] transition-all"
-          >
-            <Save size={16} />
-            บันทึกตั้งค่าทั่วไป
-          </button>
-        </div>
+              <Input
+                label="เบอร์โทร"
+                value={settings.dorm_phone ?? ""}
+                onChange={(event) => setSettings((prev) => ({ ...prev, dorm_phone: event.target.value }))}
+              />
+              <label className="text-sm text-slate-600 space-y-2 block">
+                <span className="font-medium text-slate-800">{t(locale, "ui_language")}</span>
+                <select
+                  value={settings.ui_language ?? "th"}
+                  onChange={(event) =>
+                    setSettings((prev) => ({ ...prev, ui_language: event.target.value as AppLocale }))
+                  }
+                  className="w-full rounded-xl border border-slate-200/90 bg-white px-4 py-2.5 text-sm text-slate-900 shadow-sm transition-[border-color,box-shadow] duration-200 focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                >
+                  <option value="th">{t(locale, "thai")}</option>
+                  <option value="en">{t(locale, "english")}</option>
+                </select>
+              </label>
+              <label className="md:col-span-2 text-sm text-slate-600 space-y-2 block">
+                <span className="font-medium text-slate-800">ที่อยู่</span>
+                <textarea
+                  value={settings.dorm_address ?? ""}
+                  onChange={(event) =>
+                    setSettings((prev) => ({ ...prev, dorm_address: event.target.value }))
+                  }
+                  rows={3}
+                  className="w-full rounded-xl border border-slate-200/90 bg-white px-4 py-2.5 text-sm text-slate-900 shadow-sm transition-[border-color,box-shadow] duration-200 focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20 resize-none"
+                />
+              </label>
+            </div>
+            <div className="flex justify-end border-t border-slate-100 pt-6">
+              <button
+                onClick={() =>
+                  openConfirm({
+                    title: "บันทึกตั้งค่าทั่วไป",
+                    message: "ยืนยันการบันทึกตั้งค่าทั่วไป?",
+                    action: saveGeneral,
+                  })
+                }
+                className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-blue-500/20 hover:shadow-lg hover:shadow-blue-500/30 hover:-translate-y-0.5 active:scale-[0.98] transition-all"
+              >
+                <Save size={16} />
+                บันทึกตั้งค่าทั่วไป
+              </button>
+            </div>
+          </CardContent>
+        </Card>
       )}
 
       {activeTab === "Utilities" && (
-        <div className={panelClass("space-y-4 rounded-2xl border border-slate-200/60 bg-white/80 backdrop-blur-xl p-6 shadow-sm ring-1 ring-slate-900/5", "Utilities")}>
-          <div className="grid gap-4 md:grid-cols-3">
-            <Input
-              label="ค่าไฟต่อหน่วย"
-              type="number"
-              value={settings.electricity_rate ?? 0}
-              onChange={(event) =>
-                setSettings((prev) => ({ ...prev, electricity_rate: toNumber(event.target.value) }))
-              }
-            />
-            <Input
-              label="ค่าน้ำต่อหน่วย"
-              type="number"
-              value={settings.water_rate ?? 0}
-              onChange={(event) =>
-                setSettings((prev) => ({ ...prev, water_rate: toNumber(event.target.value) }))
-              }
-            />
-            <Input
-              label="ค่าส่วนกลาง"
-              type="number"
-              value={settings.common_fee ?? 0}
-              onChange={(event) =>
-                setSettings((prev) => ({ ...prev, common_fee: toNumber(event.target.value) }))
-              }
-            />
-            <Input
-              label="หน่วยน้ำขั้นต่ำ"
-              type="number"
-              value={settings.water_min_units ?? 0}
-              onChange={(event) =>
-                setSettings((prev) => ({ ...prev, water_min_units: toNumber(event.target.value) }))
-              }
-            />
-            <Input
-              label="ราคาน้ำขั้นต่ำ"
-              type="number"
-              value={settings.water_min_price ?? 0}
-              onChange={(event) =>
-                setSettings((prev) => ({ ...prev, water_min_price: toNumber(event.target.value) }))
-              }
-            />
-          </div>
-          <button
-            onClick={() =>
-              openConfirm({
-                title: "บันทึกตั้งค่าสาธารณูปโภค",
-                message: "ยืนยันการบันทึกตั้งค่าสาธารณูปโภค?",
-                action: saveUtilities,
-              })
-            }
-            className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-blue-500/20 hover:shadow-lg hover:shadow-blue-500/30 hover:-translate-y-0.5 active:scale-[0.98] transition-all"
-          >
-            <Save size={16} />
-            บันทึกค่าน้ำ/ค่าไฟ
-          </button>
-        </div>
+        <Card className={panelClass("overflow-hidden", "Utilities")}>
+          <CardHeader className="bg-slate-50/50 border-b border-slate-100">
+            <CardTitle className="flex items-center gap-2">
+              <Zap className="h-5 w-5 text-amber-500" />
+              ค่าน้ำ / ค่าไฟ
+            </CardTitle>
+            <CardDescription className="mt-1">
+              กำหนดราคาค่าน้ำและค่าไฟต่อหน่วย (บาท)
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-6 pt-6">
+            <div className="grid gap-6 md:grid-cols-2">
+              <Input
+                label="ค่าน้ำ (บาท/หน่วย)"
+                type="number"
+                value={settings.water_rate ?? 0}
+                onChange={(event) =>
+                  setSettings((prev) => ({ ...prev, water_rate: toNumber(event.target.value) }))
+                }
+              />
+              <Input
+                label="ค่าไฟ (บาท/หน่วย)"
+                type="number"
+                value={settings.electricity_rate ?? 0}
+                onChange={(event) =>
+                  setSettings((prev) => ({ ...prev, electricity_rate: toNumber(event.target.value) }))
+                }
+              />
+            </div>
+            <div className="flex justify-end pt-4">
+              <button
+                onClick={() =>
+                  openConfirm({
+                    title: "บันทึกค่าน้ำ / ค่าไฟ",
+                    message: "ยืนยันการบันทึกค่าน้ำและค่าไฟ?",
+                    action: saveUtilities,
+                  })
+                }
+                className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-blue-500/20 hover:shadow-lg hover:shadow-blue-500/30 hover:-translate-y-0.5 active:scale-[0.98] transition-all"
+              >
+                <Save size={16} />
+                บันทึกค่าน้ำ / ค่าไฟ
+              </button>
+            </div>
+          </CardContent>
+        </Card>
       )}
 
       {activeTab === "Invoice Config" && (
-        <div className={panelClass("space-y-4 rounded-2xl border border-slate-200/60 bg-white/80 backdrop-blur-xl p-6 shadow-sm ring-1 ring-slate-900/5", "Invoice Config")}>
-          <div className="grid gap-4 md:grid-cols-3">
-            <Input
-              label="ค่าส่วนกลาง"
-              type="number"
-              value={settings.common_fee ?? 0}
-              onChange={(event) =>
-                setSettings((prev) => ({ ...prev, common_fee: toNumber(event.target.value) }))
-              }
-            />
-            <Input
-              label="วันตัดรอบบิล (1-28)"
-              type="number"
-              value={settings.billing_day ?? 1}
-              onChange={(event) =>
-                setSettings((prev) => ({ ...prev, billing_day: toNumber(event.target.value) }))
-              }
-            />
-            <Input
-              label="วันครบกำหนดชำระ (1-28)"
-              type="number"
-              value={settings.due_day ?? 5}
-              onChange={(event) =>
-                setSettings((prev) => ({ ...prev, due_day: toNumber(event.target.value) }))
-              }
-            />
-            <Input
-              label="วันเริ่มคิดค่าปรับ (1-28)"
-              type="number"
-              value={settings.late_fee_start_day ?? 6}
-              onChange={(event) =>
-                setSettings((prev) => ({
-                  ...prev,
-                  late_fee_start_day: toNumber(event.target.value),
-                }))
-              }
-            />
-            <Input
-              label="ค่าปรับต่อวัน"
-              type="number"
-              value={settings.late_fee_per_day ?? 0}
-              onChange={(event) =>
-                setSettings((prev) => ({
-                  ...prev,
-                  late_fee_per_day: toNumber(event.target.value),
-                }))
-              }
-            />
-          </div>
-
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <p className="text-sm font-semibold text-slate-800">ค่าธรรมเนียมเพิ่มเติม</p>
-              <button
-                onClick={() => setFees((prev) => [...prev, newFee()])}
-                className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700"
-              >
-                <Plus size={14} />
-                เพิ่มค่าธรรมเนียม
-              </button>
-            </div>
-
-            {fees.map((fee, index) => (
-              <div key={fee.id} className="grid gap-3 rounded-xl border border-slate-200 p-3 md:grid-cols-4">
+        <Card className={panelClass("overflow-hidden", "Invoice Config")}>
+          <CardHeader className="bg-slate-50/50">
+            <CardTitle className="flex items-center gap-2">
+              <Receipt className="h-5 w-5 text-indigo-500" />
+              ตั้งค่าใบแจ้งหนี้
+            </CardTitle>
+            <CardDescription>
+              กำหนดรอบบิล วันครบกำหนด ค่าปรับ และค่าธรรมเนียมเพิ่มเติมต่างๆ
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-8 pt-6">
+            <div className="space-y-4">
+              <h4 className="text-sm font-semibold text-slate-800">รอบบิลและค่าปรับ</h4>
+              <div className="grid gap-6 md:grid-cols-3">
                 <Input
-                  label="ชื่อค่าธรรมเนียม"
-                  value={fee.label}
-                  onChange={(event) =>
-                    setFees((prev) =>
-                      prev.map((item, idx) => (idx === index ? { ...item, label: event.target.value } : item))
-                    )
-                  }
-                />
-                <label className="text-sm text-slate-600">
-                  วิธีคำนวณ
-                  <select
-                    value={fee.calc_type}
-                    onChange={(event) =>
-                      setFees((prev) =>
-                        prev.map((item, idx) =>
-                          idx === index
-                            ? {
-                                ...item,
-                                calc_type: event.target.value as AdditionalFee["calc_type"],
-                              }
-                            : item
-                        )
-                      )
-                    }
-                    className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm"
-                  >
-                    <option value="fixed">จำนวนเงินคงที่</option>
-                    <option value="electricity_units">คิดตามหน่วยไฟ</option>
-                    <option value="water_units">คิดตามหน่วยน้ำ</option>
-                  </select>
-                </label>
-                <Input
-                  label={fee.calc_type === "fixed" ? "จำนวนเงิน" : "อัตรา / หน่วย"}
+                  label="ค่าส่วนกลาง"
                   type="number"
-                  value={fee.value}
+                  value={settings.common_fee ?? 0}
                   onChange={(event) =>
-                    setFees((prev) =>
-                      prev.map((item, idx) =>
-                        idx === index ? { ...item, value: toNumber(event.target.value) } : item
-                      )
-                    )
+                    setSettings((prev) => ({ ...prev, common_fee: toNumber(event.target.value) }))
                   }
                 />
-                <div className="flex items-end">
-                  <button
-                    onClick={() =>
-                      openConfirm({
-                        title: "ลบค่าธรรมเนียม",
-                        message: "ยืนยันการลบค่าธรรมเนียมนี้?",
-                        action: async () => {
-                          setFees((prev) => prev.filter((_, idx) => idx !== index));
-                          setStatusMessage("ลบรายการออกจากตารางแล้ว กรุณากดบันทึกตั้งค่าใบแจ้งหนี้");
-                        },
-                      })
-                    }
-                    className="inline-flex items-center gap-2 rounded-xl border border-red-200 px-3 py-2 text-sm text-red-600"
-                  >
-                    <Trash2 size={14} />
-                    ลบ
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <p className="text-sm font-semibold text-slate-800">กฎส่วนลด</p>
-              <button
-                onClick={() => setDiscounts((prev) => [...prev, newFee()])}
-                className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700"
-              >
-                <Plus size={14} />
-                เพิ่มส่วนลด
-              </button>
-            </div>
-
-            {discounts.map((fee, index) => (
-              <div key={`discount-${fee.id}`} className="grid gap-3 rounded-xl border border-slate-200 p-3 md:grid-cols-4">
                 <Input
-                  label="ชื่อส่วนลด"
-                  value={fee.label}
-                  onChange={(event) =>
-                    setDiscounts((prev) =>
-                      prev.map((item, idx) => (idx === index ? { ...item, label: event.target.value } : item))
-                    )
-                  }
-                />
-                <label className="text-sm text-slate-600">
-                  วิธีคำนวณ
-                  <select
-                    value={fee.calc_type}
-                    onChange={(event) =>
-                      setDiscounts((prev) =>
-                        prev.map((item, idx) =>
-                          idx === index
-                            ? {
-                                ...item,
-                                calc_type: event.target.value as AdditionalFee["calc_type"],
-                              }
-                            : item
-                        )
-                      )
-                    }
-                    className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm"
-                  >
-                    <option value="fixed">จำนวนเงินคงที่</option>
-                    <option value="electricity_units">คิดตามหน่วยไฟ</option>
-                    <option value="water_units">คิดตามหน่วยน้ำ</option>
-                  </select>
-                </label>
-                <Input
-                  label={fee.calc_type === "fixed" ? "จำนวนเงิน" : "อัตรา / หน่วย"}
+                  label="วันตัดรอบบิล (1-28)"
                   type="number"
-                  value={fee.value}
+                  value={settings.billing_day ?? 1}
                   onChange={(event) =>
-                    setDiscounts((prev) =>
-                      prev.map((item, idx) =>
-                        idx === index ? { ...item, value: toNumber(event.target.value) } : item
-                      )
-                    )
+                    setSettings((prev) => ({ ...prev, billing_day: toNumber(event.target.value) }))
                   }
                 />
-                <div className="flex items-end">
-                  <button
-                    onClick={() =>
-                      openConfirm({
-                        title: "ลบส่วนลด",
-                        message: "ยืนยันการลบส่วนลดนี้?",
-                        action: async () => {
-                          setDiscounts((prev) => prev.filter((_, idx) => idx !== index));
-                          setStatusMessage("ลบรายการส่วนลดออกจากตารางแล้ว กรุณากดบันทึกตั้งค่าใบแจ้งหนี้");
-                        },
-                      })
-                    }
-                    className="inline-flex items-center gap-2 rounded-xl border border-red-200 px-3 py-2 text-sm text-red-600"
-                  >
-                    <Trash2 size={14} />
-                    ลบ
-                  </button>
-                </div>
+                <Input
+                  label="วันครบกำหนดชำระ (1-28)"
+                  type="number"
+                  value={settings.due_day ?? 5}
+                  onChange={(event) =>
+                    setSettings((prev) => ({ ...prev, due_day: toNumber(event.target.value) }))
+                  }
+                />
+                <Input
+                  label="วันเริ่มคิดค่าปรับ (1-28)"
+                  type="number"
+                  value={settings.late_fee_start_day ?? 6}
+                  onChange={(event) =>
+                    setSettings((prev) => ({
+                      ...prev,
+                      late_fee_start_day: toNumber(event.target.value),
+                    }))
+                  }
+                />
+                <Input
+                  label="ค่าปรับต่อวัน"
+                  type="number"
+                  value={settings.late_fee_per_day ?? 0}
+                  onChange={(event) =>
+                    setSettings((prev) => ({
+                      ...prev,
+                      late_fee_per_day: toNumber(event.target.value),
+                    }))
+                  }
+                />
               </div>
-            ))}
-          </div>
-
-          <button
-            onClick={() =>
-              openConfirm({
-                title: "บันทึกตั้งค่าใบแจ้งหนี้",
-                message: "ยืนยันการบันทึกตั้งค่าใบแจ้งหนี้?",
-                action: saveInvoiceConfig,
-              })
-            }
-            className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-blue-500/20 hover:shadow-lg hover:shadow-blue-500/30 hover:-translate-y-0.5 active:scale-[0.98] transition-all"
-          >
-            <Save size={16} />
-            บันทึกตั้งค่าใบแจ้งหนี้
-          </button>
-        </div>
-      )}
-
-      {activeTab === "Payment Methods" && (
-        <div className={panelClass("space-y-4 rounded-2xl border border-slate-200/60 bg-white/80 backdrop-blur-xl p-6 shadow-sm ring-1 ring-slate-900/5", "Payment Methods")}>
-          <div className="flex items-center justify-between">
-            <p className="text-sm font-semibold text-slate-800">ช่องทางชำระเงิน</p>
-            <button
-              onClick={() => setMethods((prev) => [...prev, newPaymentMethod()])}
-              className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700"
-            >
-              <Plus size={14} />
-              เพิ่มช่องทางชำระเงิน
-            </button>
-          </div>
-
-          <div className="space-y-3">
-            {methods.map((method, index) => (
-              <div key={method.id ?? `new-${index}`} className="rounded-xl border border-slate-200 p-4">
-                <div className="grid gap-3 md:grid-cols-2">
-                  <Input
-                    label="ชื่อแสดงผล"
-                    value={method.label}
-                    onChange={(event) =>
-                      setMethods((prev) =>
-                        prev.map((item, idx) =>
-                          idx === index ? { ...item, label: event.target.value } : item
-                        )
-                      )
-                    }
-                  />
-                  <Input
-                    label="ธนาคาร"
-                    value={method.bank_name}
-                    onChange={(event) =>
-                      setMethods((prev) =>
-                        prev.map((item, idx) =>
-                          idx === index ? { ...item, bank_name: event.target.value } : item
-                        )
-                      )
-                    }
-                  />
-                  <Input
-                    label="ชื่อบัญชี"
-                    value={method.account_name}
-                    onChange={(event) =>
-                      setMethods((prev) =>
-                        prev.map((item, idx) =>
-                          idx === index ? { ...item, account_name: event.target.value } : item
-                        )
-                      )
-                    }
-                  />
-                  <Input
-                    label="เลขบัญชี"
-                    value={method.account_number}
-                    onChange={(event) =>
-                      setMethods((prev) =>
-                        prev.map((item, idx) =>
-                          idx === index ? { ...item, account_number: event.target.value } : item
-                        )
-                      )
-                    }
-                  />
-                </div>
-
-                <div className="mt-3 flex flex-wrap items-center gap-3">
-                  <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700">
-                    <Upload size={14} />
-                    อัปโหลด QR
-                    <input
-                      type="file"
-                      accept="image/*"
-                      className="hidden"
-                      onChange={(event) => uploadQr(index, event.target.files?.[0])}
-                    />
-                  </label>
-
-                  {method.qr_url && (
-                    <a
-                      href={method.qr_url}
-                      target="_blank"
-                      className="text-sm text-blue-600 underline"
-                      rel="noreferrer"
-                    >
-                      ดู QR
-                    </a>
-                  )}
-
-                  <button
-                    onClick={() =>
-                      openConfirm({
-                        title: "ลบช่องทางชำระเงิน",
-                        message: "ยืนยันการลบช่องทางชำระเงินนี้?",
-                        action: async () => removeMethod(index),
-                      })
-                    }
-                    className="inline-flex items-center gap-2 rounded-xl border border-red-200 px-3 py-2 text-sm text-red-600"
-                  >
-                    <Trash2 size={14} />
-                    ลบ
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-
-          <button
-            onClick={() =>
-              openConfirm({
-                title: "บันทึกช่องทางชำระเงิน",
-                message: "ยืนยันการบันทึกช่องทางชำระเงิน?",
-                action: savePaymentMethods,
-              })
-            }
-            className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-blue-500/20 hover:shadow-lg hover:shadow-blue-500/30 hover:-translate-y-0.5 active:scale-[0.98] transition-all"
-          >
-            <Save size={16} />
-            บันทึกช่องทางชำระเงิน
-          </button>
-
-          <div className="mt-6 border-t border-slate-200 pt-6">
-            <div className="flex items-center justify-between">
-              <p className="text-sm font-semibold text-slate-800">ข้อมูลออกใบเสร็จ (นิติบุคคล)</p>
-              <button
-                onClick={() => setReceiptProfiles((prev) => [...prev, newReceiptProfile()])}
-                className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700"
-              >
-                <Plus size={14} />
-                เพิ่มโปรไฟล์ใบเสร็จ
-              </button>
             </div>
 
-            <div className="mt-3 space-y-3">
-              {receiptProfiles.map((profile, index) => (
-                <div key={profile.id ?? `receipt-${index}`} className="rounded-xl border border-slate-200 p-4">
-                  <div className="grid gap-3 md:grid-cols-2">
-                    <Input
-                      label="ชื่อโปรไฟล์"
-                      value={profile.label}
-                      onChange={(event) =>
-                        setReceiptProfiles((prev) =>
-                          prev.map((item, idx) =>
-                            idx === index ? { ...item, label: event.target.value } : item
-                          )
-                        )
-                      }
-                    />
-                    <Input
-                      label="ชื่อนิติบุคคล/บริษัท"
-                      value={profile.company_name}
-                      onChange={(event) =>
-                        setReceiptProfiles((prev) =>
-                          prev.map((item, idx) =>
-                            idx === index ? { ...item, company_name: event.target.value } : item
-                          )
-                        )
-                      }
-                    />
-                    <Input
-                      label="เลขผู้เสียภาษี"
-                      value={profile.tax_id}
-                      onChange={(event) =>
-                        setReceiptProfiles((prev) =>
-                          prev.map((item, idx) =>
-                            idx === index ? { ...item, tax_id: event.target.value } : item
-                          )
-                        )
-                      }
-                    />
-                    <Input
-                      label="สาขา"
-                      value={profile.branch}
-                      onChange={(event) =>
-                        setReceiptProfiles((prev) =>
-                          prev.map((item, idx) =>
-                            idx === index ? { ...item, branch: event.target.value } : item
-                          )
-                        )
-                      }
-                    />
-                    <div className="md:col-span-2">
-                      <Input
-                        label="ที่อยู่ออกใบเสร็จ"
-                        value={profile.address}
-                        onChange={(event) =>
-                          setReceiptProfiles((prev) =>
-                            prev.map((item, idx) =>
-                              idx === index ? { ...item, address: event.target.value } : item
-                            )
-                          )
-                        }
-                      />
-                    </div>
-                  </div>
-                  <div className="mt-3">
-                    <button
-                      onClick={() =>
-                        openConfirm({
-                          title: "ลบโปรไฟล์ใบเสร็จ",
-                          message: "ยืนยันการลบโปรไฟล์ใบเสร็จนี้?",
-                          action: async () => removeReceiptProfile(index),
-                        })
-                      }
-                      className="inline-flex items-center gap-2 rounded-xl border border-red-200 px-3 py-2 text-sm text-red-600"
-                    >
-                      <Trash2 size={14} />
-                      ลบ
-                    </button>
-                  </div>
+            <div className="space-y-4 pt-4 border-t border-slate-100">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h4 className="text-sm font-semibold text-slate-800">ค่าธรรมเนียมเพิ่มเติม</h4>
+                  <p className="text-xs text-slate-500 mt-1">ตั้งค่าบริการพิเศษที่จะบวกเพิ่มในบิลทุกเดือน</p>
                 </div>
-              ))}
-            </div>
-
-            <button
-              onClick={() =>
-                openConfirm({
-                  title: "บันทึกโปรไฟล์ใบเสร็จ",
-                  message: "ยืนยันการบันทึกข้อมูลออกใบเสร็จ?",
-                  action: saveReceiptProfiles,
-                })
-              }
-              className="mt-3 inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
-            >
-              <Save size={16} />
-              บันทึกโปรไฟล์ใบเสร็จ
-            </button>
-          </div>
-        </div>
-      )}
-
-      {activeTab === "Rooms" && (
-        <div className={panelClass("space-y-6 rounded-2xl border border-slate-200/60 bg-white/80 backdrop-blur-xl p-6 shadow-sm ring-1 ring-slate-900/5 animate-fade-in-up", "Rooms")}>
-          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-            <p className="text-sm font-semibold text-slate-800">เพิ่มอาคาร</p>
-            <div className="mt-3 grid gap-3 md:grid-cols-3">
-              <Input
-                label="ชื่ออาคาร"
-                value={buildingName}
-                onChange={(event) => setBuildingName(event.target.value)}
-                placeholder="อาคาร A"
-              />
-              <Input
-                label="ที่อยู่"
-                value={buildingAddress}
-                onChange={(event) => setBuildingAddress(event.target.value)}
-                placeholder="ไม่บังคับ"
-              />
-              <div className="flex items-end">
                 <button
-                  onClick={() =>
-                    openConfirm({
-                      title: "เพิ่มอาคาร",
-                      message: "ยืนยันการเพิ่มอาคารนี้?",
-                      action: addBuilding,
-                    })
-                  }
-                  className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
+                  onClick={() => setFees((prev) => [...prev, newFee()])}
+                  className="inline-flex items-center gap-2 rounded-xl bg-slate-100 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-200 transition-colors"
                 >
-                  <Plus size={16} />
-                  เพิ่มอาคาร
+                  <Plus size={14} />
+                  เพิ่มรายการ
                 </button>
               </div>
-            </div>
-          </div>
 
-          <div className="flex flex-wrap items-end gap-3">
-            <label className="text-sm text-slate-600">
-              อาคาร
-              <select
-                value={selectedBuilding}
-                onChange={(event) => setSelectedBuilding(event.target.value)}
-                className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm"
-              >
-                {buildings.length === 0 && <option value="">ไม่มีอาคาร</option>}
-                {buildings.map((building) => (
-                  <option key={building.id} value={building.id}>
-                    {building.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <Input
-              label="เลขห้อง"
-              value={roomNumber}
-              onChange={(event) => setRoomNumber(event.target.value)}
-            />
-            <Input
-              label="ประเภทห้อง"
-              value={roomType}
-              onChange={(event) => setRoomType(event.target.value)}
-            />
-            <Input
-              label="ราคา / เดือน"
-              type="number"
-              value={roomPrice}
-              onChange={(event) => setRoomPrice(toNumber(event.target.value))}
-            />
-            <button
-              onClick={() =>
-                openConfirm({
-                  title: "เพิ่มห้อง",
-                  message: "ยืนยันการเพิ่มห้องนี้?",
-                  action: addRoom,
-                })
-              }
-              className="inline-flex items-center gap-2 rounded-xl bg-green-600 px-4 py-2 text-sm font-semibold text-white"
-            >
-              <Plus size={16} />
-              เพิ่มห้อง
-            </button>
-          </div>
-
-          <div className="overflow-hidden rounded-2xl border border-slate-200">
-            <table className="w-full text-left text-sm">
-              <thead className="bg-slate-100 text-xs uppercase tracking-wider text-slate-500">
-                <tr>
-                  <th className="px-4 py-3">เลขห้อง</th>
-                  <th className="px-4 py-3">ประเภทห้อง</th>
-                  <th className="px-4 py-3">ราคา / เดือน</th>
-                  <th className="px-4 py-3">สถานะ</th>
-                  <th className="px-4 py-3" />
-                </tr>
-              </thead>
-              <tbody>
-                {[...rooms]
-                  .sort((a, b) => roomNumberCompare(a.room_number, b.room_number))
-                  .map((room) => (
-                  <tr key={room.id} className="border-t border-slate-100">
-                    <td className="px-4 py-3">
-                      <input
-                        value={room.room_number}
+              {fees.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-8 text-center text-sm text-slate-500">
+                  ยังไม่มีค่าธรรมเนียมเพิ่มเติม
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {fees.map((fee, index) => (
+                    <div key={fee.id} className="grid gap-4 rounded-xl border border-slate-200/60 bg-white p-4 shadow-sm md:grid-cols-[1.5fr_1fr_1fr_auto] items-end">
+                      <Input
+                        label="ชื่อรายการ"
+                        value={fee.label}
                         onChange={(event) =>
-                          setRooms((prev) =>
-                            prev.map((item) =>
-                              item.id === room.id
-                                ? { ...item, room_number: event.target.value }
-                                : item
-                            )
+                          setFees((prev) =>
+                            prev.map((item, idx) => (idx === index ? { ...item, label: event.target.value } : item))
                           )
                         }
-                        className="w-32 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm"
                       />
-                    </td>
-                    <td className="px-4 py-3">
-                      <input
-                        value={room.room_type ?? ""}
-                        onChange={(event) =>
-                          setRooms((prev) =>
-                            prev.map((item) =>
-                              item.id === room.id
-                                ? { ...item, room_type: event.target.value }
-                                : item
+                      <label className="text-sm text-slate-600 space-y-2 block">
+                        <span className="font-medium text-slate-800">วิธีคำนวณ</span>
+                        <select
+                          value={fee.calc_type}
+                          onChange={(event) =>
+                            setFees((prev) =>
+                              prev.map((item, idx) =>
+                                idx === index
+                                  ? {
+                                      ...item,
+                                      calc_type: event.target.value as AdditionalFee["calc_type"],
+                                    }
+                                  : item
+                              )
                             )
-                          )
-                        }
-                        className="w-36 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm"
-                      />
-                    </td>
-                    <td className="px-4 py-3">
-                      <input
+                          }
+                          className="w-full rounded-xl border border-slate-200/90 bg-white px-4 py-2.5 text-sm text-slate-900 shadow-sm transition-[border-color,box-shadow] duration-200 focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                        >
+                          <option value="fixed">จำนวนเงินคงที่</option>
+                          <option value="electricity_units">คิดตามหน่วยไฟ</option>
+                          <option value="water_units">คิดตามหน่วยน้ำ</option>
+                        </select>
+                      </label>
+                      <Input
+                        label={fee.calc_type === "fixed" ? "จำนวนเงิน (บาท)" : "อัตรา / หน่วย (บาท)"}
                         type="number"
-                        value={room.price_month ?? 0}
+                        value={fee.value}
                         onChange={(event) =>
-                          setRooms((prev) =>
-                            prev.map((item) =>
-                              item.id === room.id
-                                ? { ...item, price_month: toNumber(event.target.value) }
-                                : item
+                          setFees((prev) =>
+                            prev.map((item, idx) =>
+                              idx === index ? { ...item, value: toNumber(event.target.value) } : item
                             )
                           )
                         }
-                        className="w-28 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm"
                       />
-                    </td>
-                    <td className="px-4 py-3">
-                      <select
-                        value={room.status}
-                        onChange={(event) =>
-                          setRooms((prev) =>
-                            prev.map((item) =>
-                              item.id === room.id ? { ...item, status: event.target.value } : item
-                            )
-                          )
-                        }
-                        className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm"
-                      >
-                        <option value="available">ว่าง</option>
-                        <option value="occupied">มีผู้เช่า</option>
-                        <option value="maintenance">ซ่อมบำรุง</option>
-                      </select>
-                    </td>
-                    <td className="px-4 py-3">
                       <button
                         onClick={() =>
                           openConfirm({
-                            title: "ลบห้อง",
-                            message: "ยืนยันการลบห้องนี้?",
-                            action: async () => deleteRoom(room.id),
+                            title: "ลบค่าธรรมเนียม",
+                            message: "ยืนยันการลบค่าธรรมเนียมนี้?",
+                            action: async () => {
+                              setFees((prev) => prev.filter((_, idx) => idx !== index));
+                              setStatusMessage("ลบรายการออกจากตารางแล้ว กรุณากดบันทึก");
+                            },
                           })
                         }
-                        className="inline-flex items-center gap-2 rounded-lg border border-red-200 px-3 py-1 text-xs text-red-600"
+                        className="inline-flex h-[42px] items-center justify-center rounded-xl border border-red-200 bg-red-50 px-3 text-red-600 hover:bg-red-100 transition-colors"
+                        title="ลบ"
                       >
-                        <Trash2 size={12} />
-                        ลบ
+                        <Trash2 size={16} />
                       </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          <button
-            onClick={() =>
-              openConfirm({
-                title: "บันทึกข้อมูลห้อง",
-                message: "ยืนยันการบันทึกการเปลี่ยนแปลงห้องทั้งหมด?",
-                action: saveRooms,
-              })
-            }
-            className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-blue-500/20 hover:shadow-lg hover:shadow-blue-500/30 hover:-translate-y-0.5 active:scale-[0.98] transition-all"
-          >
-            <Save size={16} />
-            บันทึกการเปลี่ยนแปลงห้อง
-          </button>
-        </div>
-      )}
-
-      {activeTab === "Access Control" && (
-        <div className={panelClass("space-y-5 rounded-2xl border border-slate-200/60 bg-white/80 backdrop-blur-xl p-6 shadow-sm ring-1 ring-slate-900/5 animate-fade-in-up", "Access Control")}>
-          <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-            จัดการบทบาทผู้ใช้และสิทธิ์ในหน้าเดียวกัน เมื่อคลิกผู้ใช้ ระบบจะแสดงสิทธิ์ที่ได้จากบทบาทนั้นทันที
-          </div>
-
-          <div className="grid gap-5 xl:grid-cols-[1.25fr_1fr]">
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <p className="text-sm font-semibold text-slate-800">ผู้ใช้และบทบาท</p>
-                <button
-                  onClick={() => void loadUserRoles()}
-                  className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700"
-                >
-                  รีเฟรช
-                </button>
-              </div>
-              {loadingUserRoles ? (
-                <div className="space-y-3 animate-pulse">
-                  {Array.from({ length: 5 }).map((_, i) => (
-                    <div key={i} className="flex h-14 items-center gap-4 rounded-xl border border-slate-100 bg-slate-50 px-4">
-                      <div className="h-4 w-32 rounded bg-slate-200"></div>
-                      <div className="h-4 w-24 rounded bg-slate-200"></div>
-                      <div className="h-8 w-24 rounded-lg bg-slate-200"></div>
-                      <div className="h-8 w-24 rounded-lg bg-slate-200"></div>
                     </div>
                   ))}
                 </div>
+              )}
+            </div>
+
+            <div className="space-y-4 pt-4 border-t border-slate-100">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h4 className="text-sm font-semibold text-slate-800">กฎส่วนลด</h4>
+                  <p className="text-xs text-slate-500 mt-1">ตั้งค่าส่วนลดที่จะหักลบในบิลทุกเดือน</p>
+                </div>
+                <button
+                  onClick={() => setDiscounts((prev) => [...prev, newFee()])}
+                  className="inline-flex items-center gap-2 rounded-xl bg-slate-100 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-200 transition-colors"
+                >
+                  <Plus size={14} />
+                  เพิ่มส่วนลด
+                </button>
+              </div>
+
+              {discounts.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-8 text-center text-sm text-slate-500">
+                  ยังไม่มีกฎส่วนลด
+                </div>
               ) : (
-                <div className="overflow-x-auto rounded-2xl border border-slate-200">
-                  <table className="w-full min-w-[760px] text-sm">
-                    <thead className="bg-slate-100 text-slate-600">
-                      <tr>
-                        <th className="px-4 py-3 text-left">อีเมล</th>
-                        <th className="px-4 py-3 text-left">เข้าใช้ล่าสุด</th>
-                        <th className="px-4 py-3 text-left">บทบาท</th>
-                        <th className="px-4 py-3 text-left">บันทึก</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {userRoles.map((user) => (
-                        <tr
-                          key={user.id}
-                          onClick={() => setSelectedAccessUserId(user.id)}
-                          className={`border-t border-slate-100 cursor-pointer ${
-                            selectedAccessUser?.id === user.id ? "bg-blue-50" : "hover:bg-slate-50"
-                          }`}
-                          title="คลิกเพื่อดูสิทธิ์ของผู้ใช้นี้"
+                <div className="space-y-3">
+                  {discounts.map((fee, index) => (
+                    <div key={`discount-${fee.id}`} className="grid gap-4 rounded-xl border border-slate-200/60 bg-white p-4 shadow-sm md:grid-cols-[1.5fr_1fr_1fr_auto] items-end">
+                      <Input
+                        label="ชื่อส่วนลด"
+                        value={fee.label}
+                        onChange={(event) =>
+                          setDiscounts((prev) =>
+                            prev.map((item, idx) => (idx === index ? { ...item, label: event.target.value } : item))
+                          )
+                        }
+                      />
+                      <label className="text-sm text-slate-600 space-y-2 block">
+                        <span className="font-medium text-slate-800">วิธีคำนวณ</span>
+                        <select
+                          value={fee.calc_type}
+                          onChange={(event) =>
+                            setDiscounts((prev) =>
+                              prev.map((item, idx) =>
+                                idx === index
+                                  ? {
+                                      ...item,
+                                      calc_type: event.target.value as AdditionalFee["calc_type"],
+                                    }
+                                  : item
+                              )
+                            )
+                          }
+                          className="w-full rounded-xl border border-slate-200/90 bg-white px-4 py-2.5 text-sm text-slate-900 shadow-sm transition-[border-color,box-shadow] duration-200 focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                         >
-                          <td className="px-4 py-3">
-                            <div className="font-medium text-slate-800">{user.email ?? "-"}</div>
-                            <div className="font-mono text-[11px] text-slate-500">{user.id}</div>
-                            {user.phone && <div className="text-xs text-slate-500">{user.phone}</div>}
-                          </td>
-                          <td className="px-4 py-3 text-slate-600">
-                            {user.last_sign_in_at ? new Date(user.last_sign_in_at).toLocaleString("th-TH") : "ไม่เคย"}
-                          </td>
-                          <td className="px-4 py-3">
-                            <select
-                              value={user.role}
-                              onClick={(e) => e.stopPropagation()}
+                          <option value="fixed">จำนวนเงินคงที่</option>
+                          <option value="electricity_units">คิดตามหน่วยไฟ</option>
+                          <option value="water_units">คิดตามหน่วยน้ำ</option>
+                        </select>
+                      </label>
+                      <Input
+                        label={fee.calc_type === "fixed" ? "จำนวนเงิน (บาท)" : "อัตรา / หน่วย (บาท)"}
+                        type="number"
+                        value={fee.value}
+                        onChange={(event) =>
+                          setDiscounts((prev) =>
+                            prev.map((item, idx) =>
+                              idx === index ? { ...item, value: toNumber(event.target.value) } : item
+                            )
+                          )
+                        }
+                      />
+                      <button
+                        onClick={() =>
+                          openConfirm({
+                            title: "ลบส่วนลด",
+                            message: "ยืนยันการลบส่วนลดนี้?",
+                            action: async () => {
+                              setDiscounts((prev) => prev.filter((_, idx) => idx !== index));
+                              setStatusMessage("ลบรายการออกจากตารางแล้ว กรุณากดบันทึก");
+                            },
+                          })
+                        }
+                        className="inline-flex h-[42px] items-center justify-center rounded-xl border border-red-200 bg-red-50 px-3 text-red-600 hover:bg-red-100 transition-colors"
+                        title="ลบ"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end border-t border-slate-100 pt-6">
+              <button
+                onClick={() =>
+                  openConfirm({
+                    title: "บันทึกตั้งค่าใบแจ้งหนี้",
+                    message: "ยืนยันการบันทึกตั้งค่าใบแจ้งหนี้?",
+                    action: saveInvoiceConfig,
+                  })
+                }
+                className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-blue-500/20 hover:shadow-lg hover:shadow-blue-500/30 hover:-translate-y-0.5 active:scale-[0.98] transition-all"
+              >
+                <Save size={16} />
+                บันทึกตั้งค่าใบแจ้งหนี้
+              </button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {activeTab === "Payment Methods" && (
+        <Card className={panelClass("overflow-hidden", "Payment Methods")}>
+          <CardHeader className="bg-slate-50/50 border-b border-slate-100">
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle className="flex items-center gap-2">
+                  <CreditCard className="h-5 w-5 text-emerald-500" />
+                  ช่องทางชำระเงิน
+                </CardTitle>
+                <CardDescription className="mt-1">
+                  ตั้งค่าบัญชีธนาคารและ QR Code สำหรับการโอนเงิน
+                </CardDescription>
+              </div>
+              <button
+                onClick={() => setMethods((prev) => [...prev, newPaymentMethod()])}
+                className="inline-flex items-center gap-2 rounded-xl bg-emerald-50 text-emerald-700 hover:bg-emerald-100 px-4 py-2 text-sm font-semibold transition-colors shadow-sm"
+              >
+                <Plus size={16} />
+                เพิ่มช่องทาง
+              </button>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-6 pt-6">
+            {methods.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-8 text-center text-sm text-slate-500">
+                ยังไม่มีช่องทางชำระเงิน
+              </div>
+            ) : (
+              <div className="grid gap-4">
+                {methods.map((method, index) => (
+                  <div key={method.id ?? `new-${index}`} className="group relative rounded-xl border border-slate-200/80 bg-white p-5 shadow-sm transition-all hover:border-slate-300 hover:shadow-md">
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <Input
+                        label="ชื่อแสดงผล"
+                        value={method.label}
+                        placeholder="เช่น กสิกรไทย (ค่าเช่า)"
+                        onChange={(event) =>
+                          setMethods((prev) =>
+                            prev.map((item, idx) =>
+                              idx === index ? { ...item, label: event.target.value } : item
+                            )
+                          )
+                        }
+                      />
+                      <Input
+                        label="ธนาคาร"
+                        value={method.bank_name}
+                        onChange={(event) =>
+                          setMethods((prev) =>
+                            prev.map((item, idx) =>
+                              idx === index ? { ...item, bank_name: event.target.value } : item
+                            )
+                          )
+                        }
+                      />
+                      <Input
+                        label="ชื่อบัญชี"
+                        value={method.account_name}
+                        onChange={(event) =>
+                          setMethods((prev) =>
+                            prev.map((item, idx) =>
+                              idx === index ? { ...item, account_name: event.target.value } : item
+                            )
+                          )
+                        }
+                      />
+                      <Input
+                        label="เลขบัญชี"
+                        value={method.account_number}
+                        onChange={(event) =>
+                          setMethods((prev) =>
+                            prev.map((item, idx) =>
+                              idx === index ? { ...item, account_number: event.target.value } : item
+                            )
+                          )
+                        }
+                      />
+                    </div>
+
+                    <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-4">
+                      <div className="flex items-center gap-3">
+                        <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg bg-slate-100 hover:bg-slate-200 px-4 py-2 text-sm font-medium text-slate-700 transition-colors">
+                          <Upload size={16} className="text-slate-500" />
+                          อัปโหลด QR
+                          <input
+                            type="file"
+                            accept="image/*"
+                            className="hidden"
+                            onChange={(event) => uploadQr(index, event.target.files?.[0])}
+                          />
+                        </label>
+
+                        {method.qr_url && (
+                          <a
+                            href={method.qr_url}
+                            target="_blank"
+                            className="inline-flex items-center gap-1.5 text-sm font-medium text-blue-600 hover:text-blue-700 underline-offset-4 hover:underline"
+                            rel="noreferrer"
+                          >
+                            ดูรูป QR Code
+                          </a>
+                        )}
+                      </div>
+
+                      <button
+                        onClick={() =>
+                          openConfirm({
+                            title: "ลบช่องทางชำระเงิน",
+                            message: "ยืนยันการลบช่องทางชำระเงินนี้?",
+                            action: async () => removeMethod(index),
+                          })
+                        }
+                        className="inline-flex items-center gap-1.5 rounded-lg text-sm font-medium text-red-500 hover:text-red-700 transition-colors"
+                      >
+                        <Trash2 size={16} />
+                        ลบช่องทางนี้
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="flex justify-end pt-2">
+              <button
+                onClick={() =>
+                  openConfirm({
+                    title: "บันทึกช่องทางชำระเงิน",
+                    message: "ยืนยันการบันทึกช่องทางชำระเงิน?",
+                    action: savePaymentMethods,
+                  })
+                }
+                className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-blue-500/20 hover:shadow-lg hover:shadow-blue-500/30 hover:-translate-y-0.5 active:scale-[0.98] transition-all"
+              >
+                <Save size={16} />
+                บันทึกช่องทางชำระเงิน
+              </button>
+            </div>
+          </CardContent>
+
+          <CardHeader className="bg-slate-50/50 border-y border-slate-100 mt-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle className="flex items-center gap-2">
+                  <Banknote className="h-5 w-5 text-blue-500" />
+                  ข้อมูลออกใบเสร็จ (นิติบุคคล)
+                </CardTitle>
+                <CardDescription className="mt-1">
+                  โปรไฟล์ข้อมูลที่ใช้สำหรับออกใบเสร็จรับเงิน
+                </CardDescription>
+              </div>
+              <button
+                onClick={() => setReceiptProfiles((prev) => [...prev, newReceiptProfile()])}
+                className="inline-flex items-center gap-2 rounded-xl bg-blue-50 text-blue-700 hover:bg-blue-100 px-4 py-2 text-sm font-semibold transition-colors shadow-sm"
+              >
+                <Plus size={16} />
+                เพิ่มโปรไฟล์
+              </button>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-6 pt-6">
+            {receiptProfiles.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-8 text-center text-sm text-slate-500">
+                ยังไม่มีโปรไฟล์ออกใบเสร็จ
+              </div>
+            ) : (
+              <div className="grid gap-4">
+                {receiptProfiles.map((profile, index) => (
+                  <div key={profile.id ?? `receipt-${index}`} className="group relative rounded-xl border border-slate-200/80 bg-white p-5 shadow-sm transition-all hover:border-slate-300 hover:shadow-md">
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <Input
+                        label="ชื่อโปรไฟล์ (สำหรับเลือก)"
+                        value={profile.label}
+                        placeholder="เช่น สำนักงานใหญ่"
+                        onChange={(event) =>
+                          setReceiptProfiles((prev) =>
+                            prev.map((item, idx) =>
+                              idx === index ? { ...item, label: event.target.value } : item
+                            )
+                          )
+                        }
+                      />
+                      <Input
+                        label="ชื่อนิติบุคคล/บริษัท"
+                        value={profile.company_name}
+                        onChange={(event) =>
+                          setReceiptProfiles((prev) =>
+                            prev.map((item, idx) =>
+                              idx === index ? { ...item, company_name: event.target.value } : item
+                            )
+                          )
+                        }
+                      />
+                      <Input
+                        label="เลขประจำตัวผู้เสียภาษี"
+                        value={profile.tax_id}
+                        onChange={(event) =>
+                          setReceiptProfiles((prev) =>
+                            prev.map((item, idx) =>
+                              idx === index ? { ...item, tax_id: event.target.value } : item
+                            )
+                          )
+                        }
+                      />
+                      <Input
+                        label="สาขา"
+                        value={profile.branch}
+                        onChange={(event) =>
+                          setReceiptProfiles((prev) =>
+                            prev.map((item, idx) =>
+                              idx === index ? { ...item, branch: event.target.value } : item
+                            )
+                          )
+                        }
+                      />
+                      <div className="md:col-span-2">
+                        <Input
+                          label="ที่อยู่ออกใบเสร็จ"
+                          value={profile.address}
+                          onChange={(event) =>
+                            setReceiptProfiles((prev) =>
+                              prev.map((item, idx) =>
+                                idx === index ? { ...item, address: event.target.value } : item
+                              )
+                            )
+                          }
+                        />
+                      </div>
+                    </div>
+                    
+                    <div className="mt-4 flex justify-end border-t border-slate-100 pt-4">
+                      <button
+                        onClick={() =>
+                          openConfirm({
+                            title: "ลบโปรไฟล์ใบเสร็จ",
+                            message: "ยืนยันการลบโปรไฟล์ใบเสร็จนี้?",
+                            action: async () => removeReceiptProfile(index),
+                          })
+                        }
+                        className="inline-flex items-center gap-1.5 rounded-lg text-sm font-medium text-red-500 hover:text-red-700 transition-colors"
+                      >
+                        <Trash2 size={16} />
+                        ลบโปรไฟล์นี้
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="flex justify-end pt-2">
+              <button
+                onClick={() =>
+                  openConfirm({
+                    title: "บันทึกโปรไฟล์ใบเสร็จ",
+                    message: "ยืนยันการบันทึกข้อมูลออกใบเสร็จ?",
+                    action: saveReceiptProfiles,
+                  })
+                }
+                className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-blue-500/20 hover:shadow-lg hover:shadow-blue-500/30 hover:-translate-y-0.5 active:scale-[0.98] transition-all"
+              >
+                <Save size={16} />
+                บันทึกโปรไฟล์ใบเสร็จ
+              </button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {activeTab === "Rooms" && (
+        <Card className={panelClass("overflow-hidden", "Rooms")}>
+          <CardHeader className="bg-slate-50/50 border-b border-slate-100">
+            <CardTitle className="flex items-center gap-2">
+              <DoorOpen className="h-5 w-5 text-indigo-500" />
+              จัดการข้อมูลห้องพัก
+            </CardTitle>
+            <CardDescription className="mt-1">
+              เพิ่มอาคาร กำหนดเลขห้อง ประเภทห้อง และราคาค่าเช่า
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-6 pt-6">
+            <div className="rounded-xl border border-slate-200/80 bg-slate-50/50 p-5 shadow-sm">
+              <h4 className="text-sm font-semibold text-slate-800 mb-3 flex items-center gap-2">
+                <Building2 className="h-4 w-4 text-slate-500" />
+                เพิ่มอาคารใหม่
+              </h4>
+              <div className="grid gap-4 md:grid-cols-3">
+                <Input
+                  label="ชื่ออาคาร"
+                  value={buildingName}
+                  onChange={(event) => setBuildingName(event.target.value)}
+                  placeholder="เช่น อาคาร A"
+                />
+                <Input
+                  label="ที่อยู่"
+                  value={buildingAddress}
+                  onChange={(event) => setBuildingAddress(event.target.value)}
+                  placeholder="ไม่บังคับ"
+                />
+                <div className="flex items-end">
+                  <button
+                    onClick={() =>
+                      openConfirm({
+                        title: "เพิ่มอาคาร",
+                        message: "ยืนยันการเพิ่มอาคารนี้?",
+                        action: addBuilding,
+                      })
+                    }
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-slate-800 px-4 py-[42px] h-[42px] text-sm font-semibold text-white hover:bg-slate-700 transition-colors shadow-sm"
+                  >
+                    <Plus size={16} />
+                    เพิ่มอาคาร
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="pt-4 border-t border-slate-100">
+              <h4 className="text-sm font-semibold text-slate-800 mb-4">เพิ่มห้องพักใหม่</h4>
+              <div className="flex flex-wrap items-end gap-4 bg-white p-4 rounded-xl border border-slate-200/60 shadow-sm">
+                <label className="text-sm text-slate-600 space-y-2 block flex-1 min-w-[150px]">
+                  <span className="font-medium text-slate-800">อาคาร</span>
+                  <select
+                    value={selectedBuilding}
+                    onChange={(event) => setSelectedBuilding(event.target.value)}
+                    className="w-full rounded-xl border border-slate-200/90 bg-white px-4 py-2.5 text-sm text-slate-900 shadow-sm transition-[border-color,box-shadow] duration-200 focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                  >
+                    {buildings.length === 0 && <option value="">ไม่มีอาคาร</option>}
+                    {buildings.map((building) => (
+                      <option key={building.id} value={building.id}>
+                        {building.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="flex-1 min-w-[120px]">
+                  <Input
+                    label="เลขห้อง"
+                    value={roomNumber}
+                    onChange={(event) => setRoomNumber(event.target.value)}
+                  />
+                </div>
+                <div className="flex-1 min-w-[120px]">
+                  <Input
+                    label="ประเภทห้อง"
+                    value={roomType}
+                    onChange={(event) => setRoomType(event.target.value)}
+                  />
+                </div>
+                <div className="flex-1 min-w-[120px]">
+                  <Input
+                    label="ราคา / เดือน"
+                    type="number"
+                    value={roomPrice}
+                    onChange={(event) => setRoomPrice(toNumber(event.target.value))}
+                  />
+                </div>
+                <button
+                  onClick={() =>
+                    openConfirm({
+                      title: "เพิ่มห้อง",
+                      message: "ยืนยันการเพิ่มห้องนี้?",
+                      action: addRoom,
+                    })
+                  }
+                  className="inline-flex h-[42px] items-center gap-2 rounded-xl bg-emerald-600 px-6 py-2 text-sm font-semibold text-white hover:bg-emerald-700 transition-colors shadow-sm"
+                >
+                  <Plus size={16} />
+                  เพิ่มห้อง
+                </button>
+              </div>
+            </div>
+
+            <div className="pt-2">
+              <div className="overflow-hidden rounded-xl border border-slate-200/80 shadow-sm">
+                <table className="w-full text-left text-sm whitespace-nowrap">
+                  <thead className="bg-slate-50 border-b border-slate-100 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    <tr>
+                      <th className="px-5 py-4">เลขห้อง</th>
+                      <th className="px-5 py-4">ประเภทห้อง</th>
+                      <th className="px-5 py-4">ราคา / เดือน</th>
+                      <th className="px-5 py-4">สถานะ</th>
+                      <th className="px-5 py-4 w-20 text-center">จัดการ</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 bg-white">
+                    {rooms.length === 0 ? (
+                      <tr>
+                        <td colSpan={5} className="px-5 py-8 text-center text-slate-500">
+                          ยังไม่มีข้อมูลห้องในอาคารนี้
+                        </td>
+                      </tr>
+                    ) : (
+                      [...rooms]
+                        .sort((a, b) => roomNumberCompare(a.room_number, b.room_number))
+                        .map((room) => (
+                        <tr key={room.id} className="hover:bg-slate-50/50 transition-colors">
+                          <td className="px-5 py-3">
+                            <input
+                              value={room.room_number}
                               onChange={(event) =>
-                                setUserRoles((prev) =>
-                                  prev.map((row) =>
-                                    row.id === user.id ? { ...row, role: event.target.value as RoleKey } : row
+                                setRooms((prev) =>
+                                  prev.map((item) =>
+                                    item.id === room.id
+                                      ? { ...item, room_number: event.target.value }
+                                      : item
                                   )
                                 )
                               }
-                              className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm"
+                              className="w-full max-w-[120px] rounded-lg border border-slate-200/60 bg-white px-3 py-1.5 text-sm focus:border-blue-400 focus:ring-1 focus:ring-blue-400 focus:outline-none transition-all"
+                            />
+                          </td>
+                          <td className="px-5 py-3">
+                            <input
+                              value={room.room_type ?? ""}
+                              onChange={(event) =>
+                                setRooms((prev) =>
+                                  prev.map((item) =>
+                                    item.id === room.id
+                                      ? { ...item, room_type: event.target.value }
+                                      : item
+                                  )
+                                )
+                              }
+                              className="w-full max-w-[140px] rounded-lg border border-slate-200/60 bg-white px-3 py-1.5 text-sm focus:border-blue-400 focus:ring-1 focus:ring-blue-400 focus:outline-none transition-all"
+                            />
+                          </td>
+                          <td className="px-5 py-3">
+                            <input
+                              type="number"
+                              value={room.price_month ?? 0}
+                              onChange={(event) =>
+                                setRooms((prev) =>
+                                  prev.map((item) =>
+                                    item.id === room.id
+                                      ? { ...item, price_month: toNumber(event.target.value) }
+                                      : item
+                                  )
+                                )
+                              }
+                              className="w-full max-w-[120px] rounded-lg border border-slate-200/60 bg-white px-3 py-1.5 text-sm focus:border-blue-400 focus:ring-1 focus:ring-blue-400 focus:outline-none transition-all"
+                            />
+                          </td>
+                          <td className="px-5 py-3">
+                            <select
+                              value={room.status}
+                              onChange={(event) =>
+                                setRooms((prev) =>
+                                  prev.map((item) =>
+                                    item.id === room.id ? { ...item, status: event.target.value } : item
+                                  )
+                                )
+                              }
+                              className="rounded-lg border border-slate-200/60 bg-white px-3 py-1.5 text-sm focus:border-blue-400 focus:ring-1 focus:ring-blue-400 focus:outline-none transition-all cursor-pointer"
                             >
-                              <option value="owner">owner</option>
-                              <option value="admin">admin</option>
-                              <option value="staff">staff</option>
-                              <option value="viewer">viewer</option>
+                              <option value="available">ว่าง</option>
+                              <option value="occupied">มีผู้เช่า</option>
+                              <option value="maintenance">ซ่อมบำรุง</option>
                             </select>
                           </td>
-                          <td className="px-4 py-3">
+                          <td className="px-5 py-3 text-center">
                             <button
-                              onClick={(e) => {
-                                e.stopPropagation();
+                              onClick={() =>
                                 openConfirm({
-                                  title: "บันทึกบทบาทผู้ใช้",
-                                  message: `ตั้งค่าบทบาทสำหรับ ${user.email ?? user.id} ใช่หรือไม่?`,
-                                  action: async () => saveUserRole(user.id, user.role),
-                                });
-                              }}
-                              className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700"
+                                  title: "ลบห้อง",
+                                  message: "ยืนยันการลบห้องนี้?",
+                                  action: async () => deleteRoom(room.id),
+                                })
+                              }
+                              className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-500 transition-colors"
+                              title="ลบห้อง"
                             >
-                              <Save size={12} />
-                              บันทึกบทบาท
+                              <Trash2 size={16} />
                             </button>
                           </td>
                         </tr>
-                      ))}
-                      {userRoles.length === 0 && (
-                        <tr>
-                          <td colSpan={4} className="px-4 py-6 text-center text-sm text-slate-500">
-                            ไม่พบผู้ใช้ในระบบ Auth
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              )}
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
 
-            <div className="space-y-3">
-              <p className="text-sm font-semibold text-slate-800">สิทธิ์ของผู้ใช้ที่เลือก</p>
-              {selectedAccessUser ? (
-                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                  <div className="space-y-1 border-b border-slate-200 pb-3">
-                    <p className="font-semibold text-slate-900">{selectedAccessUser.email ?? "-"}</p>
-                    <p className="text-xs text-slate-500 font-mono">{selectedAccessUser.id}</p>
-                    <p className="text-sm text-slate-700">
-                      บทบาท: <span className="font-semibold">{roleLabelThai(selectedAccessUser.role)} ({selectedAccessUser.role})</span>
-                    </p>
+            <div className="flex justify-end pt-4">
+              <button
+                onClick={() =>
+                  openConfirm({
+                    title: "บันทึกข้อมูลห้อง",
+                    message: "ยืนยันการบันทึกการเปลี่ยนแปลงห้องทั้งหมด?",
+                    action: saveRooms,
+                  })
+                }
+                className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-blue-500/20 hover:shadow-lg hover:shadow-blue-500/30 hover:-translate-y-0.5 active:scale-[0.98] transition-all"
+              >
+                <Save size={16} />
+                บันทึกการเปลี่ยนแปลงตารางห้อง
+              </button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {activeTab === "Access Control" && (
+        <Card className={panelClass("overflow-hidden", "Access Control")}>
+          <CardHeader className="bg-slate-50/50 border-b border-slate-100">
+            <CardTitle className="flex items-center gap-2">
+              <Shield className="h-5 w-5 text-rose-500" />
+              จัดการสิทธิ์การเข้าถึง
+            </CardTitle>
+            <CardDescription className="mt-1">
+              จัดการบทบาทผู้ใช้และกำหนดสิทธิ์สำหรับแต่ละบทบาท
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-6 pt-6">
+            <div className="rounded-xl border border-amber-200/60 bg-amber-50/80 p-4 text-sm text-amber-900 shadow-sm flex gap-3">
+              <Shield className="h-5 w-5 text-amber-500 shrink-0" />
+              <p>จัดการบทบาทผู้ใช้และสิทธิ์ในหน้าเดียวกัน เมื่อคลิกผู้ใช้ ระบบจะแสดงสิทธิ์ที่ได้จากบทบาทนั้นทันที</p>
+            </div>
+
+            <div className="grid gap-6 xl:grid-cols-[1.25fr_1fr]">
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-sm font-semibold text-slate-800 flex items-center gap-2">
+                    <Users className="h-4 w-4 text-slate-500" />
+                    ผู้ใช้และบทบาท
+                  </h4>
+                  <button
+                    onClick={() => void loadUserRoles()}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200/80 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm hover:bg-slate-50 transition-colors"
+                  >
+                    <RefreshCw size={12} className={loadingUserRoles ? "animate-spin" : ""} />
+                    รีเฟรช
+                  </button>
+                </div>
+                
+                {loadingUserRoles ? (
+                  <div className="space-y-3 animate-pulse">
+                    {Array.from({ length: 5 }).map((_, i) => (
+                      <div key={i} className="flex h-[72px] items-center gap-4 rounded-xl border border-slate-100 bg-slate-50 px-4">
+                        <div className="h-4 w-32 rounded bg-slate-200"></div>
+                        <div className="h-4 w-24 rounded bg-slate-200"></div>
+                        <div className="h-8 w-24 rounded-lg bg-slate-200"></div>
+                        <div className="h-8 w-24 rounded-lg bg-slate-200"></div>
+                      </div>
+                    ))}
                   </div>
-                  <div className="mt-3 max-h-[420px] space-y-2 overflow-auto pr-1">
-                    {PERMISSION_KEYS.map((permission) => {
-                      const allowed = !!rolePermissions[selectedAccessUser.role]?.[permission];
-                      return (
-                        <div
-                          key={`selected-${selectedAccessUser.id}-${permission}`}
-                          className={`rounded-lg border px-3 py-2 text-sm ${
-                            allowed ? "border-green-200 bg-green-50" : "border-red-200 bg-red-50"
-                          }`}
-                        >
-                          <div className="flex items-center justify-between gap-3">
+                ) : (
+                  <div className="overflow-hidden rounded-xl border border-slate-200/80 shadow-sm">
+                    <table className="w-full text-left text-sm whitespace-nowrap">
+                      <thead className="bg-slate-50 border-b border-slate-100 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                        <tr>
+                          <th className="px-5 py-3">อีเมล</th>
+                          <th className="px-5 py-3">เข้าใช้ล่าสุด</th>
+                          <th className="px-5 py-3">บทบาท</th>
+                          <th className="px-5 py-3 w-20 text-center">บันทึก</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 bg-white">
+                        {userRoles.length === 0 ? (
+                          <tr>
+                            <td colSpan={4} className="px-5 py-8 text-center text-sm text-slate-500">
+                              ไม่พบผู้ใช้ในระบบ Auth
+                            </td>
+                          </tr>
+                        ) : (
+                          userRoles.map((user) => (
+                            <tr
+                              key={user.id}
+                              onClick={() => setSelectedAccessUserId(user.id)}
+                              className={`cursor-pointer transition-colors ${
+                                selectedAccessUser?.id === user.id ? "bg-blue-50/60" : "hover:bg-slate-50/50"
+                              }`}
+                              title="คลิกเพื่อดูสิทธิ์ของผู้ใช้นี้"
+                            >
+                              <td className="px-5 py-3">
+                                <div className="font-medium text-slate-800">{user.email ?? "-"}</div>
+                                <div className="font-mono text-[11px] text-slate-400 mt-0.5">{user.id}</div>
+                                {user.phone && <div className="text-xs text-slate-500 mt-0.5">{user.phone}</div>}
+                              </td>
+                              <td className="px-5 py-3 text-xs text-slate-600">
+                                {user.last_sign_in_at ? new Date(user.last_sign_in_at).toLocaleString("th-TH") : "ไม่เคย"}
+                              </td>
+                              <td className="px-5 py-3">
+                                <select
+                                  value={user.role}
+                                  onClick={(e) => e.stopPropagation()}
+                                  onChange={(event) =>
+                                    setUserRoles((prev) =>
+                                      prev.map((row) =>
+                                        row.id === user.id ? { ...row, role: event.target.value as RoleKey } : row
+                                      )
+                                    )
+                                  }
+                                  className="w-full min-w-[100px] rounded-lg border border-slate-200/60 bg-white px-3 py-1.5 text-sm focus:border-blue-400 focus:ring-1 focus:ring-blue-400 focus:outline-none transition-all cursor-pointer"
+                                >
+                                  <option value="owner">owner</option>
+                                  <option value="admin">admin</option>
+                                  <option value="staff">staff</option>
+                                  <option value="viewer">viewer</option>
+                                </select>
+                              </td>
+                              <td className="px-5 py-3 text-center">
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    openConfirm({
+                                      title: "บันทึกบทบาทผู้ใช้",
+                                      message: `ตั้งค่าบทบาทสำหรับ ${user.email ?? user.id} ใช่หรือไม่?`,
+                                      action: async () => saveUserRole(user.id, user.role),
+                                    });
+                                  }}
+                                  className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-blue-50 hover:text-blue-600 transition-colors"
+                                  title="บันทึกบทบาท"
+                                >
+                                  <Save size={16} />
+                                </button>
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-4">
+                <h4 className="text-sm font-semibold text-slate-800 flex items-center gap-2">
+                  <CheckSquare className="h-4 w-4 text-slate-500" />
+                  สิทธิ์ของผู้ใช้ที่เลือก
+                </h4>
+                {selectedAccessUser ? (
+                  <div className="rounded-xl border border-slate-200/80 bg-white shadow-sm overflow-hidden flex flex-col h-full max-h-[500px]">
+                    <div className="bg-slate-50 border-b border-slate-100 p-4">
+                      <p className="font-medium text-slate-900 truncate">{selectedAccessUser.email ?? "-"}</p>
+                      <p className="text-xs text-slate-500 font-mono mt-0.5 truncate">{selectedAccessUser.id}</p>
+                      <div className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-indigo-50 px-2.5 py-1 text-xs font-semibold text-indigo-700">
+                        {roleLabelThai(selectedAccessUser.role)} ({selectedAccessUser.role})
+                      </div>
+                    </div>
+                    <div className="flex-1 overflow-y-auto p-4 space-y-2">
+                      {PERMISSION_KEYS.map((permission) => {
+                        const allowed = !!rolePermissions[selectedAccessUser.role]?.[permission];
+                        return (
+                          <div
+                            key={`selected-${selectedAccessUser.id}-${permission}`}
+                            className={`flex items-center justify-between gap-3 rounded-lg border px-3 py-2 text-sm transition-colors ${
+                              allowed ? "border-emerald-200/60 bg-emerald-50/50" : "border-rose-100 bg-rose-50/30 opacity-70"
+                            }`}
+                          >
                             <div>
                               <div className="font-medium text-slate-800">{permissionLabelThai(permission)}</div>
-                              <div className="text-xs text-slate-500">{permission}</div>
+                              <div className="text-[11px] text-slate-500">{permission}</div>
                             </div>
-                            <span className={`text-xs font-semibold ${allowed ? "text-green-700" : "text-red-700"}`}>
-                              {allowed ? "อนุญาต" : "ไม่อนุญาต"}
-                            </span>
+                            {allowed ? (
+                              <CheckCircle2 size={16} className="text-emerald-500 shrink-0" />
+                            ) : (
+                              <XCircle size={16} className="text-rose-400 shrink-0" />
+                            )}
                           </div>
-                        </div>
-                      );
-                    })}
+                        );
+                      })}
+                    </div>
                   </div>
-                </div>
-              ) : (
-                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">
-                  เลือกผู้ใช้จากตารางด้านซ้ายเพื่อดูสิทธิ์
-                </div>
-              )}
+                ) : (
+                  <div className="flex h-[200px] items-center justify-center rounded-xl border border-dashed border-slate-300 bg-slate-50 text-sm text-slate-500">
+                    เลือกผู้ใช้จากตารางด้านซ้ายเพื่อดูสิทธิ์
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
 
-          <div className="space-y-3">
-            <p className="text-sm font-semibold text-slate-800">ตารางสิทธิ์ตามบทบาท</p>
-            <div className="overflow-x-auto rounded-2xl border border-slate-200">
-              <table className="w-full min-w-[980px] text-sm">
-                <thead className="bg-slate-100 text-slate-600">
-                  <tr>
-                    <th className="px-4 py-3 text-left">สิทธิ์</th>
-                    {(["owner", "admin", "staff", "viewer"] as RoleKey[]).map((role) => (
-                      <th key={role} className="px-4 py-3 text-center">
-                        {roleLabelThai(role)}
-                        <div className="text-[11px] font-normal text-slate-500">{role}</div>
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {PERMISSION_KEYS.map((permission) => (
-                    <tr key={permission} className="border-t border-slate-100">
-                      <td className="px-4 py-3">
-                        <div className="font-medium text-slate-800">{permissionLabelThai(permission)}</div>
-                        <div className="text-xs text-slate-500">{permission}</div>
-                      </td>
+            <div className="space-y-4 pt-6 border-t border-slate-100 mt-6">
+              <h4 className="text-sm font-semibold text-slate-800 flex items-center gap-2">
+                <List className="h-4 w-4 text-slate-500" />
+                ตารางสิทธิ์ตามบทบาท
+              </h4>
+              <div className="overflow-x-auto rounded-xl border border-slate-200/80 shadow-sm">
+                <table className="w-full text-left text-sm whitespace-nowrap">
+                  <thead className="bg-slate-50 border-b border-slate-100">
+                    <tr>
+                      <th className="px-5 py-4 text-xs font-semibold uppercase tracking-wider text-slate-500">สิทธิ์</th>
                       {(["owner", "admin", "staff", "viewer"] as RoleKey[]).map((role) => (
-                        <td key={`${role}-${permission}`} className="px-4 py-3 text-center">
-                          <input
-                            type="checkbox"
-                            checked={!!rolePermissions[role]?.[permission]}
-                            onChange={() => togglePermission(role, permission)}
-                          />
-                        </td>
+                        <th key={role} className="px-5 py-4 text-center">
+                          <div className="font-semibold text-slate-700">{roleLabelThai(role)}</div>
+                          <div className="text-[10px] uppercase tracking-wider text-slate-400 mt-0.5">{role}</div>
+                        </th>
                       ))}
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 bg-white">
+                    {PERMISSION_KEYS.map((permission) => (
+                      <tr key={permission} className="hover:bg-slate-50/50 transition-colors">
+                        <td className="px-5 py-3">
+                          <div className="font-medium text-slate-800">{permissionLabelThai(permission)}</div>
+                          <div className="text-[11px] text-slate-500 mt-0.5">{permission}</div>
+                        </td>
+                        {(["owner", "admin", "staff", "viewer"] as RoleKey[]).map((role) => (
+                          <td key={`${role}-${permission}`} className="px-5 py-3 text-center">
+                            <label className="inline-flex cursor-pointer items-center justify-center p-1 rounded-full hover:bg-slate-100 transition-colors">
+                              <input
+                                type="checkbox"
+                                checked={!!rolePermissions[role]?.[permission]}
+                                onChange={() => togglePermission(role, permission)}
+                                className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                              />
+                            </label>
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              
+              <div className="flex justify-end pt-2">
+                <button
+                  onClick={() =>
+                    openConfirm({
+                      title: "บันทึกสิทธิ์",
+                      message: "ยืนยันการบันทึกสิทธิ์ตามบทบาท?",
+                      action: savePermissions,
+                    })
+                  }
+                  className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-blue-500/20 hover:shadow-lg hover:shadow-blue-500/30 hover:-translate-y-0.5 active:scale-[0.98] transition-all"
+                >
+                  <Save size={16} />
+                  บันทึกสิทธิ์ส่วนกลาง
+                </button>
+              </div>
             </div>
-            <button
-              onClick={() =>
-                openConfirm({
-                  title: "บันทึกสิทธิ์",
-                  message: "ยืนยันการบันทึกสิทธิ์ตามบทบาท?",
-                  action: savePermissions,
-                })
-              }
-              className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-blue-500/20 hover:shadow-lg hover:shadow-blue-500/30 hover:-translate-y-0.5 active:scale-[0.98] transition-all"
-            >
-              <Save size={16} />
-              บันทึกสิทธิ์
-            </button>
-          </div>
-        </div>
+          </CardContent>
+        </Card>
       )}
 
       <Modal isOpen={confirmOpen} onClose={() => setConfirmOpen(false)} title={pendingAction?.title ?? "ยืนยัน"} size="md">
