@@ -198,6 +198,7 @@ export function MoveOutProcessingModal({
         tenantId,
         payload: {
           forfeitDeposit,
+          useProrate,
           move_out_date: moveOutDate,
           meterData: {
             initial_electricity: prevElec,

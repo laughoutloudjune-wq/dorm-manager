@@ -347,6 +347,7 @@ export async function POST(req: Request) {
       const {
         forfeitDeposit,
         forfeit_security_deposit,
+        useProrate = true,
         meterData: extractedMeterData,
         moveOutFeeLines: extractedMoveOutFeeLines,
         ...restPayload
@@ -434,8 +435,8 @@ export async function POST(req: Request) {
       const priceMonth = toNumber(roomRel?.price_month ?? 0);
       const dailyRate = priceMonth / 30;
       
-      const baseRent = priceMonth * fullMonths;
-      const proratedRent = roundTo2(dailyRate * prorateDays);
+      const baseRent = useProrate ? (priceMonth * fullMonths) : 0;
+      const proratedRent = useProrate ? roundTo2(dailyRate * prorateDays) : 0;
       const totalRent = baseRent + proratedRent;
 
       // Utilities

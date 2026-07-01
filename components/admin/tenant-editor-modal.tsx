@@ -713,6 +713,7 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
         payload: {
         status: "inactive",
         move_out_date: moveOutDate,
+        useProrate,
         final_electricity_reading: toNumber(form.final_electricity_reading),
         final_water_reading: toNumber(form.final_water_reading),
         forfeit_security_deposit: forfeitDeposit,
