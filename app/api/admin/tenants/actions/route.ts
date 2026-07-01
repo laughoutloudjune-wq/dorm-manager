@@ -344,8 +344,19 @@ export async function POST(req: Request) {
       const tenantId = String(body?.tenantId ?? "");
       const roomId = String(body?.roomId ?? "");
       const payload = body?.payload ?? {};
+      const {
+        forfeitDeposit,
+        forfeit_security_deposit,
+        meterData,
+        moveOutFeeLines,
+        ...restPayload
+      } = payload;
+      
+      const isForfeit = forfeitDeposit ?? forfeit_security_deposit ?? false;
+
       const updatePayload = {
-        ...payload,
+        ...restPayload,
+        forfeit_security_deposit: isForfeit,
         status: "inactive",
         room_id: null,
       };
@@ -460,8 +471,8 @@ export async function POST(req: Request) {
       }
 
       // Deductions
-      const forfeitDeposit = Boolean(payload?.forfeitDeposit);
-      const depositRefund = forfeitDeposit ? 0 : toNumber(tenant?.security_deposit_amount ?? 0);
+      const checkForfeit = Boolean(payload?.forfeitDeposit ?? payload?.forfeit_security_deposit);
+      const depositRefund = checkForfeit ? 0 : toNumber(tenant?.security_deposit_amount ?? 0);
       const advanceRentRefund = toNumber(tenant?.advance_rent_amount ?? 0);
       const totalDiscount = depositRefund + advanceRentRefund;
 
@@ -495,7 +506,7 @@ export async function POST(req: Request) {
         electricity_reading_end: toNumber(meterData.final_electricity),
         water_reading_start: toNumber(meterData.initial_water),
         water_reading_end: toNumber(meterData.final_water),
-        notes: forfeitDeposit ? "ย้ายออก (ริบเงินประกัน)" : "ย้ายออก (Final Statement)",
+        notes: checkForfeit ? "ย้ายออก (ริบเงินประกัน)" : "ย้ายออก (Final Statement)",
         created_at: new Date().toISOString(),
       });
 
