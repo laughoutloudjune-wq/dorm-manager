@@ -61,6 +61,8 @@ type Props = {
   setForm: (updater: (prev: MoveOutWizardForm) => MoveOutWizardForm) => void;
   forfeitDeposit: boolean;
   setForfeitDeposit: (v: boolean) => void;
+  useProrate: boolean;
+  setUseProrate: (v: boolean) => void;
   moveOutFeeLines: MoveOutFeeLine[];
   setMoveOutFeeLines: React.Dispatch<React.SetStateAction<MoveOutFeeLine[]>>;
   latestPrevElectricity: number;
@@ -553,6 +555,8 @@ function Step3FinancialSummary({
   setForm,
   forfeitDeposit,
   setForfeitDeposit,
+  useProrate,
+  setUseProrate,
   moveOutFeeLines,
   setMoveOutFeeLines,
   rates,
@@ -572,6 +576,8 @@ function Step3FinancialSummary({
   setForm: Props["setForm"];
   forfeitDeposit: boolean;
   setForfeitDeposit: (v: boolean) => void;
+  useProrate: boolean;
+  setUseProrate: (v: boolean) => void;
   moveOutFeeLines: MoveOutFeeLine[];
   setMoveOutFeeLines: React.Dispatch<React.SetStateAction<MoveOutFeeLine[]>>;
   rates: SettingsRates;
@@ -731,24 +737,45 @@ function Step3FinancialSummary({
       </SectionCard>
 
       {/* Forfeit deposit toggle */}
-      <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-red-200 bg-red-50/60 px-4 py-4">
-        <div className="relative mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center">
-          <input
-            type="checkbox"
-            checked={forfeitDeposit}
-            onChange={e => setForfeitDeposit(e.target.checked)}
-            className="peer sr-only"
-          />
-          <div className="h-5 w-5 rounded-md border-2 border-red-300 bg-white peer-checked:border-red-600 peer-checked:bg-red-600 transition-all" />
-          {forfeitDeposit && (
-            <CheckCircle2 className="absolute h-3.5 w-3.5 text-white pointer-events-none" />
-          )}
-        </div>
-        <div>
-          <p className="text-sm font-semibold text-red-800">ริบเงินประกัน (ไม่คืนเงินประกัน)</p>
-          <p className="mt-0.5 text-xs text-red-600">ใช้กรณีผู้เช่าไม่แจ้งล่วงหน้า หรือย้ายออกก่อนครบสัญญา ระบบจะไม่นำเงินประกันมาเป็นเครดิตในสรุปย้ายออก</p>
-        </div>
-      </label>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-red-200 bg-red-50/60 px-4 py-4">
+          <div className="relative mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center">
+            <input
+              type="checkbox"
+              checked={forfeitDeposit}
+              onChange={e => setForfeitDeposit(e.target.checked)}
+              className="peer sr-only"
+            />
+            <div className="h-5 w-5 rounded-md border-2 border-red-300 bg-white peer-checked:border-red-600 peer-checked:bg-red-600 transition-all" />
+            {forfeitDeposit && (
+              <CheckCircle2 className="absolute h-3.5 w-3.5 text-white pointer-events-none" />
+            )}
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-red-800">ริบเงินประกัน (ไม่คืนเงินประกัน)</p>
+            <p className="mt-0.5 text-xs text-red-600">ใช้กรณีผิดสัญญา ระบบจะไม่คืนเงินประกัน</p>
+          </div>
+        </label>
+
+        <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-4">
+          <div className="relative mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center">
+            <input
+              type="checkbox"
+              checked={useProrate}
+              onChange={e => setUseProrate(e.target.checked)}
+              className="peer sr-only"
+            />
+            <div className="h-5 w-5 rounded-md border-2 border-slate-300 bg-white peer-checked:border-violet-600 peer-checked:bg-violet-600 transition-all" />
+            {useProrate && (
+              <CheckCircle2 className="absolute h-3.5 w-3.5 text-white pointer-events-none" />
+            )}
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-slate-800">คิดค่าเช่าเฉลี่ยตามวัน (Prorate)</p>
+            <p className="mt-0.5 text-xs text-slate-500">หากปิดใช้งาน จะไม่เรียกเก็บค่าเช่าในรอบบิลสุดท้าย</p>
+          </div>
+        </label>
+      </div>
 
       <div className="flex justify-between pt-2">
         <button
@@ -1044,6 +1071,8 @@ export function MoveOutWizard({
   setForm,
   forfeitDeposit,
   setForfeitDeposit,
+  useProrate,
+  setUseProrate,
   moveOutFeeLines,
   setMoveOutFeeLines,
   latestPrevElectricity,
@@ -1121,6 +1150,8 @@ export function MoveOutWizard({
               setForm={setForm}
               forfeitDeposit={forfeitDeposit}
               setForfeitDeposit={setForfeitDeposit}
+              useProrate={useProrate}
+              setUseProrate={setUseProrate}
               moveOutFeeLines={moveOutFeeLines}
               setMoveOutFeeLines={setMoveOutFeeLines}
               rates={rates}

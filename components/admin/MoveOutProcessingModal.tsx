@@ -35,6 +35,7 @@ export function MoveOutProcessingModal({
   });
 
   const [forfeitDeposit, setForfeitDeposit] = useState(false);
+  const [useProrate, setUseProrate] = useState(true);
   const [moveOutFeeLines, setMoveOutFeeLines] = useState<MoveOutFeeLine[]>([]);
   const [isMovingOut, setIsMovingOut] = useState(false);
   const [isCancellingMoveOut, setIsCancellingMoveOut] = useState(false);
@@ -344,6 +345,8 @@ export function MoveOutProcessingModal({
             setForm={setForm}
             forfeitDeposit={forfeitDeposit}
             setForfeitDeposit={setForfeitDeposit}
+            useProrate={useProrate}
+            setUseProrate={setUseProrate}
             moveOutFeeLines={moveOutFeeLines}
             setMoveOutFeeLines={setMoveOutFeeLines}
             latestPrevElectricity={prevElec}
