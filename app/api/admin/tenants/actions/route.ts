@@ -187,10 +187,8 @@ export async function POST(req: Request) {
       }
 
       if (roomId) {
-        const roomAuth = await requireAdminPermission(req, "room.edit");
-        if ("error" in roomAuth) return roomAuth.error;
-        await roomAuth.supabase.from("rooms").update({ status: "occupied" }).eq("id", roomId);
-        await roomAuth.supabase.from("room_logs").insert({
+        await auth.supabase.from("rooms").update({ status: "occupied" }).eq("id", roomId);
+        await auth.supabase.from("room_logs").insert({
           room_id: roomId,
           event_type: "move_in",
           created_at: new Date().toISOString(),
@@ -220,8 +218,6 @@ export async function POST(req: Request) {
     if (action === "move_out") {
       const auth = await requireAdminPermission(req, "tenant.edit");
       if ("error" in auth) return auth.error;
-      const roomAuth = await requireAdminPermission(req, "room.edit");
-      if ("error" in roomAuth) return roomAuth.error;
 
       const tenantId = String(body?.tenantId ?? "");
       const roomId = String(body?.roomId ?? "");
@@ -257,8 +253,8 @@ export async function POST(req: Request) {
           .eq("id", openLog.id);
       }
 
-      await roomAuth.supabase.from("rooms").update({ status: "available" }).eq("id", roomId);
-      await roomAuth.supabase.from("room_logs").insert({
+      await auth.supabase.from("rooms").update({ status: "available" }).eq("id", roomId);
+      await auth.supabase.from("room_logs").insert({
         room_id: roomId,
         event_type: "move_out",
         created_at: new Date().toISOString(),
@@ -338,8 +334,6 @@ export async function POST(req: Request) {
     if (action === "final_move_out") {
       const auth = await requireAdminPermission(req, "tenant.edit");
       if ("error" in auth) return auth.error;
-      const roomAuth = await requireAdminPermission(req, "room.edit");
-      if ("error" in roomAuth) return roomAuth.error;
 
       const tenantId = String(body?.tenantId ?? "");
       const roomId = String(body?.roomId ?? "");
@@ -382,8 +376,8 @@ export async function POST(req: Request) {
           .eq("id", openLog.id);
       }
 
-      await roomAuth.supabase.from("rooms").update({ status: "available" }).eq("id", roomId);
-      await roomAuth.supabase.from("room_logs").insert({
+      await auth.supabase.from("rooms").update({ status: "available" }).eq("id", roomId);
+      await auth.supabase.from("room_logs").insert({
         room_id: roomId,
         event_type: "move_out",
         created_at: new Date().toISOString(),
@@ -583,8 +577,6 @@ export async function POST(req: Request) {
     if (action === "abandon_room") {
       const auth = await requireAdminPermission(req, "tenant.edit");
       if ("error" in auth) return auth.error;
-      const roomAuth = await requireAdminPermission(req, "room.edit");
-      if ("error" in roomAuth) return roomAuth.error;
 
       const tenantId = String(body?.tenantId ?? "");
       const forfeitDeposit = Boolean(body?.forfeitDeposit);
@@ -702,8 +694,8 @@ export async function POST(req: Request) {
         }
 
         // Free the room and log the event
-        await roomAuth.supabase.from("rooms").update({ status: "available" }).eq("id", roomId);
-        await roomAuth.supabase.from("room_logs").insert({
+        await auth.supabase.from("rooms").update({ status: "available" }).eq("id", roomId);
+        await auth.supabase.from("room_logs").insert({
           room_id: roomId,
           event_type: "move_out",
           created_at: nowIso,
