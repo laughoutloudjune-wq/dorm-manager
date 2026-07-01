@@ -347,8 +347,8 @@ export async function POST(req: Request) {
       const {
         forfeitDeposit,
         forfeit_security_deposit,
-        meterData,
-        moveOutFeeLines,
+        meterData: extractedMeterData,
+        moveOutFeeLines: extractedMoveOutFeeLines,
         ...restPayload
       } = payload;
       
