@@ -95,16 +95,23 @@ export function MoveRoomWizardModal({
     };
 
     try {
+      const { createClient } = await import("@/lib/supabase-client");
+      const supabase = createClient();
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+      if (!token) throw new Error("เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่");
+
       const res = await fetch("/api/admin/tenants/actions", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({
           action: "save_tenant",
-          data: {
-            payload: { id: activeTenant.id, room_id: form.new_room_id },
-            roomId: form.new_room_id,
-            transferPayload: payload,
-          },
+          payload: { id: activeTenant.id, room_id: form.new_room_id },
+          roomId: form.new_room_id,
+          transferPayload: payload,
         }),
       });
       if (!res.ok) {
