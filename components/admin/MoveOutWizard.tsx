@@ -642,11 +642,13 @@ function Step3FinancialSummary({
             value={`฿${formatMoney(appliedMoveOutRentBase)}`}
           />
           <LineItem
-            label={`ค่าไฟฟ้า (${elecUsage} หน่วย)`}
+            label="ค่าไฟฟ้า"
+            sub={`มิเตอร์ ${toNumber(form.final_electricity_reading)} - ${latestPrevElectricity} = ${elecUsage} หน่วย`}
             value={`฿${formatMoney(elecCost)}`}
           />
           <LineItem
-            label={`ค่าน้ำ (${waterUsage} หน่วย)`}
+            label="ค่าน้ำ"
+            sub={`มิเตอร์ ${toNumber(form.final_water_reading)} - ${latestPrevWater} = ${waterUsage} หน่วย`}
             value={`฿${formatMoney(waterCost)}`}
           />
           {moveOutFeeLines.filter(l => l.label.trim() && toNumber(l.amount) > 0).map(l => (

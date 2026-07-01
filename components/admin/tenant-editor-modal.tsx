@@ -1269,6 +1269,8 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
             }}
             forfeitDeposit={forfeitDeposit}
             setForfeitDeposit={setForfeitDeposit}
+            useProrate={useProrate}
+            setUseProrate={setUseProrate}
             moveOutFeeLines={moveOutFeeLines}
             setMoveOutFeeLines={setMoveOutFeeLines}
             latestPrevElectricity={latestPrevElectricity}
