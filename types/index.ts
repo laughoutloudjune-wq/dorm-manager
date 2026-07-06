@@ -126,6 +126,10 @@ export type InvoiceRow = {
   late_fee_per_day: number | null;
   late_fee_start_date: string | null;
   carry_forward_amount: number | null;
+  electricity_reading_start: number | null;
+  electricity_reading_end: number | null;
+  water_reading_start: number | null;
+  water_reading_end: number | null;
   other_fees: any;
   additional_fees_total: number | null;
   additional_fees_breakdown: any;

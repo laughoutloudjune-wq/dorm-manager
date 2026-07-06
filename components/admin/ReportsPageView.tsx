@@ -115,6 +115,7 @@ export default function ReportsPageView() {
   const [meters, setMeters] = useState<any[]>([]);
   const [logs, setLogs] = useState<any[]>([]);
   const [transfers, setTransfers] = useState<any[]>([]);
+  const [settlementInvoices, setSettlementInvoices] = useState<any[]>([]);
 
   const canViewReports = can("tenant.view") || can("room.view") || can("invoice.create");
 
@@ -130,7 +131,7 @@ export default function ReportsPageView() {
       setError(null);
       const start = yearStart(selectedYear);
       const end = yearEnd(selectedYear);
-      const [settingsRes, invoicesRes, tenantsRes, metersRes, logsRes, transfersRes] = await Promise.all([
+      const [settingsRes, invoicesRes, tenantsRes, metersRes, logsRes, transfersRes, settlementInvoicesRes] = await Promise.all([
         supabase.from("settings").select("water_rate,electricity_rate").eq("id", 1).maybeSingle(),
         supabase
           .from("invoices")
@@ -158,6 +159,16 @@ export default function ReportsPageView() {
           .gte("transfer_date", start)
           .lt("transfer_date", end)
           .order("transfer_date", { ascending: false }),
+        // Final move-out settlement invoices (created by final_move_out) hold the
+        // REAL deposit/advance credit applied (discount_amount) and the real net
+        // amount (total_amount, negative when the tenant is owed a refund) — not
+        // restricted to the selected year since a move-out invoice's billing
+        // period can start in the prior year.
+        supabase
+          .from("invoices")
+          .select("id,tenant_id,room_id,total_amount,discount_amount,notes,issue_date,rooms(room_number,buildings(name))")
+          .ilike("notes", "ย้ายออก%")
+          .order("issue_date", { ascending: false }),
       ]);
 
       if (!mounted) return;
@@ -167,7 +178,8 @@ export default function ReportsPageView() {
         tenantsRes.error ||
         metersRes.error ||
         logsRes.error ||
-        transfersRes.error;
+        transfersRes.error ||
+        settlementInvoicesRes.error;
 
       if (firstError) {
         setError(firstError.message);
@@ -211,6 +223,7 @@ export default function ReportsPageView() {
       setMeters(metersRes.data ?? []);
       setLogs(logsRes.data ?? []);
       setTransfers(transfersRes.data ?? []);
+      setSettlementInvoices(settlementInvoicesRes.data ?? []);
       setLoading(false);
     };
 
@@ -228,6 +241,38 @@ export default function ReportsPageView() {
     }
     return map;
   }, [logs, meters, tenants]);
+
+  // final_move_out clears tenant.room_id once a tenant is fully settled, so looking
+  // up a finalized tenant's room by their (now-null) room_id fails. room_tenant_logs
+  // keeps the historical room_id/tenant_id pairing regardless, so use that instead.
+  const roomByTenantId = useMemo(() => {
+    const map = new Map<string, { room_number: string; building: string }>();
+    for (const row of logs) {
+      const room = relationItem(row.rooms);
+      if (row.tenant_id && room?.room_number) {
+        map.set(String(row.tenant_id), { room_number: room.room_number, building: getBuildingName(room) });
+      }
+    }
+    return map;
+  }, [logs]);
+
+  // The real, authoritative settlement figures live on the final move-out invoice
+  // (created by final_move_out) — discount_amount is the deposit/advance credit
+  // ACTUALLY applied (already zeroed out if forfeited), and total_amount nets
+  // that credit against the final charges (negative total_amount = tenant is
+  // owed a cash refund beyond what covered their final bill).
+  const settlementInvoiceByTenantId = useMemo(() => {
+    const map = new Map<string, any>();
+    for (const row of settlementInvoices) {
+      const tenantId = String(row.tenant_id ?? "");
+      if (!tenantId) continue;
+      // Multiple settlement invoices could exist if a tenant record was somehow
+      // finalized more than once; keep the most recent by issue_date (query is
+      // already ordered descending, so the first one seen wins).
+      if (!map.has(tenantId)) map.set(tenantId, row);
+    }
+    return map;
+  }, [settlementInvoices]);
 
   const meterByRoomMonth = useMemo(() => {
     const map = new Map<string, any>();
@@ -385,16 +430,56 @@ export default function ReportsPageView() {
     const direct = tenants
       .filter((row) => monthKey(String(row.move_out_date ?? "")) === selectedMonth)
       .map((row) => {
+        const settlement = settlementInvoiceByTenantId.get(String(row.id));
+
+        if (settlement) {
+          // Real figures from the final settlement invoice: discount_amount is the
+          // deposit/advance credit actually applied (already zero if forfeited),
+          // total_amount nets that against the final charges.
+          const settlementRoom = relationItem(settlement.rooms);
+          const prepaid = toNumber(settlement.discount_amount);
+          const netAmount = toNumber(settlement.total_amount);
+          const refunded = Math.max(0, -netAmount);
+          const stillOwed = Math.max(0, netAmount);
+          return {
+            date: row.move_out_date,
+            room:
+              settlementRoom?.room_number ??
+              roomByTenantId.get(String(row.id))?.room_number ??
+              relationItem(row.rooms)?.room_number ??
+              roomNumberById.get(String(row.room_id)) ??
+              "-",
+            tenant: row.full_name,
+            building:
+              (settlementRoom ? getBuildingName(settlementRoom) : null) ??
+              roomByTenantId.get(String(row.id))?.building ??
+              getBuildingName(relationItem(row.rooms)),
+            prepaid,
+            refunded,
+            note:
+              stillOwed > 0
+                ? `จากใบแจ้งหนี้สรุปย้ายออก — ผู้เช่าค้างชำระเพิ่มเติม ${formatMoney(stillOwed)}`
+                : "จากใบแจ้งหนี้สรุปย้ายออก",
+          };
+        }
+
+        // No settlement invoice found (e.g. moved out via "abandon room" or a
+        // manual date edit that skipped the settlement wizard) — fall back to the
+        // tenant's raw deposit/advance fields as a rough estimate only.
         const room = relationItem(row.rooms);
         const prepaid = toNumber(row.security_deposit_amount) + toNumber(row.advance_rent_amount);
         return {
           date: row.move_out_date,
-          room: room?.room_number ?? roomNumberById.get(String(row.room_id)) ?? "-",
+          room:
+            room?.room_number ??
+            roomByTenantId.get(String(row.id))?.room_number ??
+            roomNumberById.get(String(row.room_id)) ??
+            "-",
           tenant: row.full_name,
-          building: getBuildingName(room),
+          building: getBuildingName(room) !== "-" ? getBuildingName(room) : (roomByTenantId.get(String(row.id))?.building ?? "-"),
           prepaid,
           refunded: prepaid,
-          note: "ประมาณจากเงินประกัน + ค่าเช่าล่วงหน้าที่บันทึกไว้",
+          note: "ประมาณจากเงินประกัน + ค่าเช่าล่วงหน้าที่บันทึกไว้ (ไม่พบใบแจ้งหนี้สรุปย้ายออก)",
         };
       });
 
@@ -403,14 +488,20 @@ export default function ReportsPageView() {
       .filter((row) => monthKey(String(row.move_out_date ?? "")) === selectedMonth)
       .map((row) => {
         const room = relationItem(row.rooms);
+        // The tenant record itself may be gone, but the settlement invoice (keyed
+        // by tenant_id) can still carry the real refund figures.
+        const settlement = settlementInvoiceByTenantId.get(String(row.tenant_id ?? ""));
+        const prepaid = settlement ? toNumber(settlement.discount_amount) : 0;
+        const netAmount = settlement ? toNumber(settlement.total_amount) : 0;
+        const refunded = settlement ? Math.max(0, -netAmount) : 0;
         return {
           date: row.move_out_date,
           room: room?.room_number ?? roomNumberById.get(String(row.room_id)) ?? "-",
           tenant: row.tenant_name,
           building: getBuildingName(room),
-          prepaid: 0,
-          refunded: 0,
-          note: "มีเฉพาะประวัติการย้ายออก",
+          prepaid,
+          refunded,
+          note: settlement ? "จากใบแจ้งหนี้สรุปย้ายออก" : "มีเฉพาะประวัติการย้ายออก",
         };
       })
       .filter((row) => !seen.has(`${row.tenant}:${row.room}:${row.date}`));
@@ -421,7 +512,7 @@ export default function ReportsPageView() {
       if (dateA !== dateB) return dateB - dateA;
       return byBuildingAndRoom(a, b);
     });
-  }, [logs, roomNumberById, selectedMonth, tenants]);
+  }, [logs, roomNumberById, roomByTenantId, settlementInvoiceByTenantId, selectedMonth, tenants]);
 
   const moveOutSummary = useMemo(
     () => ({
