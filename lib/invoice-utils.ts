@@ -2,7 +2,7 @@
  * Invoice-specific utility functions extracted from InvoicesPageView.tsx.
  * These are pure functions that don't depend on React state.
  */
-import { toNumber, roundTo2, toLocalDateString, formatMoney } from "./format";
+import { toNumber, toLocalDateString, formatMoney } from "./format";
 
 // ── Date helpers ──────────────────────────────────────────────────────────────
 
@@ -370,6 +370,14 @@ export const buildRuleBreakdown = (
     };
   });
 
+/**
+ * Canonical daily rent rate: monthly rent split over a fixed 30-day cycle,
+ * rounded DOWN to a whole baht. This is the one true rounding convention for
+ * all rent proration in the app (move-in, room transfer, move-out) — do not
+ * introduce another divisor or leave the daily rate unrounded elsewhere.
+ */
+export const dailyRentRate = (monthlyRent: number) => Math.floor(toNumber(monthlyRent) / 30);
+
 export const calculateProratedRentByBillingDay = (
   monthlyRent: number,
   moveInDateText: string | null | undefined,
@@ -380,7 +388,7 @@ export const calculateProratedRentByBillingDay = (
   const moveInDay = Math.min(Math.max(moveInDate.getDate(), 1), 30);
   const billingDay = Math.min(Math.max(toNumber(billingDayInput ?? 1), 1), 30);
   const dailyRaw = monthlyRent / 30;
-  const dailyRounded = Math.floor(dailyRaw);
+  const dailyRounded = dailyRentRate(monthlyRent);
   const occupiedDays =
     moveInDay <= billingDay
       ? billingDay - moveInDay + 1
@@ -522,8 +530,8 @@ export const calculateInvoiceTransferRentProration = (
     moveInDateObj && moveInDateObj > periodStart ? moveInDateObj : periodStart;
   const billingEnd = periodEnd;
   const transferStart = transferDateObj < billingStart ? billingStart : transferDateObj;
-  const dailyOldRate = oldRoomRate / 30;
-  const dailyNewRate = newRoomRate / 30;
+  const dailyOldRate = dailyRentRate(oldRoomRate);
+  const dailyNewRate = dailyRentRate(newRoomRate);
 
   let oldRoomDays = 0;
   if (transferStart > billingStart) {
@@ -537,8 +545,8 @@ export const calculateInvoiceTransferRentProration = (
     billingStart,
     oldRoomDays,
     newRoomDays,
-    oldRentAmount: roundTo2(dailyOldRate * oldRoomDays),
-    newRentAmount: roundTo2(dailyNewRate * newRoomDays),
+    oldRentAmount: dailyOldRate * oldRoomDays,
+    newRentAmount: dailyNewRate * newRoomDays,
   };
 };
 
