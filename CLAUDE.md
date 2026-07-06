@@ -59,6 +59,28 @@ registration) is only permitted when the current active tenant already has a `mo
 set — enforced server-side in `app/api/register/route.ts` and `app/api/register/takeover/route.ts`.
 Without that check anyone could claim any occupied room by guessing its room number.
 
+## Meter readings — single source of truth, two writers only
+
+`meter_readings` (room_id + reading_month → previous/current electricity & water) is written
+ONLY by `app/api/admin/meters/actions/route.ts` (Meters page save button) and
+`app/api/admin-liff/meters/actions/route.ts` (LINE meter-staff LIFF). Every other file that
+touches this table — move-out settlement, reports, receipts, dashboard stats — must only
+`select` from it, never insert/update/upsert. This can't be enforced with Postgres RLS here:
+every server route uses the service-role key, which bypasses RLS uniformly, so the DB can't
+tell "the Meters page" apart from any other route. The only real enforcement is code review —
+if you're adding a write to `meter_readings` anywhere other than those two files, stop and
+reconsider.
+
+Anything that needs a tenant's/room's last known reading (e.g. move-out settlement computing
+usage as current − previous) must read the latest `meter_readings` row for that room, not
+reconstruct it from invoice history or a tenant's original move-in reading. A past bug in
+`MoveOutProcessingModal.tsx` did exactly that: the on-screen "previous reading" was correctly
+sourced from `meter_readings`, but the value actually submitted to `final_move_out` was
+separately (and wrongly) derived from `invoiceHistory[0].electricity_reading_end` — a field
+regular monthly invoices never populate — falling through to the tenant's original move-in
+reading. For a long-tenured tenant this produced a massively inflated "usage" on their final
+bill. Both values must come from the same place.
+
 ## Known intentional duplication
 
 `resolveElectricityUsage`/`resolveWaterUsage` exist in both `lib/invoice-utils.ts` and

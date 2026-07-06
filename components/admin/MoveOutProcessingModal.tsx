@@ -217,15 +217,17 @@ export function MoveOutProcessingModal({
     const moveOutDate =
       form.final_move_out_date || new Date().toISOString().slice(0, 10);
     try {
-      // Previous meter readings (source of truth from fetched data)
-      const prevElec =
-        data?.invoiceHistory?.[0]?.electricity_reading_end ??
-        data?.tenant?.initial_electricity_reading ??
-        0;
-      const prevWater =
-        data?.invoiceHistory?.[0]?.water_reading_end ??
-        data?.tenant?.initial_water_reading ??
-        0;
+      // Previous meter readings: MUST match data.prevElec/prevWater exactly —
+      // those are the same values shown on screen as "ก่อนหน้า X" (sourced from
+      // the latest meter_readings row for this room, the authoritative record).
+      // This used to recompute a SEPARATE value here from invoiceHistory, which
+      // is almost always empty for this purpose (regular monthly invoices never
+      // populate electricity_reading_end/water_reading_end — only a prior
+      // final_move_out invoice would), so it silently fell back to the tenant's
+      // original move-in reading — stale for anyone who'd lived there more than
+      // one billing cycle, producing a wildly inflated "usage" on the final bill.
+      const prevElec = data?.prevElec ?? 0;
+      const prevWater = data?.prevWater ?? 0;
 
       // ── FIX: nest meterData inside `payload` so the API handler can read it ──
       await callTenantsAction("final_move_out", {
