@@ -1,5 +1,6 @@
 ﻿import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase-admin";
+import { verifyLineAccessToken } from "@/lib/line-admin-auth";
 
 export async function POST(req: Request) {
   try {
@@ -26,17 +27,15 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Missing required fields." }, { status: 400 });
     }
 
-    if (accessToken) {
-      const profileResponse = await fetch("https://api.line.me/v2/profile", {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      if (!profileResponse.ok) {
-        return NextResponse.json({ error: "Unable to verify LINE profile." }, { status: 401 });
-      }
-      const profile = await profileResponse.json();
-      if (profile.userId !== userId) {
-        return NextResponse.json({ error: "LINE user mismatch." }, { status: 401 });
-      }
+    if (!accessToken) {
+      return NextResponse.json({ error: "Missing LINE access token." }, { status: 401 });
+    }
+    const profile = await verifyLineAccessToken(String(accessToken));
+    if (!profile) {
+      return NextResponse.json({ error: "Unable to verify LINE profile." }, { status: 401 });
+    }
+    if (profile.userId !== userId) {
+      return NextResponse.json({ error: "LINE user mismatch." }, { status: 401 });
     }
 
     const supabase = createAdminClient();
@@ -85,7 +84,7 @@ export async function POST(req: Request) {
 
     const { data: tenant } = await supabase
       .from("tenants")
-      .select("id,line_user_id")
+      .select("id,line_user_id,move_out_date")
       .eq("room_id", room.id)
       .eq("status", "active")
       .maybeSingle();
@@ -109,6 +108,23 @@ export async function POST(req: Request) {
 
     // Self-service takeover flow:
     // If room has an active tenant (any occupant) and user registers as new tenant, create takeover request.
+    // Only allowed once the current tenant already has a move-out date on record — otherwise
+    // anyone could claim any occupied room by guessing its number with no real connection to it.
+    if (
+      shouldMarkAsNewTenant &&
+      tenant?.id &&
+      (!tenant.line_user_id || tenant.line_user_id !== userId) &&
+      !tenant.move_out_date
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "ห้องนี้มีผู้เช่าอยู่และยังไม่ได้แจ้งย้ายออก กรุณาติดต่อผู้ดูแลหอพักโดยตรงหากต้องการย้ายเข้าห้องนี้",
+        },
+        { status: 409 }
+      );
+    }
+
     if (
       shouldMarkAsNewTenant &&
       tenant?.id &&

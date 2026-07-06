@@ -6,19 +6,9 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/Badge";
 import { createClient } from "@/lib/supabase-client";
 import { usePermissions } from "@/lib/use-permissions";
-import {
-  Building2,
-  ChevronRight,
-  RefreshCw,
-  CalendarDays,
-  Smartphone,
-  Clock,
-  CheckCircle2,
-  XCircle,
-  LogOut,
-  AlertTriangle,
-} from "lucide-react";
+import { AlertTriangle, Building2, CalendarDays, CheckCircle2, ChevronRight, Clock, LogOut, Plus, RefreshCw, Smartphone, XCircle } from "lucide-react";
 import { MoveOutProcessingModal } from "@/components/admin/MoveOutProcessingModal";
+import { AddManualMoveOutModal } from "@/components/admin/AddManualMoveOutModal";
 
 type RequestRow = {
   id: string;
@@ -76,6 +66,7 @@ const requestStatusThai = (s: string) => {
   if (s === "completed") return "ย้ายออกแล้ว";
   if (s === "cancelled") return "ยกเลิก";
   if (s === "manual") return "กำหนดแล้ว";
+  if (s === "pending_settlement") return "รอสรุปยอด";
   return s;
 };
 
@@ -95,7 +86,7 @@ const daysUntil = (dateStr: string) => {
   return Math.round((target.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
 };
 
-type ActiveTab = "waiting_verify" | "waiting_moveout" | "declined" | "past";
+type ActiveTab = "waiting_verify" | "waiting_moveout" | "pending_settlement" | "declined" | "past";
 
 export default function MoveOutsPage() {
   const supabase = useMemo(() => createClient(), []);
@@ -105,15 +96,17 @@ export default function MoveOutsPage() {
   const [loading, setLoading] = useState(true);
   const [requests, setRequests] = useState<RequestRow[]>([]);
   const [tenantsWithDate, setTenantsWithDate] = useState<TenantWithMoveOut[]>([]);
+  const [pendingSettlementTenants, setPendingSettlementTenants] = useState<TenantWithMoveOut[]>([]);
 
   const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isManualModalOpen, setIsManualModalOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<ActiveTab>("waiting_verify");
 
   const load = useCallback(async () => {
     if (!canView) return;
     setLoading(true);
-    const [reqRes, tenRes] = await Promise.all([
+    const [reqRes, tenRes, settlementRes] = await Promise.all([
       supabase
         .from("move_out_requests")
         .select(
@@ -125,6 +118,16 @@ export default function MoveOutsPage() {
         .select("id,full_name,move_out_date,room_id,rooms(room_number,buildings(name))")
         .not("move_out_date", "is", null)
         .eq("status", "active")
+        .order("move_out_date", { ascending: true }),
+      // Tenants freed via the quick "ปลดล็อกห้องทันที" action: already inactive, but
+      // room_id is only cleared by the full settlement (final_move_out/abandon_room),
+      // so a non-null room_id here means the settlement invoice hasn't been made yet.
+      supabase
+        .from("tenants")
+        .select("id,full_name,move_out_date,room_id,rooms(room_number,buildings(name))")
+        .not("move_out_date", "is", null)
+        .not("room_id", "is", null)
+        .eq("status", "inactive")
         .order("move_out_date", { ascending: true }),
     ]);
     if (reqRes.error) {
@@ -138,6 +141,12 @@ export default function MoveOutsPage() {
       setTenantsWithDate([]);
     } else {
       setTenantsWithDate((tenRes.data ?? []) as TenantWithMoveOut[]);
+    }
+    if (settlementRes.error) {
+      toast.error(settlementRes.error.message);
+      setPendingSettlementTenants([]);
+    } else {
+      setPendingSettlementTenants((settlementRes.data ?? []) as TenantWithMoveOut[]);
     }
     setLoading(false);
   }, [canView, supabase]);
@@ -195,15 +204,44 @@ export default function MoveOutsPage() {
       }
     });
 
+    pendingSettlementTenants.forEach((t) => {
+      // A tenant vacated via the quick action may still have a stale "approved"/"requested"
+      // move-out request row (that flow doesn't touch move_out_requests) — supersede it
+      // rather than showing both a stale request AND a pending-settlement row.
+      const existing = Array.from(map.values()).find((u) => u.tenant_id === t.id);
+      if (existing) {
+        existing.status = "pending_settlement";
+        existing.status_label = requestStatusThai("pending_settlement");
+        existing.move_out_date = t.move_out_date;
+        existing.sort_date = new Date(`${t.move_out_date}T00:00:00`).getTime();
+        return;
+      }
+      const { room, building } = roomFromTenant(t);
+      map.set(`settle-${t.id}`, {
+        key: `settle-${t.id}`,
+        tenant_id: t.id,
+        tenant_name: t.full_name,
+        room,
+        building,
+        move_out_date: t.move_out_date,
+        sort_date: new Date(`${t.move_out_date}T00:00:00`).getTime(),
+        status: "pending_settlement",
+        status_label: requestStatusThai("pending_settlement"),
+        source: "admin",
+        notice_date: null,
+      });
+    });
+
     return Array.from(map.values()).sort((a, b) => {
       if (a.status === "requested" && b.status !== "requested") return -1;
       if (b.status === "requested" && a.status !== "requested") return 1;
       return a.sort_date - b.sort_date;
     });
-  }, [requests, tenantsWithDate]);
+  }, [requests, tenantsWithDate, pendingSettlementTenants]);
 
   const requestedCount = unifiedList.filter((r) => r.status === "requested").length;
   const approvedCount = unifiedList.filter((r) => r.status === "approved" || r.status === "manual").length;
+  const pendingSettlementCount = unifiedList.filter((r) => r.status === "pending_settlement").length;
   const thisWeekCount = unifiedList.filter((r) => {
     if (!["approved", "manual"].includes(r.status)) return false;
     const d = daysUntil(r.move_out_date);
@@ -214,6 +252,7 @@ export default function MoveOutsPage() {
     return unifiedList.filter((row) => {
       if (activeTab === "waiting_verify") return row.status === "requested";
       if (activeTab === "waiting_moveout") return row.status === "approved" || row.status === "manual";
+      if (activeTab === "pending_settlement") return row.status === "pending_settlement";
       if (activeTab === "declined") return row.status === "rejected" || row.status === "cancelled";
       if (activeTab === "past") return row.status === "completed";
       return true;
@@ -223,6 +262,7 @@ export default function MoveOutsPage() {
   const getBadgeVariant = (status: string) => {
     if (status === "requested") return "warning" as const;
     if (status === "approved" || status === "manual") return "success" as const;
+    if (status === "pending_settlement") return "warning" as const;
     if (status === "rejected" || status === "cancelled") return "danger" as const;
     return "default" as const;
   };
@@ -235,6 +275,7 @@ export default function MoveOutsPage() {
   const tabs: { id: ActiveTab; label: string; icon: React.ElementType; count?: number }[] = [
     { id: "waiting_verify", label: "รอตรวจสอบ", icon: Clock, count: requestedCount },
     { id: "waiting_moveout", label: "รอย้ายออก", icon: LogOut, count: approvedCount },
+    { id: "pending_settlement", label: "รอสรุปยอด", icon: AlertTriangle, count: pendingSettlementCount },
     { id: "declined", label: "ปฏิเสธ / ยกเลิก", icon: XCircle },
     { id: "past", label: "ย้ายออกแล้ว", icon: CheckCircle2 },
   ];
@@ -291,17 +332,29 @@ export default function MoveOutsPage() {
       {/* ── Header ── */}
       <div className="flex items-center justify-between">
         <p className="text-sm text-slate-500">รายการผู้เช่าที่เตรียมย้ายออก</p>
-        {canView && (
-          <button
-            type="button"
-            onClick={() => void load()}
-            disabled={loading}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:opacity-50"
-          >
-            <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
-            รีเฟรช
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          {canView && (
+            <>
+              <button
+                type="button"
+                onClick={() => setIsManualModalOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-primary-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm transition hover:bg-primary-700"
+              >
+                <Plus className="h-4 w-4" />
+                เพิ่มย้ายออกแบบกำหนดเอง
+              </button>
+              <button
+                type="button"
+                onClick={() => void load()}
+                disabled={loading}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:opacity-50"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+                รีเฟรช
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
       {!permLoading && !canView && (
@@ -329,7 +382,7 @@ export default function MoveOutsPage() {
                   className={`
                     flex items-center gap-2 whitespace-nowrap px-5 py-3.5 text-sm font-semibold transition-colors
                     ${isActive
-                      ? "border-b-2 border-violet-600 text-violet-700 bg-violet-50/50"
+                      ? "border-b-2 border-primary-600 text-primary-700 bg-primary-50/50"
                       : "text-slate-500 hover:text-slate-700 hover:bg-slate-50"
                     }
                   `}
@@ -339,7 +392,7 @@ export default function MoveOutsPage() {
                   {tab.count != null && tab.count > 0 && (
                     <span className={`
                       rounded-full px-2 py-0.5 text-sm font-bold
-                      ${isActive ? "bg-violet-100 text-violet-700" : "bg-amber-100 text-amber-700"}
+                      ${isActive ? "bg-primary-100 text-primary-700" : "bg-amber-100 text-amber-700"}
                     `}>
                       {tab.count}
                     </span>
@@ -419,7 +472,7 @@ export default function MoveOutsPage() {
                         <td className="px-5 py-3.5">
                           <button
                             onClick={() => openModal(row.tenant_id)}
-                            className="inline-flex items-center gap-0.5 rounded-lg bg-violet-50 px-3 py-1.5 text-sm font-semibold text-violet-700 hover:bg-violet-100 transition-colors"
+                            className="inline-flex items-center gap-0.5 rounded-lg bg-primary-50 px-3 py-1.5 text-sm font-semibold text-primary-700 hover:bg-primary-100 transition-colors"
                           >
                             จัดการ <ChevronRight className="h-3.5 w-3.5" />
                           </button>
@@ -439,6 +492,14 @@ export default function MoveOutsPage() {
           isOpen={isModalOpen}
           onClose={() => setIsModalOpen(false)}
           tenantId={selectedTenantId}
+          onSuccess={load}
+        />
+      )}
+
+      {isManualModalOpen && (
+        <AddManualMoveOutModal
+          isOpen={isManualModalOpen}
+          onClose={() => setIsManualModalOpen(false)}
           onSuccess={load}
         />
       )}

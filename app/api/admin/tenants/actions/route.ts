@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/admin-api-auth";
+import { dailyRentRate } from "@/lib/invoice-utils";
 
 const toNumber = (value: unknown) => {
   const parsed = typeof value === "number" ? value : Number(value ?? 0);
@@ -19,7 +20,6 @@ const calculateTransferRentProration = (
   const transferMonth = transferDateObj.getMonth();
   const periodStart = new Date(transferYear, transferMonth, 1);
   const periodEnd = new Date(transferYear, transferMonth + 1, 0);
-  const daysInMonth = periodEnd.getDate();
   const billingStart = moveInDate ? new Date(moveInDate) : periodStart;
   const effectiveBillingStart = billingStart > periodStart ? billingStart : periodStart;
   const effectiveTransferDate = transferDateObj > effectiveBillingStart ? transferDateObj : effectiveBillingStart;
@@ -36,12 +36,15 @@ const calculateTransferRentProration = (
     periodEnd >= effectiveTransferDate
       ? Math.floor((periodEnd.getTime() - effectiveTransferDate.getTime()) / 86400000) + 1
       : 0;
-  const dailyOldRate = oldRoomRate / 30;
-  const dailyNewRate = newRoomRate / 30;
+  // Same fixed-30-day, floor-down-to-whole-baht convention as calculateProratedRentByBillingDay
+  // (lib/invoice-utils.ts) — this used to divide unrounded, giving a different total than
+  // the other two proration paths for the same scenario.
+  const dailyOldRate = dailyRentRate(oldRoomRate);
+  const dailyNewRate = dailyRentRate(newRoomRate);
 
   return {
-    oldRoomAmount: roundTo2(dailyOldRate * oldRoomDays),
-    newRoomAmount: roundTo2(dailyNewRate * newRoomDays),
+    oldRoomAmount: dailyOldRate * oldRoomDays,
+    newRoomAmount: dailyNewRate * newRoomDays,
   };
 };
 
@@ -126,12 +129,15 @@ export async function POST(req: Request) {
 
       if (roomChanged) {
         const closeDate = moveInDate || new Date().toISOString().slice(0, 10);
-        await auth.supabase
+        const { error: closeOldLogError } = await auth.supabase
           .from("room_tenant_logs")
           .update({ move_out_date: closeDate, updated_at: new Date().toISOString() })
           .eq("room_id", String(previousTenant.room_id))
           .eq("tenant_id", tenantId)
           .is("move_out_date", null);
+        if (closeOldLogError) {
+          return NextResponse.json({ error: closeOldLogError.message }, { status: 500 });
+        }
 
         if (transferPayload?.transfer_date) {
           const roomIds = [String(previousTenant.room_id), roomId];
@@ -180,12 +186,17 @@ export async function POST(req: Request) {
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
           };
-          await auth.supabase.from("tenant_room_transfers").insert(transferInsert);
+          const { error: transferInsertError } = await auth.supabase
+            .from("tenant_room_transfers")
+            .insert(transferInsert);
+          if (transferInsertError) {
+            return NextResponse.json({ error: transferInsertError.message }, { status: 500 });
+          }
         }
       }
 
       if (shouldLogMoveIn) {
-        await auth.supabase.from("room_tenant_logs").upsert(
+        const { error: moveInLogError } = await auth.supabase.from("room_tenant_logs").upsert(
           {
             room_id: roomId,
             tenant_id: effectiveTenantId || null,
@@ -195,15 +206,27 @@ export async function POST(req: Request) {
           },
           { onConflict: "room_id,tenant_id,move_in_date" }
         );
+        if (moveInLogError) {
+          return NextResponse.json({ error: moveInLogError.message }, { status: 500 });
+        }
       }
 
       if (roomId) {
-        await auth.supabase.from("rooms").update({ status: "occupied" }).eq("id", roomId);
-        await auth.supabase.from("room_logs").insert({
+        const { error: roomStatusError } = await auth.supabase
+          .from("rooms")
+          .update({ status: "occupied" })
+          .eq("id", roomId);
+        if (roomStatusError) {
+          return NextResponse.json({ error: roomStatusError.message }, { status: 500 });
+        }
+        const { error: roomLogError } = await auth.supabase.from("room_logs").insert({
           room_id: roomId,
           event_type: "move_in",
           created_at: new Date().toISOString(),
         });
+        if (roomLogError) {
+          console.warn("room_logs insert failed:", roomLogError.message);
+        }
       }
       return NextResponse.json({ success: true });
     }
@@ -248,7 +271,7 @@ export async function POST(req: Request) {
         .eq("id", tenantId);
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-      const { data: openLog } = await auth.supabase
+      const { data: openLog, error: openLogError } = await auth.supabase
         .from("room_tenant_logs")
         .select("id")
         .eq("room_id", roomId)
@@ -257,19 +280,30 @@ export async function POST(req: Request) {
         .order("move_in_date", { ascending: false })
         .limit(1)
         .maybeSingle();
+      if (openLogError) return NextResponse.json({ error: openLogError.message }, { status: 500 });
       if (openLog?.id) {
-        await auth.supabase
+        const { error: closeLogError } = await auth.supabase
           .from("room_tenant_logs")
           .update({ move_out_date: moveOutDate, updated_at: new Date().toISOString() })
           .eq("id", openLog.id);
+        if (closeLogError) return NextResponse.json({ error: closeLogError.message }, { status: 500 });
       }
 
-      await auth.supabase.from("rooms").update({ status: "available" }).eq("id", roomId);
-      await auth.supabase.from("room_logs").insert({
+      const { error: roomStatusError } = await auth.supabase
+        .from("rooms")
+        .update({ status: "available" })
+        .eq("id", roomId);
+      if (roomStatusError) return NextResponse.json({ error: roomStatusError.message }, { status: 500 });
+
+      const { error: roomLogError } = await auth.supabase.from("room_logs").insert({
         room_id: roomId,
         event_type: "move_out",
         created_at: new Date().toISOString(),
       });
+      if (roomLogError) {
+        // Non-fatal: room is already freed; the journal entry is only for reporting.
+        console.warn("room_logs insert failed:", roomLogError.message);
+      }
       return NextResponse.json({ success: true });
     }
 
@@ -359,50 +393,30 @@ export async function POST(req: Request) {
       } = payload;
       
       const isForfeit = forfeitDeposit ?? forfeit_security_deposit ?? false;
-
-      const updatePayload = {
-        ...restPayload,
-        forfeit_security_deposit: isForfeit,
-        status: "inactive",
-        room_id: null,
-      };
-      const { error } = await auth.supabase.from("tenants").update(updatePayload).eq("id", tenantId);
-      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-
       const moveOutDate =
         payload?.move_out_date ? String(payload.move_out_date) : new Date().toISOString().slice(0, 10);
-      const { data: openLog } = await auth.supabase
-        .from("room_tenant_logs")
-        .select("id")
-        .eq("room_id", roomId)
-        .eq("tenant_id", tenantId)
-        .is("move_out_date", null)
-        .order("move_in_date", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (openLog?.id) {
-        await auth.supabase
-          .from("room_tenant_logs")
-          .update({ move_out_date: moveOutDate, updated_at: new Date().toISOString() })
-          .eq("id", openLog.id);
-      }
 
-      await auth.supabase.from("rooms").update({ status: "available" }).eq("id", roomId);
-      await auth.supabase.from("room_logs").insert({
-        room_id: roomId,
-        event_type: "move_out",
-        created_at: new Date().toISOString(),
-      });
-
-      const { data: settings } = await auth.supabase.from("settings").select("*").maybeSingle();
-      const billingDay = Math.max(1, Math.min(28, Number(settings?.billing_day) || 25));
-      const dueDay = Math.max(1, Math.min(28, Number(settings?.due_day) || 10));
-
-      const { data: tenant } = await auth.supabase
+      // Fetch tenant + room data and compute the whole settlement BEFORE touching
+      // the tenant/room/logs below. The invoice insert used to happen last, so a
+      // failure there (e.g. a missing column) still left the tenant marked
+      // inactive and the room freed with no settlement invoice ever created —
+      // an orphaned record with no way to recover the numbers that were entered.
+      // Now nothing is mutated until the invoice is safely in the database.
+      const { data: tenant, error: tenantFetchError } = await auth.supabase
         .from("tenants")
         .select("id,room_id,advance_rent_amount,security_deposit_amount,rooms(id,price_month,room_number)")
         .eq("id", tenantId)
         .maybeSingle();
+      if (tenantFetchError) {
+        return NextResponse.json({ error: tenantFetchError.message }, { status: 500 });
+      }
+      if (!tenant?.id) {
+        return NextResponse.json({ error: "Tenant not found." }, { status: 404 });
+      }
+
+      const { data: settings } = await auth.supabase.from("settings").select("*").maybeSingle();
+      const billingDay = Math.max(1, Math.min(28, Number(settings?.billing_day) || 25));
+      const dueDay = Math.max(1, Math.min(28, Number(settings?.due_day) || 10));
 
       const { data: lastInvoice } = await auth.supabase
         .from("invoices")
@@ -438,10 +452,10 @@ export async function POST(req: Request) {
 
       const roomRel = Array.isArray(tenant?.rooms) ? tenant?.rooms[0] : tenant?.rooms;
       const priceMonth = toNumber(roomRel?.price_month ?? 0);
-      const dailyRate = priceMonth / 30;
-      
+      const dailyRate = dailyRentRate(priceMonth);
+
       const baseRent = useProrate ? (priceMonth * fullMonths) : 0;
-      const proratedRent = useProrate ? roundTo2(dailyRate * prorateDays) : 0;
+      const proratedRent = useProrate ? dailyRate * prorateDays : 0;
       const totalRent = baseRent + proratedRent;
 
       // Utilities
@@ -488,10 +502,10 @@ export async function POST(req: Request) {
       const dueDateObj = new Date(moveOutDateObj.getFullYear(), moveOutDateObj.getMonth(), moveOutDateObj.getDate() + 7);
 
       // Save the Master Final Invoice
-      await auth.supabase.from("invoices").insert({
+      const { error: finalInvoiceError } = await auth.supabase.from("invoices").insert({
         id: crypto.randomUUID(),
         tenant_id: tenantId,
-        room_id: tenant?.room_id,
+        room_id: roomId,
         status: "pending",
         start_date: toYmd(masterStartDateObj),
         end_date: moveOutDate,
@@ -515,6 +529,55 @@ export async function POST(req: Request) {
         notes: checkForfeit ? "ย้ายออก (ริบเงินประกัน)" : "ย้ายออก (Final Statement)",
         created_at: new Date().toISOString(),
       });
+      if (finalInvoiceError) {
+        return NextResponse.json({ error: finalInvoiceError.message }, { status: 500 });
+      }
+
+      // The settlement invoice exists now — safe to mutate tenant/room state.
+      const updatePayload = {
+        ...restPayload,
+        forfeit_security_deposit: isForfeit,
+        status: "inactive",
+        room_id: null,
+      };
+      const { error: tenantUpdateError } = await auth.supabase
+        .from("tenants")
+        .update(updatePayload)
+        .eq("id", tenantId);
+      if (tenantUpdateError) return NextResponse.json({ error: tenantUpdateError.message }, { status: 500 });
+
+      const { data: openLog, error: openLogError } = await auth.supabase
+        .from("room_tenant_logs")
+        .select("id")
+        .eq("room_id", roomId)
+        .eq("tenant_id", tenantId)
+        .is("move_out_date", null)
+        .order("move_in_date", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (openLogError) return NextResponse.json({ error: openLogError.message }, { status: 500 });
+      if (openLog?.id) {
+        const { error: closeLogError } = await auth.supabase
+          .from("room_tenant_logs")
+          .update({ move_out_date: moveOutDate, updated_at: new Date().toISOString() })
+          .eq("id", openLog.id);
+        if (closeLogError) return NextResponse.json({ error: closeLogError.message }, { status: 500 });
+      }
+
+      const { error: roomStatusError } = await auth.supabase
+        .from("rooms")
+        .update({ status: "available" })
+        .eq("id", roomId);
+      if (roomStatusError) return NextResponse.json({ error: roomStatusError.message }, { status: 500 });
+
+      const { error: roomLogError } = await auth.supabase.from("room_logs").insert({
+        room_id: roomId,
+        event_type: "move_out",
+        created_at: new Date().toISOString(),
+      });
+      if (roomLogError) {
+        console.warn("room_logs insert failed:", roomLogError.message);
+      }
 
       const { error: requestsError } = await auth.supabase
         .from("move_out_requests")
@@ -575,13 +638,6 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: cancelRequestsError.message }, { status: 500 });
       }
 
-      // Cancel any draft prorated move-out invoice that was auto-created on approval
-      await auth.supabase
-        .from("invoices")
-        .update({ status: "cancelled", updated_at: nowIso })
-        .eq("tenant_id", tenantId)
-        .eq("status", "draft");
-
       return NextResponse.json({ success: true });
     }
 
@@ -630,7 +686,9 @@ export async function POST(req: Request) {
 
       if (invErr) return NextResponse.json({ error: invErr.message }, { status: 500 });
 
-      // Apply credit to invoices in order
+      // Apply credit to invoices in order. Each update is checked — if one fails
+      // partway through, we stop immediately rather than continuing to "spend"
+      // remainingCredit against invoices that never actually got written.
       for (const inv of unpaidInvoices ?? []) {
         const outstanding = Math.max(0, toNumber(inv.total_amount) - toNumber(inv.paid_amount));
         if (outstanding <= 0) continue;
@@ -638,7 +696,7 @@ export async function POST(req: Request) {
         if (remainingCredit >= outstanding) {
           // Fully pay this invoice
           remainingCredit -= outstanding;
-          await auth.supabase
+          const { error: payError } = await auth.supabase
             .from("invoices")
             .update({
               paid_amount: toNumber(inv.total_amount),
@@ -647,11 +705,12 @@ export async function POST(req: Request) {
               notes: "ชำระโดยเครดิตจากการทิ้งห้อง (Abandon Room)",
             })
             .eq("id", inv.id);
+          if (payError) return NextResponse.json({ error: payError.message }, { status: 500 });
         } else if (remainingCredit > 0) {
           // Partially pay then cancel remainder
           const newPaid = toNumber(inv.paid_amount) + remainingCredit;
           remainingCredit = 0;
-          await auth.supabase
+          const { error: partialPayError } = await auth.supabase
             .from("invoices")
             .update({
               paid_amount: newPaid,
@@ -660,9 +719,10 @@ export async function POST(req: Request) {
               notes: "ชำระบางส่วนโดยเครดิตจากการทิ้งห้อง แล้วยกเลิกส่วนที่เหลือ",
             })
             .eq("id", inv.id);
+          if (partialPayError) return NextResponse.json({ error: partialPayError.message }, { status: 500 });
         } else {
           // No credit left — cancel the invoice
-          await auth.supabase
+          const { error: cancelError } = await auth.supabase
             .from("invoices")
             .update({
               status: "cancelled",
@@ -670,11 +730,12 @@ export async function POST(req: Request) {
               notes: "ยกเลิกเนื่องจากผู้เช่าทิ้งห้อง (Abandon Room)",
             })
             .eq("id", inv.id);
+          if (cancelError) return NextResponse.json({ error: cancelError.message }, { status: 500 });
         }
       }
 
       // Mark tenant inactive and clear room
-      await auth.supabase
+      const { error: abandonTenantError } = await auth.supabase
         .from("tenants")
         .update({
           status: "inactive",
@@ -684,11 +745,14 @@ export async function POST(req: Request) {
           updated_at: nowIso,
         })
         .eq("id", tenantId);
+      if (abandonTenantError) {
+        return NextResponse.json({ error: abandonTenantError.message }, { status: 500 });
+      }
 
       // Close the open room_tenant_log
       const roomId = String(tenant.room_id ?? "");
       if (roomId) {
-        const { data: openLog } = await auth.supabase
+        const { data: openLog, error: openLogError } = await auth.supabase
           .from("room_tenant_logs")
           .select("id")
           .eq("room_id", roomId)
@@ -697,28 +761,41 @@ export async function POST(req: Request) {
           .order("move_in_date", { ascending: false })
           .limit(1)
           .maybeSingle();
+        if (openLogError) return NextResponse.json({ error: openLogError.message }, { status: 500 });
         if (openLog?.id) {
-          await auth.supabase
+          const { error: closeLogError } = await auth.supabase
             .from("room_tenant_logs")
             .update({ move_out_date: moveOutDate, updated_at: nowIso })
             .eq("id", openLog.id);
+          if (closeLogError) return NextResponse.json({ error: closeLogError.message }, { status: 500 });
         }
 
         // Free the room and log the event
-        await auth.supabase.from("rooms").update({ status: "available" }).eq("id", roomId);
-        await auth.supabase.from("room_logs").insert({
+        const { error: roomStatusError } = await auth.supabase
+          .from("rooms")
+          .update({ status: "available" })
+          .eq("id", roomId);
+        if (roomStatusError) return NextResponse.json({ error: roomStatusError.message }, { status: 500 });
+
+        const { error: roomLogError } = await auth.supabase.from("room_logs").insert({
           room_id: roomId,
           event_type: "move_out",
           created_at: nowIso,
         });
+        if (roomLogError) {
+          console.warn("room_logs insert failed:", roomLogError.message);
+        }
       }
 
       // Mark any pending move-out requests as completed
-      await auth.supabase
+      const { error: closeRequestsError } = await auth.supabase
         .from("move_out_requests")
         .update({ status: "completed", updated_at: nowIso, actual_move_out_date: moveOutDate })
         .eq("tenant_id", tenantId)
         .in("status", ["requested", "approved"]);
+      if (closeRequestsError) {
+        return NextResponse.json({ error: closeRequestsError.message }, { status: 500 });
+      }
 
       return NextResponse.json({ success: true });
     }

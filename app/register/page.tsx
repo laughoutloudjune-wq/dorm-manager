@@ -14,7 +14,7 @@ type RoomSuggestion = {
   id: string;
   room_number: string;
   building_name?: string | null;
-  registration_status?: "available" | "takeover_required";
+  registration_status?: "available" | "takeover_required" | "occupied_locked";
   has_active_tenant?: boolean;
 };
 
@@ -357,11 +357,14 @@ export default function RegisterPage() {
                       <div className="max-h-44 space-y-1 overflow-auto">
                         {suggestions.map((room) => {
                           const needsTakeover = room.registration_status === "takeover_required";
+                          const isLocked = room.registration_status === "occupied_locked";
                           return (
                             <button
                               key={room.id}
                               type="button"
+                              disabled={isLocked}
                               onClick={() => {
+                                if (isLocked) return;
                                 setRoomNumber(room.room_number);
                                 setPickedRoomId(room.id);
                                 setSuggestions([]);
@@ -372,8 +375,12 @@ export default function RegisterPage() {
                                   );
                                 }
                               }}
-                              className={`w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-white ${
-                                needsTakeover ? "text-amber-900" : "text-slate-700"
+                              className={`w-full rounded-lg px-3 py-2 text-left text-sm ${
+                                isLocked
+                                  ? "cursor-not-allowed text-slate-400"
+                                  : needsTakeover
+                                    ? "text-amber-900 hover:bg-white"
+                                    : "text-slate-700 hover:bg-white"
                               }`}
                             >
                               {room.room_number}
@@ -381,6 +388,11 @@ export default function RegisterPage() {
                               {needsTakeover ? (
                                 <span className="mt-0.5 block text-xs font-medium text-amber-700">
                                   มีผู้เช่าอยู่ — ขออนุมัติย้ายเข้า
+                                </span>
+                              ) : null}
+                              {isLocked ? (
+                                <span className="mt-0.5 block text-xs font-medium text-slate-400">
+                                  มีผู้เช่าอยู่ — กรุณาติดต่อผู้ดูแลหอพัก
                                 </span>
                               ) : null}
                             </button>

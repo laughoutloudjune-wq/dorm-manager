@@ -47,7 +47,7 @@ export async function POST(req: Request) {
 
     const { data: activeTenant, error: activeTenantError } = await supabase
       .from("tenants")
-      .select("id,line_user_id")
+      .select("id,line_user_id,move_out_date")
       .eq("room_id", roomId)
       .eq("status", "active")
       .maybeSingle();
@@ -65,6 +65,19 @@ export async function POST(req: Request) {
 
     if (activeTenant.line_user_id && activeTenant.line_user_id === lineUserId) {
       return NextResponse.json({ error: "This is already your active tenant record." }, { status: 400 });
+    }
+
+    // Only allow a takeover claim once the current tenant already has a move-out
+    // date on record — otherwise anyone could claim any occupied room by guessing
+    // its room ID with no real connection to it.
+    if (!activeTenant.move_out_date) {
+      return NextResponse.json(
+        {
+          error:
+            "Room's current tenant has not given move-out notice yet. Please contact the office directly.",
+        },
+        { status: 409 }
+      );
     }
 
     const existing = await supabase

@@ -58,7 +58,7 @@ export async function GET(req: Request) {
 
     const { data: activeTenants, error: tenantError } = await supabase
       .from("tenants")
-      .select("room_id,line_user_id")
+      .select("room_id,line_user_id,move_out_date")
       .in("room_id", roomIds)
       .eq("status", "active");
 
@@ -66,17 +66,26 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: tenantError.message }, { status: 500 });
     }
 
-    const activeByRoom = new Map<string, { line_user_id: string | null }>();
+    const activeByRoom = new Map<string, { line_user_id: string | null; move_out_date: string | null }>();
     for (const row of activeTenants ?? []) {
       activeByRoom.set(String((row as any).room_id), {
         line_user_id: (row as any).line_user_id ?? null,
+        move_out_date: (row as any).move_out_date ?? null,
       });
     }
 
     const mapped = rooms.map((row: any) => {
       const building = Array.isArray(row.buildings) ? row.buildings[0] : row.buildings;
       const active = activeByRoom.get(String(row.id));
-      const registration_status = active ? "takeover_required" : "available";
+      // Only offer the self-service takeover path when the current tenant already
+      // has a move-out date on record (admin/tenant already signaled they're leaving).
+      // Otherwise anyone could file a takeover claim on any occupied room by guessing
+      // its number — that case must go through the office, not self-service.
+      const registration_status = !active
+        ? "available"
+        : active.move_out_date
+          ? "takeover_required"
+          : "occupied_locked";
       return {
         id: row.id,
         room_number: row.room_number,

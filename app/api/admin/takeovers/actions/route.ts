@@ -80,7 +80,7 @@ export async function POST(req: Request) {
         .eq("id", activeTenantId);
       if (updateTenantErr) return NextResponse.json({ error: updateTenantErr.message }, { status: 500 });
 
-      const { data: openLog } = await supabase
+      const { data: openLog, error: openLogError } = await supabase
         .from("room_tenant_logs")
         .select("id")
         .eq("room_id", roomId)
@@ -89,6 +89,7 @@ export async function POST(req: Request) {
         .order("move_in_date", { ascending: false })
         .limit(1)
         .maybeSingle();
+      if (openLogError) return NextResponse.json({ error: openLogError.message }, { status: 500 });
 
       if (openLog?.id) {
         const { error: closeLogErr } = await supabase

@@ -203,7 +203,7 @@ export async function POST(req: Request) {
           const noteText = requestNote ? `หมายเหตุ: ${requestNote}` : null;
 
           const baseUrl = (getPublicSiteOrigin() || "").replace(/\/$/, "");
-          const adminMoveOutUrl = baseUrl ? `${baseUrl}/admin/move-out` : null;
+          const adminMoveOutUrl = baseUrl ? `${baseUrl}/move-outs` : null;
 
           const footerButtons: any[] = [];
           if (adminMoveOutUrl) {
