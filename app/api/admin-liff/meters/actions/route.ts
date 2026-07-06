@@ -2,9 +2,11 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase-admin";
 import { requireLineMeterAccess } from "@/lib/line-admin-auth";
 
+/** Meter readings are physical measurements — never negative, never absurdly large. */
 const toNumber = (value: unknown) => {
   const parsed = Number(value ?? 0);
-  return Number.isFinite(parsed) ? parsed : 0;
+  if (!Number.isFinite(parsed) || parsed < 0) return 0;
+  return parsed;
 };
 
 const normalizeDate = (value: unknown) => {

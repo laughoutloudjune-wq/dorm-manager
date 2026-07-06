@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase-admin";
+import { isTrustedSlipUrl } from "@/lib/slip-url";
 
 export async function POST(req: Request) {
   try {
@@ -12,6 +13,9 @@ export async function POST(req: Request) {
 
     if (!accessToken || invoiceIds.length === 0 || !slipUrl) {
       return NextResponse.json({ error: "Missing required fields." }, { status: 400 });
+    }
+    if (!isTrustedSlipUrl(slipUrl)) {
+      return NextResponse.json({ error: "Invalid slip URL." }, { status: 400 });
     }
 
     const profileResponse = await fetch("https://api.line.me/v2/profile", {
