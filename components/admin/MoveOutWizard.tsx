@@ -110,7 +110,7 @@ function StepRail({ currentStep, onStepClick }: { currentStep: number; onStepCli
               className={`
                 group flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-all duration-200
                 ${isActive
-                  ? "bg-violet-600 text-white shadow-md shadow-violet-200"
+                  ? "bg-primary-600 text-white shadow-md shadow-primary-200"
                   : isDone
                     ? "bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
                     : "text-slate-400 hover:bg-slate-50 hover:text-slate-600"
@@ -319,7 +319,7 @@ function Step1RequestReview({
       {/* Date inputs */}
       <SectionCard>
         <p className="text-base font-semibold text-slate-800 mb-3 flex items-center gap-2">
-          <Home className="h-4 w-4 text-violet-500" />
+          <Home className="h-4 w-4 text-primary-500" />
           กำหนดวันย้ายออก
         </p>
         <div className="grid gap-4 sm:grid-cols-2">
@@ -329,7 +329,7 @@ function Step1RequestReview({
               type="date"
               value={form.move_out_request_date}
               onChange={(e) => setField("move_out_request_date", e.target.value)}
-              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-base text-slate-800 focus:border-violet-400 focus:outline-none focus:ring-2 focus:ring-violet-200"
+              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-base text-slate-800 focus:border-primary-400 focus:outline-none focus:ring-2 focus:ring-primary-200"
             />
           </div>
           <div>
@@ -338,7 +338,7 @@ function Step1RequestReview({
               type="date"
               value={form.final_move_out_date}
               onChange={(e) => setField("final_move_out_date", e.target.value)}
-              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-base text-slate-800 focus:border-violet-400 focus:outline-none focus:ring-2 focus:ring-violet-200"
+              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-base text-slate-800 focus:border-primary-400 focus:outline-none focus:ring-2 focus:ring-primary-200"
             />
           </div>
         </div>
@@ -392,7 +392,7 @@ function Step1RequestReview({
         <button
           type="button"
           onClick={onNext}
-          className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-6 py-2.5 text-base font-semibold text-white hover:bg-violet-700 shadow-sm hover:shadow-violet-200 shadow-violet-100 transition-all"
+          className="inline-flex items-center gap-2 rounded-xl bg-primary-600 px-6 py-2.5 text-base font-semibold text-white hover:bg-primary-700 shadow-sm hover:shadow-primary-200 shadow-primary-100 transition-all"
         >
           ถัดไป: มิเตอร์ <ChevronRight className="h-4 w-4" />
         </button>
@@ -539,7 +539,7 @@ function Step2MeterReadings({
         <button
           type="button"
           onClick={onNext}
-          className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-6 py-2.5 text-base font-semibold text-white hover:bg-violet-700 shadow-sm transition-all"
+          className="inline-flex items-center gap-2 rounded-xl bg-primary-600 px-6 py-2.5 text-base font-semibold text-white hover:bg-primary-700 shadow-sm transition-all"
         >
           ถัดไป: สรุปค่าใช้จ่าย <ChevronRight className="h-4 w-4" />
         </button>
@@ -674,7 +674,7 @@ function Step3FinancialSummary({
           <button
             type="button"
             onClick={() => setMoveOutFeeLines(prev => [...prev, createFeeLine()])}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50 px-3 py-1.5 text-sm font-medium text-violet-700 hover:bg-violet-100 transition-colors"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-primary-200 bg-primary-50 px-3 py-1.5 text-sm font-medium text-primary-700 hover:bg-primary-100 transition-colors"
           >
             <Plus className="h-3.5 w-3.5" /> เพิ่มรายการ
           </button>
@@ -690,14 +690,14 @@ function Step3FinancialSummary({
                 placeholder="รายการ (เช่น ค่าซ่อมแซม)"
                 value={line.label}
                 onChange={e => setMoveOutFeeLines(prev => prev.map(item => item.id === line.id ? { ...item, label: e.target.value } : item))}
-                className="flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-base focus:border-violet-300 focus:outline-none focus:ring-2 focus:ring-violet-100"
+                className="flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-base focus:border-primary-300 focus:outline-none focus:ring-2 focus:ring-primary-100"
               />
               <input
                 type="number"
                 placeholder="จำนวน"
                 value={line.amount}
                 onChange={e => setMoveOutFeeLines(prev => prev.map(item => item.id === line.id ? { ...item, amount: toNumber(e.target.value) } : item))}
-                className="w-28 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-base font-mono focus:border-violet-300 focus:outline-none focus:ring-2 focus:ring-violet-100"
+                className="w-28 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-base font-mono focus:border-primary-300 focus:outline-none focus:ring-2 focus:ring-primary-100"
               />
               <button
                 type="button"
@@ -767,7 +767,7 @@ function Step3FinancialSummary({
               onChange={e => setUseProrate(e.target.checked)}
               className="peer sr-only"
             />
-            <div className="h-5 w-5 rounded-md border-2 border-slate-300 bg-white peer-checked:border-violet-600 peer-checked:bg-violet-600 transition-all" />
+            <div className="h-5 w-5 rounded-md border-2 border-slate-300 bg-white peer-checked:border-primary-600 peer-checked:bg-primary-600 transition-all" />
             {useProrate && (
               <CheckCircle2 className="absolute h-3.5 w-3.5 text-white pointer-events-none" />
             )}
@@ -790,7 +790,7 @@ function Step3FinancialSummary({
         <button
           type="button"
           onClick={onNext}
-          className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-6 py-2.5 text-base font-semibold text-white hover:bg-violet-700 shadow-sm transition-all"
+          className="inline-flex items-center gap-2 rounded-xl bg-primary-600 px-6 py-2.5 text-base font-semibold text-white hover:bg-primary-700 shadow-sm transition-all"
         >
           ถัดไป: ยืนยัน <ChevronRight className="h-4 w-4" />
         </button>
@@ -1060,7 +1060,7 @@ function Step4Confirm({
               type="button"
               onClick={() => setConfirmOpen(true)}
               disabled={!canEditTenant || isMovingOut}
-              className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-5 py-2.5 text-base font-semibold text-white hover:bg-violet-700 shadow-sm shadow-violet-200 transition-all disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded-xl bg-primary-600 px-5 py-2.5 text-base font-semibold text-white hover:bg-primary-700 shadow-sm shadow-primary-200 transition-all disabled:opacity-50"
             >
               {isMovingOut ? <Loader2 className="h-4 w-4 animate-spin" /> : <Flag className="h-4 w-4" />}
               {isMovingOut ? "กำลังบันทึก…" : "ยืนยันการย้ายออก"}

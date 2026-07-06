@@ -177,7 +177,7 @@ export default function TenantsPage() {
                     .map((tenant) => (
                     <div
                       key={tenant.id}
-                      className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition-shadow hover:shadow-md"
+                      className="rounded-2xl border border-slate-200/80 bg-white/95 p-4 shadow-soft backdrop-blur-sm transition-all hover:-translate-y-0.5 hover:shadow-soft-lg"
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div>

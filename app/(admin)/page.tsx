@@ -6,16 +6,32 @@ import { Card, CardContent } from "@/components/ui/Card";
 import { useDashboardStats } from "@/lib/hooks/use-data";
 import { formatMoney } from "@/lib/format";
 
+type KpiTint = "red" | "orange" | "indigo" | "teal" | "green" | "purple";
+
 type Kpi = {
   label: string;
   value: string;
   hint: string;
   tone: string;
+  tint: KpiTint;
   icon: any;
   href: string;
 };
 
 const formatMoneyBaht = (value: number) => `฿${formatMoney(value)}`;
+
+// Each tint carries meaning, not decoration: red = money at risk, orange = needs
+// review soon, indigo = action requested, teal = neutral metric, green = positive
+// availability, purple = upcoming/scheduled. Written as full literal class names
+// (not built via string interpolation) so Tailwind's static scan picks them up.
+const KPI_ICON_CLASSES: Record<KpiTint, string> = {
+  red: "bg-apple-red/10 text-apple-red",
+  orange: "bg-apple-orange/10 text-apple-orange",
+  indigo: "bg-apple-indigo/10 text-apple-indigo",
+  teal: "bg-apple-teal/10 text-apple-teal",
+  green: "bg-apple-green/10 text-apple-green",
+  purple: "bg-apple-purple/10 text-apple-purple",
+};
 
 export default function DashboardPage() {
   const { data: dashboard, error, isLoading: loading } = useDashboardStats();
@@ -78,7 +94,8 @@ export default function DashboardPage() {
       label: "ยอดค้างชำระ",
       value: formatMoneyBaht(dashboard.totalOutstanding),
       hint: `เกินกำหนด ${dashboard.overdueInvoicesCount} | รอชำระ/ชำระบางส่วน ${dashboard.pendingInvoicesCount}`,
-      tone: "from-rose-50 to-white",
+      tone: "from-red-50 to-white",
+      tint: "red",
       icon: AlertTriangle,
       href: "/invoices",
     },
@@ -86,7 +103,8 @@ export default function DashboardPage() {
       label: "บิลรอตรวจสอบ",
       value: String(dashboard.verifyingInvoicesCount),
       hint: "มีสลิปอัปโหลดแล้วและรอแอดมินตรวจสอบ",
-      tone: "from-amber-50 to-white",
+      tone: "from-orange-50 to-white",
+      tint: "orange",
       icon: FileClock,
       href: "/invoices",
     },
@@ -94,7 +112,8 @@ export default function DashboardPage() {
       label: "คำขอย้ายออก",
       value: String(dashboard.requestedMoveOutsCount),
       hint: "คำขอจากผู้เช่าที่รอแอดมินตรวจสอบ",
-      tone: "from-orange-50 to-white",
+      tone: "from-indigo-50 to-white",
+      tint: "indigo",
       icon: ArrowRight,
       href: "/tenants",
     },
@@ -102,7 +121,8 @@ export default function DashboardPage() {
       label: "อัตราเข้าพัก",
       value: `${dashboard.occupancyRate}%`,
       hint: `ห้องใช้งาน ${dashboard.activeTenantsCount} จาก ${dashboard.totalRoomsCount} ห้อง`,
-      tone: "from-sky-50 to-white",
+      tone: "from-teal-50 to-white",
+      tint: "teal",
       icon: Home,
       href: "/rooms",
     },
@@ -110,7 +130,8 @@ export default function DashboardPage() {
       label: "ห้องว่าง",
       value: String(dashboard.vacantRoomsCount),
       hint: "ห้องที่สามารถปล่อยเช่าได้",
-      tone: "from-emerald-50 to-white",
+      tone: "from-green-50 to-white",
+      tint: "green",
       icon: CheckCircle2,
       href: "/rooms",
     },
@@ -118,7 +139,8 @@ export default function DashboardPage() {
       label: "รอเข้าพัก",
       value: String(dashboard.upcomingMoveInsCount),
       hint: "ผู้เช่าที่มีกำหนดย้ายเข้าใน 30 วัน",
-      tone: "from-indigo-50 to-white",
+      tone: "from-purple-50 to-white",
+      tint: "purple",
       icon: Users,
       href: "/tenants",
     },
@@ -134,38 +156,73 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Anomalies */}
-      {dashboard.anomalies.length > 0 && (
-        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 sm:p-5">
-          <div className="flex items-center gap-2 text-rose-700">
-            <AlertTriangle className="h-5 w-5" />
-            <h2 className="font-semibold">ข้อสังเกตที่ควรตรวจสอบ ({dashboard.anomalies.length})</h2>
-          </div>
-          <ul className="mt-3 grid gap-2 sm:grid-cols-2">
-            {dashboard.anomalies.map((a) => (
-              <li key={a.id} className="flex items-start gap-2 text-sm text-rose-600">
-                <span className="mt-1.5 block h-1.5 w-1.5 shrink-0 rounded-full bg-rose-400"></span>
-                <span>{a.text}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+      {/* Anomalies — split by severity so real breakage (red) doesn't get lost
+          among softer data-quality notices (amber). The API already tags each
+          anomaly with severity; the UI just wasn't using it. */}
+      {(() => {
+        const highAnomalies = dashboard.anomalies.filter((a) => a.severity === "high");
+        const mediumAnomalies = dashboard.anomalies.filter((a) => a.severity !== "high");
+        return (
+          <>
+            {highAnomalies.length > 0 && (
+              <div className="rounded-2xl border border-red-200 bg-red-50 p-4 sm:p-5">
+                <div className="flex items-center gap-2 text-red-700">
+                  <AlertTriangle className="h-5 w-5" />
+                  <h2 className="font-semibold">ข้อผิดพลาดที่ต้องแก้ไขด่วน ({highAnomalies.length})</h2>
+                </div>
+                <ul className="mt-3 grid gap-2 sm:grid-cols-2">
+                  {highAnomalies.map((a) => (
+                    <li key={a.id} className="flex items-start gap-2 text-sm text-red-600">
+                      <span className="mt-1.5 block h-1.5 w-1.5 shrink-0 rounded-full bg-red-400"></span>
+                      <span>{a.text}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {mediumAnomalies.length > 0 && (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 sm:p-5">
+                <div className="flex items-center gap-2 text-amber-700">
+                  <AlertTriangle className="h-5 w-5" />
+                  <h2 className="font-semibold">ข้อสังเกตที่ควรตรวจสอบ ({mediumAnomalies.length})</h2>
+                </div>
+                <ul className="mt-3 grid gap-2 sm:grid-cols-2">
+                  {mediumAnomalies.map((a) => (
+                    <li key={a.id} className="flex items-start gap-2 text-sm text-amber-700">
+                      <span className="mt-1.5 block h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400"></span>
+                      <span>{a.text}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </>
+        );
+      })()}
 
       {/* KPIs Grid */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 lg:grid-cols-6 lg:gap-6">
+      {/* 6-across is deferred to xl: at lg (a common 1366px laptop width) 6 columns
+          left too little room for a bold 2xl currency value, clipping it (e.g.
+          "฿165,715.00" cut to "฿165,715.0"). lg:grid-cols-3 gives each card room
+          to breathe until there's genuinely enough width for all six. */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 lg:grid-cols-3 lg:gap-6 2xl:grid-cols-6">
         {kpis.map((kpi, idx) => (
           <Link key={idx} href={kpi.href} className="group block focus:outline-none focus:ring-2 focus:ring-slate-400 focus:ring-offset-2 rounded-2xl">
-            <Card className={`h-full overflow-hidden border-none bg-gradient-to-b ${kpi.tone} shadow-sm ring-1 ring-slate-200/50 transition-all hover:-translate-y-0.5 hover:shadow-md`}>
+            <Card className={`h-full overflow-hidden border-none bg-gradient-to-b ${kpi.tone} shadow-soft ring-1 ring-slate-200/50 transition-all hover:-translate-y-0.5 hover:shadow-soft-lg`}>
               <CardContent className="p-4 sm:p-5">
                 <div className="flex items-center justify-between">
-                  <div className="rounded-xl bg-white/60 p-2 text-slate-600 shadow-sm backdrop-blur-sm group-hover:scale-110 group-hover:text-slate-900 transition-all">
+                  <div className={`rounded-xl p-2 shadow-sm backdrop-blur-sm transition-all group-hover:scale-110 ${KPI_ICON_CLASSES[kpi.tint]}`}>
                     <kpi.icon className="h-5 w-5 sm:h-6 sm:w-6" />
                   </div>
                 </div>
                 <div className="mt-3 sm:mt-4">
                   <p className="truncate text-xs font-medium text-slate-500 sm:text-sm">{kpi.label}</p>
-                  <p className="mt-1 text-lg font-bold tracking-tight text-slate-900 sm:text-2xl">{kpi.value}</p>
+                  <p
+                    className="mt-1 truncate text-lg font-bold tracking-tight text-slate-900 sm:text-xl"
+                    title={kpi.value}
+                  >
+                    {kpi.value}
+                  </p>
                 </div>
                 <p className="mt-2 text-[10px] text-slate-500 line-clamp-2 sm:text-xs">{kpi.hint}</p>
               </CardContent>

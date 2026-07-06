@@ -29,7 +29,40 @@ const config: Config = {
         },
         red: {
           ...require('tailwindcss/colors').red
-        }
+        },
+        // App-wide brand color, anchored on Apple's HIG systemBlue (#007AFF) at
+        // the 600 step to match the convention every other color ramp in this
+        // app already uses (600 = default interactive/button shade). This is
+        // the ONE primary/accent color for the whole admin app — don't reach
+        // for violet/purple/indigo as a second "primary" elsewhere.
+        primary: {
+          50: "#EFF7FF",
+          100: "#DBEDFF",
+          200: "#B8DBFF",
+          300: "#85C2FF",
+          400: "#4DA3FF",
+          500: "#1A84FF",
+          600: "#007AFF",
+          700: "#0062CC",
+          800: "#004C9E",
+          900: "#073B75",
+          950: "#05264D",
+        },
+        // Apple HIG system colors (light mode), for status/semantic use.
+        apple: {
+          red: "#FF3B30",
+          orange: "#FF9500",
+          yellow: "#FFCC00",
+          green: "#34C759",
+          mint: "#00C7BE",
+          teal: "#30B0C7",
+          cyan: "#32ADE6",
+          blue: "#007AFF",
+          indigo: "#5856D6",
+          purple: "#AF52DE",
+          pink: "#FF2D55",
+          brown: "#A2845E",
+        },
       },
       backgroundImage: {
         "gradient-radial": "radial-gradient(var(--tw-gradient-stops))",
