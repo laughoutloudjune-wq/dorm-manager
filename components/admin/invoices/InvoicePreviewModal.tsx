@@ -11,8 +11,8 @@ import {
   formatPeriodLabel, 
   formatDateThai,
   calculateProratedRentByBillingDay,
-  resolveWaterUsage,
-  resolveElectricityUsage,
+  resolveWaterUsageForDisplay,
+  resolveElectricityUsageForDisplay,
   toTransferBreakdownItems,
   toCarryForwardRows,
   toLateFeeItems,
@@ -263,7 +263,12 @@ export function InvoicePreviewModal() {
                           <tr className="border-t border-slate-100">
                             <td className="px-3 py-2">ค่าน้ำ</td>
                             <td className="px-3 py-2 text-right">
-                              {resolveWaterUsage(previewReading).toLocaleString("th-TH")} หน่วย
+                              {resolveWaterUsageForDisplay(
+                                previewReading,
+                                toNumber(previewInvoice.water_bill),
+                                toNumber(printSettings?.water_rate),
+                              ).toLocaleString("th-TH")}{" "}
+                              หน่วย
                             </td>
                             <td className="px-3 py-2 text-right">
                               {formatMoney(toNumber(printSettings?.water_rate))}
@@ -273,7 +278,12 @@ export function InvoicePreviewModal() {
                           <tr className="border-t border-slate-100">
                             <td className="px-3 py-2">ค่าไฟ</td>
                             <td className="px-3 py-2 text-right">
-                              {resolveElectricityUsage(previewReading).toLocaleString("th-TH")} หน่วย
+                              {resolveElectricityUsageForDisplay(
+                                previewReading,
+                                toNumber(previewInvoice.electricity_bill),
+                                toNumber(printSettings?.electricity_rate),
+                              ).toLocaleString("th-TH")}{" "}
+                              หน่วย
                             </td>
                             <td className="px-3 py-2 text-right">
                               {formatMoney(toNumber(printSettings?.electricity_rate))}

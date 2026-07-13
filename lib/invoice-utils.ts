@@ -476,6 +476,23 @@ export const resolveWaterUsage = (reading: MeterReadingRow | null | undefined) =
   return 0;
 };
 
+// When no meter_readings row is found for the invoice's room/month (e.g. the
+// row was never saved, or a room transfer means no reading exists under the
+// new room_id), fall back to inferring units from the billed amount rather
+// than showing 0. This can be inaccurate under a minimum-charge water rate,
+// but it's closer to the truth than a bare zero.
+export const resolveElectricityUsageForDisplay = (
+  reading: MeterReadingRow | null | undefined,
+  billAmount: number,
+  rate: number,
+) => (reading ? resolveElectricityUsage(reading) : rate > 0 ? billAmount / rate : billAmount);
+
+export const resolveWaterUsageForDisplay = (
+  reading: MeterReadingRow | null | undefined,
+  billAmount: number,
+  rate: number,
+) => (reading ? resolveWaterUsage(reading) : rate > 0 ? billAmount / rate : billAmount);
+
 // ── Serialization helpers ─────────────────────────────────────────────────────
 
 export const serializeTransferBreakdownRows = (items: TransferBreakdownItem[]) =>

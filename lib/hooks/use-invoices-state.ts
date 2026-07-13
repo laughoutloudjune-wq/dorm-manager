@@ -59,6 +59,8 @@ import {
   calculateLateFeePreview,
   resolveElectricityUsage,
   resolveWaterUsage,
+  resolveElectricityUsageForDisplay,
+  resolveWaterUsageForDisplay,
   serializeTransferBreakdownRows,
   parsePaymentMethodText,
   invoiceDisplayOutstanding,
@@ -2433,8 +2435,8 @@ export function useInvoicesState() {
     const waterRate = toNumber(printSettings?.water_rate);
     const waterMinUnits = toNumber(printSettings?.water_min_units);
     const waterMinPrice = toNumber(printSettings?.water_min_price);
-    const elecUnits = resolveElectricityUsage(reading);
-    const waterUnits = resolveWaterUsage(reading);
+    const elecUnits = resolveElectricityUsageForDisplay(reading, toNumber(invoice.electricity_bill), elecRate);
+    const waterUnits = resolveWaterUsageForDisplay(reading, toNumber(invoice.water_bill), waterRate);
     const paymentText = getPaymentMethodLabel(invoice);
     const prorateSummary = calculateProratedRentByBillingDay(
       toNumber(invoice.room_price_month || invoice.rent_amount),
