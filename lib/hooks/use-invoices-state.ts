@@ -2730,7 +2730,10 @@ export function useInvoicesState() {
     arrearsSnapshotRows: ArrearsSnapshotItem[] = [],
   ) => {
     const win = window.open("", "_blank");
-    if (!win) return;
+    if (!win) {
+      setError("เบราว์เซอร์บล็อกหน้าต่างพิมพ์ กรุณาอนุญาตป๊อปอัปสำหรับเว็บไซต์นี้แล้วลองอีกครั้ง");
+      return;
+    }
     win.document.write(
       buildPrintHtml(invoice, reading, docType, arrearsSnapshotRows),
     );
