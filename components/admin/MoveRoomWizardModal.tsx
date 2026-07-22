@@ -1,5 +1,6 @@
 import React, { useMemo, useState, useEffect } from "react";
 import { Modal } from "@/components/ui/Modal";
+import { buttonClasses } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Loader2, ArrowRightLeft, Building2, CheckCircle2, ChevronRight, ChevronLeft, Save } from "lucide-react";
 import { formatMoney, toNumber, ymdToLocalDate } from "@/lib/format";
@@ -198,16 +199,16 @@ export function MoveRoomWizardModal({
                   {index < STEPS.length - 1 && (
                     <div
                       className={`absolute left-[15px] top-8 h-[calc(100%+8px)] w-0.5 -translate-x-1/2 ${
-                        isPast ? "bg-blue-600" : "bg-slate-200"
+                        isPast ? "bg-primary-600" : "bg-slate-200"
                       }`}
                     />
                   )}
                   <div
                     className={`relative z-10 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-2 transition-colors ${
                       isActive
-                        ? "border-blue-600 bg-blue-600 text-white shadow-sm shadow-blue-200"
+                        ? "border-primary-600 bg-primary-600 text-white shadow-sm"
                         : isPast
-                          ? "border-blue-600 bg-white text-blue-600"
+                          ? "border-primary-600 bg-white text-primary-600"
                           : "border-slate-200 bg-slate-50 text-slate-400"
                     }`}
                   >
@@ -221,7 +222,7 @@ export function MoveRoomWizardModal({
                     >
                       {s.label}
                     </span>
-                    <span className="mt-1 text-[11px] text-slate-500">{s.desc}</span>
+                    <span className="mt-1 text-2xs text-slate-500">{s.desc}</span>
                   </div>
                 </div>
               );
@@ -241,7 +242,7 @@ export function MoveRoomWizardModal({
                     <select
                       value={form.new_room_id}
                       onChange={(e) => setForm({ ...form, new_room_id: e.target.value })}
-                      className="w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-base shadow-sm focus:border-blue-500 focus:ring-blue-500"
+                      className="w-full rounded-control border border-slate-200 bg-white px-4 py-2.5 text-base shadow-sm focus:border-primary-500 focus:ring-primary-500"
                     >
                       <option value="">-- เลือกห้อง --</option>
                       {rooms.filter(r => r.id !== activeTenant.room_id).map((room) => (
@@ -260,8 +261,8 @@ export function MoveRoomWizardModal({
                   />
                 </div>
                 
-                <div className="rounded-xl border border-blue-100 bg-blue-50/50 p-4 text-sm text-slate-700">
-                  <p className="font-semibold text-blue-900 mb-2">ข้อมูลการย้าย</p>
+                <div className="rounded-control border border-primary-100 bg-primary-50/50 p-4 text-sm text-slate-700">
+                  <p className="font-semibold text-primary-900 mb-2">ข้อมูลการย้าย</p>
                   <p>ห้องเดิม: <span className="font-medium text-slate-900">{tenantRoomNumber(activeTenant, roomsById)}</span> (฿{formatMoney(oldRoomRate)})</p>
                   <p>ห้องใหม่: <span className="font-medium text-slate-900">{newRoom ? roomLabel(newRoom) : "-"}</span> (฿{formatMoney(newRoomRate)})</p>
                 </div>
@@ -273,7 +274,7 @@ export function MoveRoomWizardModal({
                 <h3 className="text-lg font-bold text-slate-800 border-b border-slate-100 pb-2">ปิดยอดมิเตอร์ห้องเดิม</h3>
                 <p className="text-sm text-slate-500">กรอกเลขมิเตอร์ ณ วันที่ย้ายออกเพื่อคิดค่าน้ำไฟของห้องเก่าในเดือนนี้</p>
                 <div className="grid gap-4 md:grid-cols-2">
-                  <div className="space-y-3 rounded-xl border border-slate-200 p-3 bg-white shadow-sm">
+                  <div className="space-y-3 rounded-control border border-slate-200 p-3 bg-white shadow-sm">
                     <p className="font-medium text-slate-700 border-b border-slate-100 pb-2">ไฟฟ้า (ห้องเดิม)</p>
                     <Input
                       label="เลขครั้งก่อน"
@@ -289,7 +290,7 @@ export function MoveRoomWizardModal({
                     />
                     <p className="text-sm text-slate-500 text-right">ใช้ไป {transferOldElectricUsage} หน่วย</p>
                   </div>
-                  <div className="space-y-3 rounded-xl border border-slate-200 p-3 bg-white shadow-sm">
+                  <div className="space-y-3 rounded-control border border-slate-200 p-3 bg-white shadow-sm">
                     <p className="font-medium text-slate-700 border-b border-slate-100 pb-2">น้ำประปา (ห้องเดิม)</p>
                     <Input
                       label="เลขครั้งก่อน"
@@ -338,7 +339,7 @@ export function MoveRoomWizardModal({
               <div className="space-y-5 animate-in fade-in slide-in-from-right-4 duration-300">
                 <h3 className="text-lg font-bold text-slate-800 border-b border-slate-100 pb-2">สรุปรายการย้ายห้องกลางเดือน</h3>
                 
-                <div className="rounded-2xl border border-slate-200 overflow-hidden text-sm shadow-sm bg-white">
+                <div className="rounded-card border border-slate-200 overflow-hidden text-sm shadow-sm bg-white">
                   <div className="p-4 bg-slate-50 border-b border-slate-200">
                     <p className="font-semibold text-slate-800 text-base">การคำนวณ Pro-rate (ดึงไปออกบิลสิ้นเดือน)</p>
                   </div>
@@ -374,7 +375,7 @@ export function MoveRoomWizardModal({
                     <span className="font-semibold">฿{formatMoney(transferOldUtility)}</span>
                   </div>
 
-                  <div className="grid grid-cols-[1fr_auto] p-4 bg-blue-50/50 text-blue-900 border-t-2 border-blue-100">
+                  <div className="grid grid-cols-[1fr_auto] p-4 bg-primary-50/50 text-primary-900 border-t-2 border-primary-100">
                     <p className="font-bold">รวมประมาณการย้ายห้องกลางเดือน</p>
                     <span className="font-black text-lg">฿{formatMoney(transferGrandTotal)}</span>
                   </div>
@@ -389,7 +390,7 @@ export function MoveRoomWizardModal({
               type="button"
               onClick={() => setStep(step - 1)}
               disabled={step === 1 || isSaving}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-600 transition hover:bg-slate-50 disabled:opacity-50"
+              className={buttonClasses({ variant: "secondary" })}
             >
               <ChevronLeft className="h-4 w-4" /> ย้อนกลับ
             </button>
@@ -405,7 +406,7 @@ export function MoveRoomWizardModal({
                   setStep(step + 1);
                 }}
                 disabled={isSaving}
-                className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-50"
+                className={buttonClasses({ variant: "primary" })}
               >
                 ถัดไป <ChevronRight className="h-4 w-4" />
               </button>
@@ -414,7 +415,7 @@ export function MoveRoomWizardModal({
                 type="button"
                 onClick={handleConfirm}
                 disabled={isSaving}
-                className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-bold text-white transition hover:bg-blue-700 disabled:opacity-50"
+                className={buttonClasses({ variant: "primary" })}
               >
                 {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
                 {isSaving ? "กำลังบันทึก..." : "ยืนยันการย้ายห้อง"}

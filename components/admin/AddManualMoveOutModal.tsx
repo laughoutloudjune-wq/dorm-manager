@@ -3,6 +3,7 @@
 import { useEffect, useState, useRef } from "react";
 import { toast } from "sonner";
 import { Modal } from "@/components/ui/Modal";
+import { buttonClasses } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { createClient } from "@/lib/supabase-client";
 import { Loader2, Search, ChevronDown } from "lucide-react";
@@ -152,7 +153,7 @@ export function AddManualMoveOutModal({ isOpen, onClose, onSuccess }: Props) {
               onChange={handleSearchChange}
               onFocus={() => setIsDropdownOpen(true)}
               placeholder="พิมพ์ชื่อหรือเลขห้องเพื่อค้นหา..."
-              className="w-full rounded-xl border border-slate-300 bg-white pl-10 pr-10 py-2 text-sm text-slate-900 focus:border-primary-500 focus:ring-1 focus:ring-primary-500 disabled:opacity-50"
+              className="w-full rounded-control border border-slate-300 bg-white pl-10 pr-10 py-2 text-sm text-slate-900 focus:border-primary-500 focus:ring-1 focus:ring-primary-500 disabled:opacity-50"
               disabled={loading || tenants.length === 0}
             />
             <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-3 text-slate-400">
@@ -161,7 +162,7 @@ export function AddManualMoveOutModal({ isOpen, onClose, onSuccess }: Props) {
           </div>
           
           {isDropdownOpen && tenants.length > 0 && (
-            <div className="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-xl border border-slate-200 bg-white py-1 shadow-lg shadow-black/5">
+            <div className="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-control border border-slate-200 bg-white py-1 shadow-float-lg shadow-black/5">
               {filteredTenants.length === 0 ? (
                 <div className="px-4 py-3 text-sm text-slate-500">ไม่พบผู้เช่าที่ค้นหา</div>
               ) : (
@@ -172,7 +173,7 @@ export function AddManualMoveOutModal({ isOpen, onClose, onSuccess }: Props) {
                       key={t.id}
                       type="button"
                       onClick={() => handleSelectTenant(t)}
-                      className="flex w-full items-center px-4 py-2.5 text-left text-sm hover:bg-primary-50 hover:text-primary-900 transition-colors"
+                      className={buttonClasses({ variant: "subtle", fullWidth: true })}
                     >
                       {roomNumber ? <span className="font-semibold w-16 shrink-0 text-slate-500">ห้อง {roomNumber}</span> : null}
                       <span className="font-medium">{t.full_name}</span>
@@ -184,7 +185,7 @@ export function AddManualMoveOutModal({ isOpen, onClose, onSuccess }: Props) {
           )}
           
           {tenants.length === 0 && (
-            <p className="mt-1.5 text-xs text-amber-600">ไม่มีผู้เช่าที่สามารถตั้งค่าย้ายออกได้ในขณะนี้</p>
+            <p className="mt-1.5 text-xs text-warning-600">ไม่มีผู้เช่าที่สามารถตั้งค่าย้ายออกได้ในขณะนี้</p>
           )}
         </div>
 
@@ -204,14 +205,14 @@ export function AddManualMoveOutModal({ isOpen, onClose, onSuccess }: Props) {
             type="button"
             onClick={onClose}
             disabled={loading}
-            className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+            className="rounded-control border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
           >
             ยกเลิก
           </button>
           <button
             type="submit"
             disabled={loading || !selectedTenantId}
-            className="inline-flex items-center gap-2 rounded-xl bg-primary-600 px-4 py-2 text-sm font-semibold text-white hover:bg-primary-700 disabled:opacity-50"
+            className={buttonClasses({ variant: "primary" })}
           >
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
             ยืนยัน

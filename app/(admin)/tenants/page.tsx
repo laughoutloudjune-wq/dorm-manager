@@ -3,6 +3,10 @@
 import { useMemo, useState } from "react";
 import { Plus, Search } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
+import { Card } from "@/components/ui/Card";
+import { Input, Select } from "@/components/ui/Input";
+import { EmptyState, Notice, PageHeader, Skeleton } from "@/components/ui/Page";
 import { TenantEditorModal } from "@/components/admin/tenant-editor-modal";
 import { usePermissions } from "@/lib/use-permissions";
 import { useTenants, useRooms, useMoveOutRequests } from "@/lib/hooks/use-data";
@@ -89,22 +93,36 @@ export default function TenantsPage() {
 
   return (
     <div className="space-y-6 pb-20">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex w-full flex-col gap-3 md:w-auto md:flex-row">
-          <div className="relative w-full md:w-80">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-            <input
+      <PageHeader
+        description="ข้อมูลผู้เช่าทั้งหมด แยกตามอาคาร"
+        actions={
+          <Button
+            onClick={() => void openModal()}
+            disabled={!canEditTenant}
+            title={!canEditTenant ? "ไม่มีสิทธิ์เพิ่ม/แก้ไขข้อมูลผู้เช่า" : undefined}
+            icon={<Plus size={16} />}
+          >
+            เพิ่มผู้เช่า
+          </Button>
+        }
+      />
+
+      <Card className="p-3">
+        <div className="flex w-full flex-col gap-2.5 md:flex-row">
+          <div className="relative w-full md:max-w-sm">
+            <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={17} />
+            <Input
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               placeholder="ค้นหาชื่อผู้เช่าหรือเลขห้อง"
-              className="w-full rounded-xl border border-slate-200 bg-white py-3 pl-10 pr-4 text-base shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-600/40"
+              className="pl-10"
             />
           </div>
           {buildingOptions.length > 1 && (
-            <select
+            <Select
               value={buildingFilter}
               onChange={(event) => setBuildingFilter(event.target.value)}
-              className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-base shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-600/40 md:w-56"
+              className="md:w-56"
             >
               <option value="all">ทุกอาคาร</option>
               {buildingOptions.map((building) => (
@@ -112,46 +130,28 @@ export default function TenantsPage() {
                   {building}
                 </option>
               ))}
-            </select>
+            </Select>
           )}
-          <select
+          <Select
             value={statusFilter}
             onChange={(event) => setStatusFilter(event.target.value)}
-            className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-base shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-600/40 md:w-48"
+            className="md:w-48"
           >
             <option value="all">สถานะทั้งหมด</option>
             <option value="active">กำลังพักอาศัย</option>
             <option value="moved_out">ย้ายออกแล้ว</option>
-          </select>
+          </Select>
         </div>
-        <button
-          onClick={() => void openModal()}
-          disabled={!canEditTenant}
-          title={!canEditTenant ? "ไม่มีสิทธิ์เพิ่ม/แก้ไขข้อมูลผู้เช่า" : undefined}
-          className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-base font-semibold text-white shadow-lg shadow-blue-600/20 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none"
-        >
-          <Plus size={16} />
-          เพิ่มผู้เช่า
-        </button>
-      </div>
+      </Card>
 
-      {!canViewTenants && (
-        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-          บัญชีนี้ไม่มีสิทธิ์ดูข้อมูลผู้เช่า
-        </div>
-      )}
+      {!canViewTenants && <Notice tone="danger" title="บัญชีนี้ไม่มีสิทธิ์ดูข้อมูลผู้เช่า" />}
 
       {isPageLoading ? (
         <div className="space-y-6">
-          <div className="h-6 w-32 bg-slate-200 rounded animate-pulse"></div>
+          <Skeleton className="h-6 w-32" />
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
             {[...Array(8)].map((_, i) => (
-              <div key={i} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm animate-pulse">
-                <div className="h-4 w-12 bg-slate-200 rounded mb-2"></div>
-                <div className="h-6 w-20 bg-slate-200 rounded mb-4"></div>
-                <div className="h-4 w-32 bg-slate-200 rounded mb-6"></div>
-                <div className="h-10 w-full bg-slate-200 rounded mt-4"></div>
-              </div>
+              <Skeleton key={i} className="h-52" />
             ))}
           </div>
         </div>
@@ -175,36 +175,42 @@ export default function TenantsPage() {
                       return rA.localeCompare(rB, undefined, { numeric: true, sensitivity: "base" });
                     })
                     .map((tenant) => (
-                    <div
-                      key={tenant.id}
-                      className="rounded-2xl border border-slate-200/80 bg-white/95 p-4 shadow-soft backdrop-blur-sm transition-all hover:-translate-y-0.5 hover:shadow-soft-lg"
-                    >
+                    <Card key={tenant.id} className="flex flex-col p-4 hover-float">
                       <div className="flex items-start justify-between gap-3">
-                        <div>
+                        <div className="min-w-0">
                           <p className="text-xs font-medium uppercase tracking-wide text-slate-400">ห้อง</p>
-                          <h2 className="mt-1 text-base font-semibold text-slate-900">{tenantRoomNumber(tenant, roomsById)}</h2>
-                          <p className="mt-1 text-sm text-slate-600">{tenant.full_name}</p>
+                          <h2 className="mt-1 text-base font-semibold text-slate-900">
+                            {tenantRoomNumber(tenant, roomsById)}
+                          </h2>
+                          <p className="mt-1 truncate text-sm text-slate-600">{tenant.full_name}</p>
                         </div>
-                        <Badge variant={tenant.status === "active" ? "success" : "warning"}>
+                        <Badge variant={tenant.status === "active" ? "success" : "warning"} dot>
                           {tenantStatusLabel(tenant.status)}
                         </Badge>
                       </div>
 
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        {activeMoveOutRequestByTenantId.has(String(tenant.id)) && (
-                          <Badge variant="warning">รอจัดการย้ายออก</Badge>
-                        )}
-                        {tenant.forfeit_security_deposit ? <Badge variant="danger">ไม่คืนเงินประกัน</Badge> : null}
-                      </div>
+                      {(activeMoveOutRequestByTenantId.has(String(tenant.id)) ||
+                        tenant.forfeit_security_deposit) && (
+                        <div className="mt-3 flex flex-wrap gap-1.5">
+                          {activeMoveOutRequestByTenantId.has(String(tenant.id)) && (
+                            <Badge variant="warning" size="sm">รอจัดการย้ายออก</Badge>
+                          )}
+                          {tenant.forfeit_security_deposit ? (
+                            <Badge variant="danger" size="sm">ไม่คืนเงินประกัน</Badge>
+                          ) : null}
+                        </div>
+                      )}
 
-                      <div className="mt-3 space-y-2 text-sm text-slate-600">
-                        <div className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2">
+                      <div className="mt-3 space-y-1.5 text-sm text-slate-600">
+                        <div className="flex items-center justify-between rounded-control bg-slate-50 px-3 py-2">
                           <span>เบอร์โทร</span>
                           <span className="font-medium text-slate-800">{tenant.phone_number ?? "-"}</span>
                         </div>
-                        <div className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2">
+                        <div className="flex items-center justify-between rounded-control bg-slate-50 px-3 py-2">
                           <span>LINE</span>
-                          <span className={`font-medium ${tenant.line_user_id ? "text-emerald-700" : "text-slate-500"}`}>
+                          <span
+                            className={`font-medium ${tenant.line_user_id ? "text-success-700" : "text-slate-500"}`}
+                          >
                             {tenant.line_user_id ? "เชื่อมแล้ว" : "ยังไม่เชื่อม"}
                           </span>
                         </div>
@@ -212,34 +218,40 @@ export default function TenantsPage() {
 
                       <div className="mt-4 flex flex-wrap gap-2">
                         {activeMoveOutRequestByTenantId.has(String(tenant.id)) && (
-                          <button
-                            type="button"
+                          <Button
+                            size="sm"
+                            variant="subtle"
                             disabled={!canEditTenant}
                             onClick={() => openModal(tenant, "move_out")}
-                            className="rounded-xl border border-orange-200 bg-orange-50 px-3 py-2 text-sm font-medium text-orange-700 disabled:cursor-not-allowed disabled:opacity-60"
+                            className="border-warning-200 bg-warning-50 text-warning-800 hover:border-warning-300 hover:bg-warning-100"
                           >
                             ดูคำขอย้ายออก
-                          </button>
+                          </Button>
                         )}
-                        <button
+                        <Button
+                          size="sm"
+                          variant="secondary"
                           disabled={!canEditTenant}
                           title={!canEditTenant ? "ไม่มีสิทธิ์แก้ไขข้อมูลผู้เช่า" : undefined}
-                          className="rounded-xl border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:border-red-200 disabled:text-red-400"
                           onClick={() => openModal(tenant)}
                         >
                           แก้ไขข้อมูล
-                        </button>
+                        </Button>
                       </div>
-                    </div>
+                    </Card>
                   ))}
                 </div>
               </div>
             ))}
 
           {!isPageLoading && filtered.length === 0 && canViewTenants && (
-            <div className="rounded-3xl border border-dashed border-slate-300 bg-slate-50 px-6 py-12 text-center text-slate-500">
-              ไม่พบข้อมูลผู้เช่าตามคำค้นหา
-            </div>
+            <Card>
+              <EmptyState
+                icon={<Search className="h-5 w-5" />}
+                title="ไม่พบข้อมูลผู้เช่าตามคำค้นหา"
+                description="ลองเปลี่ยนคำค้นหา อาคาร หรือสถานะที่เลือกไว้"
+              />
+            </Card>
           )}
         </>
       )}

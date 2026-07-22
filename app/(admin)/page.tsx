@@ -2,7 +2,9 @@
 
 import Link from "next/link";
 import { AlertTriangle, ArrowRight, CheckCircle2, FileClock, Home, ReceiptText, Users, Zap } from "lucide-react";
-import { Card, CardContent } from "@/components/ui/Card";
+import { Card, CardContent, SectionCard } from "@/components/ui/Card";
+import { EmptyState, Notice, PageHeader, Skeleton } from "@/components/ui/Page";
+import { Table, TableCard, TBody, TD, TH, THead, TR } from "@/components/ui/Table";
 import { useDashboardStats } from "@/lib/hooks/use-data";
 import { formatMoney } from "@/lib/format";
 
@@ -12,7 +14,6 @@ type Kpi = {
   label: string;
   value: string;
   hint: string;
-  tone: string;
   tint: KpiTint;
   icon: any;
   href: string;
@@ -38,32 +39,27 @@ export default function DashboardPage() {
 
   if (loading) {
     return (
-      <div className="mx-auto max-w-7xl space-y-6 p-4 pb-20 sm:space-y-8 sm:p-6 lg:p-8 animate-pulse">
-        {/* Header Skeleton */}
+      <div className="space-y-6">
         <div className="space-y-2">
-          <div className="h-8 w-48 rounded-lg bg-slate-200"></div>
-          <div className="h-4 w-72 rounded-lg bg-slate-100"></div>
+          <Skeleton className="h-8 w-48" />
+          <Skeleton className="h-4 w-72" />
         </div>
-
-        {/* KPIs Grid Skeleton */}
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 lg:grid-cols-6 lg:gap-6">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 lg:grid-cols-3 lg:gap-6 2xl:grid-cols-6">
           {Array.from({ length: 6 }).map((_, i) => (
-            <div key={i} className="h-[120px] rounded-2xl bg-slate-100 ring-1 ring-slate-200/50"></div>
+            <Skeleton key={i} className="h-[130px]" />
           ))}
         </div>
-
-        {/* Main Content Skeleton */}
         <div className="grid gap-6 lg:grid-cols-3">
           <div className="space-y-6 lg:col-span-2">
             <div className="grid gap-6 sm:grid-cols-2">
-              <div className="h-[280px] rounded-2xl bg-slate-100 ring-1 ring-slate-200/50"></div>
-              <div className="h-[280px] rounded-2xl bg-slate-100 ring-1 ring-slate-200/50"></div>
+              <Skeleton className="h-[280px]" />
+              <Skeleton className="h-[280px]" />
             </div>
-            <div className="h-[320px] rounded-2xl bg-slate-100 ring-1 ring-slate-200/50"></div>
+            <Skeleton className="h-[320px]" />
           </div>
           <div className="space-y-6">
-            <div className="h-[280px] rounded-2xl bg-slate-100 ring-1 ring-slate-200/50"></div>
-            <div className="h-[320px] rounded-2xl bg-slate-100 ring-1 ring-slate-200/50"></div>
+            <Skeleton className="h-[280px]" />
+            <Skeleton className="h-[320px]" />
           </div>
         </div>
       </div>
@@ -72,9 +68,9 @@ export default function DashboardPage() {
 
   if (error) {
     return (
-      <div className="p-8 text-center text-red-500">
-        เกิดข้อผิดพลาดในการโหลดข้อมูล: {error.message || String(error)}
-      </div>
+      <Notice tone="danger" icon={<AlertTriangle className="h-5 w-5" />} title="โหลดข้อมูลไม่สำเร็จ">
+        {error.message || String(error)}
+      </Notice>
     );
   }
 
@@ -94,7 +90,6 @@ export default function DashboardPage() {
       label: "ยอดค้างชำระ",
       value: formatMoneyBaht(dashboard.totalOutstanding),
       hint: `เกินกำหนด ${dashboard.overdueInvoicesCount} | รอชำระ/ชำระบางส่วน ${dashboard.pendingInvoicesCount}`,
-      tone: "from-red-50 to-white",
       tint: "red",
       icon: AlertTriangle,
       href: "/invoices",
@@ -103,7 +98,6 @@ export default function DashboardPage() {
       label: "บิลรอตรวจสอบ",
       value: String(dashboard.verifyingInvoicesCount),
       hint: "มีสลิปอัปโหลดแล้วและรอแอดมินตรวจสอบ",
-      tone: "from-orange-50 to-white",
       tint: "orange",
       icon: FileClock,
       href: "/invoices",
@@ -112,7 +106,6 @@ export default function DashboardPage() {
       label: "คำขอย้ายออก",
       value: String(dashboard.requestedMoveOutsCount),
       hint: "คำขอจากผู้เช่าที่รอแอดมินตรวจสอบ",
-      tone: "from-indigo-50 to-white",
       tint: "indigo",
       icon: ArrowRight,
       href: "/tenants",
@@ -121,7 +114,6 @@ export default function DashboardPage() {
       label: "อัตราเข้าพัก",
       value: `${dashboard.occupancyRate}%`,
       hint: `ห้องใช้งาน ${dashboard.activeTenantsCount} จาก ${dashboard.totalRoomsCount} ห้อง`,
-      tone: "from-teal-50 to-white",
       tint: "teal",
       icon: Home,
       href: "/rooms",
@@ -130,7 +122,6 @@ export default function DashboardPage() {
       label: "ห้องว่าง",
       value: String(dashboard.vacantRoomsCount),
       hint: "ห้องที่สามารถปล่อยเช่าได้",
-      tone: "from-green-50 to-white",
       tint: "green",
       icon: CheckCircle2,
       href: "/rooms",
@@ -139,92 +130,85 @@ export default function DashboardPage() {
       label: "รอเข้าพัก",
       value: String(dashboard.upcomingMoveInsCount),
       hint: "ผู้เช่าที่มีกำหนดย้ายเข้าใน 30 วัน",
-      tone: "from-purple-50 to-white",
       tint: "purple",
       icon: Users,
       href: "/tenants",
     },
   ];
 
+  const highAnomalies = dashboard.anomalies.filter((a) => a.severity === "high");
+  const mediumAnomalies = dashboard.anomalies.filter((a) => a.severity !== "high");
+
   return (
-    <div className="mx-auto max-w-7xl space-y-6 p-4 pb-20 sm:space-y-8 sm:p-6 lg:p-8">
-      {/* Header */}
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">ภาพรวมระบบ</h1>
-          <p className="mt-1 text-sm text-slate-500">ข้อมูลสรุปประจำวันและการแจ้งเตือนสำคัญ</p>
-        </div>
-      </div>
+    <div className="space-y-6">
+      <PageHeader description="ข้อมูลสรุปประจำวันและการแจ้งเตือนสำคัญ" />
 
-      {/* Anomalies — split by severity so real breakage (red) doesn't get lost
-          among softer data-quality notices (amber). The API already tags each
+      {/* Anomalies — split by severity so real breakage (danger) doesn't get lost
+          among softer data-quality notices (warning). The API already tags each
           anomaly with severity; the UI just wasn't using it. */}
-      {(() => {
-        const highAnomalies = dashboard.anomalies.filter((a) => a.severity === "high");
-        const mediumAnomalies = dashboard.anomalies.filter((a) => a.severity !== "high");
-        return (
-          <>
-            {highAnomalies.length > 0 && (
-              <div className="rounded-2xl border border-red-200 bg-red-50 p-4 sm:p-5">
-                <div className="flex items-center gap-2 text-red-700">
-                  <AlertTriangle className="h-5 w-5" />
-                  <h2 className="font-semibold">ข้อผิดพลาดที่ต้องแก้ไขด่วน ({highAnomalies.length})</h2>
-                </div>
-                <ul className="mt-3 grid gap-2 sm:grid-cols-2">
-                  {highAnomalies.map((a) => (
-                    <li key={a.id} className="flex items-start gap-2 text-sm text-red-600">
-                      <span className="mt-1.5 block h-1.5 w-1.5 shrink-0 rounded-full bg-red-400"></span>
-                      <span>{a.text}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {mediumAnomalies.length > 0 && (
-              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 sm:p-5">
-                <div className="flex items-center gap-2 text-amber-700">
-                  <AlertTriangle className="h-5 w-5" />
-                  <h2 className="font-semibold">ข้อสังเกตที่ควรตรวจสอบ ({mediumAnomalies.length})</h2>
-                </div>
-                <ul className="mt-3 grid gap-2 sm:grid-cols-2">
-                  {mediumAnomalies.map((a) => (
-                    <li key={a.id} className="flex items-start gap-2 text-sm text-amber-700">
-                      <span className="mt-1.5 block h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400"></span>
-                      <span>{a.text}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </>
-        );
-      })()}
+      {highAnomalies.length > 0 && (
+        <Notice
+          tone="danger"
+          icon={<AlertTriangle className="h-5 w-5" />}
+          title={`ข้อผิดพลาดที่ต้องแก้ไขด่วน (${highAnomalies.length})`}
+        >
+          <ul className="mt-2 grid gap-1.5 sm:grid-cols-2">
+            {highAnomalies.map((a) => (
+              <li key={a.id} className="flex items-start gap-2">
+                <span className="mt-1.5 block h-1.5 w-1.5 shrink-0 rounded-full bg-danger-400" />
+                <span>{a.text}</span>
+              </li>
+            ))}
+          </ul>
+        </Notice>
+      )}
 
-      {/* KPIs Grid */}
-      {/* 6-across is deferred to xl: at lg (a common 1366px laptop width) 6 columns
-          left too little room for a bold 2xl currency value, clipping it (e.g.
-          "฿165,715.00" cut to "฿165,715.0"). lg:grid-cols-3 gives each card room
-          to breathe until there's genuinely enough width for all six. */}
+      {mediumAnomalies.length > 0 && (
+        <Notice
+          tone="warning"
+          icon={<AlertTriangle className="h-5 w-5" />}
+          title={`ข้อสังเกตที่ควรตรวจสอบ (${mediumAnomalies.length})`}
+        >
+          <ul className="mt-2 grid gap-1.5 sm:grid-cols-2">
+            {mediumAnomalies.map((a) => (
+              <li key={a.id} className="flex items-start gap-2">
+                <span className="mt-1.5 block h-1.5 w-1.5 shrink-0 rounded-full bg-warning-400" />
+                <span>{a.text}</span>
+              </li>
+            ))}
+          </ul>
+        </Notice>
+      )}
+
+      {/* 6-across is deferred to 2xl: at lg (a common 1366px laptop width) six
+          columns left too little room for a bold currency value and clipped it
+          (e.g. "฿165,715.00" cut to "฿165,715.0"). */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 lg:grid-cols-3 lg:gap-6 2xl:grid-cols-6">
         {kpis.map((kpi, idx) => (
-          <Link key={idx} href={kpi.href} className="group block focus:outline-none focus:ring-2 focus:ring-slate-400 focus:ring-offset-2 rounded-2xl">
-            <Card className={`h-full overflow-hidden border-none bg-gradient-to-b ${kpi.tone} shadow-soft ring-1 ring-slate-200/50 transition-all hover:-translate-y-0.5 hover:shadow-soft-lg`}>
+          <Link
+            key={idx}
+            href={kpi.href}
+            className="group block rounded-card focus-ring"
+          >
+            <Card interactive className="h-full">
               <CardContent className="p-4 sm:p-5">
-                <div className="flex items-center justify-between">
-                  <div className={`rounded-xl p-2 shadow-sm backdrop-blur-sm transition-all group-hover:scale-110 ${KPI_ICON_CLASSES[kpi.tint]}`}>
-                    <kpi.icon className="h-5 w-5 sm:h-6 sm:w-6" />
-                  </div>
+                <div
+                  className={`inline-flex rounded-control p-2 transition-transform duration-200 ease-float group-hover:scale-105 ${KPI_ICON_CLASSES[kpi.tint]}`}
+                >
+                  <kpi.icon className="h-5 w-5" />
                 </div>
-                <div className="mt-3 sm:mt-4">
-                  <p className="truncate text-xs font-medium text-slate-500 sm:text-sm">{kpi.label}</p>
+                <div className="mt-3.5">
+                  <p className="truncate text-xs font-medium text-slate-500">{kpi.label}</p>
                   <p
-                    className="mt-1 truncate text-lg font-bold tracking-tight text-slate-900 sm:text-xl"
+                    className="mt-1 truncate text-xl font-semibold tracking-tight text-slate-900"
                     title={kpi.value}
                   >
                     {kpi.value}
                   </p>
                 </div>
-                <p className="mt-2 text-[10px] text-slate-500 line-clamp-2 sm:text-xs">{kpi.hint}</p>
+                <p className="mt-2 line-clamp-2 text-2xs leading-relaxed text-slate-500">
+                  {kpi.hint}
+                </p>
               </CardContent>
             </Card>
           </Link>
@@ -232,159 +216,160 @@ export default function DashboardPage() {
       </div>
 
       <div className="grid gap-6 lg:grid-cols-3">
-        {/* Main Content Area */}
         <div className="space-y-6 lg:col-span-2">
-          {/* Charts Row */}
           <div className="grid gap-6 sm:grid-cols-2">
-            {/* Monthly Trend */}
-            <Card className="overflow-hidden border-slate-200 shadow-sm">
-              <div className="border-b border-slate-100 bg-slate-50/50 px-5 py-4">
-                <h3 className="font-semibold text-slate-900">กระแสเงินสด 6 เดือนล่าสุด</h3>
-              </div>
-              <CardContent className="p-5">
-                <div className="space-y-3">
-                  {dashboard.monthlyTrend.slice().reverse().map((row) => (
-                    <div key={row.month} className="space-y-1.5">
-                      <div className="flex justify-between text-xs sm:text-sm">
-                        <span className="font-medium text-slate-700">{row.month}</span>
-                        <div className="flex gap-3">
-                          <span className="text-emerald-600">฿{row.collected.toLocaleString()}</span>
-                          <span className="text-rose-500">{row.outstanding > 0 ? `ค้าง ฿${row.outstanding.toLocaleString()}` : ''}</span>
-                        </div>
-                      </div>
-                      <div className="flex h-2 w-full overflow-hidden rounded-full bg-slate-100">
-                        {row.collected + row.outstanding > 0 ? (
-                          <>
-                            <div className="bg-emerald-400" style={{ width: `${(row.collected / (row.collected + row.outstanding)) * 100}%` }}></div>
-                            <div className="bg-rose-400" style={{ width: `${(row.outstanding / (row.collected + row.outstanding)) * 100}%` }}></div>
-                          </>
-                        ) : null}
+            <SectionCard title="กระแสเงินสด 6 เดือนล่าสุด">
+              <div className="space-y-3.5">
+                {dashboard.monthlyTrend.slice().reverse().map((row) => (
+                  <div key={row.month} className="space-y-1.5">
+                    <div className="flex justify-between text-xs sm:text-sm">
+                      <span className="font-medium text-slate-700">{row.month}</span>
+                      <div className="flex gap-3">
+                        <span className="text-success-600">฿{row.collected.toLocaleString()}</span>
+                        <span className="text-danger-500">
+                          {row.outstanding > 0 ? `ค้าง ฿${row.outstanding.toLocaleString()}` : ""}
+                        </span>
                       </div>
                     </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
+                    <div className="flex h-2 w-full overflow-hidden rounded-full bg-slate-100">
+                      {row.collected + row.outstanding > 0 ? (
+                        <>
+                          <div
+                            className="bg-success-500"
+                            style={{ width: `${(row.collected / (row.collected + row.outstanding)) * 100}%` }}
+                          />
+                          <div
+                            className="bg-danger-400"
+                            style={{ width: `${(row.outstanding / (row.collected + row.outstanding)) * 100}%` }}
+                          />
+                        </>
+                      ) : null}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </SectionCard>
 
-            {/* Utility Trend */}
-            <Card className="overflow-hidden border-slate-200 shadow-sm">
-              <div className="border-b border-slate-100 bg-slate-50/50 px-5 py-4">
-                <h3 className="font-semibold text-slate-900">การใช้สาธารณูปโภค</h3>
-              </div>
-              <CardContent className="p-5">
-                <div className="space-y-3">
-                  {dashboard.utilityTrend.slice().reverse().map((row) => (
-                    <div key={row.month} className="space-y-1.5">
-                      <div className="flex justify-between text-xs sm:text-sm">
-                        <span className="font-medium text-slate-700">{row.month}</span>
-                        <div className="flex gap-3 text-slate-500">
-                          <span>ไฟ {row.electricity.toLocaleString()}</span>
-                          <span>น้ำ {row.water.toLocaleString()}</span>
-                        </div>
-                      </div>
-                      <div className="flex h-2 w-full overflow-hidden rounded-full bg-slate-100">
-                        {row.electricity + row.water > 0 ? (
-                          <>
-                            <div className="bg-amber-400" style={{ width: `${(row.electricity / (row.electricity + row.water)) * 100}%` }}></div>
-                            <div className="bg-sky-400" style={{ width: `${(row.water / (row.electricity + row.water)) * 100}%` }}></div>
-                          </>
-                        ) : null}
+            <SectionCard title="การใช้สาธารณูปโภค">
+              <div className="space-y-3.5">
+                {dashboard.utilityTrend.slice().reverse().map((row) => (
+                  <div key={row.month} className="space-y-1.5">
+                    <div className="flex justify-between text-xs sm:text-sm">
+                      <span className="font-medium text-slate-700">{row.month}</span>
+                      <div className="flex gap-3 text-slate-500">
+                        <span>ไฟ {row.electricity.toLocaleString()}</span>
+                        <span>น้ำ {row.water.toLocaleString()}</span>
                       </div>
                     </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
+                    <div className="flex h-2 w-full overflow-hidden rounded-full bg-slate-100">
+                      {row.electricity + row.water > 0 ? (
+                        <>
+                          <div
+                            className="bg-apple-orange"
+                            style={{ width: `${(row.electricity / (row.electricity + row.water)) * 100}%` }}
+                          />
+                          <div
+                            className="bg-apple-cyan"
+                            style={{ width: `${(row.water / (row.electricity + row.water)) * 100}%` }}
+                          />
+                        </>
+                      ) : null}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </SectionCard>
           </div>
 
-          {/* Building Stats */}
-          <Card className="overflow-hidden border-slate-200 shadow-sm">
-            <div className="border-b border-slate-100 bg-slate-50/50 px-5 py-4">
-              <h3 className="font-semibold text-slate-900">สถานะห้องพักแยกตามอาคาร</h3>
+          <Card className="overflow-hidden">
+            <div className="border-b border-slate-100 px-5 py-4">
+              <h3 className="text-base font-semibold tracking-tight text-slate-900">
+                สถานะห้องพักแยกตามอาคาร
+              </h3>
             </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead>
-                  <tr className="border-b border-slate-200 text-slate-500">
-                    <th className="px-5 py-3 font-medium">อาคาร</th>
-                    <th className="px-5 py-3 font-medium text-right">จำนวนห้อง</th>
-                    <th className="px-5 py-3 font-medium text-right">มีผู้เช่า</th>
-                    <th className="px-5 py-3 font-medium text-right">ว่าง</th>
-                    <th className="px-5 py-3 font-medium text-right">อัตราการเข้าพัก</th>
+            <div className="scrollbar-slim overflow-x-auto">
+              <Table>
+                <THead>
+                  <tr>
+                    <TH>อาคาร</TH>
+                    <TH className="text-right">จำนวนห้อง</TH>
+                    <TH className="text-right">มีผู้เช่า</TH>
+                    <TH className="text-right">ว่าง</TH>
+                    <TH className="text-right">อัตราการเข้าพัก</TH>
                   </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
+                </THead>
+                <TBody>
                   {dashboard.buildingStats.map((stat) => (
-                    <tr key={stat.building} className="hover:bg-slate-50/50">
-                      <td className="px-5 py-3 font-medium text-slate-900">{stat.building}</td>
-                      <td className="px-5 py-3 text-right text-slate-600">{stat.total}</td>
-                      <td className="px-5 py-3 text-right text-emerald-600">{stat.occupied}</td>
-                      <td className="px-5 py-3 text-right text-slate-600">{stat.vacant}</td>
-                      <td className="px-5 py-3 text-right">
+                    <TR key={stat.building}>
+                      <TD className="font-medium text-slate-900">{stat.building}</TD>
+                      <TD className="text-right">{stat.total}</TD>
+                      <TD className="text-right font-medium text-success-600">{stat.occupied}</TD>
+                      <TD className="text-right">{stat.vacant}</TD>
+                      <TD className="text-right">
                         <div className="flex items-center justify-end gap-2">
                           <span className="font-medium text-slate-700">{stat.occupancy}%</span>
                           <div className="h-1.5 w-16 overflow-hidden rounded-full bg-slate-100">
-                            <div className="h-full bg-emerald-500" style={{ width: `${stat.occupancy}%` }}></div>
+                            <div
+                              className="h-full rounded-full bg-success-500"
+                              style={{ width: `${stat.occupancy}%` }}
+                            />
                           </div>
                         </div>
-                      </td>
-                    </tr>
+                      </TD>
+                    </TR>
                   ))}
                   {dashboard.buildingStats.length === 0 && (
                     <tr>
-                      <td colSpan={5} className="px-5 py-8 text-center text-slate-500">
-                        ไม่มีข้อมูลห้องพัก
+                      <td colSpan={5}>
+                        <EmptyState icon={<Home className="h-5 w-5" />} title="ไม่มีข้อมูลห้องพัก" />
                       </td>
                     </tr>
                   )}
-                </tbody>
-              </table>
+                </TBody>
+              </Table>
             </div>
           </Card>
         </div>
 
-        {/* Sidebar Area */}
         <div className="space-y-6">
-          {/* Quick Actions */}
-          <Card className="overflow-hidden border-slate-200 shadow-sm">
-            <div className="border-b border-slate-100 bg-slate-50/50 px-5 py-4">
-              <h3 className="font-semibold text-slate-900">การเข้าถึงด่วน</h3>
+          <Card className="overflow-hidden">
+            <div className="border-b border-slate-100 px-5 py-4">
+              <h3 className="text-base font-semibold tracking-tight text-slate-900">การเข้าถึงด่วน</h3>
             </div>
             <div className="divide-y divide-slate-100">
               {quickActions.map((action, idx) => (
                 <Link
                   key={idx}
                   href={action.href}
-                  className="group flex items-center gap-4 px-5 py-4 transition-colors hover:bg-slate-50 focus:bg-slate-50 focus:outline-none"
+                  className="group flex items-center gap-4 px-5 py-3.5 transition-colors hover:bg-slate-50 focus:bg-slate-50 focus:outline-none"
                 >
-                  <div className="rounded-lg bg-slate-100 p-2 text-slate-500 transition-colors group-hover:bg-indigo-50 group-hover:text-indigo-600 group-focus:bg-indigo-50 group-focus:text-indigo-600">
+                  <div className="rounded-control bg-slate-100 p-2 text-slate-500 transition-colors group-hover:bg-primary-50 group-hover:text-primary-600 group-focus:bg-primary-50 group-focus:text-primary-600">
                     <action.icon className="h-5 w-5" />
                   </div>
                   <div className="flex-1">
-                    <p className="text-sm font-medium text-slate-900 group-hover:text-indigo-600 group-focus:text-indigo-600">
+                    <p className="text-sm font-medium text-slate-900 group-hover:text-primary-700 group-focus:text-primary-700">
                       {action.label}
                     </p>
                     <p className="text-xs text-slate-500">{action.hint}</p>
                   </div>
-                  <ArrowRight className="h-4 w-4 text-slate-300 transition-transform group-hover:translate-x-1 group-hover:text-indigo-400 group-focus:translate-x-1 group-focus:text-indigo-400" />
+                  <ArrowRight className="h-4 w-4 text-slate-300 transition-transform duration-200 ease-float group-hover:translate-x-1 group-hover:text-primary-400 group-focus:translate-x-1 group-focus:text-primary-400" />
                 </Link>
               ))}
             </div>
           </Card>
 
-          {/* Recent Activity */}
-          <Card className="overflow-hidden border-slate-200 shadow-sm">
-            <div className="border-b border-slate-100 bg-slate-50/50 px-5 py-4">
-              <h3 className="font-semibold text-slate-900">รายการล่าสุด</h3>
+          <Card className="overflow-hidden">
+            <div className="border-b border-slate-100 px-5 py-4">
+              <h3 className="text-base font-semibold tracking-tight text-slate-900">รายการล่าสุด</h3>
             </div>
-            <div className="p-5">
-              {dashboard.recentActivities.length > 0 ? (
-                <div className="relative space-y-6 before:absolute before:inset-y-0 before:left-2 before:w-px before:bg-slate-200">
+            {dashboard.recentActivities.length > 0 ? (
+              <div className="p-5">
+                <div className="relative space-y-5 before:absolute before:inset-y-1 before:left-[7px] before:w-px before:bg-slate-200">
                   {dashboard.recentActivities.map((activity) => (
                     <div key={activity.id} className="relative flex gap-4 pl-6">
-                      <div className="absolute left-0 top-1.5 h-4 w-4 rounded-full border-4 border-white bg-indigo-500 shadow-sm"></div>
+                      <div className="absolute left-0 top-1 h-[15px] w-[15px] rounded-full border-[3px] border-white bg-primary-500 shadow-float" />
                       <div>
-                        <p className="text-sm text-slate-700">{activity.text}</p>
+                        <p className="text-sm leading-relaxed text-slate-700">{activity.text}</p>
                         <p className="mt-1 text-xs text-slate-400">
                           {new Date(activity.created_at).toLocaleString("th-TH", {
                             dateStyle: "short",
@@ -395,10 +380,10 @@ export default function DashboardPage() {
                     </div>
                   ))}
                 </div>
-              ) : (
-                <p className="text-center text-sm text-slate-500">ไม่มีรายการล่าสุด</p>
-              )}
-            </div>
+              </div>
+            ) : (
+              <EmptyState icon={<FileClock className="h-5 w-5" />} title="ไม่มีรายการล่าสุด" />
+            )}
           </Card>
         </div>
       </div>

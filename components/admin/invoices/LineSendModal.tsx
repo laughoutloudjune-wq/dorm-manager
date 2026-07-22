@@ -1,6 +1,7 @@
 "use client";
 
 import { Modal } from "@/components/ui/Modal";
+import { buttonClasses } from "@/components/ui/Button";
 import { useInvoiceContext } from "./InvoiceContext";
 import { Input } from "@/components/ui/Input";
 import { Badge } from "@/components/ui/Badge";
@@ -177,12 +178,12 @@ export function LineSendModal() {
           >
             <div className="space-y-4">
               <div
-                className={`rounded-xl border p-4 text-sm ${
+                className={`rounded-control border p-4 text-sm ${
                   lineSendState === "success"
-                    ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                    ? "border-success-200 bg-success-50 text-success-800"
                     : lineSendState === "error"
-                      ? "border-red-200 bg-red-50 text-red-800"
-                      : "border-blue-200 bg-blue-50 text-blue-800"
+                      ? "border-danger-200 bg-danger-50 text-danger-800"
+                      : "border-primary-200 bg-primary-50 text-primary-800"
                 }`}
               >
                 <div className="flex items-start gap-3">
@@ -201,7 +202,7 @@ export function LineSendModal() {
                   type="button"
                   onClick={() => setLineSendModalOpen(false)}
                   disabled={lineSendState === "sending"}
-                  className="rounded-xl border border-slate-200 px-4 py-2 text-sm text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  className={buttonClasses({ variant: "secondary" })}
                 >
                   {lineSendState === "sending" ? "กำลังส่ง..." : "ปิด"}
                 </button>

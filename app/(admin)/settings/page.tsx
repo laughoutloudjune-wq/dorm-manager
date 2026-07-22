@@ -4,6 +4,7 @@ import { toast } from "sonner";
 
 import { useEffect, useMemo, useState } from "react";
 import { Input } from "@/components/ui/Input";
+import { buttonClasses } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Modal } from "@/components/ui/Modal";
 import { createClient } from "@/lib/supabase-client";
@@ -668,10 +669,14 @@ export default function SettingsPage() {
   const selectedAccessUser = userRoles.find((row) => row.id === selectedAccessUserId) ?? userRoles[0] ?? null;
 
   return (
-    <div className="flex flex-col md:flex-row gap-8 h-[calc(100vh-8rem)]">
-      {/* Sidebar Navigation */}
-      <div className="w-full md:w-64 shrink-0 space-y-1 rounded-2xl bg-white/60 p-3 shadow-sm border border-slate-200/50 backdrop-blur-xl">
-        <h2 className="mb-2 px-3 pt-2 text-xs font-bold uppercase tracking-wider text-slate-400">Settings Menu</h2>
+    <div className="flex flex-col gap-6 md:flex-row md:items-start">
+      {/* Settings nav — sticks alongside the content instead of owning its own
+          scroll container, so the page scrolls as one surface like every other
+          admin page. */}
+      <div className="w-full shrink-0 space-y-1 rounded-card border border-slate-200/70 bg-white p-3 shadow-float md:sticky md:top-28 md:w-60">
+        <h2 className="mb-1 px-3 pt-1 text-2xs font-semibold uppercase tracking-[0.16em] text-slate-400">
+          Settings Menu
+        </h2>
         {tabs.map((tab) => (
           <button
             key={tab}
@@ -682,26 +687,26 @@ export default function SettingsPage() {
               }
               setActiveTab(tab);
             }}
-            className={`w-full flex items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold transition-all ${
+            className={`flex w-full items-center justify-between gap-3 rounded-control px-3 py-2.5 text-sm font-medium transition-all duration-200 ease-float ${
               activeTab === tab
-                ? "bg-blue-600 text-white shadow-sm"
-                : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
-            } ${tabLocked(tab) ? "opacity-50 cursor-not-allowed" : ""}`}
+                ? "bg-primary-50 text-primary-700"
+                : "text-slate-600 hover:bg-slate-100/80 hover:text-slate-900"
+            } ${tabLocked(tab) ? "cursor-not-allowed opacity-50" : ""}`}
             title={tabLocked(tab) ? "ถูกล็อก: ไม่มีสิทธิ์" : undefined}
           >
-            <span className="flex items-center gap-2">
-              {tabLabel(tab)}
-            </span>
-            {tabLocked(tab) && <Lock size={14} className={activeTab === tab ? "text-blue-200" : "text-red-400"} />}
+            <span className="flex items-center gap-2">{tabLabel(tab)}</span>
+            {tabLocked(tab) && (
+              <Lock size={14} className={activeTab === tab ? "text-primary-400" : "text-danger-400"} />
+            )}
           </button>
         ))}
       </div>
 
       {/* Main Content Area */}
-      <div className="flex-1 space-y-6 min-w-0 overflow-y-auto custom-scrollbar pr-2 pb-8">
+      <div className="min-w-0 flex-1 space-y-6 pb-8">
         {statusMessage && <Badge variant="info">{statusMessage}</Badge>}
         {tabLocked(activeTab) && (
-          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <div className="rounded-control border border-warning-200 bg-warning-50 px-4 py-3 text-sm text-warning-900">
             ส่วนนี้ถูกล็อกสำหรับสิทธิ์ของคุณ
           </div>
         )}
@@ -710,7 +715,7 @@ export default function SettingsPage() {
         <Card className={panelClass("overflow-hidden", "General")}>
           <CardHeader className="bg-slate-50/50">
             <CardTitle className="flex items-center gap-2">
-              <Settings className="h-5 w-5 text-blue-600" />
+              <Settings className="h-5 w-5 text-primary-600" />
               ตั้งค่าทั่วไป
             </CardTitle>
             <CardDescription>
@@ -736,7 +741,7 @@ export default function SettingsPage() {
                   onChange={(event) =>
                     setSettings((prev) => ({ ...prev, ui_language: event.target.value as AppLocale }))
                   }
-                  className="w-full rounded-xl border border-slate-200/90 bg-white px-4 py-2.5 text-sm text-slate-900 shadow-sm transition-[border-color,box-shadow] duration-200 focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                  className="w-full rounded-control border border-slate-200/90 bg-white px-4 py-2.5 text-sm text-slate-900 shadow-sm transition-[border-color,box-shadow] duration-200 focus:border-primary-300 focus:outline-none focus:ring-2 focus:ring-primary-500/20"
                 >
                   <option value="th">{t(locale, "thai")}</option>
                   <option value="en">{t(locale, "english")}</option>
@@ -750,7 +755,7 @@ export default function SettingsPage() {
                     setSettings((prev) => ({ ...prev, dorm_address: event.target.value }))
                   }
                   rows={3}
-                  className="w-full rounded-xl border border-slate-200/90 bg-white px-4 py-2.5 text-sm text-slate-900 shadow-sm transition-[border-color,box-shadow] duration-200 focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20 resize-none"
+                  className="w-full rounded-control border border-slate-200/90 bg-white px-4 py-2.5 text-sm text-slate-900 shadow-sm transition-[border-color,box-shadow] duration-200 focus:border-primary-300 focus:outline-none focus:ring-2 focus:ring-primary-500/20 resize-none"
                 />
               </label>
             </div>
@@ -763,7 +768,7 @@ export default function SettingsPage() {
                     action: saveGeneral,
                   })
                 }
-                className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-blue-500/20 hover:shadow-lg hover:shadow-blue-500/30 hover:-translate-y-0.5 active:scale-[0.98] transition-all"
+                className={buttonClasses({ variant: "primary" })}
               >
                 <Save size={16} />
                 บันทึกตั้งค่าทั่วไป
@@ -777,7 +782,7 @@ export default function SettingsPage() {
         <Card className={panelClass("overflow-hidden", "Utilities")}>
           <CardHeader className="bg-slate-50/50 border-b border-slate-100">
             <CardTitle className="flex items-center gap-2">
-              <Zap className="h-5 w-5 text-amber-500" />
+              <Zap className="h-5 w-5 text-warning-500" />
               ค่าน้ำ / ค่าไฟ
             </CardTitle>
             <CardDescription className="mt-1">
@@ -812,7 +817,7 @@ export default function SettingsPage() {
                     action: saveUtilities,
                   })
                 }
-                className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-blue-500/20 hover:shadow-lg hover:shadow-blue-500/30 hover:-translate-y-0.5 active:scale-[0.98] transition-all"
+                className={buttonClasses({ variant: "primary" })}
               >
                 <Save size={16} />
                 บันทึกค่าน้ำ / ค่าไฟ
@@ -826,7 +831,7 @@ export default function SettingsPage() {
         <Card className={panelClass("overflow-hidden", "Invoice Config")}>
           <CardHeader className="bg-slate-50/50">
             <CardTitle className="flex items-center gap-2">
-              <Receipt className="h-5 w-5 text-indigo-500" />
+              <Receipt className="h-5 w-5 text-primary-500" />
               ตั้งค่าใบแจ้งหนี้
             </CardTitle>
             <CardDescription>
@@ -894,7 +899,7 @@ export default function SettingsPage() {
                 </div>
                 <button
                   onClick={() => setFees((prev) => [...prev, newFee()])}
-                  className="inline-flex items-center gap-2 rounded-xl bg-slate-100 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-200 transition-colors"
+                  className={buttonClasses({ variant: "secondary" })}
                 >
                   <Plus size={14} />
                   เพิ่มรายการ
@@ -902,13 +907,13 @@ export default function SettingsPage() {
               </div>
 
               {fees.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-8 text-center text-sm text-slate-500">
+                <div className="rounded-control border border-dashed border-slate-300 bg-slate-50 p-8 text-center text-sm text-slate-500">
                   ยังไม่มีค่าธรรมเนียมเพิ่มเติม
                 </div>
               ) : (
                 <div className="space-y-3">
                   {fees.map((fee, index) => (
-                    <div key={fee.id} className="grid gap-4 rounded-xl border border-slate-200/60 bg-white p-4 shadow-sm md:grid-cols-[1.5fr_1fr_1fr_auto] items-end">
+                    <div key={fee.id} className="grid gap-4 rounded-control border border-slate-200/60 bg-white p-4 shadow-sm md:grid-cols-[1.5fr_1fr_1fr_auto] items-end">
                       <Input
                         label="ชื่อรายการ"
                         value={fee.label}
@@ -934,7 +939,7 @@ export default function SettingsPage() {
                               )
                             )
                           }
-                          className="w-full rounded-xl border border-slate-200/90 bg-white px-4 py-2.5 text-sm text-slate-900 shadow-sm transition-[border-color,box-shadow] duration-200 focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                          className="w-full rounded-control border border-slate-200/90 bg-white px-4 py-2.5 text-sm text-slate-900 shadow-sm transition-[border-color,box-shadow] duration-200 focus:border-primary-300 focus:outline-none focus:ring-2 focus:ring-primary-500/20"
                         >
                           <option value="fixed">จำนวนเงินคงที่</option>
                           <option value="electricity_units">คิดตามหน่วยไฟ</option>
@@ -964,7 +969,7 @@ export default function SettingsPage() {
                             },
                           })
                         }
-                        className="inline-flex h-[42px] items-center justify-center rounded-xl border border-red-200 bg-red-50 px-3 text-red-600 hover:bg-red-100 transition-colors"
+                        className="inline-flex h-[42px] items-center justify-center rounded-control border border-danger-200 bg-danger-50 px-3 text-danger-600 hover:bg-danger-100 transition-colors"
                         title="ลบ"
                       >
                         <Trash2 size={16} />
@@ -983,7 +988,7 @@ export default function SettingsPage() {
                 </div>
                 <button
                   onClick={() => setDiscounts((prev) => [...prev, newFee()])}
-                  className="inline-flex items-center gap-2 rounded-xl bg-slate-100 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-200 transition-colors"
+                  className={buttonClasses({ variant: "secondary" })}
                 >
                   <Plus size={14} />
                   เพิ่มส่วนลด
@@ -991,13 +996,13 @@ export default function SettingsPage() {
               </div>
 
               {discounts.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-8 text-center text-sm text-slate-500">
+                <div className="rounded-control border border-dashed border-slate-300 bg-slate-50 p-8 text-center text-sm text-slate-500">
                   ยังไม่มีกฎส่วนลด
                 </div>
               ) : (
                 <div className="space-y-3">
                   {discounts.map((fee, index) => (
-                    <div key={`discount-${fee.id}`} className="grid gap-4 rounded-xl border border-slate-200/60 bg-white p-4 shadow-sm md:grid-cols-[1.5fr_1fr_1fr_auto] items-end">
+                    <div key={`discount-${fee.id}`} className="grid gap-4 rounded-control border border-slate-200/60 bg-white p-4 shadow-sm md:grid-cols-[1.5fr_1fr_1fr_auto] items-end">
                       <Input
                         label="ชื่อส่วนลด"
                         value={fee.label}
@@ -1023,7 +1028,7 @@ export default function SettingsPage() {
                               )
                             )
                           }
-                          className="w-full rounded-xl border border-slate-200/90 bg-white px-4 py-2.5 text-sm text-slate-900 shadow-sm transition-[border-color,box-shadow] duration-200 focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                          className="w-full rounded-control border border-slate-200/90 bg-white px-4 py-2.5 text-sm text-slate-900 shadow-sm transition-[border-color,box-shadow] duration-200 focus:border-primary-300 focus:outline-none focus:ring-2 focus:ring-primary-500/20"
                         >
                           <option value="fixed">จำนวนเงินคงที่</option>
                           <option value="electricity_units">คิดตามหน่วยไฟ</option>
@@ -1053,7 +1058,7 @@ export default function SettingsPage() {
                             },
                           })
                         }
-                        className="inline-flex h-[42px] items-center justify-center rounded-xl border border-red-200 bg-red-50 px-3 text-red-600 hover:bg-red-100 transition-colors"
+                        className="inline-flex h-[42px] items-center justify-center rounded-control border border-danger-200 bg-danger-50 px-3 text-danger-600 hover:bg-danger-100 transition-colors"
                         title="ลบ"
                       >
                         <Trash2 size={16} />
@@ -1073,7 +1078,7 @@ export default function SettingsPage() {
                     action: saveInvoiceConfig,
                   })
                 }
-                className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-blue-500/20 hover:shadow-lg hover:shadow-blue-500/30 hover:-translate-y-0.5 active:scale-[0.98] transition-all"
+                className={buttonClasses({ variant: "primary" })}
               >
                 <Save size={16} />
                 บันทึกตั้งค่าใบแจ้งหนี้
@@ -1089,7 +1094,7 @@ export default function SettingsPage() {
             <div className="flex items-center justify-between">
               <div>
                 <CardTitle className="flex items-center gap-2">
-                  <CreditCard className="h-5 w-5 text-emerald-500" />
+                  <CreditCard className="h-5 w-5 text-success-500" />
                   ช่องทางชำระเงิน
                 </CardTitle>
                 <CardDescription className="mt-1">
@@ -1098,7 +1103,7 @@ export default function SettingsPage() {
               </div>
               <button
                 onClick={() => setMethods((prev) => [...prev, newPaymentMethod()])}
-                className="inline-flex items-center gap-2 rounded-xl bg-emerald-50 text-emerald-700 hover:bg-emerald-100 px-4 py-2 text-sm font-semibold transition-colors shadow-sm"
+                className="inline-flex items-center gap-2 rounded-control bg-success-50 text-success-700 hover:bg-success-100 px-4 py-2 text-sm font-semibold transition-colors shadow-sm"
               >
                 <Plus size={16} />
                 เพิ่มช่องทาง
@@ -1107,13 +1112,13 @@ export default function SettingsPage() {
           </CardHeader>
           <CardContent className="space-y-6 pt-6">
             {methods.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-8 text-center text-sm text-slate-500">
+              <div className="rounded-control border border-dashed border-slate-300 bg-slate-50 p-8 text-center text-sm text-slate-500">
                 ยังไม่มีช่องทางชำระเงิน
               </div>
             ) : (
               <div className="grid gap-4">
                 {methods.map((method, index) => (
-                  <div key={method.id ?? `new-${index}`} className="group relative rounded-xl border border-slate-200/80 bg-white p-5 shadow-sm transition-all hover:border-slate-300 hover:shadow-md">
+                  <div key={method.id ?? `new-${index}`} className="group relative rounded-control border border-slate-200/80 bg-white p-5 shadow-sm transition-all hover:border-slate-300 hover:shadow-float-md">
                     <div className="grid gap-4 md:grid-cols-2">
                       <Input
                         label="ชื่อแสดงผล"
@@ -1179,7 +1184,7 @@ export default function SettingsPage() {
                           <a
                             href={method.qr_url}
                             target="_blank"
-                            className="inline-flex items-center gap-1.5 text-sm font-medium text-blue-600 hover:text-blue-700 underline-offset-4 hover:underline"
+                            className="inline-flex items-center gap-1.5 text-sm font-medium text-primary-600 hover:text-primary-700 underline-offset-4 hover:underline"
                             rel="noreferrer"
                           >
                             ดูรูป QR Code
@@ -1195,7 +1200,7 @@ export default function SettingsPage() {
                             action: async () => removeMethod(index),
                           })
                         }
-                        className="inline-flex items-center gap-1.5 rounded-lg text-sm font-medium text-red-500 hover:text-red-700 transition-colors"
+                        className="inline-flex items-center gap-1.5 rounded-lg text-sm font-medium text-danger-500 hover:text-danger-700 transition-colors"
                       >
                         <Trash2 size={16} />
                         ลบช่องทางนี้
@@ -1215,7 +1220,7 @@ export default function SettingsPage() {
                     action: savePaymentMethods,
                   })
                 }
-                className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-blue-500/20 hover:shadow-lg hover:shadow-blue-500/30 hover:-translate-y-0.5 active:scale-[0.98] transition-all"
+                className={buttonClasses({ variant: "primary" })}
               >
                 <Save size={16} />
                 บันทึกช่องทางชำระเงิน
@@ -1227,7 +1232,7 @@ export default function SettingsPage() {
             <div className="flex items-center justify-between">
               <div>
                 <CardTitle className="flex items-center gap-2">
-                  <Banknote className="h-5 w-5 text-blue-500" />
+                  <Banknote className="h-5 w-5 text-primary-500" />
                   ข้อมูลออกใบเสร็จ (นิติบุคคล)
                 </CardTitle>
                 <CardDescription className="mt-1">
@@ -1236,7 +1241,7 @@ export default function SettingsPage() {
               </div>
               <button
                 onClick={() => setReceiptProfiles((prev) => [...prev, newReceiptProfile()])}
-                className="inline-flex items-center gap-2 rounded-xl bg-blue-50 text-blue-700 hover:bg-blue-100 px-4 py-2 text-sm font-semibold transition-colors shadow-sm"
+                className={buttonClasses({ variant: "subtle" })}
               >
                 <Plus size={16} />
                 เพิ่มโปรไฟล์
@@ -1245,13 +1250,13 @@ export default function SettingsPage() {
           </CardHeader>
           <CardContent className="space-y-6 pt-6">
             {receiptProfiles.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-8 text-center text-sm text-slate-500">
+              <div className="rounded-control border border-dashed border-slate-300 bg-slate-50 p-8 text-center text-sm text-slate-500">
                 ยังไม่มีโปรไฟล์ออกใบเสร็จ
               </div>
             ) : (
               <div className="grid gap-4">
                 {receiptProfiles.map((profile, index) => (
-                  <div key={profile.id ?? `receipt-${index}`} className="group relative rounded-xl border border-slate-200/80 bg-white p-5 shadow-sm transition-all hover:border-slate-300 hover:shadow-md">
+                  <div key={profile.id ?? `receipt-${index}`} className="group relative rounded-control border border-slate-200/80 bg-white p-5 shadow-sm transition-all hover:border-slate-300 hover:shadow-float-md">
                     <div className="grid gap-4 md:grid-cols-2">
                       <Input
                         label="ชื่อโปรไฟล์ (สำหรับเลือก)"
@@ -1322,7 +1327,7 @@ export default function SettingsPage() {
                             action: async () => removeReceiptProfile(index),
                           })
                         }
-                        className="inline-flex items-center gap-1.5 rounded-lg text-sm font-medium text-red-500 hover:text-red-700 transition-colors"
+                        className="inline-flex items-center gap-1.5 rounded-lg text-sm font-medium text-danger-500 hover:text-danger-700 transition-colors"
                       >
                         <Trash2 size={16} />
                         ลบโปรไฟล์นี้
@@ -1342,7 +1347,7 @@ export default function SettingsPage() {
                     action: saveReceiptProfiles,
                   })
                 }
-                className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-blue-500/20 hover:shadow-lg hover:shadow-blue-500/30 hover:-translate-y-0.5 active:scale-[0.98] transition-all"
+                className={buttonClasses({ variant: "primary" })}
               >
                 <Save size={16} />
                 บันทึกโปรไฟล์ใบเสร็จ
@@ -1356,7 +1361,7 @@ export default function SettingsPage() {
         <Card className={panelClass("overflow-hidden", "Rooms")}>
           <CardHeader className="bg-slate-50/50 border-b border-slate-100">
             <CardTitle className="flex items-center gap-2">
-              <DoorOpen className="h-5 w-5 text-indigo-500" />
+              <DoorOpen className="h-5 w-5 text-primary-500" />
               จัดการข้อมูลห้องพัก
             </CardTitle>
             <CardDescription className="mt-1">
@@ -1364,7 +1369,7 @@ export default function SettingsPage() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-6 pt-6">
-            <div className="rounded-xl border border-slate-200/80 bg-slate-50/50 p-5 shadow-sm">
+            <div className="rounded-control border border-slate-200/80 bg-slate-50/50 p-5 shadow-sm">
               <h4 className="text-sm font-semibold text-slate-800 mb-3 flex items-center gap-2">
                 <Building2 className="h-4 w-4 text-slate-500" />
                 เพิ่มอาคารใหม่
@@ -1391,7 +1396,7 @@ export default function SettingsPage() {
                         action: addBuilding,
                       })
                     }
-                    className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-slate-800 px-4 py-[42px] h-[42px] text-sm font-semibold text-white hover:bg-slate-700 transition-colors shadow-sm"
+                    className={buttonClasses({ variant: "primary", fullWidth: true, className: "h-[42px]" })}
                   >
                     <Plus size={16} />
                     เพิ่มอาคาร
@@ -1402,13 +1407,13 @@ export default function SettingsPage() {
 
             <div className="pt-4 border-t border-slate-100">
               <h4 className="text-sm font-semibold text-slate-800 mb-4">เพิ่มห้องพักใหม่</h4>
-              <div className="flex flex-wrap items-end gap-4 bg-white p-4 rounded-xl border border-slate-200/60 shadow-sm">
+              <div className="flex flex-wrap items-end gap-4 bg-white p-4 rounded-control border border-slate-200/60 shadow-sm">
                 <label className="text-sm text-slate-600 space-y-2 block flex-1 min-w-[150px]">
                   <span className="font-medium text-slate-800">อาคาร</span>
                   <select
                     value={selectedBuilding}
                     onChange={(event) => setSelectedBuilding(event.target.value)}
-                    className="w-full rounded-xl border border-slate-200/90 bg-white px-4 py-2.5 text-sm text-slate-900 shadow-sm transition-[border-color,box-shadow] duration-200 focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                    className="w-full rounded-control border border-slate-200/90 bg-white px-4 py-2.5 text-sm text-slate-900 shadow-sm transition-[border-color,box-shadow] duration-200 focus:border-primary-300 focus:outline-none focus:ring-2 focus:ring-primary-500/20"
                   >
                     {buildings.length === 0 && <option value="">ไม่มีอาคาร</option>}
                     {buildings.map((building) => (
@@ -1448,7 +1453,7 @@ export default function SettingsPage() {
                       action: addRoom,
                     })
                   }
-                  className="inline-flex h-[42px] items-center gap-2 rounded-xl bg-emerald-600 px-6 py-2 text-sm font-semibold text-white hover:bg-emerald-700 transition-colors shadow-sm"
+                  className={buttonClasses({ variant: "success" })}
                 >
                   <Plus size={16} />
                   เพิ่มห้อง
@@ -1457,7 +1462,7 @@ export default function SettingsPage() {
             </div>
 
             <div className="pt-2">
-              <div className="overflow-hidden rounded-xl border border-slate-200/80 shadow-sm">
+              <div className="overflow-hidden rounded-control border border-slate-200/80 shadow-sm">
                 <table className="w-full text-left text-sm whitespace-nowrap">
                   <thead className="bg-slate-50 border-b border-slate-100 text-xs font-semibold uppercase tracking-wider text-slate-500">
                     <tr>
@@ -1492,7 +1497,7 @@ export default function SettingsPage() {
                                   )
                                 )
                               }
-                              className="w-full max-w-[120px] rounded-lg border border-slate-200/60 bg-white px-3 py-1.5 text-sm focus:border-blue-400 focus:ring-1 focus:ring-blue-400 focus:outline-none transition-all"
+                              className="w-full max-w-[120px] rounded-lg border border-slate-200/60 bg-white px-3 py-1.5 text-sm focus:border-primary-400 focus:ring-1 focus:ring-primary-400 focus:outline-none transition-all"
                             />
                           </td>
                           <td className="px-5 py-3">
@@ -1507,7 +1512,7 @@ export default function SettingsPage() {
                                   )
                                 )
                               }
-                              className="w-full max-w-[140px] rounded-lg border border-slate-200/60 bg-white px-3 py-1.5 text-sm focus:border-blue-400 focus:ring-1 focus:ring-blue-400 focus:outline-none transition-all"
+                              className="w-full max-w-[140px] rounded-lg border border-slate-200/60 bg-white px-3 py-1.5 text-sm focus:border-primary-400 focus:ring-1 focus:ring-primary-400 focus:outline-none transition-all"
                             />
                           </td>
                           <td className="px-5 py-3">
@@ -1523,7 +1528,7 @@ export default function SettingsPage() {
                                   )
                                 )
                               }
-                              className="w-full max-w-[120px] rounded-lg border border-slate-200/60 bg-white px-3 py-1.5 text-sm focus:border-blue-400 focus:ring-1 focus:ring-blue-400 focus:outline-none transition-all"
+                              className="w-full max-w-[120px] rounded-lg border border-slate-200/60 bg-white px-3 py-1.5 text-sm focus:border-primary-400 focus:ring-1 focus:ring-primary-400 focus:outline-none transition-all"
                             />
                           </td>
                           <td className="px-5 py-3">
@@ -1536,7 +1541,7 @@ export default function SettingsPage() {
                                   )
                                 )
                               }
-                              className="rounded-lg border border-slate-200/60 bg-white px-3 py-1.5 text-sm focus:border-blue-400 focus:ring-1 focus:ring-blue-400 focus:outline-none transition-all cursor-pointer"
+                              className="rounded-lg border border-slate-200/60 bg-white px-3 py-1.5 text-sm focus:border-primary-400 focus:ring-1 focus:ring-primary-400 focus:outline-none transition-all cursor-pointer"
                             >
                               <option value="available">ว่าง</option>
                               <option value="occupied">มีผู้เช่า</option>
@@ -1552,7 +1557,7 @@ export default function SettingsPage() {
                                   action: async () => deleteRoom(room.id),
                                 })
                               }
-                              className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-500 transition-colors"
+                              className="inline-flex h-8 w-8 items-center justify-center rounded-control text-slate-400 transition-colors hover:bg-danger-50 hover:text-danger-600"
                               title="ลบห้อง"
                             >
                               <Trash2 size={16} />
@@ -1575,7 +1580,7 @@ export default function SettingsPage() {
                     action: saveRooms,
                   })
                 }
-                className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-blue-500/20 hover:shadow-lg hover:shadow-blue-500/30 hover:-translate-y-0.5 active:scale-[0.98] transition-all"
+                className={buttonClasses({ variant: "primary" })}
               >
                 <Save size={16} />
                 บันทึกการเปลี่ยนแปลงตารางห้อง
@@ -1589,7 +1594,7 @@ export default function SettingsPage() {
         <Card className={panelClass("overflow-hidden", "Access Control")}>
           <CardHeader className="bg-slate-50/50 border-b border-slate-100">
             <CardTitle className="flex items-center gap-2">
-              <Shield className="h-5 w-5 text-rose-500" />
+              <Shield className="h-5 w-5 text-danger-500" />
               จัดการสิทธิ์การเข้าถึง
             </CardTitle>
             <CardDescription className="mt-1">
@@ -1597,8 +1602,8 @@ export default function SettingsPage() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-6 pt-6">
-            <div className="rounded-xl border border-amber-200/60 bg-amber-50/80 p-4 text-sm text-amber-900 shadow-sm flex gap-3">
-              <Shield className="h-5 w-5 text-amber-500 shrink-0" />
+            <div className="rounded-control border border-warning-200/60 bg-warning-50/80 p-4 text-sm text-warning-900 shadow-sm flex gap-3">
+              <Shield className="h-5 w-5 text-warning-500 shrink-0" />
               <p>จัดการบทบาทผู้ใช้และสิทธิ์ในหน้าเดียวกัน เมื่อคลิกผู้ใช้ ระบบจะแสดงสิทธิ์ที่ได้จากบทบาทนั้นทันที</p>
             </div>
 
@@ -1611,7 +1616,7 @@ export default function SettingsPage() {
                   </h4>
                   <button
                     onClick={() => void loadUserRoles()}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200/80 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm hover:bg-slate-50 transition-colors"
+                    className={buttonClasses({ variant: "secondary", size: "sm" })}
                   >
                     <RefreshCw size={12} className={loadingUserRoles ? "animate-spin" : ""} />
                     รีเฟรช
@@ -1621,7 +1626,7 @@ export default function SettingsPage() {
                 {loadingUserRoles ? (
                   <div className="space-y-3 animate-pulse">
                     {Array.from({ length: 5 }).map((_, i) => (
-                      <div key={i} className="flex h-[72px] items-center gap-4 rounded-xl border border-slate-100 bg-slate-50 px-4">
+                      <div key={i} className="flex h-[72px] items-center gap-4 rounded-control border border-slate-100 bg-slate-50 px-4">
                         <div className="h-4 w-32 rounded bg-slate-200"></div>
                         <div className="h-4 w-24 rounded bg-slate-200"></div>
                         <div className="h-8 w-24 rounded-lg bg-slate-200"></div>
@@ -1630,7 +1635,7 @@ export default function SettingsPage() {
                     ))}
                   </div>
                 ) : (
-                  <div className="overflow-hidden rounded-xl border border-slate-200/80 shadow-sm">
+                  <div className="overflow-hidden rounded-control border border-slate-200/80 shadow-sm">
                     <table className="w-full text-left text-sm whitespace-nowrap">
                       <thead className="bg-slate-50 border-b border-slate-100 text-xs font-semibold uppercase tracking-wider text-slate-500">
                         <tr>
@@ -1653,13 +1658,13 @@ export default function SettingsPage() {
                               key={user.id}
                               onClick={() => setSelectedAccessUserId(user.id)}
                               className={`cursor-pointer transition-colors ${
-                                selectedAccessUser?.id === user.id ? "bg-blue-50/60" : "hover:bg-slate-50/50"
+                                selectedAccessUser?.id === user.id ? "bg-primary-50/60" : "hover:bg-slate-50/50"
                               }`}
                               title="คลิกเพื่อดูสิทธิ์ของผู้ใช้นี้"
                             >
                               <td className="px-5 py-3">
                                 <div className="font-medium text-slate-800">{user.email ?? "-"}</div>
-                                <div className="font-mono text-[11px] text-slate-400 mt-0.5">{user.id}</div>
+                                <div className="font-mono text-2xs text-slate-400 mt-0.5">{user.id}</div>
                                 {user.phone && <div className="text-xs text-slate-500 mt-0.5">{user.phone}</div>}
                               </td>
                               <td className="px-5 py-3 text-xs text-slate-600">
@@ -1676,7 +1681,7 @@ export default function SettingsPage() {
                                       )
                                     )
                                   }
-                                  className="w-full min-w-[100px] rounded-lg border border-slate-200/60 bg-white px-3 py-1.5 text-sm focus:border-blue-400 focus:ring-1 focus:ring-blue-400 focus:outline-none transition-all cursor-pointer"
+                                  className="w-full min-w-[100px] rounded-lg border border-slate-200/60 bg-white px-3 py-1.5 text-sm focus:border-primary-400 focus:ring-1 focus:ring-primary-400 focus:outline-none transition-all cursor-pointer"
                                 >
                                   <option value="owner">owner</option>
                                   <option value="admin">admin</option>
@@ -1694,7 +1699,7 @@ export default function SettingsPage() {
                                       action: async () => saveUserRole(user.id, user.role),
                                     });
                                   }}
-                                  className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-blue-50 hover:text-blue-600 transition-colors"
+                                  className="inline-flex h-8 w-8 items-center justify-center rounded-control text-slate-400 transition-colors hover:bg-primary-50 hover:text-primary-600"
                                   title="บันทึกบทบาท"
                                 >
                                   <Save size={16} />
@@ -1715,11 +1720,11 @@ export default function SettingsPage() {
                   สิทธิ์ของผู้ใช้ที่เลือก
                 </h4>
                 {selectedAccessUser ? (
-                  <div className="rounded-xl border border-slate-200/80 bg-white shadow-sm overflow-hidden flex flex-col h-full max-h-[500px]">
+                  <div className="rounded-control border border-slate-200/80 bg-white shadow-sm overflow-hidden flex flex-col h-full max-h-[500px]">
                     <div className="bg-slate-50 border-b border-slate-100 p-4">
                       <p className="font-medium text-slate-900 truncate">{selectedAccessUser.email ?? "-"}</p>
                       <p className="text-xs text-slate-500 font-mono mt-0.5 truncate">{selectedAccessUser.id}</p>
-                      <div className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-indigo-50 px-2.5 py-1 text-xs font-semibold text-indigo-700">
+                      <div className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-primary-50 px-2.5 py-1 text-xs font-semibold text-primary-700">
                         {roleLabelThai(selectedAccessUser.role)} ({selectedAccessUser.role})
                       </div>
                     </div>
@@ -1730,17 +1735,17 @@ export default function SettingsPage() {
                           <div
                             key={`selected-${selectedAccessUser.id}-${permission}`}
                             className={`flex items-center justify-between gap-3 rounded-lg border px-3 py-2 text-sm transition-colors ${
-                              allowed ? "border-emerald-200/60 bg-emerald-50/50" : "border-rose-100 bg-rose-50/30 opacity-70"
+                              allowed ? "border-success-200/60 bg-success-50/50" : "border-danger-100 bg-danger-50/30 opacity-70"
                             }`}
                           >
                             <div>
                               <div className="font-medium text-slate-800">{permissionLabelThai(permission)}</div>
-                              <div className="text-[11px] text-slate-500">{permission}</div>
+                              <div className="text-2xs text-slate-500">{permission}</div>
                             </div>
                             {allowed ? (
-                              <CheckCircle2 size={16} className="text-emerald-500 shrink-0" />
+                              <CheckCircle2 size={16} className="text-success-500 shrink-0" />
                             ) : (
-                              <XCircle size={16} className="text-rose-400 shrink-0" />
+                              <XCircle size={16} className="text-danger-400 shrink-0" />
                             )}
                           </div>
                         );
@@ -1748,7 +1753,7 @@ export default function SettingsPage() {
                     </div>
                   </div>
                 ) : (
-                  <div className="flex h-[200px] items-center justify-center rounded-xl border border-dashed border-slate-300 bg-slate-50 text-sm text-slate-500">
+                  <div className="flex h-[200px] items-center justify-center rounded-control border border-dashed border-slate-300 bg-slate-50 text-sm text-slate-500">
                     เลือกผู้ใช้จากตารางด้านซ้ายเพื่อดูสิทธิ์
                   </div>
                 )}
@@ -1760,7 +1765,7 @@ export default function SettingsPage() {
                 <List className="h-4 w-4 text-slate-500" />
                 ตารางสิทธิ์ตามบทบาท
               </h4>
-              <div className="overflow-x-auto rounded-xl border border-slate-200/80 shadow-sm">
+              <div className="overflow-x-auto rounded-control border border-slate-200/80 shadow-sm">
                 <table className="w-full text-left text-sm whitespace-nowrap">
                   <thead className="bg-slate-50 border-b border-slate-100">
                     <tr>
@@ -1768,7 +1773,7 @@ export default function SettingsPage() {
                       {(["owner", "admin", "staff", "viewer"] as RoleKey[]).map((role) => (
                         <th key={role} className="px-5 py-4 text-center">
                           <div className="font-semibold text-slate-700">{roleLabelThai(role)}</div>
-                          <div className="text-[10px] uppercase tracking-wider text-slate-400 mt-0.5">{role}</div>
+                          <div className="text-2xs uppercase tracking-wider text-slate-400 mt-0.5">{role}</div>
                         </th>
                       ))}
                     </tr>
@@ -1778,7 +1783,7 @@ export default function SettingsPage() {
                       <tr key={permission} className="hover:bg-slate-50/50 transition-colors">
                         <td className="px-5 py-3">
                           <div className="font-medium text-slate-800">{permissionLabelThai(permission)}</div>
-                          <div className="text-[11px] text-slate-500 mt-0.5">{permission}</div>
+                          <div className="text-2xs text-slate-500 mt-0.5">{permission}</div>
                         </td>
                         {(["owner", "admin", "staff", "viewer"] as RoleKey[]).map((role) => (
                           <td key={`${role}-${permission}`} className="px-5 py-3 text-center">
@@ -1787,7 +1792,7 @@ export default function SettingsPage() {
                                 type="checkbox"
                                 checked={!!rolePermissions[role]?.[permission]}
                                 onChange={() => togglePermission(role, permission)}
-                                className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                                className="h-4 w-4 rounded border-slate-300 text-primary-600 focus:ring-primary-500 cursor-pointer"
                               />
                             </label>
                           </td>
@@ -1807,7 +1812,7 @@ export default function SettingsPage() {
                       action: savePermissions,
                     })
                   }
-                  className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-blue-500/20 hover:shadow-lg hover:shadow-blue-500/30 hover:-translate-y-0.5 active:scale-[0.98] transition-all"
+                  className={buttonClasses({ variant: "primary" })}
                 >
                   <Save size={16} />
                   บันทึกสิทธิ์ส่วนกลาง
@@ -1824,14 +1829,14 @@ export default function SettingsPage() {
           <div className="flex justify-end gap-2">
             <button
               onClick={() => setConfirmOpen(false)}
-              className="rounded-xl border border-slate-200 px-4 py-2 text-sm text-slate-700"
+              className={buttonClasses({ variant: "secondary" })}
               disabled={saving}
             >
               ยกเลิก
             </button>
             <button
               onClick={executePending}
-              className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+              className={buttonClasses({ variant: "primary" })}
               disabled={saving}
             >
               {saving && <Loader2 size={16} className="animate-spin" />}

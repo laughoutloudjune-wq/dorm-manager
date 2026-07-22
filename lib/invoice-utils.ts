@@ -93,24 +93,35 @@ export const statusLabelThai = (status: string) => {
 export const isInvoiceDetailEditable = (status: string) => 
   ["draft", "pending", "partial", "overdue"].includes(status);
 
+// Invoice status → colour, in ONE place. There used to be three independent
+// maps for this (`statusVariant` below, plus the pill and row helpers here) and
+// they disagreed: `statusVariant` classified `partial` as warning and
+// `verifying` as info, while the pill painted them orange and sky. A status now
+// resolves to a single semantic tone, and the pill/row helpers derive from it,
+// so a badge and its table row can never drift apart again. `statusVariant`
+// values are Badge variant names — keep them in sync with components/ui/Badge.
 export const statusPillClass = (status: string) => {
-  if (status === "draft") return "bg-slate-100 text-slate-700 border-slate-300";
-  if (status === "pending") return "bg-amber-100 text-amber-800 border-amber-300";
-  if (status === "partial") return "bg-orange-100 text-orange-800 border-orange-300";
-  if (status === "verifying") return "bg-sky-100 text-sky-800 border-sky-300";
-  if (status === "paid") return "bg-green-100 text-green-800 border-green-300";
-  if (status === "overdue") return "bg-red-100 text-red-800 border-red-300";
-  return "bg-slate-100 text-slate-700 border-slate-300";
+  const variant = statusVariant[status as keyof typeof statusVariant] ?? "default";
+  const byVariant: Record<string, string> = {
+    default: "border-slate-200 bg-slate-50 text-slate-700",
+    warning: "border-warning-200/70 bg-warning-50 text-warning-800",
+    info: "border-primary-200/70 bg-primary-50 text-primary-700",
+    success: "border-success-200/70 bg-success-50 text-success-700",
+    danger: "border-danger-200/70 bg-danger-50 text-danger-700",
+  };
+  return byVariant[variant] ?? byVariant.default;
 };
 
 export const statusRowClass = (status: string) => {
-  if (status === "draft") return "bg-slate-50";
-  if (status === "pending") return "bg-amber-50/50";
-  if (status === "partial") return "bg-orange-50/60";
-  if (status === "verifying") return "bg-sky-50/50";
-  if (status === "paid") return "bg-green-50/50";
-  if (status === "overdue") return "bg-red-50/50";
-  return "";
+  const variant = statusVariant[status as keyof typeof statusVariant] ?? "default";
+  const byVariant: Record<string, string> = {
+    default: "",
+    warning: "bg-warning-50/40",
+    info: "bg-primary-50/40",
+    success: "bg-success-50/40",
+    danger: "bg-danger-50/40",
+  };
+  return byVariant[variant] ?? "";
 };
 
 // ── Billing day helpers ───────────────────────────────────────────────────────

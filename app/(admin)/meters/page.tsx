@@ -3,7 +3,9 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/Badge";
 import { Card, CardContent } from "@/components/ui/Card";
-import { Input } from "@/components/ui/Input";
+import { Input, controlClasses } from "@/components/ui/Input";
+import { Button } from "@/components/ui/Button";
+import { PageHeader, Skeleton } from "@/components/ui/Page";
 import { createClient } from "@/lib/supabase-client";
 import { ConfirmActionModal } from "@/components/ui/ConfirmActionModal";
 import { Building2, Droplets, Save, UserRound, Zap } from "lucide-react";
@@ -71,8 +73,13 @@ type MeterReadingDb = {
 
 
 const numberCellClass = "px-2 py-2.5 text-right tabular-nums text-slate-800 sm:px-3";
-const numberInputClass =
-  "w-full min-w-[4.5rem] max-w-[6.5rem] rounded-lg border border-slate-200/90 bg-white px-2.5 py-1.5 text-right text-sm tabular-nums text-slate-900 shadow-sm transition focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20 sm:ml-auto";
+// Derived from the shared control style rather than restated, so meter inputs
+// keep the same border, focus ring and radius as every other field in the app.
+// Only the size and alignment differ — these sit inside a dense grid.
+const numberInputClass = controlClasses({
+  className:
+    "min-w-[4.5rem] max-w-[6.5rem] px-2.5 py-1.5 text-right text-sm tabular-nums sm:ml-auto",
+});
 
 export default function MetersPage() {
   const supabase = useMemo(() => createClient(), []);
@@ -412,50 +419,44 @@ export default function MetersPage() {
 
   return (
     <div className="space-y-6">
+      <PageHeader
+        description="กรอกเลขมิเตอร์ไฟและน้ำของแต่ละห้องประจำเดือน"
+        actions={
+          <Button
+            onClick={() => setConfirmOpen(true)}
+            loading={saving}
+            icon={<Save size={16} />}
+          >
+            {saving ? "กำลังบันทึก..." : "บันทึกมิเตอร์ทั้งหมด"}
+          </Button>
+        }
+      />
+
       <Card>
         <CardContent className="!p-4 md:!p-5">
-          <div className="grid gap-4 md:grid-cols-12 md:items-end">
-            <div className="md:col-span-3">
-              <Input
-                label="เดือนที่บันทึก"
-                type="month"
-                value={selectedMonth}
-                onChange={(event) => setSelectedMonth(event.target.value)}
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-3 md:col-span-5">
-              <div>
-                <span className="mb-1.5 block text-sm font-medium text-slate-800">ค่าสูงสุดมิเตอร์ (ไฟ)</span>
-                <input
-                  type="number"
-                  value={electricityMax}
-                  onChange={(event) => setElectricityMax(toNumber(event.target.value))}
-                  className="w-full rounded-xl border border-slate-200/90 bg-white px-3 py-2.5 text-right text-sm tabular-nums shadow-sm transition focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-                  min={0}
-                />
-              </div>
-              <div>
-                <span className="mb-1.5 block text-sm font-medium text-slate-800">ค่าสูงสุดมิเตอร์ (น้ำ)</span>
-                <input
-                  type="number"
-                  value={waterMax}
-                  onChange={(event) => setWaterMax(toNumber(event.target.value))}
-                  className="w-full rounded-xl border border-slate-200/90 bg-white px-3 py-2.5 text-right text-sm tabular-nums shadow-sm transition focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-                  min={0}
-                />
-              </div>
-            </div>
-            <div className="flex md:col-span-4 md:justify-end">
-              <button
-                type="button"
-                onClick={() => setConfirmOpen(true)}
-                disabled={saving}
-                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-b from-blue-600 to-blue-700 px-4 py-2.5 text-sm font-semibold text-white shadow-md shadow-blue-600/20 transition hover:brightness-105 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500/40 disabled:cursor-not-allowed disabled:opacity-50 md:mt-6 md:w-auto"
-              >
-                <Save size={16} />
-                {saving ? "กำลังบันทึก..." : "บันทึกมิเตอร์ทั้งหมด"}
-              </button>
-            </div>
+          <div className="grid gap-4 md:grid-cols-3">
+            <Input
+              label="เดือนที่บันทึก"
+              type="month"
+              value={selectedMonth}
+              onChange={(event) => setSelectedMonth(event.target.value)}
+            />
+            <Input
+              label="ค่าสูงสุดมิเตอร์ (ไฟ)"
+              type="number"
+              value={electricityMax}
+              onChange={(event) => setElectricityMax(toNumber(event.target.value))}
+              className="text-right tabular-nums"
+              min={0}
+            />
+            <Input
+              label="ค่าสูงสุดมิเตอร์ (น้ำ)"
+              type="number"
+              value={waterMax}
+              onChange={(event) => setWaterMax(toNumber(event.target.value))}
+              className="text-right tabular-nums"
+              min={0}
+            />
           </div>
           {status && (
             <div className="mt-3">
@@ -468,21 +469,15 @@ export default function MetersPage() {
       {rawLoading ? (
         <div className="grid gap-6 lg:grid-cols-2">
           {[...Array(2)].map((_, i) => (
-            <div key={i} className="space-y-0 animate-pulse">
-              <div className="mb-2 flex items-center gap-2">
-                <div className="h-8 w-8 rounded-lg bg-slate-200"></div>
-                <div>
-                  <div className="h-5 w-24 rounded bg-slate-200 mb-1"></div>
-                  <div className="h-4 w-16 rounded bg-slate-200"></div>
+            <div key={i} className="space-y-2">
+              <div className="flex items-center gap-2">
+                <Skeleton className="h-8 w-8" />
+                <div className="space-y-1">
+                  <Skeleton className="h-5 w-24" />
+                  <Skeleton className="h-4 w-16" />
                 </div>
               </div>
-              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                <div className="space-y-4">
-                  {[...Array(5)].map((_, j) => (
-                    <div key={j} className="h-16 w-full rounded-xl bg-slate-100"></div>
-                  ))}
-                </div>
-              </div>
+              <Skeleton className="h-80" />
             </div>
           ))}
         </div>
@@ -494,7 +489,7 @@ export default function MetersPage() {
               <div key={building} className="space-y-0">
                 <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
-                    <span className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-slate-600">
+                    <span className="inline-flex h-8 w-8 items-center justify-center rounded-control bg-white text-slate-600 shadow-float">
                       <Building2 size={16} />
                     </span>
                     <div>
@@ -502,15 +497,15 @@ export default function MetersPage() {
                       <p className="text-xs text-slate-500">
                         {buildingRows.length} ห้อง
                         {firstBillCount > 0 && (
-                          <span className="text-emerald-700"> · มีรอบบิลแรก {firstBillCount} ห้อง</span>
+                          <span className="text-success-700"> · มีรอบบิลแรก {firstBillCount} ห้อง</span>
                         )}
                       </p>
                     </div>
                   </div>
                 </div>
 
-                <div className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-soft">
-                  <div className="overflow-x-auto">
+                <div className="overflow-hidden rounded-card border border-slate-200/70 bg-white shadow-float">
+                  <div className="scrollbar-slim overflow-x-auto">
                     <table className="w-full min-w-[640px] text-left text-sm">
                       <thead>
                         <tr className="border-b border-slate-200/80 bg-slate-50/90 text-xs font-semibold uppercase tracking-wide text-slate-500">
@@ -522,7 +517,7 @@ export default function MetersPage() {
                           </th>
                           <th
                             colSpan={3}
-                            className="border-l-2 border-amber-200/90 bg-amber-50/50 px-2 py-2 text-amber-900 sm:px-3"
+                            className="border-l-2 border-warning-200/90 bg-warning-50/50 px-2 py-2 text-warning-900 sm:px-3"
                           >
                             <span className="inline-flex items-center justify-center gap-1.5">
                               <Zap className="h-3.5 w-3.5" aria-hidden />
@@ -539,12 +534,12 @@ export default function MetersPage() {
                             </span>
                           </th>
                         </tr>
-                        <tr className="border-b border-slate-200/80 bg-slate-50/80 text-[10px] font-medium uppercase tracking-wide text-slate-500 sm:text-xs">
-                          <th className="border-l-2 border-amber-200/80 bg-amber-50/40 px-2 py-2 text-amber-900/90 sm:px-3">
+                        <tr className="border-b border-slate-200/80 bg-slate-50/80 text-2xs font-medium uppercase tracking-wide text-slate-500 sm:text-xs">
+                          <th className="border-l-2 border-warning-200/80 bg-warning-50/40 px-2 py-2 text-warning-900/90 sm:px-3">
                             ก่อนหน้า
                           </th>
-                          <th className="bg-amber-50/30 px-2 py-2 text-amber-900/90 sm:px-3">ปัจจุบัน</th>
-                          <th className="bg-amber-50/20 px-2 py-2 text-amber-900/80 sm:px-3">ใช้ไป</th>
+                          <th className="bg-warning-50/30 px-2 py-2 text-warning-900/90 sm:px-3">ปัจจุบัน</th>
+                          <th className="bg-warning-50/20 px-2 py-2 text-warning-900/80 sm:px-3">ใช้ไป</th>
                           <th className="border-l-2 border-cyan-200/80 bg-cyan-50/40 px-2 py-2 text-cyan-900/90 sm:px-3">
                             ก่อนหน้า
                           </th>
@@ -558,10 +553,10 @@ export default function MetersPage() {
                             <tr className="border-b border-slate-100/90 transition-colors hover:bg-slate-50/50">
                               <td className="align-top border-r border-slate-100/80 px-2 py-2.5 sm:px-3">
                                 <div className="font-semibold tabular-nums text-slate-900">{row.room_number}</div>
-                                <label className="mt-2 flex cursor-pointer select-none items-center gap-2 text-[11px] text-slate-500">
+                                <label className="mt-2 flex cursor-pointer select-none items-center gap-2 text-2xs text-slate-500">
                                   <input
                                     type="checkbox"
-                                    className="h-3.5 w-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500/30"
+                                    className="h-3.5 w-3.5 rounded border-slate-300 text-primary-600 focus:ring-primary-500/30"
                                     checked={row.rollover}
                                     onChange={(event) =>
                                       updateRollover(building, row.room_id, event.target.checked)
@@ -570,10 +565,10 @@ export default function MetersPage() {
                                   มิเตอร์หมุน
                                 </label>
                               </td>
-                              <td className={`${numberCellClass} border-l-2 border-amber-200/60 bg-amber-50/25`}>
+                              <td className={`${numberCellClass} border-l-2 border-warning-200/60 bg-warning-50/25`}>
                                 {row.previous_electricity}
                               </td>
-                              <td className={`${numberCellClass} bg-amber-50/10`}>
+                              <td className={`${numberCellClass} bg-warning-50/10`}>
                                 <input
                                   type="number"
                                   value={row.current_electricity}
@@ -602,8 +597,8 @@ export default function MetersPage() {
                               </td>
                               <td
                                 className={`${numberCellClass} font-medium ${
-                                  row.electricity_usage < 0 ? "text-red-600" : "text-amber-950/80"
-                                } bg-amber-50/5`}
+                                  row.electricity_usage < 0 ? "text-danger-600" : "text-warning-950/80"
+                                } bg-warning-50/5`}
                               >
                                 {row.electricity_usage}
                               </td>
@@ -639,36 +634,36 @@ export default function MetersPage() {
                               </td>
                               <td
                                 className={`${numberCellClass} font-medium ${
-                                  row.water_usage < 0 ? "text-red-600" : "text-cyan-950/80"
+                                  row.water_usage < 0 ? "text-danger-600" : "text-cyan-950/80"
                                 } bg-cyan-50/5`}
                               >
                                 {row.water_usage}
                               </td>
                             </tr>
                             {row.move_in_date && (
-                              <tr className="bg-emerald-50/40">
+                              <tr className="bg-success-50/40">
                                 <td colSpan={7} className="border-b border-slate-100/80 p-0">
-                                  <div className="border-l-[3px] border-emerald-500 px-3 py-2.5 sm:px-4">
+                                  <div className="border-l-[3px] border-success-500 px-3 py-2.5 sm:px-4">
                                     <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
-                                      <div className="flex min-w-0 items-start gap-2 text-xs text-emerald-900">
-                                        <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-emerald-100/90 text-emerald-800">
+                                      <div className="flex min-w-0 items-start gap-2 text-xs text-success-900">
+                                        <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-success-100/90 text-success-800">
                                           <UserRound className="h-3.5 w-3.5" aria-hidden />
                                         </span>
                                         <div className="min-w-0 leading-snug">
                                           <p className="font-semibold">รอบบิลแรกหลังย้ายเข้า</p>
-                                          <p className="text-[11px] text-emerald-800/90 sm:text-xs">
+                                          <p className="text-2xs text-success-800/90 sm:text-xs">
                                             {row.move_in_tenant_name ? (
                                               <span className="font-medium">{row.move_in_tenant_name}</span>
                                             ) : (
                                               "ผู้เช่า"
                                             )}
-                                            <span className="text-emerald-700/80"> · </span>
+                                            <span className="text-success-700/80"> · </span>
                                             เข้าอยู่ {formatThaiDateShort(row.move_in_date)}
                                           </p>
                                         </div>
                                       </div>
                                       <div className="w-full min-w-0 sm:max-w-md sm:shrink-0 sm:self-center">
-                                        <label className="mb-0.5 block text-[10px] font-medium text-emerald-800/80 sm:text-xs">
+                                        <label className="mb-0.5 block text-2xs font-medium text-success-800/80 sm:text-xs">
                                           ฐานคำนวณ “ก่อนหน้า”
                                         </label>
                                         <select
@@ -680,7 +675,7 @@ export default function MetersPage() {
                                               event.target.value as MeterRow["previous_source"]
                                             )
                                           }
-                                          className="w-full rounded-lg border border-emerald-200/80 bg-white/95 px-2.5 py-2 text-xs text-slate-800 shadow-sm transition focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 sm:text-sm"
+                                          className={controlClasses({ className: "border-success-200/80 px-2.5 py-2 text-xs focus:border-success-400 focus:ring-success-500/20 sm:text-sm" })}
                                         >
                                           <option value="move_in">
                                             ค่าเริ่มตอนเข้าอยู่ (ยังไม่มีบิลรอบก่อน)

@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Modal } from "@/components/ui/Modal";
+import { buttonClasses } from "@/components/ui/Button";
 import { MoveOutTab } from "@/components/admin/MoveOutTab";
 import { MoveOutWizard } from "@/components/admin/MoveOutWizard";
 import { MoveInWizard } from "@/components/admin/MoveInWizard";
@@ -1050,26 +1051,26 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
     <>
       <Modal isOpen={isOpen} onClose={onClose} title="รายละเอียดผู้เช่า" size="xl">
         {!canEditTenant && (
-          <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          <div className="mb-4 rounded-control border border-warning-200 bg-warning-50 px-4 py-3 text-sm text-warning-800">
             บัญชีนี้ไม่มีสิทธิ์แก้ไขข้อมูลผู้เช่า (ดูได้อย่างเดียว)
           </div>
         )}
         <div className="[&_label]:text-base [&_input]:text-base [&_select]:text-base [&_p]:text-base">
         <div className="mb-4 flex gap-2 text-base">
           <button
-            className={`rounded-full px-3 py-2 text-base ${activeTab === "info" ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-700"}`}
+            className={`rounded-full px-3 py-2 text-base ${activeTab === "info" ? "bg-primary-600 text-white" : "bg-slate-100 text-slate-700"}`}
             onClick={() => setActiveTab("info")}
           >
             ข้อมูลทั่วไป
           </button>
           <button
-            className={`rounded-full px-3 py-2 text-base ${activeTab === "move_in" ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-700"}`}
+            className={`rounded-full px-3 py-2 text-base ${activeTab === "move_in" ? "bg-primary-600 text-white" : "bg-slate-100 text-slate-700"}`}
             onClick={() => setActiveTab("move_in")}
           >
             ย้ายเข้า
           </button>
           <button
-            className={`rounded-full px-3 py-2 text-base ${activeTab === "payments" ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-700"}`}
+            className={`rounded-full px-3 py-2 text-base ${activeTab === "payments" ? "bg-primary-600 text-white" : "bg-slate-100 text-slate-700"}`}
             onClick={() => setActiveTab("payments")}
           >
             ประวัติการชำระ
@@ -1092,7 +1093,7 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
                   <select
                     value={form.room_id}
                     onChange={(event) => setForm({ ...form, room_id: event.target.value })}
-                    className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-base"
+                    className="mt-2 w-full rounded-control border border-slate-200 bg-white px-4 py-2.5 text-base"
                   >
                     <option value="">เลือกห้อง</option>
                     {rooms.map((room) => (
@@ -1102,7 +1103,7 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
                     ))}
                   </select>
                   {existingTenantInSelectedRoom && (
-                    <div className="mt-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                    <div className="mt-2 rounded-control border border-danger-200 bg-danger-50 px-4 py-3 text-sm text-danger-700">
                       ห้องนี้มีผู้เช่าอยู่แล้ว: {existingTenantInSelectedRoom.full_name}
                       {existingTenantInSelectedRoom.phone_number
                         ? ` | เบอร์โทร ${existingTenantInSelectedRoom.phone_number}`
@@ -1111,13 +1112,13 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
                   )}
                 </>
               ) : (
-                <div className="mt-2 flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-base text-slate-900 font-semibold">
+                <div className="mt-2 flex items-center justify-between rounded-control border border-slate-200 bg-slate-50 px-4 py-2.5 text-base text-slate-900 font-semibold">
                   <span>{tenantRoomNumber(activeTenant, roomsById)}</span>
                   <button
                     type="button"
                     onClick={() => setMoveRoomWizardOpen(true)}
                     disabled={!canEditTenant}
-                    className="text-sm font-semibold text-blue-600 hover:text-blue-800 bg-white border border-blue-200 px-3 py-1 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="text-sm font-semibold text-primary-600 hover:text-primary-800 bg-white border border-primary-200 px-3 py-1 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     ย้ายห้อง
                   </button>
@@ -1140,7 +1141,7 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
                 <select
                   value={selectedMethodId}
                   onChange={(event) => setSelectedMethodId(event.target.value)}
-                  className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-base"
+                  className="mt-2 w-full rounded-control border border-slate-200 bg-white px-4 py-2.5 text-base"
                 >
                   <option value="">เลือกช่องทางชำระเงิน</option>
                   {methods.map((method) => (
@@ -1168,7 +1169,7 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
                 <select
                   value={selectedReceiptProfileId}
                   onChange={(event) => setSelectedReceiptProfileId(event.target.value)}
-                  className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-base"
+                  className="mt-2 w-full rounded-control border border-slate-200 bg-white px-4 py-2.5 text-base"
                 >
                   <option value="">เลือกโปรไฟล์ใบเสร็จ</option>
                   {receiptProfiles.map((profile) => (
@@ -1180,12 +1181,12 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
               )}
             </div>
 
-            <div className="tenant-line-box space-y-2 md:col-span-2 rounded-xl border border-slate-200 p-4">
+            <div className="tenant-line-box space-y-2 md:col-span-2 rounded-control border border-slate-200 p-4">
               <p className="text-base font-medium text-slate-700">การเชื่อมต่อ LINE</p>
               <div
-                className={`rounded-xl border px-3 py-2 text-sm font-medium ${
+                className={`rounded-control border px-3 py-2 text-sm font-medium ${
                   activeTenant?.line_user_id
-                    ? "border-green-200 bg-green-50 text-green-700"
+                    ? "border-success-200 bg-success-50 text-success-700"
                     : "border-slate-200 bg-slate-50 text-slate-600"
                 }`}
               >
@@ -1195,7 +1196,7 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
                 onClick={() => setConfirmUnlinkOpen(true)}
                 disabled={!activeTenant?.line_user_id || !canManageTenantLine}
                 title={!canManageTenantLine ? "ไม่มีสิทธิ์จัดการการเชื่อม LINE" : undefined}
-                className="inline-flex items-center gap-2 rounded-xl border border-red-200 px-4 py-2 text-sm text-red-600 disabled:cursor-not-allowed disabled:opacity-50"
+                className="inline-flex items-center gap-2 rounded-control border border-danger-200 px-4 py-2 text-sm text-danger-600 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 ยกเลิกการเชื่อม LINE
               </button>
@@ -1230,13 +1231,13 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
 
         {activeTab === "payments" && (
           <div className="space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-card border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
               <p>แสดงใบแจ้งหนี้ของผู้เช่ารายนี้ พร้อมสถานะการชำระ วันที่ชำระล่าสุด และสลิปที่อัปโหลด</p>
               {paymentHistoryMonthOptions.length > 1 && (
                 <select
                   value={paymentHistoryMonth}
                   onChange={(event) => setPaymentHistoryMonth(event.target.value)}
-                  className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm text-slate-700"
+                  className="rounded-control border border-slate-200 bg-white px-4 py-2 text-sm text-slate-700"
                 >
                   <option value="all">ทุกเดือน</option>
                   {paymentHistoryMonthOptions.map((month) => (
@@ -1249,7 +1250,7 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
             </div>
 
             {filteredTenantInvoiceHistory.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-6 py-10 text-center text-slate-500">
+              <div className="rounded-card border border-dashed border-slate-300 bg-slate-50 px-6 py-10 text-center text-slate-500">
                 ไม่พบประวัติใบแจ้งหนี้ในช่วงที่เลือก
               </div>
             ) : (
@@ -1267,7 +1268,7 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
                   return (
                     <div
                       key={invoice.id}
-                      className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"
+                      className="rounded-card border border-slate-200 bg-white p-4 shadow-sm"
                     >
                       <div className="flex flex-wrap items-start justify-between gap-3">
                         <div>
@@ -1284,15 +1285,15 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
                       </div>
 
                       <div className="mt-3 grid gap-3 md:grid-cols-3">
-                        <div className="rounded-xl bg-slate-50 px-3 py-3">
+                        <div className="rounded-control bg-slate-50 px-3 py-3">
                           <p className="text-xs uppercase tracking-wide text-slate-400">ยอดรวม</p>
                           <p className="mt-1 text-sm font-semibold text-slate-900">฿{formatMoney(toNumber(invoice.total_amount))}</p>
                         </div>
-                        <div className="rounded-xl bg-slate-50 px-3 py-3">
+                        <div className="rounded-control bg-slate-50 px-3 py-3">
                           <p className="text-xs uppercase tracking-wide text-slate-400">ชำระแล้ว</p>
-                          <p className="mt-1 text-sm font-semibold text-emerald-700">฿{formatMoney(toNumber(invoice.paid_amount))}</p>
+                          <p className="mt-1 text-sm font-semibold text-success-700">฿{formatMoney(toNumber(invoice.paid_amount))}</p>
                         </div>
-                        <div className="rounded-xl bg-slate-50 px-3 py-3">
+                        <div className="rounded-control bg-slate-50 px-3 py-3">
                           <p className="text-xs uppercase tracking-wide text-slate-400">วันที่ชำระล่าสุด</p>
                           <p className="mt-1 text-sm font-semibold text-slate-900">
                             {paymentDate ? new Date(paymentDate).toLocaleString("th-TH") : "-"}
@@ -1306,12 +1307,12 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
                             href={invoice.slip_url}
                             target="_blank"
                             rel="noreferrer"
-                            className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-medium text-blue-700"
+                            className="rounded-control border border-primary-200 bg-primary-50 px-3 py-2 text-sm font-medium text-primary-700"
                           >
                             เปิดดูสลิป
                           </a>
                         ) : (
-                          <span className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-500">
+                          <span className="rounded-control border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-500">
                             ไม่มีสลิป
                           </span>
                         )}
@@ -1329,7 +1330,7 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
             onClick={() => setConfirmDeleteOpen(true)}
             disabled={!activeTenant || !canEditTenant || isDeletingTenant}
             title={!canEditTenant ? "ไม่มีสิทธิ์ลบผู้เช่า" : undefined}
-            className="inline-flex items-center gap-2 rounded-xl border border-red-200 px-4 py-2.5 text-base text-red-600 disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex items-center gap-2 rounded-control border border-danger-200 px-4 py-2.5 text-base text-danger-600 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {isDeletingTenant ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
             {isDeletingTenant ? "กำลังลบ..." : "ลบผู้เช่า"}
@@ -1337,7 +1338,7 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
           <div className="flex items-center gap-3">
             <button
               onClick={onClose}
-              className="rounded-xl border border-slate-200 px-4 py-2.5 text-base text-slate-600"
+              className={buttonClasses({ variant: "secondary", size: "lg" })}
             >
               ยกเลิก
             </button>
@@ -1345,7 +1346,7 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
               onClick={() => setConfirmSaveOpen(true)}
               disabled={!canEditTenant || isSavingTenant}
               title={!canEditTenant ? "ไม่มีสิทธิ์แก้ไขข้อมูลผู้เช่า" : undefined}
-              className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-base font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+              className={buttonClasses({ variant: "primary", size: "lg" })}
             >
               {isSavingTenant ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
               {isSavingTenant ? "กำลังบันทึก..." : "บันทึกผู้เช่า"}

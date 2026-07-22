@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/Badge";
+import { buttonClasses } from "@/components/ui/Button";
 import { createClient } from "@/lib/supabase-client";
 import { usePermissions } from "@/lib/use-permissions";
 import { AlertTriangle, Building2, CalendarDays, CheckCircle2, ChevronRight, Clock, LogOut, Plus, RefreshCw, Smartphone, XCircle } from "lucide-react";
@@ -289,35 +290,35 @@ export default function MoveOutsPage() {
             {
               label: "รอตรวจสอบ",
               value: requestedCount,
-              color: "text-amber-700",
-              bg: "bg-amber-50 border-amber-200",
+              color: "text-warning-700",
+              bg: "bg-warning-50 border-warning-200",
               icon: Clock,
             },
             {
               label: "รอย้ายออก",
               value: approvedCount,
-              color: "text-blue-700",
-              bg: "bg-blue-50 border-blue-200",
+              color: "text-primary-700",
+              bg: "bg-primary-50 border-primary-200",
               icon: LogOut,
             },
             {
               label: "ใน 7 วันนี้",
               value: thisWeekCount,
-              color: thisWeekCount > 0 ? "text-rose-700" : "text-slate-500",
-              bg: thisWeekCount > 0 ? "bg-rose-50 border-rose-200" : "bg-slate-50 border-slate-200",
+              color: thisWeekCount > 0 ? "text-danger-700" : "text-slate-500",
+              bg: thisWeekCount > 0 ? "bg-danger-50 border-danger-200" : "bg-slate-50 border-slate-200",
               icon: AlertTriangle,
             },
             {
               label: "รวมย้ายออกแล้ว",
               value: unifiedList.filter((r) => r.status === "completed").length,
-              color: "text-emerald-700",
-              bg: "bg-emerald-50 border-emerald-200",
+              color: "text-success-700",
+              bg: "bg-success-50 border-success-200",
               icon: CheckCircle2,
             },
           ].map((stat) => (
             <div
               key={stat.label}
-              className={`flex items-center gap-3 rounded-2xl border px-4 py-3.5 ${stat.bg}`}
+              className={`flex items-center gap-3 rounded-card border px-4 py-3.5 ${stat.bg}`}
             >
               <stat.icon className={`h-5 w-5 shrink-0 ${stat.color}`} />
               <div>
@@ -338,7 +339,7 @@ export default function MoveOutsPage() {
               <button
                 type="button"
                 onClick={() => setIsManualModalOpen(true)}
-                className="inline-flex items-center gap-1.5 rounded-xl bg-primary-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm transition hover:bg-primary-700"
+                className={buttonClasses({ variant: "primary", size: "sm" })}
               >
                 <Plus className="h-4 w-4" />
                 เพิ่มย้ายออกแบบกำหนดเอง
@@ -347,7 +348,7 @@ export default function MoveOutsPage() {
                 type="button"
                 onClick={() => void load()}
                 disabled={loading}
-                className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:opacity-50"
+                className={buttonClasses({ variant: "secondary", size: "sm" })}
               >
                 <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
                 รีเฟรช
@@ -358,18 +359,18 @@ export default function MoveOutsPage() {
       </div>
 
       {!permLoading && !canView && (
-        <p className="text-sm text-amber-800">ไม่มีสิทธิ์ดูข้อมูลนี้</p>
+        <p className="text-sm text-warning-800">ไม่มีสิทธิ์ดูข้อมูลนี้</p>
       )}
 
       {canView && loading && (
-        <div className="flex items-center justify-center gap-2 rounded-2xl border border-slate-200/80 py-12 text-slate-500">
+        <div className="flex items-center justify-center gap-2 rounded-card border border-slate-200/80 py-12 text-slate-500">
           <span className="h-2 w-2 animate-pulse rounded-full bg-slate-300" />
           กำลังโหลด…
         </div>
       )}
 
       {canView && !loading && (
-        <div className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
+        <div className="overflow-hidden rounded-card border border-slate-200/80 bg-white shadow-sm">
           {/* Tabs */}
           <div className="flex border-b border-slate-100 overflow-x-auto">
             {tabs.map((tab) => {
@@ -392,7 +393,7 @@ export default function MoveOutsPage() {
                   {tab.count != null && tab.count > 0 && (
                     <span className={`
                       rounded-full px-2 py-0.5 text-sm font-bold
-                      ${isActive ? "bg-primary-100 text-primary-700" : "bg-amber-100 text-amber-700"}
+                      ${isActive ? "bg-primary-100 text-primary-700" : "bg-warning-100 text-warning-700"}
                     `}>
                       {tab.count}
                     </span>
@@ -429,7 +430,7 @@ export default function MoveOutsPage() {
                     return (
                       <tr
                         key={row.key}
-                        className={`border-t border-slate-100/90 transition-colors hover:bg-slate-50/60 ${isUrgent ? "bg-rose-50/30" : ""}`}
+                        className={`border-t border-slate-100/90 transition-colors hover:bg-slate-50/60 ${isUrgent ? "bg-danger-50/30" : ""}`}
                       >
                         <td className="px-5 py-3.5">
                           <Badge variant={getBadgeVariant(row.status)}>
@@ -445,26 +446,26 @@ export default function MoveOutsPage() {
                         </td>
                         <td className="px-5 py-3.5">
                           <div className="flex flex-col gap-0.5">
-                            <span className={`font-semibold ${isUrgent ? "text-rose-700" : row.status === "requested" ? "text-amber-700" : "text-slate-800"}`}>
+                            <span className={`font-semibold ${isUrgent ? "text-danger-700" : row.status === "requested" ? "text-warning-700" : "text-slate-800"}`}>
                               {formatThai(row.move_out_date)}
                             </span>
                             {(row.status === "approved" || row.status === "manual") && days >= 0 && (
-                              <span className={`text-[11px] font-medium ${days <= 3 ? "text-rose-600" : days <= 7 ? "text-amber-600" : "text-slate-400"}`}>
+                              <span className={`text-2xs font-medium ${days <= 3 ? "text-danger-600" : days <= 7 ? "text-warning-600" : "text-slate-400"}`}>
                                 {days === 0 ? "วันนี้" : days === 1 ? "พรุ่งนี้" : `อีก ${days} วัน`}
                               </span>
                             )}
                             {row.notice_date && (
-                              <span className="text-[11px] text-slate-400">แจ้งเมื่อ: {formatThai(row.notice_date)}</span>
+                              <span className="text-2xs text-slate-400">แจ้งเมื่อ: {formatThai(row.notice_date)}</span>
                             )}
                           </div>
                         </td>
                         <td className="px-5 py-3.5">
                           {row.source === "tenant" ? (
-                            <span className="inline-flex items-center gap-1 rounded-lg bg-blue-50 px-2 py-1 text-sm text-blue-600">
+                            <span className="inline-flex items-center gap-1 rounded-lg bg-primary-50 px-2 py-1 text-sm text-primary-600">
                               <Smartphone className="h-3 w-3" /> แอปผู้เช่า
                             </span>
                           ) : (
-                            <span className="inline-flex items-center gap-1 rounded-lg bg-purple-50 px-2 py-1 text-sm text-purple-600">
+                            <span className="inline-flex items-center gap-1 rounded-lg bg-primary-50 px-2 py-1 text-sm text-primary-600">
                               <CalendarDays className="h-3 w-3" /> แอดมินตั้ง
                             </span>
                           )}
@@ -472,7 +473,7 @@ export default function MoveOutsPage() {
                         <td className="px-5 py-3.5">
                           <button
                             onClick={() => openModal(row.tenant_id)}
-                            className="inline-flex items-center gap-0.5 rounded-lg bg-primary-50 px-3 py-1.5 text-sm font-semibold text-primary-700 hover:bg-primary-100 transition-colors"
+                            className={buttonClasses({ variant: "subtle", size: "sm" })}
                           >
                             จัดการ <ChevronRight className="h-3.5 w-3.5" />
                           </button>

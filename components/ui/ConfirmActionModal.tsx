@@ -1,7 +1,7 @@
 "use client";
 
 import { Modal } from "@/components/ui/Modal";
-import { Loader2 } from "lucide-react";
+import { Button } from "@/components/ui/Button";
 import { t } from "@/lib/i18n";
 import { useUiLanguage } from "@/lib/use-ui-language";
 
@@ -11,6 +11,8 @@ export function ConfirmActionModal({
   message,
   confirmLabel,
   cancelLabel,
+  /** Use for irreversible actions so the confirm button reads as destructive. */
+  destructive = false,
   loading = false,
   onCancel,
   onConfirm,
@@ -20,6 +22,7 @@ export function ConfirmActionModal({
   message: string;
   confirmLabel?: string;
   cancelLabel?: string;
+  destructive?: boolean;
   loading?: boolean;
   onCancel: () => void;
   onConfirm: () => void;
@@ -30,29 +33,27 @@ export function ConfirmActionModal({
   const processingLabel = t(locale, "ui_processing");
 
   return (
-    <Modal isOpen={isOpen} onClose={onCancel} title={title} size="md">
-      <div className="space-y-4">
-        <p className="text-sm text-slate-600">{message}</p>
-        <div className="flex flex-wrap justify-end gap-2">
-          <button
-            type="button"
-            onClick={onCancel}
-            disabled={loading}
-            className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:opacity-60"
-          >
+    <Modal
+      isOpen={isOpen}
+      onClose={onCancel}
+      title={title}
+      size="md"
+      footer={
+        <>
+          <Button variant="secondary" onClick={onCancel} disabled={loading}>
             {resolvedCancelLabel}
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant={destructive ? "danger" : "primary"}
             onClick={onConfirm}
-            disabled={loading}
-            className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-md shadow-blue-600/15 transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+            loading={loading}
           >
-            {loading && <Loader2 size={16} className="animate-spin" />}
             {loading ? processingLabel : resolvedConfirmLabel}
-          </button>
-        </div>
-      </div>
+          </Button>
+        </>
+      }
+    >
+      <p className="text-sm leading-relaxed text-slate-600">{message}</p>
     </Modal>
   );
 }

@@ -4,12 +4,34 @@
 
 @layer base {
   :root {
-    --font-app: "Google Sans", "Google Sans Text", "Product Sans", "Noto Sans Thai", "Sarabun", system-ui, sans-serif;
-    --page-bg: #f4f6f9;
-    --page-bg-accent: #eef2f7;
-    --surface-elevated: #ffffff;
-    --border-hairline: rgba(15, 23, 42, 0.06);
-    --ring-focus: rgba(37, 99, 235, 0.35);
+    /* Apple-first, per-glyph fallback. `-apple-system` resolves to the real
+       SF Pro on macOS/iOS; everywhere else Inter (self-hosted, see layout.tsx)
+       stands in for it. Noto Sans Thai sits last so Latin glyphs take SF/Inter
+       and Thai glyphs fall through to it. The previous stack asked for "Google
+       Sans"/"Product Sans", which are proprietary and installed on virtually
+       no machine — it was silently rendering as the OS UI font. */
+    --font-app: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
+      var(--font-inter), "Segoe UI", var(--font-noto-thai), "Noto Sans Thai",
+      system-ui, sans-serif;
+
+    /* Page canvas. Kept deliberately light and near-neutral so that white
+       floating surfaces read as lifted off it rather than blending into it.
+       The gap between --page-bg and --surface is the whole trick: too small
+       and cards look flat, too large and it stops feeling light. */
+    --page-bg: #f2f4f8;
+    --page-bg-accent: #eaeef5;
+
+    /* Surfaces */
+    --surface: #ffffff;
+    --surface-muted: #f8fafc; /* card headers, table headers, inset wells */
+    --surface-sunken: #f1f5f9; /* progress tracks, disabled fills */
+
+    /* A hairline, not a border. 1px at 6% slate reads as an edge without
+       drawing a box — the shadow does the separating work. */
+    --border-hairline: rgba(15, 23, 42, 0.07);
+    --border-hairline-strong: rgba(15, 23, 42, 0.12);
+
+    --ring-focus: rgba(0, 122, 255, 0.35);
   }
 
   html {
@@ -21,6 +43,20 @@
     html {
       scroll-behavior: auto;
     }
+
+    /* Entrance animations are decorative. Honour the OS preference by
+       collapsing them to their end state instead of removing the classes
+       at every call site. */
+    .animate-fade-in-up,
+    .animate-fade-in-down,
+    .animate-soft-pop {
+      animation: none !important;
+    }
+
+    .hover-lift:hover,
+    .hover-float:hover {
+      transform: none !important;
+    }
   }
 
   body {
@@ -29,17 +65,56 @@
     text-rendering: optimizeLegibility;
     background-color: var(--page-bg);
     background-image: radial-gradient(
-        ellipse 110% 70% at 0% -15%,
-        rgba(191, 219, 254, 0.35),
-        transparent 52%
+        ellipse 120% 80% at 0% -20%,
+        rgba(0, 122, 255, 0.07),
+        transparent 55%
       ),
-      radial-gradient(ellipse 90% 45% at 100% 0%, rgba(255, 255, 255, 0.75), transparent 42%),
+      radial-gradient(ellipse 90% 50% at 100% 0%, rgba(255, 255, 255, 0.9), transparent 45%),
       linear-gradient(180deg, var(--page-bg) 0%, var(--page-bg-accent) 100%);
     background-attachment: fixed;
   }
 
   ::selection {
-    @apply bg-blue-200/60 text-slate-900;
+    @apply bg-primary-200/60 text-slate-900;
+  }
+
+  /* Tabular figures for money and meter readings. Columns of baht amounts
+     misalign badly with proportional digits. */
+  .tnum,
+  td,
+  th {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@layer components {
+  /* The base floating surface. Every card, panel and popover in the admin app
+     resolves to this: white fill, hairline edge, soft two-layer lift. Prefer
+     the <Card> primitive; this class exists for the cases where a component
+     needs the look on an element it already owns (e.g. a <table> wrapper). */
+  .surface {
+    background: var(--surface);
+    border: 1px solid var(--border-hairline);
+    border-radius: theme("borderRadius.card");
+    box-shadow: theme("boxShadow.float");
+  }
+
+  .surface-raised {
+    background: var(--surface);
+    border: 1px solid var(--border-hairline);
+    border-radius: theme("borderRadius.card");
+    box-shadow: theme("boxShadow.float-lg");
+  }
+
+  /* Frosted variant, for surfaces that overlap scrolling content: the sticky
+     page header and the sidebar rail. */
+  .surface-frosted {
+    background: rgba(255, 255, 255, 0.72);
+    backdrop-filter: saturate(180%) blur(20px);
+    -webkit-backdrop-filter: saturate(180%) blur(20px);
+    border: 1px solid var(--border-hairline);
+    border-radius: theme("borderRadius.card");
+    box-shadow: theme("boxShadow.float");
   }
 }
 
@@ -60,28 +135,67 @@
     animation: softPop 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
   }
 
+  /* Interactive lift. Pairs a small rise with a step up the elevation scale,
+     which is what sells "floating" — a card that moves without its shadow
+     growing looks like it slid, not lifted. */
+  .hover-float {
+    transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1),
+      box-shadow 220ms cubic-bezier(0.22, 1, 0.36, 1),
+      border-color 220ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .hover-float:hover {
+    transform: translateY(-2px);
+    box-shadow: theme("boxShadow.float-md");
+  }
+
+  /* Retained alias — pre-existing call sites use this name. */
   .hover-lift {
-    transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
+    transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1),
+      box-shadow 220ms cubic-bezier(0.22, 1, 0.36, 1),
+      border-color 220ms cubic-bezier(0.22, 1, 0.36, 1);
   }
 
   .hover-lift:hover {
     transform: translateY(-2px);
+    box-shadow: theme("boxShadow.float-md");
   }
 
   .surface-elevated {
-    background: var(--surface-elevated);
+    background: var(--surface);
     border: 1px solid var(--border-hairline);
-    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px -4px rgba(15, 23, 42, 0.06);
+    box-shadow: theme("boxShadow.float");
   }
 
   .focus-ring {
-    @apply outline-none focus-visible:ring-2 focus-visible:ring-blue-500/30 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-50;
+    @apply outline-none focus-visible:ring-2 focus-visible:ring-primary-500/35 focus-visible:ring-offset-2 focus-visible:ring-offset-white;
   }
 
   .stagger-1 { animation-delay: 40ms; }
   .stagger-2 { animation-delay: 90ms; }
   .stagger-3 { animation-delay: 140ms; }
   .stagger-4 { animation-delay: 190ms; }
+
+  /* Thin, unobtrusive scrollbars inside floating panels — a full-width native
+     bar cuts visually through a rounded card. */
+  .scrollbar-slim {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(15, 23, 42, 0.18) transparent;
+  }
+
+  .scrollbar-slim::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  .scrollbar-slim::-webkit-scrollbar-thumb {
+    background-color: rgba(15, 23, 42, 0.16);
+    border-radius: 999px;
+  }
+
+  .scrollbar-slim::-webkit-scrollbar-track {
+    background: transparent;
+  }
 }
 
 @keyframes fadeInUp {

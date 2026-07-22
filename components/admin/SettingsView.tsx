@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Input } from "@/components/ui/Input";
+import { buttonClasses } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { createClient } from "@/lib/supabase-client";
 import { Plus, Save, Trash2 } from "lucide-react";
@@ -202,8 +203,8 @@ export default function SettingsView() {
             onClick={() => setActiveTab(tab)}
             className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
               activeTab === tab
-                ? "bg-blue-600 text-white"
-                : "bg-white text-slate-600 border border-slate-200 hover:border-blue-200"
+                ? "bg-primary-600 text-white"
+                : "bg-white text-slate-600 border border-slate-200 hover:border-primary-200"
             }`}
           >
             {tab}
@@ -219,7 +220,7 @@ export default function SettingsView() {
           <Input label="Phone" placeholder="02-000-0000" />
           <label className="md:col-span-2 text-sm text-slate-600">
             Address
-            <textarea className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-600/40" />
+            <textarea className="mt-2 w-full rounded-control border border-slate-200 bg-white px-4 py-2.5 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-600/40" />
           </label>
         </div>
       )}
@@ -257,7 +258,7 @@ export default function SettingsView() {
           </div>
           <button
             onClick={saveUtilities}
-            className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
+            className={buttonClasses({ variant: "primary" })}
           >
             <Save size={16} />
             Save Utilities
@@ -270,7 +271,7 @@ export default function SettingsView() {
           <Input label="Common Fee Label" placeholder="Common Area Fee" />
           <Input label="Common Fee Amount" placeholder="100" />
           <Input label="Late Fee (per day)" placeholder="30" />
-          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+          <div className="rounded-card border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
             <p className="font-semibold text-slate-900">Late Fee Policy</p>
             <p className="mt-2 text-xs text-slate-500">
               Late fee will apply after the due date and is calculated daily.
@@ -290,7 +291,7 @@ export default function SettingsView() {
             </div>
             <button
               onClick={addPaymentMethod}
-              className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
+              className={buttonClasses({ variant: "primary" })}
             >
               <Plus size={16} />
               Add Account
@@ -300,7 +301,7 @@ export default function SettingsView() {
             {methods.map((method) => (
               <div
                 key={method.id}
-                className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"
+                className="flex flex-wrap items-center justify-between gap-3 rounded-card border border-slate-200 bg-white p-4 shadow-sm"
               >
                 <div className="flex-1 grid gap-2 md:grid-cols-3">
                   <Input
@@ -321,7 +322,7 @@ export default function SettingsView() {
                 </div>
                 <button
                   onClick={() => removeMethod(method.id)}
-                  className="inline-flex items-center gap-2 rounded-xl border border-red-200 px-3 py-2 text-sm text-red-600"
+                  className="inline-flex items-center gap-2 rounded-control border border-danger-200 px-3 py-2 text-sm text-danger-600"
                 >
                   <Trash2 size={14} />
                   Remove
@@ -331,7 +332,7 @@ export default function SettingsView() {
           </div>
           <button
             onClick={saveUtilities}
-            className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
+            className={buttonClasses({ variant: "primary" })}
           >
             <Save size={16} />
             Save Payment Methods
@@ -341,7 +342,7 @@ export default function SettingsView() {
 
       {activeTab === "Rooms" && (
         <div className="space-y-6">
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="rounded-card border border-slate-200 bg-white p-4 shadow-sm">
             <p className="text-sm font-semibold text-slate-700">Add Building</p>
             <div className="mt-3 grid gap-3 md:grid-cols-3">
               <Input
@@ -359,7 +360,7 @@ export default function SettingsView() {
               <div className="flex items-end">
                 <button
                   onClick={addBuilding}
-                  className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
+                  className={buttonClasses({ variant: "primary", fullWidth: true })}
                 >
                   <Plus size={16} />
                   Add Building
@@ -374,7 +375,7 @@ export default function SettingsView() {
               <select
                 value={selectedBuilding ?? ""}
                 onChange={(event) => setSelectedBuilding(event.target.value)}
-                className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm"
+                className="mt-2 w-full rounded-control border border-slate-200 bg-white px-4 py-2.5 text-sm"
               >
                 {buildings.length === 0 && <option value="">No buildings yet</option>}
                 {buildings.map((building) => (
@@ -402,14 +403,14 @@ export default function SettingsView() {
             />
             <button
               onClick={addRooms}
-              className="inline-flex items-center gap-2 rounded-xl bg-green-600 px-4 py-2 text-sm font-semibold text-white"
+              className={buttonClasses({ variant: "success" })}
             >
               <Plus size={16} />
               Add Room
             </button>
           </div>
 
-          <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <div className="overflow-hidden rounded-card border border-slate-200 bg-white shadow-sm">
             <table className="w-full text-left text-sm">
               <thead className="bg-slate-100 text-xs uppercase tracking-wider text-slate-500">
                 <tr>
@@ -489,7 +490,7 @@ export default function SettingsView() {
                     <td className="px-4 py-3">
                       <button
                         onClick={() => deleteRoom(room.id)}
-                        className="inline-flex items-center gap-2 rounded-lg border border-red-200 px-3 py-1 text-xs text-red-600"
+                        className="inline-flex items-center gap-2 rounded-lg border border-danger-200 px-3 py-1 text-xs text-danger-600"
                       >
                         <Trash2 size={12} />
                         Delete
@@ -502,7 +503,7 @@ export default function SettingsView() {
           </div>
           <button
             onClick={saveRooms}
-            className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
+            className={buttonClasses({ variant: "primary" })}
           >
             <Save size={16} />
             Save Room Changes

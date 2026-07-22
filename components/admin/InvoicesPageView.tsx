@@ -2,6 +2,9 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/Badge";
+import { Card } from "@/components/ui/Card";
+import { Button, buttonClasses } from "@/components/ui/Button";
+import { EmptyState, Tabs } from "@/components/ui/Page";
 import { Modal } from "@/components/ui/Modal";
 import { Input } from "@/components/ui/Input";
 import { ConfirmActionModal } from "@/components/ui/ConfirmActionModal";
@@ -250,40 +253,26 @@ export default function InvoicesPage() {
   return (
     <InvoiceProvider state={state}>
     <div className="space-y-6">
-      <div className="flex space-x-1 rounded-xl bg-slate-100 p-1 w-full max-w-sm">
-        <button
-          onClick={() => setViewMode("monthly")}
-          className={`flex-1 rounded-lg py-2 text-sm font-semibold transition-all ${
-            viewMode === "monthly"
-              ? "bg-white text-slate-900 shadow-sm"
-              : "text-slate-500 hover:text-slate-700"
-          }`}
-        >
-          รายการบิล (รายเดือน)
-        </button>
-        <button
-          onClick={() => setViewMode("overdue")}
-          className={`flex-1 rounded-lg py-2 text-sm font-semibold transition-all ${
-            viewMode === "overdue"
-              ? "bg-white text-rose-700 shadow-sm"
-              : "text-slate-500 hover:text-rose-600"
-          }`}
-        >
-          สรุปห้องค้างชำระ
-        </button>
-      </div>
+      <Tabs
+        value={viewMode}
+        onChange={setViewMode}
+        items={[
+          { value: "monthly", label: "รายการบิล (รายเดือน)" },
+          { value: "overdue", label: "สรุปห้องค้างชำระ" },
+        ]}
+      />
 
       {viewMode === "overdue" ? (
         <OverdueRoomsTab />
       ) : (
         <>
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="rounded-card border border-slate-200 bg-white p-4 shadow-sm">
             {pendingMoveOutCount > 0 && (
           <div className="mb-3">
             <Badge variant="warning" className="text-xs font-semibold sm:text-sm">
               รอดำเนินการย้ายออก {pendingMoveOutCount} รายการ
             </Badge>
-            <p className="mt-1 text-xs text-amber-900/80">
+            <p className="mt-1 text-xs text-warning-900/80">
               นับรวม: คำขอสถานะรอตรวจ หรือผู้เช่าที่ตั้ง <span className="font-medium">วันย้ายออก</span> แล้ว
             </p>
           </div>
@@ -304,7 +293,7 @@ export default function InvoicesPage() {
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               placeholder="ค้นหาห้อง / ผู้เช่า / อาคาร / สถานะ / เลขบิล"
-              className="w-full rounded-xl border border-slate-200 bg-white py-3 pl-10 pr-4 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-600/40"
+              className="w-full rounded-control border border-slate-200 bg-white py-3 pl-10 pr-4 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-600/40"
             />
           </div>
         </div>
@@ -313,7 +302,7 @@ export default function InvoicesPage() {
             onClick={() => setConfirmGenerateOpen(true)}
             disabled={!canCreateInvoice}
             title={!canCreateInvoice ? "ไม่มีสิทธิ์สร้างใบแจ้งหนี้" : undefined}
-            className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-blue-600/20 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none"
+            className={buttonClasses({ variant: "primary" })}
           >
             <FileText size={16} />
             สร้างใบแจ้งหนี้รายเดือน
@@ -322,7 +311,7 @@ export default function InvoicesPage() {
       </div>
 
       {moveOutWarnings.length > 0 && (
-        <div className="rounded-2xl border border-orange-200 bg-orange-50 px-4 py-3 text-sm text-orange-900">
+        <div className="rounded-card border border-warning-200 bg-warning-50 px-4 py-3 text-sm text-warning-900">
           <p className="font-semibold">มีคำขอย้ายออกในงวดนี้ {moveOutWarnings.length} รายการ</p>
           <div className="mt-1 space-y-1 text-xs">
             {moveOutWarnings.slice(0, 5).map((row: any) => {
@@ -338,14 +327,14 @@ export default function InvoicesPage() {
         </div>
       )}
 
-      {error && <span className="text-sm text-red-600">{error}</span>}
+      {error && <span className="text-sm text-danger-600">{error}</span>}
 
       {loading ? (
         <div className="space-y-4 animate-pulse">
           {Array.from({ length: 3 }).map((_, i) => (
             <div key={i} className="space-y-3">
               <div className="h-6 w-32 rounded-lg bg-slate-200"></div>
-              <div className="rounded-2xl border border-slate-100 bg-white">
+              <div className="rounded-card border border-slate-100 bg-white">
                 <div className="flex h-14 items-center gap-4 border-b border-slate-100 px-4">
                   <div className="h-4 w-24 rounded bg-slate-100"></div>
                   <div className="h-4 w-32 rounded bg-slate-100"></div>
@@ -361,25 +350,27 @@ export default function InvoicesPage() {
           ))}
         </div>
       ) : !error && filteredInvoices.length === 0 ? (
-        <div className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-600">
-          ไม่พบใบแจ้งหนี้ตามคำค้นหา
-          {invoices.length > 0 && search.trim() ? (
-            <button
-              type="button"
-              onClick={() => setSearch("")}
-              className="ml-2 text-sm font-semibold text-blue-600 underline"
-            >
-              ล้างคำค้นหา
-            </button>
-          ) : null}
-        </div>
+        <Card>
+          <EmptyState
+            icon={<Search className="h-5 w-5" />}
+            title="ไม่พบใบแจ้งหนี้ตามคำค้นหา"
+            description="ลองเปลี่ยนคำค้นหา หรือเลือกเดือนอื่น"
+            action={
+              invoices.length > 0 && search.trim() ? (
+                <Button variant="secondary" size="sm" onClick={() => setSearch("")}>
+                  ล้างคำค้นหา
+                </Button>
+              ) : null
+            }
+          />
+        </Card>
       ) : (
         Object.entries(grouped)
           .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }))
           .map(([building, buildingInvoices]) => (
           <div key={building} className="space-y-3">
             <h2 className="text-lg font-semibold text-slate-900">{building}</h2>
-            <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <div className="overflow-hidden rounded-card border border-slate-200 bg-white shadow-sm">
               <table className="w-full text-left text-sm">
                 <thead className="bg-slate-100 text-xs uppercase tracking-wider text-slate-500">
                   <tr>
@@ -448,7 +439,7 @@ export default function InvoicesPage() {
                           {(invoice as any)._is_first_regular_invoice && (
                             <span
                               title={`ผู้เช่าเข้าใหม่ (${invoice.tenant_move_in_date})`}
-                              className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-emerald-200 bg-emerald-50 text-emerald-700"
+                              className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-success-200 bg-success-50 text-success-700"
                             >
                               <UserPlus size={12} />
                             </span>
@@ -456,7 +447,7 @@ export default function InvoicesPage() {
                           {(invoice as any)._is_waiting_for_move_out && (
                             <span
                               title={`เตรียมย้ายออก (${invoice.tenant_move_out_date})`}
-                              className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-orange-200 bg-orange-50 text-orange-700"
+                              className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-warning-200 bg-warning-50 text-warning-700"
                             >
                               <LogOut size={12} />
                             </span>
@@ -472,7 +463,7 @@ export default function InvoicesPage() {
                           }
                           className={`inline-flex h-8 w-8 items-center justify-center rounded-full border ${
                             invoice.opened_count > 0
-                              ? "border-blue-200 bg-blue-50 text-blue-700"
+                              ? "border-primary-200 bg-primary-50 text-primary-700"
                               : "border-slate-200 bg-slate-50 text-slate-400"
                           }`}
                         >
@@ -485,15 +476,15 @@ export default function InvoicesPage() {
                       <td className="px-4 py-3 font-semibold text-slate-900">
                         {formatMoney(invoice.total_amount)}
                         {invoice.carry_forward_amount > 0 && (
-                          <p className="mt-1 text-[11px] font-medium text-amber-700">
+                          <p className="mt-1 text-2xs font-medium text-warning-700">
                             มียอดค้างยกมา {formatMoney(invoice.carry_forward_amount)}
                           </p>
                         )}
                       </td>
-                      <td className="px-4 py-3 font-semibold text-emerald-700">
+                      <td className="px-4 py-3 font-semibold text-success-700">
                         {formatMoney(toNumber(invoice.paid_amount))}
                       </td>
-                      <td className="px-4 py-3 font-semibold text-rose-700">
+                      <td className="px-4 py-3 font-semibold text-danger-700">
                         {formatMoney(remaining)}
                       </td>
                       <td className="px-4 py-3">
@@ -505,7 +496,7 @@ export default function InvoicesPage() {
                           disabled={!invoice.slip_url}
                           className={`rounded-full px-3 py-1 text-xs font-semibold ${
                             invoice.slip_url
-                              ? "bg-emerald-100 text-emerald-700 hover:bg-emerald-200"
+                              ? "bg-success-100 text-success-700 hover:bg-success-200"
                               : "bg-slate-100 text-slate-400"
                           }`}
                         >
@@ -520,12 +511,12 @@ export default function InvoicesPage() {
                               event.stopPropagation();
                               setOpenActionMenuId((prev) => (prev === invoice.id ? null : invoice.id));
                             }}
-                            className="cursor-pointer rounded-lg bg-blue-100 px-3 py-1 text-xs font-semibold text-blue-700 hover:bg-blue-200"
+                            className={buttonClasses({ variant: "subtle", size: "sm" })}
                           >
                             เมนู
                           </button>
                           {openActionMenuId === invoice.id && (
-                          <div className="absolute right-0 z-20 mt-1 w-36 rounded-lg border border-slate-200 bg-white p-1 shadow-lg animate-soft-pop">
+                          <div className="absolute right-0 z-20 mt-1 w-36 rounded-lg border border-slate-200 bg-white p-1 shadow-float-lg animate-soft-pop">
                             <button
                               onClick={(event) => {
                                 event.stopPropagation();
@@ -534,7 +525,7 @@ export default function InvoicesPage() {
                               }}
                               disabled={!(canEditInvoice || canRecordInvoicePayment || canUpdateInvoiceStatus)}
                               title={!(canEditInvoice || canRecordInvoicePayment || canUpdateInvoiceStatus) ? "ไม่มีสิทธิ์เปิดแก้ไขใบแจ้งหนี้" : undefined}
-                              className="flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-xs font-medium text-sky-700 hover:bg-sky-50 disabled:cursor-not-allowed disabled:text-red-400 disabled:hover:bg-transparent"
+                              className={buttonClasses({ variant: "subtle", size: "sm", fullWidth: true })}
                             >
                               <Pencil size={12} />
                               เปิดรายละเอียด
@@ -545,7 +536,7 @@ export default function InvoicesPage() {
                                 setOpenActionMenuId(null);
                                 void getInvoicePrintDetail(invoice);
                               }}
-                              className="flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-xs font-medium text-indigo-700 hover:bg-indigo-50"
+                              className={buttonClasses({ variant: "subtle", size: "sm", fullWidth: true })}
                             >
                               <Printer size={12} />
                               พรีวิว
@@ -557,7 +548,7 @@ export default function InvoicesPage() {
                                 void getInvoicePrintDetail(invoice, "receipt");
                               }}
                               disabled={!(invoice.status === "verifying" || invoice.status === "paid")}
-                              className="flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-xs font-medium text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:text-slate-400 disabled:hover:bg-transparent"
+                              className="flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-xs font-medium text-success-700 hover:bg-success-50 disabled:cursor-not-allowed disabled:text-slate-400 disabled:hover:bg-transparent"
                             >
                               <FileText size={12} />
                               ใบเสร็จ
@@ -571,7 +562,7 @@ export default function InvoicesPage() {
                               }}
                               disabled={!canDeleteInvoice}
                               title={!canDeleteInvoice ? "ไม่มีสิทธิ์ลบใบแจ้งหนี้" : undefined}
-                              className="flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-xs font-medium text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:text-red-300 disabled:hover:bg-transparent"
+                              className="flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-xs font-medium text-danger-700 hover:bg-danger-50 disabled:cursor-not-allowed disabled:text-danger-300 disabled:hover:bg-transparent"
                             >
                               <Trash2 size={12} />
                               ลบ
@@ -591,13 +582,13 @@ export default function InvoicesPage() {
       )}
 
       {selected.length > 0 && (
-        <div className="fixed bottom-4 left-1/2 z-40 w-[min(90vw,720px)] -translate-x-1/2 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-2xl">
+        <div className="fixed bottom-4 left-1/2 z-40 w-[min(90vw,720px)] -translate-x-1/2 rounded-card border border-slate-200 bg-white px-4 py-3 shadow-float-xl">
           <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
             <span className="font-semibold text-slate-700">เลือกแล้ว {selected.length} ใบแจ้งหนี้</span>
             <div className="flex flex-wrap items-center gap-2">
                 <button
                   onClick={sendSelectedToLine}
-                  className="inline-flex items-center gap-2 rounded-xl bg-green-600 px-3 py-2 text-white"
+                  className={buttonClasses({ variant: "success" })}
                 >
                 <Send size={14} />
                 Send to LINE
@@ -607,7 +598,7 @@ export default function InvoicesPage() {
                   const first = invoices.find((invoice) => selected.includes(invoice.id));
                   if (first) void getInvoicePrintDetail(first);
                 }}
-                className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-slate-600"
+                className={buttonClasses({ variant: "secondary" })}
               >
                 <Printer size={14} />
                 พิมพ์
@@ -620,7 +611,7 @@ export default function InvoicesPage() {
                 }}
                 disabled={!canDeleteInvoice}
                 title={!canDeleteInvoice ? "ไม่มีสิทธิ์ลบใบแจ้งหนี้" : undefined}
-                className="inline-flex items-center gap-2 rounded-xl border border-red-200 px-3 py-2 text-red-600 disabled:cursor-not-allowed disabled:text-red-300"
+                className="inline-flex items-center gap-2 rounded-control border border-danger-200 px-3 py-2 text-danger-600 disabled:cursor-not-allowed disabled:text-danger-300"
               >
                 <Trash2 size={14} />
                 ลบ

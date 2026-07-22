@@ -3,10 +3,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
+import { Select } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
+import { EmptyState, PageHeader, Tabs } from "@/components/ui/Page";
+import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/Table";
 import { createClient } from "@/lib/supabase-client";
-import { Building2, MessageCircle, Settings2 } from "lucide-react";
+import { Building2, DoorOpen, MessageCircle, Send, Settings2 } from "lucide-react";
 
 type RoomRecord = {
   id: string;
@@ -221,75 +225,90 @@ export default function RoomsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap gap-2">
-        {buildings.map((building) => (
-          <button
-            key={building}
-            onClick={() => setActiveBuilding(building)}
-            className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
-              activeBuilding === building
-                ? "bg-blue-600 text-white shadow-lg shadow-blue-600/20"
-                : "bg-white text-slate-600 border border-slate-200 hover:border-blue-200"
-            }`}
-          >
-            {building}
-          </button>
-        ))}
-      </div>
-
-
+      <PageHeader
+        description="สถานะห้องทั้งหมดแยกตามอาคาร"
+        actions={
+          buildings.length > 0 ? (
+            <Tabs
+              items={buildings.map((building) => ({ value: building, label: building }))}
+              value={activeBuilding}
+              onChange={setActiveBuilding}
+            />
+          ) : null
+        }
+      />
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        {filteredRooms.map((room) => (
-          <Card
-            key={room.id}
-            className={`border-l-4 cursor-pointer hover:shadow-md transition ${
-              room.status === "occupied"
-                ? "border-green-500"
-                : room.status === "maintenance"
-                ? "border-yellow-400"
-                : "border-slate-200"
-            }`}
-          >
-            <button className="w-full text-left p-5" onClick={() => setSelectedRoom(room)}>
-              <div className="flex items-center justify-between">
-                <div className="text-3xl font-semibold text-slate-900">{room.room_number}</div>
-                <Badge variant={statusVariant[room.status] ?? "default"}>{statusLabel(room.status)}</Badge>
-              </div>
-              <p className="mt-3 text-sm text-slate-500">{room.tenant_name ?? "ว่าง"}</p>
-              <div className="mt-4 flex items-center justify-between text-xs text-slate-400">
-                <span className="inline-flex items-center gap-1">
-                  <Building2 size={14} />
-                  {room.building_name}
-                </span>
-                {room.tenant_line_user_id && (
-                  <span className="inline-flex items-center gap-1 rounded-full bg-green-50 px-2 py-1 text-[10px] font-semibold text-green-700">
-                    <MessageCircle size={12} />
-                    เชื่อม LINE
-                  </span>
-                )}
-              </div>
-            </button>
-            <div className="flex items-center justify-between border-t border-slate-100 px-5 py-3 text-xs text-slate-500">
-              <span className="inline-flex items-center gap-1">
-                <Settings2 size={12} />
-                ตั้งค่าสถานะ
-              </span>
-              <select
-                value={room.status}
-                onChange={(event) => void updateStatus(room, event.target.value)}
-                className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-700"
+        {filteredRooms.map((room) => {
+          // A colored top edge, not a left border: the card is rounded on all
+          // corners, and a left border fights the radius.
+          const accent =
+            room.status === "occupied"
+              ? "bg-success-500"
+              : room.status === "maintenance"
+              ? "bg-warning-400"
+              : "bg-slate-200";
+
+          return (
+            <Card key={room.id} className="overflow-hidden hover-float">
+              <div className={`h-1 w-full ${accent}`} />
+              <button
+                className="w-full p-5 text-left focus:outline-none focus-visible:bg-slate-50"
+                onClick={() => setSelectedRoom(room)}
               >
-                {roomStatusOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </Card>
-        ))}
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-2xl font-semibold tracking-tight text-slate-900">
+                    {room.room_number}
+                  </div>
+                  <Badge variant={statusVariant[room.status] ?? "default"} dot>
+                    {statusLabel(room.status)}
+                  </Badge>
+                </div>
+                <p className="mt-2.5 text-sm text-slate-500">{room.tenant_name ?? "ว่าง"}</p>
+                <div className="mt-4 flex items-center justify-between gap-2 text-xs text-slate-400">
+                  <span className="inline-flex items-center gap-1.5">
+                    <Building2 size={14} />
+                    {room.building_name}
+                  </span>
+                  {room.tenant_line_user_id && (
+                    <Badge variant="success" size="sm">
+                      <MessageCircle size={11} />
+                      เชื่อม LINE
+                    </Badge>
+                  )}
+                </div>
+              </button>
+              <div className="flex items-center justify-between gap-2 border-t border-slate-100 bg-slate-50/60 px-5 py-2.5 text-xs text-slate-500">
+                <span className="inline-flex items-center gap-1.5">
+                  <Settings2 size={13} />
+                  ตั้งค่าสถานะ
+                </span>
+                <Select
+                  value={room.status}
+                  onChange={(event) => void updateStatus(room, event.target.value)}
+                  className="w-auto py-1 pl-2.5 pr-8 text-xs font-semibold"
+                >
+                  {roomStatusOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+            </Card>
+          );
+        })}
       </div>
+
+      {filteredRooms.length === 0 && (
+        <Card>
+          <EmptyState
+            icon={<DoorOpen className="h-5 w-5" />}
+            title="ไม่มีห้องพักในอาคารนี้"
+            description="เลือกอาคารอื่น หรือเพิ่มห้องพักในหน้าตั้งค่า"
+          />
+        </Card>
+      )}
 
       <Modal
         isOpen={!!selectedRoom}
@@ -298,74 +317,80 @@ export default function RoomsPage() {
         size="lg"
       >
         {selectedRoom && (
-          <div className="space-y-4 text-sm text-slate-600">
-            <div className="grid gap-4 md:grid-cols-2">
+          <div className="space-y-5 text-sm text-slate-600">
+            <div className="grid gap-5 md:grid-cols-2">
               <div className="space-y-2">
-              <p className="text-xs uppercase tracking-[0.2em] text-slate-400">การเข้าพัก</p>
-              <p className="text-lg font-semibold text-slate-900">{selectedRoom.tenant_name ?? "ว่าง"}</p>
-              <p>อาคาร: {selectedRoom.building_name}</p>
-              <p>สถานะ: {statusLabel(selectedRoom.status)}</p>
-              <p>LINE: {selectedRoom.tenant_line_user_id ? "เชื่อมแล้ว" : "ยังไม่เชื่อม"}</p>
+                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
+                  การเข้าพัก
+                </p>
+                <p className="text-lg font-semibold text-slate-900">
+                  {selectedRoom.tenant_name ?? "ว่าง"}
+                </p>
+                <p>อาคาร: {selectedRoom.building_name}</p>
+                <p>สถานะ: {statusLabel(selectedRoom.status)}</p>
+                <p>LINE: {selectedRoom.tenant_line_user_id ? "เชื่อมแล้ว" : "ยังไม่เชื่อม"}</p>
               </div>
-              <div className="space-y-2">
-              <p className="text-xs uppercase tracking-[0.2em] text-slate-400">คำสั่งด่วน</p>
-              <button
-                className="w-full rounded-xl bg-blue-600 px-4 py-2 text-white font-semibold"
-                onClick={() => sendLineReminder(selectedRoom)}
-              >
-                ส่งแจ้งเตือน LINE
-              </button>
-              <label className="block">
-                <span className="mb-1 block text-xs text-slate-500">สถานะห้อง</span>
-                <select
+              <div className="space-y-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
+                  คำสั่งด่วน
+                </p>
+                <Button
+                  fullWidth
+                  icon={<Send size={16} />}
+                  onClick={() => sendLineReminder(selectedRoom)}
+                >
+                  ส่งแจ้งเตือน LINE
+                </Button>
+                <Select
+                  label="สถานะห้อง"
                   value={selectedRoom.status}
                   onChange={(event) => void updateStatus(selectedRoom, event.target.value)}
-                  className="w-full rounded-xl border border-slate-200 bg-white px-4 py-2 text-slate-700 font-semibold"
                 >
                   {roomStatusOptions.map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
                     </option>
                   ))}
-                </select>
-              </label>
+                </Select>
               </div>
             </div>
 
-            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-              <p className="text-xs uppercase tracking-[0.2em] text-slate-500">ประวัติผู้เช่าห้องนี้</p>
+            <div className="overflow-hidden rounded-card border border-slate-200/70 bg-slate-50/60">
+              <p className="border-b border-slate-200/70 px-4 py-3 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
+                ประวัติผู้เช่าห้องนี้
+              </p>
               {movementLoading ? (
-                <p className="mt-3 text-sm text-slate-500">กำลังโหลดประวัติ...</p>
+                <p className="px-4 py-5 text-sm text-slate-500">กำลังโหลดประวัติ...</p>
               ) : movementLogs.length === 0 ? (
-                <p className="mt-3 text-sm text-slate-500">ยังไม่มีประวัติการเข้า-ออกของห้องนี้</p>
+                <EmptyState title="ยังไม่มีประวัติการเข้า-ออกของห้องนี้" className="py-8" />
               ) : (
-                <div className="mt-3 overflow-x-auto">
-                  <table className="w-full text-left text-xs text-slate-700">
-                    <thead className="text-slate-500">
+                <div className="scrollbar-slim overflow-x-auto bg-white">
+                  <Table>
+                    <THead>
                       <tr>
-                        <th className="px-2 py-1">ชื่อผู้เช่า</th>
-                        <th className="px-2 py-1">วันที่เข้าอยู่</th>
-                        <th className="px-2 py-1">วันที่ย้ายออก</th>
+                        <TH>ชื่อผู้เช่า</TH>
+                        <TH>วันที่เข้าอยู่</TH>
+                        <TH>วันที่ย้ายออก</TH>
                       </tr>
-                    </thead>
-                    <tbody>
+                    </THead>
+                    <TBody>
                       {movementLogs.map((log) => (
-                        <tr key={log.id} className="border-t border-slate-200">
-                          <td className="px-2 py-1.5 font-medium text-slate-900">{log.tenant_name}</td>
-                          <td className="px-2 py-1.5">
+                        <TR key={log.id}>
+                          <TD className="font-medium text-slate-900">{log.tenant_name}</TD>
+                          <TD>
                             {log.move_in_date
                               ? new Date(log.move_in_date).toLocaleDateString("th-TH")
                               : "-"}
-                          </td>
-                          <td className="px-2 py-1.5">
+                          </TD>
+                          <TD>
                             {log.move_out_date
                               ? new Date(log.move_out_date).toLocaleDateString("th-TH")
                               : "-"}
-                          </td>
-                        </tr>
+                          </TD>
+                        </TR>
                       ))}
-                    </tbody>
-                  </table>
+                    </TBody>
+                  </Table>
                 </div>
               )}
             </div>

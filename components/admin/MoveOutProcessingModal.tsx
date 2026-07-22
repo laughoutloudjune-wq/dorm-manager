@@ -4,6 +4,7 @@ import { useState } from "react";
 import useSWR from "swr";
 import { toast } from "sonner";
 import { Modal } from "@/components/ui/Modal";
+import { buttonClasses } from "@/components/ui/Button";
 import { ConfirmActionModal } from "@/components/ui/ConfirmActionModal";
 import { LogOut } from "lucide-react";
 import { createClient } from "@/lib/supabase-client";
@@ -95,11 +96,22 @@ export function MoveOutProcessingModal({
       tenant.initial_water_reading ??
       0;
 
+    const latestRequest = (requestsRes.data || [])[0] ?? null;
+    // The date this form will submit on Approve must default to what the
+    // *tenant* asked for (or what was already approved, if editing after the
+    // fact) — never today's date. Before this fix, move_out_request_date sat
+    // at its initial today() value until an admin happened to notice and edit
+    // an unrelated-looking "(reference)" field, so an admin who clicked
+    // Approve without touching it silently approved the wrong date.
+    const requestDefaultDate =
+      latestRequest?.approved_move_out_date ?? latestRequest?.requested_move_out_date ?? null;
+
     setForm((prev) => ({
       ...prev,
       full_name: tenant.full_name,
       advance_rent_amount: tenant.advance_rent_amount || 0,
       security_deposit_amount: tenant.security_deposit_amount || 0,
+      move_out_request_date: requestDefaultDate ?? prev.move_out_request_date,
       // Initialize finals to previous reading so usage = 0 until admin changes them
       final_electricity_reading: prev.final_electricity_reading || prevElec,
       final_water_reading: prev.final_water_reading || prevWater,
@@ -368,17 +380,17 @@ export function MoveOutProcessingModal({
         {isLoading && (
           <div className="flex flex-col gap-4 animate-pulse">
             <div className="h-6 w-48 rounded-lg bg-slate-200" />
-            <div className="h-32 w-full rounded-2xl bg-slate-100" />
-            <div className="h-48 w-full rounded-2xl bg-slate-100" />
+            <div className="h-32 w-full rounded-card bg-slate-100" />
+            <div className="h-48 w-full rounded-card bg-slate-100" />
           </div>
         )}
         {error && (
-          <div className="rounded-2xl bg-red-50 border border-red-200 p-4 text-red-600 text-sm">
+          <div className="rounded-card bg-danger-50 border border-danger-200 p-4 text-danger-600 text-sm">
             เกิดข้อผิดพลาด: {error.message}
           </div>
         )}
         {data && data.tenant?.status === "active" && (
-          <div className="mb-4 flex items-start justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+          <div className="mb-4 flex items-start justify-between gap-3 rounded-card border border-slate-200 bg-slate-50 p-4">
             <div className="text-xs text-slate-600">
               <p className="font-semibold text-slate-800">ผู้เช่าย้ายออกไปแล้วแต่ยังไม่พร้อมสรุปยอด?</p>
               <p className="mt-0.5">
@@ -389,7 +401,7 @@ export function MoveOutProcessingModal({
               type="button"
               onClick={() => setQuickVacateConfirmOpen(true)}
               disabled={isQuickVacating}
-              className="inline-flex shrink-0 items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+              className={buttonClasses({ variant: "secondary" })}
             >
               <LogOut size={14} />
               ปลดล็อกห้องทันที

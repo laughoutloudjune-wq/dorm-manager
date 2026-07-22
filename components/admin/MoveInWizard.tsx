@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { Input } from "@/components/ui/Input";
+import { buttonClasses } from "@/components/ui/Button";
 import { Loader2, Upload, FileText, Settings, CreditCard, CheckCircle2, ChevronRight, ChevronLeft, Save } from "lucide-react";
 import { formatMoney, toNumber } from "@/lib/format";
 
@@ -61,16 +62,16 @@ export function MoveInWizard({
                 {index < STEPS.length - 1 && (
                   <div
                     className={`absolute left-[15px] top-8 h-[calc(100%+8px)] w-0.5 -translate-x-1/2 ${
-                      isPast ? "bg-blue-600" : "bg-slate-200"
+                      isPast ? "bg-primary-600" : "bg-slate-200"
                     }`}
                   />
                 )}
                 <div
                   className={`relative z-10 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-2 transition-colors ${
                     isActive
-                      ? "border-blue-600 bg-blue-600 text-white shadow-sm shadow-blue-200"
+                      ? "border-primary-600 bg-primary-600 text-white shadow-sm"
                       : isPast
-                        ? "border-blue-600 bg-white text-blue-600"
+                        ? "border-primary-600 bg-white text-primary-600"
                         : "border-slate-200 bg-slate-50 text-slate-400"
                   }`}
                 >
@@ -84,7 +85,7 @@ export function MoveInWizard({
                   >
                     {s.label}
                   </span>
-                  <span className="mt-1 text-[11px] text-slate-500">{s.desc}</span>
+                  <span className="mt-1 text-2xs text-slate-500">{s.desc}</span>
                 </div>
               </div>
             );
@@ -113,15 +114,15 @@ export function MoveInWizard({
                   onChange={(event) => setForm((prev) => ({ ...prev, lease_months: toNumber(event.target.value) }))}
                   className="text-base"
                 />
-                <div className="md:col-span-2 rounded-xl border border-blue-100 bg-blue-50/50 p-4 text-sm text-slate-700 flex flex-col gap-1">
-                  <p className="font-semibold text-blue-900">สรุปสัญญาเช่า</p>
-                  <div className="flex justify-between items-center bg-white rounded-lg px-3 py-2 mt-1 border border-blue-100">
+                <div className="md:col-span-2 rounded-control border border-primary-100 bg-primary-50/50 p-4 text-sm text-slate-700 flex flex-col gap-1">
+                  <p className="font-semibold text-primary-900">สรุปสัญญาเช่า</p>
+                  <div className="flex justify-between items-center bg-white rounded-lg px-3 py-2 mt-1 border border-primary-100">
                     <span className="text-slate-500">วันสิ้นสุดสัญญา:</span>
                     <span className="font-medium">{form.move_in_date ? leaseEnd : "-"}</span>
                   </div>
-                  <div className="flex justify-between items-center bg-white rounded-lg px-3 py-2 border border-blue-100">
+                  <div className="flex justify-between items-center bg-white rounded-lg px-3 py-2 border border-primary-100">
                     <span className="text-slate-500">สถานะสัญญา:</span>
-                    <span className={`font-bold ${leaseActive ? "text-emerald-600" : "text-rose-600"}`}>
+                    <span className={`font-bold ${leaseActive ? "text-success-600" : "text-danger-600"}`}>
                       {leaseActive ? "ยังมีผล (Active)" : "หมดอายุ (Expired)"}
                     </span>
                   </div>
@@ -154,8 +155,8 @@ export function MoveInWizard({
                   className="text-base"
                 />
               </div>
-              <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 flex gap-2 items-start text-sm text-amber-800">
-                <Settings className="w-5 h-5 shrink-0 text-amber-600 mt-0.5" />
+              <div className="rounded-control border border-warning-200 bg-warning-50 p-3 flex gap-2 items-start text-sm text-warning-800">
+                <Settings className="w-5 h-5 shrink-0 text-warning-600 mt-0.5" />
                 <p>
                   <strong>คำแนะนำ:</strong> ตรวจสอบเลขมิเตอร์ให้ตรงกับวันย้ายเข้าจริง เพื่อป้องกันการคำนวณบิลผิดพลาดในเดือนถัดไป
                 </p>
@@ -183,20 +184,20 @@ export function MoveInWizard({
                 />
               </div>
               
-              <div className="rounded-xl border border-slate-200 p-4 bg-slate-50">
+              <div className="rounded-control border border-slate-200 p-4 bg-slate-50">
                 <p className="text-sm font-semibold text-slate-700 mb-3">สลิปเงินมัดจำ / ชำระแรกเข้า</p>
                 <div className="flex flex-col gap-3">
                   <label
-                    className={`inline-flex items-center justify-center gap-2 rounded-xl border-2 border-dashed px-4 py-6 text-sm transition-colors ${
+                    className={`inline-flex items-center justify-center gap-2 rounded-control border-2 border-dashed px-4 py-6 text-sm transition-colors ${
                       canEditTenant
-                        ? "cursor-pointer border-blue-200 hover:border-blue-400 hover:bg-blue-50/50 text-blue-700 bg-white"
+                        ? "cursor-pointer border-primary-200 hover:border-primary-400 hover:bg-primary-50/50 text-primary-700 bg-white"
                         : "cursor-not-allowed border-slate-200 text-slate-400 bg-slate-50"
                     }`}
                   >
                     {isUploadingDepositSlip ? (
-                      <Loader2 size={20} className="animate-spin text-blue-600" />
+                      <Loader2 size={20} className="animate-spin text-primary-600" />
                     ) : (
-                      <Upload size={20} className="text-blue-500" />
+                      <Upload size={20} className="text-primary-500" />
                     )}
                     <span className="font-medium">คลิกเพื่ออัปโหลดสลิป</span>
                     <input
@@ -212,13 +213,13 @@ export function MoveInWizard({
                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mt-2">
                       {depositSlipUrls.map((url, index) => (
                         <div key={url} className="group relative rounded-lg border border-slate-200 bg-white p-2 flex items-center justify-between">
-                          <a href={url} target="_blank" rel="noreferrer" className="text-sm text-blue-600 hover:underline truncate mr-2" title={url}>
+                          <a href={url} target="_blank" rel="noreferrer" className="text-sm text-primary-600 hover:underline truncate mr-2" title={url}>
                             📄 สลิปที่ {index + 1}
                           </a>
                           <button
                             type="button"
                             onClick={() => removeDepositSlip(url)}
-                            className="shrink-0 rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-600 transition-colors"
+                            className="shrink-0 rounded p-1 text-slate-400 hover:bg-danger-50 hover:text-danger-600 transition-colors"
                             title="ลบสลิป"
                           >
                             <Trash2 size={14} />
@@ -235,7 +236,7 @@ export function MoveInWizard({
           {step === 4 && (
             <div className="space-y-5 animate-in fade-in slide-in-from-right-4 duration-300">
               <h3 className="text-lg font-bold text-slate-800 border-b border-slate-100 pb-2">ยืนยันข้อมูลย้ายเข้า</h3>
-              <div className="rounded-2xl border border-blue-100 bg-blue-50/30 overflow-hidden text-sm">
+              <div className="rounded-card border border-primary-100 bg-primary-50/30 overflow-hidden text-sm">
                 <div className="grid grid-cols-2 p-3 border-b border-slate-100">
                   <span className="text-slate-500">วันที่ย้ายเข้า:</span>
                   <span className="font-medium text-slate-900">{form.move_in_date || "-"}</span>
@@ -246,7 +247,7 @@ export function MoveInWizard({
                 </div>
                 <div className="grid grid-cols-2 p-3 border-b border-slate-100">
                   <span className="text-slate-500">วันสิ้นสุดสัญญา:</span>
-                  <span className={`font-medium ${leaseActive ? "text-emerald-600" : "text-rose-600"}`}>
+                  <span className={`font-medium ${leaseActive ? "text-success-600" : "text-danger-600"}`}>
                     {form.move_in_date ? leaseEnd : "-"}
                   </span>
                 </div>
@@ -274,7 +275,7 @@ export function MoveInWizard({
             type="button"
             onClick={() => setStep(step - 1)}
             disabled={step === 1 || !canEditTenant || isSavingTenant}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-600 transition hover:bg-slate-50 disabled:opacity-50"
+            className={buttonClasses({ variant: "secondary" })}
           >
             <ChevronLeft className="h-4 w-4" /> ย้อนกลับ
           </button>
@@ -284,7 +285,7 @@ export function MoveInWizard({
               type="button"
               onClick={() => setStep(step + 1)}
               disabled={!canEditTenant || isSavingTenant}
-              className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-50"
+              className={buttonClasses({ variant: "primary" })}
             >
               ถัดไป <ChevronRight className="h-4 w-4" />
             </button>
@@ -293,7 +294,7 @@ export function MoveInWizard({
               type="button"
               onClick={onSave}
               disabled={!canEditTenant || isSavingTenant}
-              className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-bold text-white transition hover:bg-blue-700 disabled:opacity-50"
+              className={buttonClasses({ variant: "primary" })}
             >
               {isSavingTenant ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
               {isSavingTenant ? "กำลังบันทึก..." : "บันทึกข้อมูลผู้เช่า"}

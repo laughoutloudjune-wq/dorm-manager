@@ -4,6 +4,7 @@ import { toast } from "sonner";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/Badge";
+import { buttonClasses } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import { createClient } from "@/lib/supabase-client";
 import { usePermissions } from "@/lib/use-permissions";
@@ -174,17 +175,17 @@ export default function MeterStaffPage() {
 
   return (
     <div className="space-y-6">
-      <div className="rounded-2xl border border-blue-100 bg-blue-50/80 p-4 text-sm text-blue-900">
+      <div className="rounded-card border border-primary-100 bg-primary-50/80 p-4 text-sm text-primary-900">
         <p className="font-semibold">ลิงก์ให้พนักงานลงทะเบียน (LIFF)</p>
         <p className="mt-1 break-all">{registerLiffUrl}</p>
-        <p className="mt-2 text-xs text-blue-800">
+        <p className="mt-2 text-xs text-primary-800">
           ส่งลิงก์นี้ให้พนักงานเปิดใน LINE — ระบบจะเก็บ LINE User ID อัตโนมัติ ไม่ต้องอัปเดต
           LINE_METER_USER_IDS ใน Vercel อีก
         </p>
         <button
           type="button"
           onClick={() => void copyText(registerLiffUrl)}
-          className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white"
+          className={buttonClasses({ variant: "primary", size: "sm" })}
         >
           <Copy className="h-3.5 w-3.5" />
           คัดลอกลิงก์
@@ -192,7 +193,7 @@ export default function MeterStaffPage() {
       </div>
 
       {!permLoading && !canEdit && (
-        <p className="text-sm text-amber-800">ไม่มีสิทธิ์จัดการพนักงานมิเตอร์ (ต้องมีสิทธิ meter.edit)</p>
+        <p className="text-sm text-warning-800">ไม่มีสิทธิ์จัดการพนักงานมิเตอร์ (ต้องมีสิทธิ meter.edit)</p>
       )}
 
       {canEdit && (
@@ -206,7 +207,7 @@ export default function MeterStaffPage() {
               type="button"
               onClick={() => void loadStaff()}
               disabled={loading}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700"
+              className={buttonClasses({ variant: "secondary", size: "sm" })}
             >
               <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
               รีเฟรช
@@ -214,7 +215,7 @@ export default function MeterStaffPage() {
             <button
               type="button"
               onClick={openCreate}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white"
+              className={buttonClasses({ variant: "primary", size: "sm" })}
             >
               <UserPlus className="h-3.5 w-3.5" />
               เพิ่มด้วยมือ
@@ -224,14 +225,14 @@ export default function MeterStaffPage() {
       )}
 
 
-      {message && <p className="text-sm text-emerald-700">{message}</p>}
+      {message && <p className="text-sm text-success-700">{message}</p>}
 
       {canEdit && loading && (
         <p className="text-sm text-slate-500">กำลังโหลด...</p>
       )}
 
       {canEdit && !loading && (
-        <div className="overflow-x-auto rounded-xl border border-slate-200">
+        <div className="overflow-x-auto rounded-control border border-slate-200">
           <table className="w-full min-w-[880px] text-left text-sm">
             <thead className="bg-slate-50 text-xs font-semibold uppercase tracking-wide text-slate-500">
               <tr>
@@ -269,7 +270,7 @@ export default function MeterStaffPage() {
                         <button
                           type="button"
                           onClick={() => void copyText(row.line_user_id)}
-                          className="text-slate-400 hover:text-blue-600"
+                          className="text-slate-400 hover:text-primary-600"
                           title="คัดลอก LINE ID"
                         >
                           <Copy className="h-3.5 w-3.5" />
@@ -279,12 +280,12 @@ export default function MeterStaffPage() {
                     <td className="px-4 py-3 text-slate-600">{row.staff_note ?? "—"}</td>
                     <td className="px-4 py-3 text-center">
                       {row.notify_payment
-                        ? <span className="inline-block rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-700">✓</span>
+                        ? <span className="inline-block rounded-full bg-success-100 px-2 py-0.5 text-xs font-semibold text-success-700">✓</span>
                         : <span className="text-slate-300">—</span>}
                     </td>
                     <td className="px-4 py-3 text-center">
                       {row.notify_move_out
-                        ? <span className="inline-block rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-700">✓</span>
+                        ? <span className="inline-block rounded-full bg-success-100 px-2 py-0.5 text-xs font-semibold text-success-700">✓</span>
                         : <span className="text-slate-300">—</span>}
                     </td>
                     <td className="px-4 py-3 text-slate-600">{formatThaiDateTime(row.last_seen_at)}</td>
@@ -301,14 +302,14 @@ export default function MeterStaffPage() {
                         <button
                           type="button"
                           onClick={() => void toggleStatus(row)}
-                          className="rounded-lg border border-slate-200 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-white"
+                          className={buttonClasses({ variant: "secondary", size: "sm" })}
                         >
                           {row.status === "active" ? "ปิด" : "เปิด"}
                         </button>
                         <button
                           type="button"
                           onClick={() => void deleteRow(row)}
-                          className="rounded-lg border border-red-200 p-1.5 text-red-600 hover:bg-red-50"
+                          className="rounded-lg border border-danger-200 p-1.5 text-danger-600 hover:bg-danger-50"
                           title="ลบ"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
@@ -336,7 +337,7 @@ export default function MeterStaffPage() {
               value={form.line_user_id}
               onChange={(event) => setForm((prev) => ({ ...prev, line_user_id: event.target.value }))}
               disabled={Boolean(editing)}
-              className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2 font-mono text-xs disabled:bg-slate-100"
+              className="mt-2 w-full rounded-control border border-slate-200 px-3 py-2 font-mono text-xs disabled:bg-slate-100"
               placeholder="Uxxxxxxxx..."
             />
           </label>
@@ -345,7 +346,7 @@ export default function MeterStaffPage() {
             <input
               value={form.display_name}
               onChange={(event) => setForm((prev) => ({ ...prev, display_name: event.target.value }))}
-              className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2"
+              className="mt-2 w-full rounded-control border border-slate-200 px-3 py-2"
             />
           </label>
           <label className="block text-slate-600">
@@ -353,7 +354,7 @@ export default function MeterStaffPage() {
             <input
               value={form.staff_note}
               onChange={(event) => setForm((prev) => ({ ...prev, staff_note: event.target.value }))}
-              className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2"
+              className="mt-2 w-full rounded-control border border-slate-200 px-3 py-2"
             />
           </label>
           <label className="block text-slate-600">
@@ -361,20 +362,20 @@ export default function MeterStaffPage() {
             <select
               value={form.status}
               onChange={(event) => setForm((prev) => ({ ...prev, status: event.target.value }))}
-              className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2"
+              className="mt-2 w-full rounded-control border border-slate-200 px-3 py-2"
             >
               <option value="active">ใช้งานได้</option>
               <option value="inactive">ปิดการใช้งาน</option>
             </select>
           </label>
-          <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-3 space-y-2">
+          <div className="rounded-control border border-slate-200 bg-slate-50/60 p-3 space-y-2">
             <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">การแจ้งเตือน LINE</p>
             <label className="flex items-center gap-3 cursor-pointer">
               <input
                 type="checkbox"
                 checked={form.notify_payment}
                 onChange={(e) => setForm((prev) => ({ ...prev, notify_payment: e.target.checked }))}
-                className="h-4 w-4 rounded border-slate-300 accent-blue-600"
+                className="h-4 w-4 rounded border-slate-300 accent-primary-600"
               />
               <span className="text-sm text-slate-700">รับแจ้งเมื่อผู้เช่าอัปโหลดสลิปชำระเงิน</span>
             </label>
@@ -383,7 +384,7 @@ export default function MeterStaffPage() {
                 type="checkbox"
                 checked={form.notify_move_out}
                 onChange={(e) => setForm((prev) => ({ ...prev, notify_move_out: e.target.checked }))}
-                className="h-4 w-4 rounded border-slate-300 accent-blue-600"
+                className="h-4 w-4 rounded border-slate-300 accent-primary-600"
               />
               <span className="text-sm text-slate-700">รับแจ้งเมื่อผู้เช่าส่งคำขอย้ายออก</span>
             </label>
@@ -391,7 +392,7 @@ export default function MeterStaffPage() {
           <button
             type="button"
             onClick={() => void saveForm()}
-            className="w-full rounded-xl bg-blue-600 px-4 py-2.5 font-semibold text-white"
+            className={buttonClasses({ variant: "primary", fullWidth: true })}
           >
             บันทึก
           </button>

@@ -1,6 +1,7 @@
 "use client";
 
 import { Modal } from "@/components/ui/Modal";
+import { buttonClasses } from "@/components/ui/Button";
 import { useInvoiceContext } from "./InvoiceContext";
 import { Input } from "@/components/ui/Input";
 import { Badge } from "@/components/ui/Badge";
@@ -189,10 +190,10 @@ export function InvoicePreviewModal() {
             {previewInvoice && (
               <div className="space-y-5 text-sm text-slate-700">
                 {previewLoading ? (
-                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">กำลังโหลดพรีวิว...</div>
+                  <div className="rounded-control border border-slate-200 bg-slate-50 p-4">กำลังโหลดพรีวิว...</div>
                 ) : (
                   <>
-                    <div className="flex flex-wrap justify-between gap-4 rounded-xl border border-slate-200 bg-white p-4">
+                    <div className="flex flex-wrap justify-between gap-4 rounded-control border border-slate-200 bg-white p-4">
                       <div className="space-y-1">
                         <p className="text-lg font-bold text-slate-900">
                           {printSettings?.dorm_name || "หอพัก"}
@@ -219,7 +220,7 @@ export function InvoicePreviewModal() {
                       </div>
                     </div>
     
-                    <div className="overflow-hidden rounded-xl border border-slate-200">
+                    <div className="overflow-hidden rounded-control border border-slate-200">
                       <table className="w-full text-sm">
                         <thead className="bg-slate-100 text-slate-600">
                           <tr>
@@ -247,8 +248,8 @@ export function InvoicePreviewModal() {
                               Math.abs(toNumber(previewInvoice.rent_amount) - summary.rentAmount) < 0.01
                             );
                           })() && (
-                            <tr className="border-t border-amber-200 bg-amber-50">
-                              <td className="px-3 py-2 text-xs text-amber-800" colSpan={4}>
+                            <tr className="border-t border-warning-200 bg-warning-50">
+                              <td className="px-3 py-2 text-xs text-warning-800" colSpan={4}>
                                 สูตรคำนวณ:{" "}
                                 {
                                   calculateProratedRentByBillingDay(
@@ -297,8 +298,8 @@ export function InvoicePreviewModal() {
                             <td className="px-3 py-2 text-right">{formatMoney(previewInvoice.common_fee)}</td>
                           </tr>
                           {toTransferBreakdownItems(previewInvoice.additional_fees_breakdown ?? []).length > 0 && (
-                            <tr className="border-t border-blue-200 bg-blue-50">
-                              <td className="px-3 py-2 font-semibold text-blue-900" colSpan={4}>
+                            <tr className="border-t border-primary-200 bg-primary-50">
+                              <td className="px-3 py-2 font-semibold text-primary-900" colSpan={4}>
                                 สรุปย้ายห้องกลางเดือน
                               </td>
                             </tr>
@@ -317,7 +318,7 @@ export function InvoicePreviewModal() {
                             (fee: any, idx: number) => (
                               <tr
                                 key={`carry-forward-${fee.label ?? fee.detail ?? ""}-${idx}`}
-                                className="border-t border-amber-100 bg-amber-50/60"
+                                className="border-t border-warning-100 bg-warning-50/60"
                               >
                                 <td className="px-3 py-2">
                                   ยอดค้างยกมา - {fee.detail ?? fee.label ?? "-"}
@@ -330,7 +331,7 @@ export function InvoicePreviewModal() {
                                     toNumber(fee.price_per_unit ?? fee.rate ?? fee.value ?? fee.amount)
                                   )}
                                 </td>
-                                <td className="px-3 py-2 text-right font-semibold text-amber-900">
+                                <td className="px-3 py-2 text-right font-semibold text-warning-900">
                                   {formatMoney(toNumber(fee.total_amount ?? fee.amount))}
                                 </td>
                               </tr>
@@ -360,7 +361,7 @@ export function InvoicePreviewModal() {
                           ))}
                           {toLateFeeItems(toLateFeeRows(previewInvoice.additional_fees_breakdown ?? [])).length > 0 ? (
                             toLateFeeItems(toLateFeeRows(previewInvoice.additional_fees_breakdown ?? [])).map((row, index) => (
-                              <tr key={`preview-late-fee-${row.source_invoice_id ?? "manual"}-${index}`} className="border-t border-amber-100 bg-amber-50/40">
+                              <tr key={`preview-late-fee-${row.source_invoice_id ?? "manual"}-${index}`} className="border-t border-warning-100 bg-warning-50/40">
                                 <td className="px-3 py-2">
                                   {row.detail || `ค่าปรับล่าช้า - บิล ${shortInvoiceId(row.source_invoice_id)}`}
                                 </td>
@@ -370,14 +371,14 @@ export function InvoicePreviewModal() {
                                 <td className="px-3 py-2 text-right">
                                   {formatMoney(toNumber(row.daily_rate ?? row.price_per_unit))}
                                 </td>
-                                <td className="px-3 py-2 text-right font-semibold text-amber-900">
+                                <td className="px-3 py-2 text-right font-semibold text-warning-900">
                                   {formatMoney(row.total_amount)}
                                 </td>
                               </tr>
                             ))
                           ) : previewArrearsSnapshots.length > 0 ? (
                             previewArrearsSnapshots.map((row) => (
-                              <tr key={`preview-late-fee-snapshot-${row.id}`} className="border-t border-amber-100 bg-amber-50/40">
+                              <tr key={`preview-late-fee-snapshot-${row.id}`} className="border-t border-warning-100 bg-warning-50/40">
                                 <td className="px-3 py-2">
                                   ค่าปรับล่าช้า - บิล {shortInvoiceId(row.source_invoice_id)} (คำนวณถึง{" "}
                                   {formatDateThai(row.snapshot_as_of)})
@@ -386,7 +387,7 @@ export function InvoicePreviewModal() {
                                   {row.days_overdue.toLocaleString("th-TH")} วัน
                                 </td>
                                 <td className="px-3 py-2 text-right">{formatMoney(row.daily_rate)}</td>
-                                <td className="px-3 py-2 text-right font-semibold text-amber-900">
+                                <td className="px-3 py-2 text-right font-semibold text-warning-900">
                                   {formatMoney(row.late_fee_amount)}
                                 </td>
                               </tr>
@@ -429,7 +430,7 @@ export function InvoicePreviewModal() {
                       </table>
                     </div>
     
-                    <div className="space-y-1 rounded-xl border border-slate-200 bg-white p-4">
+                    <div className="space-y-1 rounded-control border border-slate-200 bg-white p-4">
                       <p>
                         <span className="font-semibold">ช่องทางชำระเงิน:</span>{" "}
                         {getPaymentMethodLabel(previewInvoice)}
@@ -444,7 +445,7 @@ export function InvoicePreviewModal() {
                 <div className="flex justify-end gap-2">
                   <button
                     onClick={() => setPreviewOpen(false)}
-                    className="rounded-xl border border-slate-200 px-4 py-2 text-sm text-slate-600"
+                    className={buttonClasses({ variant: "secondary" })}
                   >
                     ปิด
                   </button>
@@ -458,7 +459,7 @@ export function InvoicePreviewModal() {
                         previewArrearsSnapshots
                       )
                     }
-                    className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
+                    className={buttonClasses({ variant: "primary" })}
                   >
                     <Printer size={16} />
                     {previewDocType === "receipt" ? "พิมพ์ใบเสร็จรับเงิน" : "พิมพ์ใบแจ้งหนี้"}

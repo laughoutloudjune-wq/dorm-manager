@@ -500,7 +500,7 @@ export default function RegisterPage() {
                         <p className="text-sm font-semibold text-slate-900">ข้อตกลงและกฎระเบียบหอพัก</p>
                         <p className="text-xs text-slate-500">กดเพื่ออ่านฉบับเต็มก่อนยอมรับข้อตกลง</p>
                       </div>
-                      <span className="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-medium text-slate-600">
+                      <span className="rounded-full bg-slate-100 px-3 py-1 text-2xs font-medium text-slate-600">
                         {POLICY_VERSION}
                       </span>
                     </div>

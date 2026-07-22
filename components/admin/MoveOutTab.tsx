@@ -8,6 +8,7 @@ import { bangkokYmd, meets30DayMoveOutNotice } from "@/lib/move-out-notice";
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { Input } from "@/components/ui/Input";
+import { buttonClasses } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { ConfirmActionModal } from "@/components/ui/ConfirmActionModal";
 import {
@@ -225,10 +226,10 @@ export function MoveOutTab({
 
       {/* ── 1. REQUEST STATUS PANEL ── */}
       {activeMoveOutRequest && (
-        <div className="rounded-2xl border border-blue-200 bg-blue-50 p-4 space-y-3">
+        <div className="rounded-card border border-primary-200 bg-primary-50 p-4 space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2">
-              <ClipboardList className="h-4 w-4 text-blue-600" />
+              <ClipboardList className="h-4 w-4 text-primary-600" />
               <p className="font-semibold text-slate-900 text-sm">คำขอย้ายออกจากผู้เช่า</p>
             </div>
             <Badge variant={requestBadgeVariant(activeMoveOutRequest.status)}>
@@ -249,14 +250,14 @@ export function MoveOutTab({
             {activeMoveOutRequest.approved_move_out_date && (
               <div className="col-span-2">
                 <span className="text-slate-500">วันที่อนุมัติ:</span>{" "}
-                <span className="font-medium text-green-700">{activeMoveOutRequest.approved_move_out_date}</span>
+                <span className="font-medium text-success-700">{activeMoveOutRequest.approved_move_out_date}</span>
               </div>
             )}
           </div>
 
           {/* 30-day warning */}
           {moveOutShorterThan30Days && (
-            <div className="flex items-start gap-2 rounded-xl bg-amber-100 px-3 py-2 text-xs text-amber-800">
+            <div className="flex items-start gap-2 rounded-control bg-warning-100 px-3 py-2 text-xs text-warning-800">
               <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
               <span>วันย้ายออกตามคำขอใกล้กว่า 30 วันจากวันที่แจ้ง — ตรวจสอบเงินประกันตามสัญญา</span>
             </div>
@@ -274,16 +275,16 @@ export function MoveOutTab({
 
       {/* ── 3. PENDING BILLS ── */}
       {outstandingMoveOutInvoices.length > 0 && (
-        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
+        <div className="rounded-card border border-warning-200 bg-warning-50 p-4 text-sm text-warning-950">
           <div className="flex flex-wrap items-start justify-between gap-2">
             <p className="font-semibold">บิลค้างชำระ (รวมในสรุปย้ายออก)</p>
-            <Link href="/invoices" className="shrink-0 text-sm font-medium text-amber-900 underline hover:text-amber-700">
+            <Link href="/invoices" className="shrink-0 text-sm font-medium text-warning-900 underline hover:text-warning-700">
               ไปหน้าใบแจ้งหนี้
             </Link>
           </div>
           <ul className="mt-2 space-y-1.5 text-xs">
             {outstandingMoveOutInvoices.map((inv) => (
-              <li key={inv.id} className="flex flex-wrap justify-between gap-2 border-b border-amber-200/60 pb-1 last:border-0">
+              <li key={inv.id} className="flex flex-wrap justify-between gap-2 border-b border-warning-200/60 pb-1 last:border-0">
                 <span>
                   งวด {String(inv.start_date ?? "").slice(0, 10)} → {String(inv.end_date ?? "").slice(0, 10)} ·{" "}
                   <span className="font-medium">{inv.status}</span>
@@ -292,14 +293,14 @@ export function MoveOutTab({
               </li>
             ))}
           </ul>
-          <p className="mt-2 text-xs text-amber-900/80">
+          <p className="mt-2 text-xs text-warning-900/80">
             รวมยอดค้าง: ฿{formatMoney(unpaidInvoicesSubtotal)} — นำไปรวมใน &quot;รวมค่าใช้จ่าย&quot; ด้านล่าง
           </p>
         </div>
       )}
 
       {/* ── 4. PRO-RATE INFO + DATE INPUTS ── */}
-      <p className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+      <p className="rounded-control border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
         ค่าเช่า Pro-rate หลังบิลล่าสุด: ใช้วันสิ้นสุดรอบในใบแจ้งหนี้ (
         <span className="font-mono">{latestBilledEndYmd ?? "—"}</span>
         ) เทียบกับวันย้ายออก — ช่วงหลังวันนั้นจนถึงวันย้ายออกจะคิดเพิ่ม
@@ -324,7 +325,7 @@ export function MoveOutTab({
       </div>
 
       {/* ── 5. METER READINGS ── */}
-      <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
+      <div className="rounded-card border border-slate-200 bg-white p-4 space-y-3">
         <p className="text-sm font-semibold text-slate-800">มิเตอร์ ณ วันย้ายออก</p>
         <div className="grid gap-4 md:grid-cols-2">
           <Input
@@ -353,16 +354,16 @@ export function MoveOutTab({
         {/* Removed useProrate checkbox as Prorate is now hardcoded correctly by the Master Invoice */}
 
         {/* Forfeit deposit */}
-        <label className="flex items-start gap-3 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 cursor-pointer">
+        <label className="flex items-start gap-3 rounded-card border border-danger-200 bg-danger-50 px-4 py-3 text-sm text-danger-800 cursor-pointer">
           <input
             type="checkbox"
             checked={forfeitDeposit}
             onChange={(e) => setForfeitDeposit(e.target.checked)}
-            className="mt-0.5 h-4 w-4 accent-red-600"
+            className="mt-0.5 h-4 w-4 accent-danger-600"
           />
           <span>
             <span className="block font-semibold">ไม่คืนเงินประกัน</span>
-            <span className="mt-1 block text-xs text-red-700">
+            <span className="mt-1 block text-xs text-danger-700">
               ใช้กรณีผู้เช่าไม่แจ้งล่วงหน้าหรือย้ายออกก่อนครบสัญญา
               ระบบจะไม่นำเงินประกันมาหักคืนในสรุปย้ายออก
             </span>
@@ -370,16 +371,16 @@ export function MoveOutTab({
         </label>
 
         {/* Abandon room */}
-        <label className="flex items-start gap-3 rounded-2xl border border-orange-200 bg-orange-50 px-4 py-3 text-sm text-orange-900 cursor-pointer">
+        <label className="flex items-start gap-3 rounded-card border border-warning-200 bg-warning-50 px-4 py-3 text-sm text-warning-900 cursor-pointer">
           <input
             type="checkbox"
             checked={abandonRoom}
             onChange={(e) => setAbandonRoom(e.target.checked)}
-            className="mt-0.5 h-4 w-4 accent-orange-600"
+            className="mt-0.5 h-4 w-4 accent-warning-600"
           />
           <span>
             <span className="block font-semibold">ผู้เช่าทิ้งห้อง</span>
-            <span className="mt-1 block text-xs text-orange-700">
+            <span className="mt-1 block text-xs text-warning-700">
               ระบบจะใช้ค่าเช่าล่วงหน้า{!forfeitDeposit ? " + เงินประกัน" : ""} เป็นเครดิตหักลบบิลค้างชำระตามลำดับ
               บิลที่เหลือจะถูกยกเลิก และผู้เช่าถูกย้ายออกทันที
               (กดปุ่ม &ldquo;ยืนยันทิ้งห้อง&rdquo; ด้านล่างเพื่อดำเนินการ)
@@ -389,13 +390,13 @@ export function MoveOutTab({
       </div>
 
       {/* ── 7. ADDITIONAL FEES ── */}
-      <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+      <div className="space-y-3 rounded-card border border-slate-200 bg-slate-50 p-4">
         <div className="flex items-center justify-between">
           <p className="text-sm font-semibold text-slate-800">ค่าใช้จ่ายเพิ่มเติม (ย้ายออก)</p>
           <button
             type="button"
             onClick={() => setMoveOutFeeLines((prev) => [...prev, createFeeLine()])}
-            className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700"
+            className={buttonClasses({ variant: "secondary", size: "sm" })}
           >
             <Plus size={14} />
             เพิ่มรายการ
@@ -428,7 +429,7 @@ export function MoveOutTab({
             <button
               type="button"
               onClick={() => setMoveOutFeeLines((prev) => prev.filter((item) => item.id !== line.id))}
-              className="mt-7 inline-flex h-10 items-center justify-center rounded-lg border border-red-200 px-3 text-red-600"
+              className="mt-7 inline-flex h-10 items-center justify-center rounded-lg border border-danger-200 px-3 text-danger-600"
               title="ลบรายการ"
             >
               <Trash2 size={14} />
@@ -438,7 +439,7 @@ export function MoveOutTab({
       </div>
 
       {/* ── 8. MOVE-OUT INVOICE SUMMARY ── */}
-      <div className="rounded-2xl border border-slate-300 bg-white p-5 text-sm text-slate-700">
+      <div className="rounded-card border border-slate-300 bg-white p-5 text-sm text-slate-700">
         <div className="mb-3 border-b border-dashed border-slate-300 pb-3">
           <p className="text-lg font-semibold text-slate-900">สรุปย้ายออก</p>
           <p>ผู้เช่า: {form.full_name || "—"}</p>
@@ -450,7 +451,7 @@ export function MoveOutTab({
 
         <div className="space-y-1">
           {unpaidInvoicesSubtotal > 0 && (
-            <p className="flex justify-between text-amber-900">
+            <p className="flex justify-between text-warning-900">
               <span>ยอดบิลค้างชำระ ({outstandingMoveOutInvoices.length} รายการ)</span>
               <span>฿{formatMoney(unpaidInvoicesSubtotal)}</span>
             </p>
@@ -499,7 +500,7 @@ export function MoveOutTab({
             <span>฿{formatMoney(refundableDeposit)}</span>
           </p>
           {forfeitedDepositAmount > 0 && (
-            <p className="flex justify-between text-red-700">
+            <p className="flex justify-between text-danger-700">
               <span>เงินประกันที่ไม่คืน</span>
               <span>฿{formatMoney(forfeitedDepositAmount)}</span>
             </p>
@@ -512,7 +513,7 @@ export function MoveOutTab({
 
         <div className="my-3 border-t border-dashed border-slate-300" />
 
-        <p className={`text-base font-semibold ${net >= 0 ? "text-green-700" : "text-red-700"}`}>
+        <p className={`text-base font-semibold ${net >= 0 ? "text-success-700" : "text-danger-700"}`}>
           {net >= 0
             ? `คืนเงินผู้เช่า: ฿${formatMoney(net)}`
             : `ผู้เช่าค้างชำระ: ฿${formatMoney(Math.abs(net))}`}
@@ -525,7 +526,7 @@ export function MoveOutTab({
           type="button"
           onClick={onSave}
           disabled={!activeTenant || !canEditTenant || isSavingTenant}
-          className="inline-flex items-center gap-2 rounded-xl border border-blue-300 bg-blue-50 px-4 py-2.5 text-base font-semibold text-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+          className={buttonClasses({ variant: "subtle", size: "lg" })}
         >
           {isSavingTenant ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
           {isSavingTenant ? "กำลังบันทึก..." : "บันทึกข้อมูลย้ายออก"}
@@ -536,14 +537,14 @@ export function MoveOutTab({
             <button
               type="button"
               onClick={onApprove}
-              className="inline-flex items-center gap-2 rounded-xl bg-green-600 px-4 py-2.5 text-base font-semibold text-white hover:bg-green-700"
+              className={buttonClasses({ variant: "success", size: "lg" })}
             >
               <CheckCircle2 size={16} /> อนุมัติคำขอย้ายออก
             </button>
             <button
               type="button"
               onClick={onDecline}
-              className="inline-flex items-center gap-2 rounded-xl border border-red-300 bg-white px-4 py-2.5 text-base font-semibold text-red-600 hover:bg-red-50"
+              className="inline-flex items-center gap-2 rounded-control border border-danger-300 bg-white px-4 py-2.5 text-base font-semibold text-danger-600 hover:bg-danger-50"
             >
               <XCircle size={16} /> ไม่อนุมัติ
             </button>
@@ -551,7 +552,7 @@ export function MoveOutTab({
               type="button"
               onClick={() => setConfirmCancelOpen(true)}
               disabled={isCancellingMoveOut}
-              className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-slate-100 px-4 py-2.5 text-base font-semibold text-slate-800 hover:bg-slate-200 disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded-control border border-slate-300 bg-slate-100 px-4 py-2.5 text-base font-semibold text-slate-800 hover:bg-slate-200 disabled:opacity-50"
             >
               <Ban size={16} />
               {isCancellingMoveOut ? "กำลังดำเนินการ…" : "ยกเลิกกระบวนการย้ายออก"}
@@ -563,7 +564,7 @@ export function MoveOutTab({
               type="button"
               onClick={onPrint}
               disabled={!activeTenant}
-              className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-base font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+              className={buttonClasses({ variant: "secondary", size: "lg" })}
             >
               <Printer size={16} />
               พิมพ์ใบสรุป
@@ -574,7 +575,7 @@ export function MoveOutTab({
                 type="button"
                 onClick={() => setAbandonConfirmOpen(true)}
                 disabled={!activeTenant || !canEditTenant || isAbandoning}
-                className="inline-flex items-center gap-2 rounded-xl bg-orange-600 px-4 py-2.5 text-base font-semibold text-white hover:bg-orange-700 disabled:cursor-not-allowed disabled:opacity-50"
+                className="inline-flex items-center gap-2 rounded-control bg-warning-600 px-4 py-2.5 text-base font-semibold text-white hover:bg-warning-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {isAbandoning ? <Loader2 size={16} className="animate-spin" /> : <Ban size={16} />}
                 {isAbandoning ? "กำลังดำเนินการ..." : "ยืนยันทิ้งห้อง"}
@@ -584,7 +585,7 @@ export function MoveOutTab({
                 type="button"
                 onClick={() => setConfirmMoveOutOpen(true)}
                 disabled={!activeTenant || !canEditTenant || isMovingOut}
-                className="inline-flex items-center gap-2 rounded-xl bg-red-600 px-4 py-2.5 text-base font-semibold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+                className={buttonClasses({ variant: "danger", size: "lg" })}
               >
                 {isMovingOut ? <Loader2 size={16} className="animate-spin" /> : null}
                 {isMovingOut ? "กำลังย้ายออก..." : "ยืนยันการย้ายออก (เสร็จสิ้น)"}
@@ -596,7 +597,7 @@ export function MoveOutTab({
                 type="button"
                 onClick={() => setConfirmCancelOpen(true)}
                 disabled={isCancellingMoveOut}
-                className="inline-flex items-center gap-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-2.5 text-base font-semibold text-amber-900 hover:bg-amber-100 disabled:opacity-50"
+                className="inline-flex items-center gap-2 rounded-control border border-warning-300 bg-warning-50 px-4 py-2.5 text-base font-semibold text-warning-900 hover:bg-warning-100 disabled:opacity-50"
               >
                 <Ban size={16} />
                 {isCancellingMoveOut ? "กำลังดำเนินการ…" : "ยกเลิกกระบวนการย้ายออก"}

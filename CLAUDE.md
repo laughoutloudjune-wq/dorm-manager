@@ -7,6 +7,49 @@ routes gated by `requireAdminPermission()` (lib/admin-api-auth.ts) against a rol
 matrix in `lib/permissions.ts`. Tenant-facing routes authenticate via a LINE access token
 verified against `tenants.line_user_id`.
 
+## Design system — admin app
+
+Light, floating surfaces. White cards with a hairline edge, lifted off a soft grey-blue canvas
+by a shadow rather than boxed in by a border. Apple-adjacent, not an Apple clone.
+
+**Everything visual comes from `components/ui/`. Do not hand-roll a button, input, card, badge,
+table or modal in a page.** That is exactly how this codebase drifted before: ~100 inline
+buttons in a dozen padding/weight combos, 281 raw `blue-*` against 40 `primary-*`, three
+different maps deciding what colour an invoice status is, and seven radius values.
+
+- **Button** (`ui/Button.tsx`) — the only button. Variants `primary | secondary | ghost |
+  subtle | danger | success`, sizes `sm | md | lg | icon`. For a `<Link>` styled as a button,
+  or an existing `<button>` you don't want to restructure, use `buttonClasses({...})`.
+- **Card / SectionCard** (`ui/Card.tsx`) — the floating surface. `interactive` adds the hover
+  lift; `raised` starts a step higher.
+- **Input / Select / Textarea / Field** (`ui/Input.tsx`) — all share `controlClasses()`, so a
+  text field and a dropdown side by side match. Need a bespoke-sized control (e.g. the dense
+  meter grid)? Call `controlClasses({ className })`, don't restate the border/focus styles.
+- **Badge** (`ui/Badge.tsx`), **Table** (`ui/Table.tsx`), **Modal** (`ui/Modal.tsx`),
+  **PageHeader / Tabs / EmptyState / Notice / Skeleton** (`ui/Page.tsx`).
+
+Tokens (tailwind.config.ts):
+
+- **Colour** — `primary` (Apple systemBlue #007AFF) is the one accent. One ramp per meaning:
+  `success`, `warning`, `danger`. Never reach for `blue`/`indigo`/`emerald`/`rose`/`amber`/
+  `orange` directly; that is the drift this replaced. `apple-*` is reserved for the dashboard
+  KPI tints, where each hue carries a documented meaning. `cyan` survives only as the
+  water-utility domain tint in the meters table.
+- **Radius** — `rounded-control` (12px: buttons, inputs, chips), `rounded-card` (18px: cards,
+  panels), `rounded-panel` (24px: modals).
+- **Elevation** — `shadow-float` (resting) → `float-md` (hover, sticky headers) → `float-lg`
+  (popovers, the sidebar) → `float-xl` (modals). Pick by role, not by taste. Coloured "glow"
+  shadows were deliberately removed: they are a different visual language from the neutral
+  float scale.
+- **Motion** — `ease-float` on every hover/enter transition.
+
+`AdminShell` owns the page title (derived from `components/admin-nav.ts`), so a page should
+**not** render its own `<h1>`. `PageHeader` takes an optional description and an actions row;
+omit `title` inside the admin shell or you get two titles.
+
+Invoice status colour resolves through `statusVariant` in `lib/invoice-utils.ts`;
+`statusPillClass` and `statusRowClass` derive from it. Add a status in one place, not three.
+
 ## Invoice lifecycle
 
 Statuses: `draft` → `pending`/`overdue`/`partial` → `paid`, or `cancelled` at any point before

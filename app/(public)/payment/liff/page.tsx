@@ -620,7 +620,7 @@ export default function PaymentLiffPage() {
                                     ครบกำหนด {new Date(invoice.due_date).toLocaleDateString("th-TH")}
                                   </p>
                                 </div>
-                                <span className="rounded-full bg-slate-100 px-2 py-1 text-[11px] text-slate-700">
+                                <span className="rounded-full bg-slate-100 px-2 py-1 text-2xs text-slate-700">
                                   {statusLabel(invoice.status)}
                                 </span>
                               </div>
@@ -629,7 +629,7 @@ export default function PaymentLiffPage() {
                               </p>
                               {(invoice.late_fee_amount ?? 0) > 0 && (
                                 <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
-                                  <p className="text-[11px] font-semibold text-amber-900">
+                                  <p className="text-2xs font-semibold text-amber-900">
                                     รวมค่าปรับล่าช้า: ฿{formatMoney(invoice.late_fee_amount ?? 0)}
                                   </p>
                                 </div>

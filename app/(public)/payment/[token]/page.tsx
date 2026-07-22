@@ -608,7 +608,7 @@ export default function PaymentTokenPage() {
                 >
                   <span>
                     ค่าปรับล่าช้า - งวด {new Date(row.source_start_date ?? row.snapshot_as_of).toLocaleDateString("th-TH", { month: "long", year: "numeric" })}
-                    <span className="block text-[11px] font-normal text-amber-800">
+                    <span className="block text-2xs font-normal text-amber-800">
                       {row.days_overdue.toLocaleString("th-TH")} วัน x ฿{formatBaht(row.daily_rate)}
                       /วัน
                     </span>

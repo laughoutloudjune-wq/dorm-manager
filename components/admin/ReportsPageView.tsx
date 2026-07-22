@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Download, FileSpreadsheet, Loader2, Search } from "lucide-react";
 import { Modal } from "@/components/ui/Modal";
+import { buttonClasses } from "@/components/ui/Button";
 import { Card, CardContent } from "@/components/ui/Card";
 import { createClient } from "@/lib/supabase-client";
 import { usePermissions } from "@/lib/use-permissions";
@@ -781,8 +782,8 @@ export default function ReportsPageView() {
 
   if (permissionLoading || loading) {
     return (
-      <div className="flex min-h-[40vh] items-center justify-center gap-3 rounded-2xl border border-slate-200 bg-white">
-        <Loader2 className="animate-spin text-blue-600" size={18} />
+      <div className="flex min-h-[40vh] items-center justify-center gap-3 rounded-card border border-slate-200 bg-white">
+        <Loader2 className="animate-spin text-primary-600" size={18} />
         <span className="text-sm text-slate-600">กำลังโหลดรายงาน...</span>
       </div>
     );
@@ -790,7 +791,7 @@ export default function ReportsPageView() {
 
   if (!canViewReports) {
     return (
-      <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+      <div className="rounded-card border border-warning-200 bg-warning-50 px-4 py-3 text-sm text-warning-800">
         คุณไม่มีสิทธิ์ดูหน้ารายงาน
       </div>
     );
@@ -815,12 +816,12 @@ export default function ReportsPageView() {
                   type="number"
                   value={selectedYear}
                   onChange={(event) => setSelectedYear(Math.max(2000, toNumber(event.target.value)))}
-                  className="w-32 rounded-xl border border-slate-200 px-3 py-2 text-slate-900"
+                  className="w-32 rounded-control border border-slate-200 px-3 py-2 text-slate-900"
                 />
               </label>
               <button
                 onClick={exportAll}
-                className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white"
+                className={buttonClasses({ variant: "primary" })}
               >
                 <FileSpreadsheet size={16} />
                 ดาวน์โหลดทุกไฟล์
@@ -828,7 +829,7 @@ export default function ReportsPageView() {
             </div>
           </div>
 
-          <div className="flex flex-wrap gap-2 rounded-2xl bg-slate-100 p-2">
+          <div className="flex flex-wrap gap-2 rounded-card bg-slate-100 p-2">
             <TabButton active={activeTab === "income"} onClick={() => setActiveTab("income")} label="รายได้รายเดือน" />
             <TabButton active={activeTab === "arrears"} onClick={() => setActiveTab("arrears")} label="ยอดค้างชำระ (ลูกหนี้)" />
             <TabButton active={activeTab === "move_in"} onClick={() => setActiveTab("move_in")} label="ย้ายเข้า" />
@@ -841,7 +842,7 @@ export default function ReportsPageView() {
       </Card>
 
       {error && (
-        <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+        <div className="rounded-card border border-danger-200 bg-danger-50 px-4 py-3 text-sm text-danger-700">
           {error}
         </div>
       )}
@@ -862,14 +863,14 @@ export default function ReportsPageView() {
                     placeholder="ค้นหาห้อง / ผู้เช่า..."
                     value={incomeSearchQuery}
                     onChange={(e) => setIncomeSearchQuery(e.target.value)}
-                    className="h-[38px] w-48 rounded-xl border border-slate-200 pl-9 pr-3 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    className="h-[38px] w-48 rounded-control border border-slate-200 pl-9 pr-3 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
                   />
                 </div>
                 {incomeBuildingOptions.length > 0 && (
                   <select
                     value={incomeBuildingFilter}
                     onChange={(e) => setIncomeBuildingFilter(e.target.value)}
-                    className="h-[38px] rounded-xl border border-slate-200 px-3 py-1 text-sm text-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    className="h-[38px] rounded-control border border-slate-200 px-3 py-1 text-sm text-slate-700 focus:outline-none focus:ring-1 focus:ring-primary-500"
                   >
                     <option value="all">ทุกอาคาร</option>
                     {incomeBuildingOptions.map(b => (
@@ -880,7 +881,7 @@ export default function ReportsPageView() {
                 <select
                   value={incomeStatusFilter}
                   onChange={(e) => setIncomeStatusFilter(e.target.value)}
-                  className="h-[38px] rounded-xl border border-slate-200 px-3 py-1 text-sm text-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  className="h-[38px] rounded-control border border-slate-200 px-3 py-1 text-sm text-slate-700 focus:outline-none focus:ring-1 focus:ring-primary-500"
                 >
                   <option value="all">ทุกสถานะ</option>
                   <option value="paid">ชำระแล้ว (Paid)</option>
@@ -893,7 +894,7 @@ export default function ReportsPageView() {
                   <select
                     value={incomePaymentMethodFilter}
                     onChange={(e) => setIncomePaymentMethodFilter(e.target.value)}
-                    className="h-[38px] rounded-xl border border-slate-200 px-3 py-1 text-sm text-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    className="h-[38px] rounded-control border border-slate-200 px-3 py-1 text-sm text-slate-700 focus:outline-none focus:ring-1 focus:ring-primary-500"
                   >
                     <option value="all">ทุกวิธีชำระ</option>
                     {incomePaymentMethodOptions.map(m => (
@@ -906,7 +907,7 @@ export default function ReportsPageView() {
                     type="month"
                     value={selectedMonth}
                     onChange={(event) => setSelectedMonth(event.target.value)}
-                    className="h-[38px] rounded-xl border border-slate-200 px-3 py-2 text-slate-900"
+                    className="h-[38px] rounded-control border border-slate-200 px-3 py-2 text-slate-900"
                   />
                 </label>
                 <ExportButton onClick={exportIncome} />
@@ -925,7 +926,7 @@ export default function ReportsPageView() {
           />
           <Card>
             <CardContent className="p-0">
-              <div className="overflow-x-auto rounded-xl">
+              <div className="overflow-x-auto rounded-control">
                 <table className="min-w-full text-left text-sm">
                   <thead className="bg-slate-50 text-slate-500">
                     <tr>
@@ -950,10 +951,10 @@ export default function ReportsPageView() {
                           <td className="px-3 py-2 font-medium">{row.room_number}</td>
                           <td className="px-3 py-2">{row.tenant_name}</td>
                           <td className="px-3 py-2 text-right">{formatMoney(row.total_amount)}</td>
-                          <td className="px-3 py-2 text-right text-green-600">{formatMoney(row.paid_amount)}</td>
+                          <td className="px-3 py-2 text-right text-success-600">{formatMoney(row.paid_amount)}</td>
                           <td className="px-3 py-2 text-center">{row.paymentMethod}</td>
                           <td className="px-3 py-2 text-center">
-                            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px]">{statusLabel(row.status)}</span>
+                            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-2xs">{statusLabel(row.status)}</span>
                           </td>
                         </tr>
                       ))
@@ -978,7 +979,7 @@ export default function ReportsPageView() {
           >
             {selectedIncomeInvoice && (
               <div className="space-y-4 text-sm">
-                <div className="flex justify-between rounded-xl bg-slate-50 p-4 border border-slate-100">
+                <div className="flex justify-between rounded-control bg-slate-50 p-4 border border-slate-100">
                   <div>
                     <p className="font-semibold text-slate-900">ห้อง {selectedIncomeInvoice.room_number}</p>
                     <p className="text-slate-500">{selectedIncomeInvoice.tenant_name}</p>
@@ -1028,7 +1029,7 @@ export default function ReportsPageView() {
                       </tr>
                     ))}
                     {selectedIncomeInvoice.discount_amount > 0 && (
-                      <tr className="border-b border-slate-100 text-green-600">
+                      <tr className="border-b border-slate-100 text-success-600">
                         <td className="px-3 py-2">ส่วนลด</td>
                         <td className="px-3 py-2 text-right">-{formatMoney(selectedIncomeInvoice.discount_amount)}</td>
                       </tr>
@@ -1096,7 +1097,7 @@ export default function ReportsPageView() {
                     type="month"
                     value={selectedMonth}
                     onChange={(event) => setSelectedMonth(event.target.value)}
-                    className="rounded-xl border border-slate-200 px-3 py-2 text-slate-900"
+                    className="rounded-control border border-slate-200 px-3 py-2 text-slate-900"
                   />
                 </label>
               </div>
@@ -1151,7 +1152,7 @@ export default function ReportsPageView() {
                     type="month"
                     value={selectedMonth}
                     onChange={(event) => setSelectedMonth(event.target.value)}
-                    className="rounded-xl border border-slate-200 px-3 py-2 text-slate-900"
+                    className="rounded-control border border-slate-200 px-3 py-2 text-slate-900"
                   />
                 </label>
               </div>
@@ -1294,13 +1295,13 @@ export default function ReportsPageView() {
                       placeholder="ค้นหาห้อง / ผู้เช่า..."
                       value={movementSearchQuery}
                       onChange={(e) => setMovementSearchQuery(e.target.value)}
-                      className="h-[38px] w-48 rounded-xl border border-slate-200 pl-9 pr-3 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      className="h-[38px] w-48 rounded-control border border-slate-200 pl-9 pr-3 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
                     />
                   </div>
                   <select
                     value={movementTypeFilter}
                     onChange={(e) => setMovementTypeFilter(e.target.value)}
-                    className="h-[38px] rounded-xl border border-slate-200 px-3 py-1 text-sm text-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    className="h-[38px] rounded-control border border-slate-200 px-3 py-1 text-sm text-slate-700 focus:outline-none focus:ring-1 focus:ring-primary-500"
                   >
                     <option value="all">ทุกประเภท</option>
                     <option value="ย้ายเข้า">ย้ายเข้า</option>
@@ -1343,8 +1344,8 @@ function TabButton({
   return (
     <button
       onClick={onClick}
-      className={`rounded-xl px-4 py-2.5 text-sm font-semibold transition ${
-        active ? "bg-white text-blue-700 shadow-sm" : "text-slate-600 hover:bg-white/70"
+      className={`rounded-control px-4 py-2.5 text-sm font-semibold transition ${
+        active ? "bg-white text-primary-700 shadow-sm" : "text-slate-600 hover:bg-white/70"
       }`}
     >
       {label}
@@ -1356,7 +1357,7 @@ function ExportButton({ onClick }: { onClick: () => void }) {
   return (
     <button
       onClick={onClick}
-      className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-4 py-2 text-sm text-slate-700"
+      className={buttonClasses({ variant: "secondary" })}
     >
       <Download size={16} />
       ดาวน์โหลดสเปรดชีต

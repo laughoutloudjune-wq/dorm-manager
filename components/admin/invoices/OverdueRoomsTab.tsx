@@ -95,7 +95,7 @@ export function OverdueRoomsTab() {
 
   if (loading) {
     return (
-      <div className="flex h-32 items-center justify-center rounded-2xl border border-slate-200 bg-white">
+      <div className="flex h-32 items-center justify-center rounded-card border border-slate-200 bg-white">
         <span className="text-sm font-medium text-slate-400 animate-pulse">กำลังโหลดข้อมูล...</span>
       </div>
     );
@@ -103,7 +103,7 @@ export function OverdueRoomsTab() {
 
   if (error) {
     return (
-      <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-600">
+      <div className="rounded-card border border-danger-200 bg-danger-50 p-4 text-sm text-danger-600">
         <AlertCircle className="inline mr-2" size={16} />
         {error}
       </div>
@@ -112,7 +112,7 @@ export function OverdueRoomsTab() {
 
   if (grouped.length === 0) {
     return (
-      <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center text-slate-500">
+      <div className="rounded-card border border-slate-200 bg-white p-8 text-center text-slate-500">
         ไม่มีห้องที่มียอดค้างชำระในขณะนี้ 🎉
       </div>
     );
@@ -122,10 +122,10 @@ export function OverdueRoomsTab() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between rounded-2xl border border-rose-200 bg-rose-50 px-5 py-4 text-rose-900 shadow-sm">
+      <div className="flex items-center justify-between rounded-card border border-danger-200 bg-danger-50 px-5 py-4 text-danger-900 shadow-sm">
         <div>
           <h2 className="text-lg font-bold">ยอดค้างชำระรวมทั้งสิ้น</h2>
-          <p className="text-xs text-rose-700/80 mt-1">
+          <p className="text-xs text-danger-700/80 mt-1">
             ทั้งหมด {grouped.length} ห้อง ({invoices.length} บิล)
           </p>
         </div>
@@ -138,14 +138,14 @@ export function OverdueRoomsTab() {
           return (
             <div
               key={group.room_number}
-              className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition-all hover:border-slate-300"
+              className="overflow-hidden rounded-card border border-slate-200 bg-white shadow-sm transition-all hover:border-slate-300"
             >
               <button
                 onClick={() => toggleExpand(group.room_number)}
                 className="flex w-full items-center justify-between p-4 text-left focus:outline-none"
               >
                 <div className="flex items-center gap-4">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-slate-100 text-slate-700">
+                  <div className="flex h-12 w-12 items-center justify-center rounded-control bg-slate-100 text-slate-700">
                     <DoorOpen size={24} />
                   </div>
                   <div>
@@ -163,8 +163,8 @@ export function OverdueRoomsTab() {
                 </div>
                 <div className="flex items-center gap-4">
                   <div className="text-right">
-                    <p className="text-xs text-rose-600 font-medium mb-1">{group.invoices.length} บิล</p>
-                    <p className="text-lg font-bold text-rose-700">฿{formatMoney(group.total_outstanding)}</p>
+                    <p className="text-xs text-danger-600 font-medium mb-1">{group.invoices.length} บิล</p>
+                    <p className="text-lg font-bold text-danger-700">฿{formatMoney(group.total_outstanding)}</p>
                   </div>
                   <div className="text-slate-400">
                     {isExpanded ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
@@ -181,23 +181,23 @@ export function OverdueRoomsTab() {
                         <div
                           key={inv.id}
                           onClick={() => openInvoice(inv)}
-                          className="flex cursor-pointer items-center justify-between rounded-xl border border-slate-200 bg-white p-3 hover:border-blue-300 hover:shadow-sm transition-colors"
+                          className="flex cursor-pointer items-center justify-between rounded-control border border-slate-200 bg-white p-3 hover:border-primary-300 hover:shadow-sm transition-colors"
                         >
                           <div>
                             <p className="text-sm font-semibold text-slate-800">
                               บิลเดือน {new Date(inv.start_date).toLocaleDateString('th-TH', { month: 'long', year: 'numeric' })}
                             </p>
-                            <p className="mt-1 text-[11px] text-slate-500">
+                            <p className="mt-1 text-2xs text-slate-500">
                               กำหนดชำระ: {new Date(inv.due_date).toLocaleDateString('th-TH', { day: 'numeric', month: 'short' })}
                               {" • "}
                               ยอดรวมบิล: ฿{formatMoney(inv.total_amount)}
                             </p>
                           </div>
                           <div className="text-right">
-                            <span className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold ${statusPillClass(inv.status)}`}>
+                            <span className={`inline-block rounded-full px-2 py-0.5 text-2xs font-semibold ${statusPillClass(inv.status)}`}>
                               {statusLabelThai(inv.status)}
                             </span>
-                            <p className="mt-1 text-sm font-bold text-rose-700">
+                            <p className="mt-1 text-sm font-bold text-danger-700">
                               ค้าง ฿{formatMoney(outstanding)}
                             </p>
                           </div>
