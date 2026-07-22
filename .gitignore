@@ -32,3 +32,6 @@ next-env.d.ts
 # scratch / one-off debug scripts — never meant to be committed
 /scratch/
 /.gemini/
+
+# Claude Code: machine-specific permission grants, not shared project config
+.claude/settings.local.json
