@@ -2,8 +2,9 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronUp, Loader2 } from "lucide-react";
+import { meets30DayMoveOutNotice } from "@/lib/move-out-notice";
 
-type TabKey = "dashboard" | "invoices" | "tenants";
+type TabKey = "dashboard" | "invoices" | "tenants" | "moveouts";
 
 type LiffProfile = { userId: string; displayName: string; pictureUrl?: string };
 
@@ -63,6 +64,21 @@ type TenantRow = {
   building_name: string;
 };
 
+type MoveOutRequestRow = {
+  id: string;
+  tenant_id: string;
+  tenant_name: string;
+  room_number: string;
+  building_name: string;
+  notice_date: string | null;
+  requested_move_out_date: string;
+  approved_move_out_date: string | null;
+  status: string;
+  request_note: string | null;
+  admin_note: string | null;
+  created_at: string | null;
+};
+
 const toArray = <T,>(v: T | T[] | null | undefined) => (Array.isArray(v) ? v : v ? [v] : []);
 const fmtDate = (v?: string | null) => (v ? new Date(v).toLocaleDateString("th-TH") : "-");
 const fmtMoney = (v?: number | null) =>
@@ -102,6 +118,12 @@ export default function AdminLiffPage() {
 
   const [tenantQuery, setTenantQuery] = useState("");
   const [tenants, setTenants] = useState<TenantRow[]>([]);
+
+  const [moveOutRequests, setMoveOutRequests] = useState<MoveOutRequestRow[]>([]);
+  const [expandedRequestId, setExpandedRequestId] = useState<string | null>(null);
+  const [approveDateByRequest, setApproveDateByRequest] = useState<Record<string, string>>({});
+  const [adminNoteByRequest, setAdminNoteByRequest] = useState<Record<string, string>>({});
+  const [moveOutSavingAction, setMoveOutSavingAction] = useState<string | null>(null);
 
   const selectedInvoice = useMemo(
     () => invoices.find((x) => x.id === selectedInvoiceId) ?? null,
@@ -173,6 +195,20 @@ export default function AdminLiffPage() {
     setTenants((data.tenants ?? []) as TenantRow[]);
   };
 
+  const loadMoveOuts = async () => {
+    if (!accessToken) return;
+    const data = await postJson("/api/admin-liff/move-outs", { accessToken });
+    const rows = (data.requests ?? []) as MoveOutRequestRow[];
+    setMoveOutRequests(rows);
+    setApproveDateByRequest((prev) => {
+      const next = { ...prev };
+      rows.forEach((row) => {
+        if (!next[row.id]) next[row.id] = row.requested_move_out_date;
+      });
+      return next;
+    });
+  };
+
   useEffect(() => {
     const boot = async () => {
       try {
@@ -199,13 +235,42 @@ export default function AdminLiffPage() {
   useEffect(() => {
     if (!accessToken) return;
     void loadDashboard().catch((e) => setMessage(e?.message ?? "โหลด dashboard ไม่สำเร็จ"));
+    // Loaded eagerly (not only when the tab is opened) so the tab bar's
+    // pending-request dot is accurate as soon as the admin opens the app.
+    void loadMoveOuts().catch(() => {});
   }, [accessToken, month]);
 
   useEffect(() => {
     if (!accessToken) return;
     if (tab === "invoices") void loadInvoices().catch((e) => setMessage(e?.message ?? "โหลดบิลไม่สำเร็จ"));
     if (tab === "tenants") void loadTenants().catch((e) => setMessage(e?.message ?? "โหลดผู้เช่าไม่สำเร็จ"));
+    if (tab === "moveouts") void loadMoveOuts().catch((e) => setMessage(e?.message ?? "โหลดคำขอย้ายออกไม่สำเร็จ"));
   }, [accessToken, tab, invoiceFilter, roomFilter, tenantQuery]);
+
+  const runMoveOutAction = async (
+    requestId: string,
+    action: "approve" | "reject",
+    payload: Record<string, unknown>
+  ) => {
+    if (!accessToken) return;
+    const key = `${action}:${requestId}`;
+    setMoveOutSavingAction(key);
+    setMessage(null);
+    try {
+      await postJson("/api/admin-liff/move-outs/actions", {
+        accessToken,
+        requestId,
+        action,
+        ...payload,
+      });
+      setMessage(action === "approve" ? "อนุมัติคำขอย้ายออกแล้ว" : "ปฏิเสธคำขอย้ายออกแล้ว");
+      await loadMoveOuts();
+    } catch (error: any) {
+      setMessage(error?.message ?? "บันทึกไม่สำเร็จ");
+    } finally {
+      setMoveOutSavingAction(null);
+    }
+  };
 
   const runInvoiceAction = async (
     action: "approve_paid" | "update_status" | "resend_invoice",
@@ -250,21 +315,30 @@ export default function AdminLiffPage() {
         </div>
 
         <div className="rounded-2xl border border-slate-200 bg-white p-2 shadow-sm">
-          <div className="grid grid-cols-3 gap-1">
+          <div className="grid grid-cols-4 gap-1">
             {([
               ["dashboard", "สรุป"],
               ["invoices", "บิล"],
               ["tenants", "ผู้เช่า"],
+              ["moveouts", "ย้ายออก"],
             ] as Array<[TabKey, string]>).map(([k, label]) => (
               <button
                 key={k}
                 type="button"
                 onClick={() => setTab(k)}
-                className={`rounded-xl px-2 py-2 text-xs font-semibold ${
+                className={`relative rounded-xl px-2 py-2 text-xs font-semibold ${
                   tab === k ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-700"
                 }`}
               >
                 {label}
+                {k === "moveouts" && moveOutRequests.some((r) => r.status === "requested") && (
+                  <span
+                    className={`absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full border-2 border-white ${
+                      tab === k ? "bg-white" : "bg-rose-500"
+                    }`}
+                    aria-hidden
+                  />
+                )}
               </button>
             ))}
           </div>
@@ -367,7 +441,7 @@ export default function AdminLiffPage() {
                                   </span>
                                   <span>{fmtMoney(Number(row.late_fee_amount))}</span>
                                 </div>
-                                <span className="text-[10px] text-amber-700">
+                                <span className="text-2xs text-amber-700">
                                   {row.days_overdue} วัน x ฿{row.daily_rate}/วัน
                                 </span>
                               </div>
@@ -474,6 +548,160 @@ export default function AdminLiffPage() {
                     </div>)}
                   </div>
                 </div>
+              </div>
+            )}
+
+            {tab === "moveouts" && (
+              <div className="space-y-2">
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                  หน้านี้ใช้ตรวจสอบและอนุมัติ/ปฏิเสธคำขอย้ายออกเท่านั้น การสรุปยอด (คำนวณค่าเช่า
+                  ค่าน้ำไฟ และเงินประกัน) ต้องทำที่หน้าเว็บแอดมินบนคอมพิวเตอร์
+                </div>
+
+                {moveOutRequests.length === 0 && (
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4 text-center text-sm text-slate-500">
+                    ไม่มีคำขอย้ายออกที่รอดำเนินการ
+                  </div>
+                )}
+
+                {moveOutRequests.map((request) => {
+                  const isExpanded = expandedRequestId === request.id;
+                  const noticeYmd = request.notice_date
+                    ? String(request.notice_date).slice(0, 10)
+                    : request.created_at
+                    ? String(request.created_at).slice(0, 10)
+                    : "";
+                  // Defaults to the tenant's requested date (or the previously approved
+                  // date, if already approved) so hitting "approve" without touching
+                  // this field records what the tenant actually asked for — not
+                  // today's date. Still fully editable: if the tenant fat-fingered the
+                  // date, the admin corrects it here before saving.
+                  const approveDate =
+                    approveDateByRequest[request.id] ??
+                    request.approved_move_out_date ??
+                    request.requested_move_out_date;
+                  const adminNote = adminNoteByRequest[request.id] ?? "";
+                  const showDepositWarning =
+                    approveDate.length > 0 && noticeYmd.length > 0 && !meets30DayMoveOutNotice(noticeYmd, approveDate);
+                  const isApproving = moveOutSavingAction === `approve:${request.id}`;
+                  const isRejecting = moveOutSavingAction === `reject:${request.id}`;
+
+                  return (
+                    <div key={request.id} className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                      <button
+                        type="button"
+                        onClick={() => setExpandedRequestId(isExpanded ? null : request.id)}
+                        className="flex w-full items-center justify-between gap-3 px-3 py-3 text-left"
+                      >
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold text-slate-900">
+                            ห้อง {request.room_number} • {request.building_name}
+                          </p>
+                          <p className="truncate text-xs text-slate-500">{request.tenant_name}</p>
+                          <p className="mt-1 text-xs text-slate-600">
+                            ต้องการย้ายออก {fmtDate(request.requested_move_out_date)}
+                          </p>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-2">
+                          <span
+                            className={`rounded-full px-2 py-1 text-2xs font-semibold ${
+                              request.status === "requested"
+                                ? "bg-rose-50 text-rose-700"
+                                : "bg-blue-50 text-blue-700"
+                            }`}
+                          >
+                            {request.status === "requested" ? "รอตรวจสอบ" : "อนุมัติแล้ว"}
+                          </span>
+                          {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                        </div>
+                      </button>
+
+                      {isExpanded && (
+                        <div className="space-y-3 border-t border-slate-100 bg-slate-50/60 px-3 py-3">
+                          <div className="space-y-1 text-xs text-slate-600">
+                            <p>วันที่แจ้ง (นับ 30 วัน): {fmtDate(noticeYmd)}</p>
+                            {request.request_note && <p>หมายเหตุจากผู้เช่า: {request.request_note}</p>}
+                            {request.admin_note && <p>หมายเหตุก่อนหน้า: {request.admin_note}</p>}
+                          </div>
+
+                          {request.status === "approved" && (
+                            <div className="rounded-lg bg-blue-50 px-3 py-2 text-xs text-blue-900">
+                              อนุมัติให้ย้ายออกวันที่ {fmtDate(request.approved_move_out_date)} แล้ว —
+                              ไปสรุปยอดที่หน้าเว็บแอดมินเมื่อถึงวันย้ายออกจริง หากวันที่ผิด แก้ไขและบันทึกใหม่ได้ด้านล่าง
+                            </div>
+                          )}
+
+                          <label className="block text-xs font-medium text-slate-700">
+                            {request.status === "requested" ? "วันที่อนุมัติให้ย้ายออก" : "แก้ไขวันที่ย้ายออก"}
+                            <input
+                              type="date"
+                              value={approveDate}
+                              onChange={(e) =>
+                                setApproveDateByRequest((prev) => ({ ...prev, [request.id]: e.target.value }))
+                              }
+                              className="mt-1 block w-full rounded-lg border border-slate-300 px-2 py-2 text-sm"
+                            />
+                          </label>
+
+                          {showDepositWarning && (
+                            <div className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-2xs text-red-900">
+                              แจ้งล่วงหน้าไม่ถึง 30 วันตามสัญญา — ผู้เช่าอาจไม่ได้รับเงินประกันคืนเต็มจำนวน
+                            </div>
+                          )}
+
+                          {request.status === "requested" && (
+                            <label className="block text-xs font-medium text-slate-700">
+                              หมายเหตุถึงผู้เช่า (ถ้ามี)
+                              <textarea
+                                value={adminNote}
+                                onChange={(e) =>
+                                  setAdminNoteByRequest((prev) => ({ ...prev, [request.id]: e.target.value }))
+                                }
+                                rows={2}
+                                className="mt-1 block w-full rounded-lg border border-slate-300 px-2 py-2 text-sm"
+                                placeholder="เช่น กรุณาคืนกุญแจภายในวันที่ย้ายออก"
+                              />
+                            </label>
+                          )}
+
+                          <div className={request.status === "requested" ? "grid grid-cols-2 gap-2" : ""}>
+                            {request.status === "requested" && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  void runMoveOutAction(request.id, "reject", { adminNote: adminNote || null })
+                                }
+                                disabled={!!moveOutSavingAction}
+                                className="inline-flex items-center justify-center gap-2 rounded-lg border border-rose-300 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700 disabled:opacity-60"
+                              >
+                                {isRejecting && <Loader2 size={14} className="animate-spin" />}
+                                {isRejecting ? "กำลังบันทึก..." : "ปฏิเสธ"}
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() =>
+                                void runMoveOutAction(request.id, "approve", {
+                                  approvedMoveOutDate: approveDate,
+                                  adminNote: request.status === "requested" ? adminNote || null : request.admin_note,
+                                })
+                              }
+                              disabled={!!moveOutSavingAction}
+                              className="inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-60"
+                            >
+                              {isApproving && <Loader2 size={14} className="animate-spin" />}
+                              {isApproving
+                                ? "กำลังบันทึก..."
+                                : request.status === "requested"
+                                ? "อนุมัติ"
+                                : "บันทึกวันที่แก้ไข"}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </>
