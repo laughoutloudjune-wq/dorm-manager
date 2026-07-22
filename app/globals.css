@@ -106,15 +106,49 @@
     box-shadow: theme("boxShadow.float-lg");
   }
 
-  /* Frosted variant, for surfaces that overlap scrolling content: the sticky
-     page header and the sidebar rail. */
+  /* Blurred-glass variant, for surfaces that hover over scrolling content:
+     the sticky page header, the sidebar rail. Deliberately kept closer to a
+     clean gaussian-blur look than a "frosted" one — content behind should
+     still read as soft-focused color and shape, not be washed out under a
+     heavy white tint. That's the fill opacity: it's low (15-28%), doing far
+     less visual work than the blur itself. Three things make it read as
+     glass rather than a plain translucent panel:
+       1. Low fill opacity — most of what you see is the blurred backdrop
+          itself, not a white overlay sitting on top of it. A much higher
+          fill (~/75, and later ~/60-78 while chasing an unrelated rendering
+          bug) reads as "frosted" — a tinted panel that happens to blur —
+          rather than "blurred" — the actual content, softened.
+       2. Blur + saturation together — saturate boosts the color underneath
+          before it's blurred, which is what stops heavy blur from reading
+          as flat grey haze.
+       3. A hairline top highlight (inset box-shadow) standing in for a
+          specular edge, the way light catches the rim of actual glass.
+     Do NOT put `isolation: isolate` on this class. It's tempting — isolation
+     is the standard fix for backdrop-filter compositing bugs when it sits on
+     an ANCESTOR of the filtered element — but here it would be on the same
+     element as the backdrop-filter itself, which is a different, self-
+     defeating case: per spec, `isolation: isolate` makes an element its own
+     "backdrop root", the boundary backdrop-filter samples content from. An
+     element that IS its own boundary has nothing behind it, within that
+     boundary, left to sample — the filter runs against essentially nothing,
+     so it silently renders as a flat, unblurred fill. This class already
+     avoids the ancestor-side bug structurally instead: see AdminShell's
+     header, which uses three elements — a plain `position: sticky` element
+     with no filter, a `position: relative` wrapper inside it, and this class
+     on an `absolute inset-0`-positioned child of that wrapper (a sibling to
+     the sticky element, never on it, never buried behind extra nesting).
+     Content goes in another sibling with `relative z-10` to stack above it.
+     Also avoid transform-based animations anywhere in a glass surface's
+     ancestor chain (`animation-fill-mode: both` counts even after it
+     finishes) — use `.animate-fade-in-plain` (opacity only), never
+     `.animate-fade-in-up/down`, on or above a glass surface. */
   .surface-frosted {
-    background: rgba(255, 255, 255, 0.72);
-    backdrop-filter: saturate(180%) blur(20px);
-    -webkit-backdrop-filter: saturate(180%) blur(20px);
-    border: 1px solid var(--border-hairline);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(255, 255, 255, 0.6));
+    backdrop-filter: saturate(190%) blur(28px);
+    -webkit-backdrop-filter: saturate(190%) blur(28px);
+    border: 1px solid rgba(255, 255, 255, 0.6);
     border-radius: theme("borderRadius.card");
-    box-shadow: theme("boxShadow.float");
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75), theme("boxShadow.float");
   }
 }
 
@@ -129,6 +163,15 @@
 
   .animate-fade-in-down {
     animation: fadeInDown 380ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  /* Opacity-only entrance — no transform. Use this (not fade-in-down) on any
+     element that is, or is an ancestor of, a backdrop-filter surface: a
+     transform animation anywhere in that chain is a known Chromium trigger
+     for backdrop-filter to silently stop compositing (the element keeps its
+     flat background color but the blur never renders, with no error). */
+  .animate-fade-in-plain {
+    animation: fadeInPlain 380ms ease both;
   }
 
   .animate-soft-pop {
@@ -217,6 +260,15 @@
   to {
     opacity: 1;
     transform: none;
+  }
+}
+
+@keyframes fadeInPlain {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
   }
 }
 

@@ -58,17 +58,24 @@ export function Tabs<T extends string>({
   items,
   value,
   onChange,
+  /** Each option splits the track evenly instead of sizing to its label —
+   *  for a top-of-form mode switch (2-3 options) rather than a page's list
+   *  of view filters, where auto-width reads better. */
+  fullWidth = false,
   className = "",
 }: {
   items: { value: T; label: ReactNode; count?: number }[];
   value: T;
   onChange: (value: T) => void;
+  fullWidth?: boolean;
   className?: string;
 }) {
   return (
     <div
       role="tablist"
-      className={`inline-flex flex-wrap items-center gap-1 rounded-control bg-slate-100/80 p-1 ${className}`}
+      className={`flex items-center gap-1 rounded-control bg-slate-100/80 p-1 ${
+        fullWidth ? "" : "inline-flex flex-wrap"
+      } ${className}`}
     >
       {items.map((item) => {
         const isActive = item.value === value;
@@ -79,7 +86,9 @@ export function Tabs<T extends string>({
             role="tab"
             aria-selected={isActive}
             onClick={() => onChange(item.value)}
-            className={`inline-flex items-center gap-2 rounded-[0.5rem] px-3.5 py-1.5 text-sm font-medium transition-all duration-200 ease-float ${
+            className={`inline-flex items-center justify-center gap-2 rounded-[0.5rem] px-3.5 py-1.5 text-sm font-medium transition-all duration-200 ease-float ${
+              fullWidth ? "flex-1" : ""
+            } ${
               isActive
                 ? "bg-white text-slate-900 shadow-float"
                 : "text-slate-500 hover:text-slate-800"

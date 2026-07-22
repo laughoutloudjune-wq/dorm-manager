@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase-client";
+import { Tabs } from "@/components/ui/Page";
 
 type LiffProfile = {
   userId: string;
@@ -95,7 +96,11 @@ export default function RegisterPage() {
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [phoneNumber, setPhoneNumber] = useState("");
-  const [isNewTenant, setIsNewTenant] = useState(false);
+  // Defaults to new-tenant: most people who reach this LIFF link are moving
+  // in for the first time, not re-linking an existing tenancy — matching the
+  // common case up front means fewer people miss the deposit-slip/policy
+  // steps below by leaving the picker on the wrong setting.
+  const [isNewTenant, setIsNewTenant] = useState(true);
   const [moveInDate, setMoveInDate] = useState(new Date().toISOString().slice(0, 10));
   const [newTenantSlipUrl, setNewTenantSlipUrl] = useState("");
   const [suggestions, setSuggestions] = useState<RoomSuggestion[]>([]);
@@ -292,7 +297,7 @@ export default function RegisterPage() {
       setLastName("");
       setPhoneNumber("");
       setSuggestions([]);
-      setIsNewTenant(false);
+      setIsNewTenant(true);
       setMoveInDate(new Date().toISOString().slice(0, 10));
       setNewTenantSlipUrl("");
       setPolicyAccepted(false);
@@ -329,6 +334,33 @@ export default function RegisterPage() {
             </div>
 
             <form onSubmit={handleSubmit} className="space-y-4">
+              <div>
+                <p className="mb-2 text-sm font-medium text-slate-700">ประเภทผู้เช่า</p>
+                <Tabs
+                  value={isNewTenant ? "new" : "existing"}
+                  onChange={(value) => {
+                    const nextIsNew = value === "new";
+                    setIsNewTenant(nextIsNew);
+                    if (!nextIsNew) {
+                      setNewTenantSlipUrl("");
+                      setPolicyAccepted(false);
+                      setPolicyModalOpen(false);
+                    }
+                  }}
+                  items={[
+                    { value: "new", label: "ผู้เช่าใหม่" },
+                    { value: "existing", label: "ผู้เช่าเดิม" },
+                  ]}
+                  fullWidth
+                  className="w-full"
+                />
+                <p className="mt-2 text-xs text-slate-500">
+                  {isNewTenant
+                    ? "สำหรับผู้ย้ายเข้าใหม่ — ต้องอัปโหลดสลิปเงินประกัน/ค่าเช่าล่วงหน้า และยอมรับกฎระเบียบ"
+                    : "สำหรับผู้เช่าที่พักอยู่แล้ว — เชื่อมบัญชี LINE กับห้องที่พักอยู่เท่านั้น"}
+                </p>
+              </div>
+
               <label className="block text-sm text-slate-600">
                 เลขห้อง
                 <input
@@ -445,24 +477,6 @@ export default function RegisterPage() {
                   required
                   placeholder="เช่น 08xxxxxxxx"
                 />
-              </label>
-
-              <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-700">
-                <input
-                  type="checkbox"
-                  checked={isNewTenant}
-                  onChange={(event) => {
-                    const checked = event.target.checked;
-                    setIsNewTenant(checked);
-                    if (!checked) {
-                      setNewTenantSlipUrl("");
-                      setPolicyAccepted(false);
-                      setPolicyModalOpen(false);
-                    }
-                  }}
-                  className="h-4 w-4 rounded border-slate-300"
-                />
-                ผู้เช่าใหม่
               </label>
 
               {isNewTenant && (

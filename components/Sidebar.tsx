@@ -102,7 +102,7 @@ export default function Sidebar() {
   return (
     <>
       {/* Mobile top bar */}
-      <header className="fixed left-0 right-0 top-0 z-30 flex items-center justify-between border-b border-slate-200/70 bg-white/80 px-4 py-2.5 backdrop-blur-xl animate-fade-in-down md:hidden">
+      <header className="animate-fade-in-plain fixed left-0 right-0 top-0 z-30 flex items-center justify-between border-b border-slate-200/70 bg-white/80 px-4 py-2.5 backdrop-blur-xl md:hidden">
         <Wordmark compact />
         <button
           onClick={() => setIsOpen((open) => !open)}
