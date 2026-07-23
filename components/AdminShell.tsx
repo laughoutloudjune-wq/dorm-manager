@@ -33,6 +33,7 @@ export default function AdminShell({ children }: { children: ReactNode }) {
   
   useRealtimeInvoices();
 
+
   const crumbs = [
     { label: "Apartment Flow", href: "/" },
     { label: pageTitle, href: pathname },
@@ -97,18 +98,12 @@ export default function AdminShell({ children }: { children: ReactNode }) {
             as tall as the header itself. The moment you scrolled past that
             (immediately), the header had nowhere left to stick to and just
             scrolled away. The gutter padding has to live on `header` itself,
-            so its containing block is this tall, page-spanning div instead.
-
-            Sticky and the glass fill are still kept on separate elements
-            (relative wrapper -> absolute `.surface-frosted` layer -> relative
-            content layer) as a defensive measure against backdrop-filter
-            compositing oddities when mixed with position:sticky, even though
-            the sticky bug above turned out to be the real cause here. */}
-        <header className="animate-fade-in-plain sticky top-2 z-10 px-4 md:top-4 md:pr-4">
-          <div className="relative mx-auto max-w-[1600px]">
-            <div className="surface-frosted absolute inset-0 z-0" aria-hidden />
-            <div className="relative z-10 flex flex-wrap items-center justify-between gap-3 px-5 py-3.5">
-              <div className="min-w-0">
+            so its containing block is this tall, page-spanning div instead. */}
+        <header
+          className="sticky top-2 z-10 px-4 md:top-4 md:pr-4"
+        >
+          <div className="surface-frosted relative mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-3 px-5 py-3.5">
+            <div className="min-w-0">
                 <nav className="text-2xs font-semibold uppercase tracking-[0.16em] text-slate-400">
                   {crumbs.map((crumb, index) => (
                     <span key={crumb.label}>
@@ -139,7 +134,6 @@ export default function AdminShell({ children }: { children: ReactNode }) {
                   {loggingOut ? t(locale, "signing_out") : t(locale, "logout")}
                 </Button>
               </div>
-            </div>
           </div>
         </header>
         <main className="mx-auto w-full max-w-[1600px] px-4 py-5 md:pr-4 md:py-6 animate-fade-in-up">
