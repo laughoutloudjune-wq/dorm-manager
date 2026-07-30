@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/admin-api-auth";
 import {
   approveReferral,
+  deleteRedemption,
   getRewardsConfig,
   getTenantPointBalance,
   listTenantLedger,
@@ -96,6 +97,19 @@ export async function POST(req: Request) {
         return NextResponse.json({ success: true, entry });
       } catch (err: any) {
         return NextResponse.json({ error: err?.message ?? "Failed to adjust points." }, { status: 400 });
+      }
+    }
+
+    if (action === "delete_redemption") {
+      const auth = await requireAdminPermission(req, "rewards.manage");
+      if ("error" in auth) return auth.error;
+      const entryId = String(body?.entryId ?? "");
+      if (!entryId) return NextResponse.json({ error: "Missing entryId." }, { status: 400 });
+      try {
+        const entry = await deleteRedemption(auth.supabase, entryId);
+        return NextResponse.json({ success: true, entry });
+      } catch (err: any) {
+        return NextResponse.json({ error: err?.message ?? "Failed to delete redemption." }, { status: 400 });
       }
     }
 

@@ -746,3 +746,32 @@ export async function manualAdjustPoints(
   if (error) throw new Error(error.message);
   return ledgerEntry as PointLedgerRow;
 }
+
+/**
+ * Admin correction: deletes a redemption ledger row. Since a tenant's balance
+ * is always derived from SUM(points), deleting a redemption (which is stored
+ * as negative points) automatically refunds those points back into their
+ * balance. It also reverts that month's redemption count (redeemPoints checks
+ * `reason = 'redemption' AND created_at >= monthStart`), lifting the
+ * once-per-month limit for this tenant this month. This does NOT reverse the
+ * invoice discount that redemption already applied — that's a separate,
+ * deliberate admin call (the discount already reduced what the tenant owes;
+ * un-doing that would require re-editing the invoice, which is out of scope
+ * for a ledger correction).
+ */
+export async function deleteRedemption(supabase: SupabaseClient, entryId: string) {
+  const { data: entry, error: fetchError } = await supabase
+    .from("point_ledger_entries")
+    .select(LEDGER_COLUMNS)
+    .eq("id", entryId)
+    .maybeSingle();
+  if (fetchError) throw new Error(fetchError.message);
+  if (!entry) throw new Error("Ledger entry not found.");
+  if ((entry as PointLedgerRow).reason !== "redemption") {
+    throw new Error("Only redemption entries can be deleted this way.");
+  }
+
+  const { error: deleteError } = await supabase.from("point_ledger_entries").delete().eq("id", entryId);
+  if (deleteError) throw new Error(deleteError.message);
+  return entry as PointLedgerRow;
+}

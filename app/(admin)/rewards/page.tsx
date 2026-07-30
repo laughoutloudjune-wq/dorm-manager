@@ -6,10 +6,11 @@ import { SectionCard } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
+import { ConfirmActionModal } from "@/components/ui/ConfirmActionModal";
 import { PageHeader, EmptyState, Skeleton, Notice } from "@/components/ui/Page";
 import { Table, TableCard, TBody, THead, TD, TH, TR } from "@/components/ui/Table";
 import { createClient } from "@/lib/supabase-client";
-import { Gift, Save, Check, X, RefreshCw } from "lucide-react";
+import { Gift, Save, Check, X, RefreshCw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 type RewardsConfig = {
@@ -78,6 +79,8 @@ export default function RewardsPage() {
   const [adjustNotes, setAdjustNotes] = useState("");
   const [adjusting, setAdjusting] = useState(false);
   const [syncingAll, setSyncingAll] = useState(false);
+  const [redemptionToDelete, setRedemptionToDelete] = useState<LedgerRow | null>(null);
+  const [deletingRedemption, setDeletingRedemption] = useState(false);
 
   const callAction = async (action: string, payload: Record<string, unknown> = {}) => {
     const { data } = await supabase.auth.getSession();
@@ -170,6 +173,22 @@ export default function RewardsPage() {
       toast.error(error?.message ?? "ปรับปรุงคะแนนไม่สำเร็จ");
     } finally {
       setAdjusting(false);
+    }
+  };
+
+  const confirmDeleteRedemption = async () => {
+    if (!redemptionToDelete || !detailTenant) return;
+    setDeletingRedemption(true);
+    try {
+      await callAction("delete_redemption", { entryId: redemptionToDelete.id });
+      toast.success("ลบรายการแลกคะแนนแล้ว คืนแต้มและสิทธิ์แลกคะแนนของเดือนนี้ให้ผู้เช่าแล้ว");
+      setRedemptionToDelete(null);
+      await openTenantDetail(detailTenant);
+      await loadOverview();
+    } catch (error: any) {
+      toast.error(error?.message ?? "ลบรายการไม่สำเร็จ");
+    } finally {
+      setDeletingRedemption(false);
     }
   };
 
@@ -441,6 +460,7 @@ export default function RewardsPage() {
                       <TH>รายการ</TH>
                       <TH>หมายเหตุ</TH>
                       <TH className="text-right">แต้ม</TH>
+                      <TH className="text-right"></TH>
                     </TR>
                   </THead>
                   <TBody>
@@ -453,6 +473,18 @@ export default function RewardsPage() {
                           {row.points >= 0 ? "+" : ""}
                           {row.points.toLocaleString("th-TH")}
                         </TD>
+                        <TD className="text-right">
+                          {row.reason === "redemption" && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => setRedemptionToDelete(row)}
+                              title="ลบรายการแลกคะแนน (คืนแต้มและสิทธิ์เดือนนี้)"
+                            >
+                              <Trash2 size={16} className="text-danger-600" />
+                            </Button>
+                          )}
+                        </TD>
                       </TR>
                     ))}
                   </TBody>
@@ -462,6 +494,21 @@ export default function RewardsPage() {
           </div>
         )}
       </Modal>
+
+      <ConfirmActionModal
+        isOpen={!!redemptionToDelete}
+        title="ลบรายการแลกคะแนน"
+        message={
+          redemptionToDelete
+            ? `ลบรายการแลกคะแนนนี้ (${Math.abs(redemptionToDelete.points).toLocaleString("th-TH")} แต้ม, ${formatDateThai(redemptionToDelete.created_at)})? แต้มจะถูกคืนให้ผู้เช่าและสิทธิ์แลกคะแนนของเดือนนี้จะกลับมาใช้ได้อีกครั้ง ส่วนลดที่ใช้ไปแล้วบนใบแจ้งหนี้จะไม่ถูกย้อนกลับ`
+            : ""
+        }
+        confirmLabel="ลบรายการ"
+        destructive
+        loading={deletingRedemption}
+        onCancel={() => setRedemptionToDelete(null)}
+        onConfirm={confirmDeleteRedemption}
+      />
     </div>
   );
 }
