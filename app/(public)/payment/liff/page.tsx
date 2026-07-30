@@ -432,6 +432,14 @@ export default function PaymentLiffPage() {
                 {tenant.full_name} • ห้อง {tenant.room_number}
               </p>
             )}
+            {tenant && (
+              <a
+                href="/payment/liff/points"
+                className="mt-2 inline-block text-xs font-semibold text-blue-600"
+              >
+                ดูคะแนนสะสมของฉัน →
+              </a>
+            )}
           </div>
         )}
 

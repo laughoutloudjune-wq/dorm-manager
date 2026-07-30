@@ -3,7 +3,23 @@ import { createAdminClient } from "@/lib/supabase-admin";
 import { Client, FlexMessage } from "@line/bot-sdk";
 import { requireLineAdminAccess } from "@/lib/line-admin-auth";
 import { applyInvoicePaymentAllocation } from "@/lib/invoice-ledger";
+import { syncPointsForTenant } from "@/lib/points-ledger";
+import { notifyTenantPointsEarned } from "@/lib/points-notify";
 import { getPublicSiteOrigin } from "@/lib/public-site-url";
+import type { SupabaseClient } from "@supabase/supabase-js";
+
+async function syncPointsAfterPayment(supabase: SupabaseClient, invoiceId: string) {
+  try {
+    const { data } = await supabase.from("invoices").select("tenant_id").eq("id", invoiceId).maybeSingle();
+    const tenantId = (data as any)?.tenant_id;
+    if (tenantId) {
+      const result = await syncPointsForTenant(supabase, tenantId);
+      await notifyTenantPointsEarned(supabase, tenantId, result.awardedEntries);
+    }
+  } catch (err) {
+    console.error("[rewards] Failed to sync points after payment for invoice:", invoiceId, err);
+  }
+}
 
 const channelAccessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN || "";
 const lineClient = new Client({ channelAccessToken });
@@ -64,6 +80,7 @@ export async function POST(req: Request) {
         mode: "full",
         source: "admin_liff_approve",
       });
+      await syncPointsAfterPayment(supabase, invoiceId);
       return NextResponse.json({ success: true, ...result });
     }
 

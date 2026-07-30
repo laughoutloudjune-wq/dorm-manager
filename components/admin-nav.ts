@@ -1,6 +1,7 @@
 import {
   Building,
   FileText,
+  Gift,
   LayoutDashboard,
   LogOut,
   ReceiptText,
@@ -19,6 +20,7 @@ const adminNavKeys = [
   { href: "/meter-staff", labelKey: null, label: "พนักงานมิเตอร์ LINE", icon: Users },
   { href: "/invoices", labelKey: "nav_invoices", icon: FileText },
   { href: "/reports", labelKey: null, label: "รายงาน", icon: ReceiptText },
+  { href: "/rewards", labelKey: null, label: "คะแนนสะสม", icon: Gift },
   { href: "/settings", labelKey: "nav_settings", icon: Settings },
 ] as const;
 

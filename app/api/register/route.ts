@@ -21,6 +21,7 @@ export async function POST(req: Request) {
       policyAccepted,
       policyAcceptedAt,
       policyVersion,
+      referrerRoomOrPhone,
     } = body ?? {};
 
     if ((!roomNumber && !roomId) || !fullName || !phoneNumber || !userId) {
@@ -161,6 +162,8 @@ export async function POST(req: Request) {
       ? Number(advanceRentAmount)
       : 0;
 
+    let registeredTenantId: string | null = null;
+
     if (tenant) {
       if (tenant.line_user_id && tenant.line_user_id !== userId) {
         return NextResponse.json({ error: "This room is already linked to another LINE account." }, { status: 400 });
@@ -185,30 +188,83 @@ export async function POST(req: Request) {
       if (updateError) {
         return NextResponse.json({ error: updateError.message }, { status: 500 });
       }
+      registeredTenantId = tenant.id;
     } else {
-      const { error: insertError } = await supabase.from("tenants").insert({
-        room_id: room.id,
-        full_name: fullName,
-        phone_number: phoneNumber,
-        line_user_id: userId,
-        move_in_date: normalizedMoveInDate,
-        status: "active",
-        security_deposit_amount: depositAmount,
-        advance_rent_amount: advanceAmount,
-        deposit_slip_url: shouldMarkAsNewTenant ? depositSlipUrl ?? null : null,
-        advance_rent_slip_url: shouldMarkAsNewTenant ? advanceRentSlipUrl ?? null : null,
-        policy_accepted: normalizedPolicyAccepted,
-        policy_accepted_at: normalizedPolicyAcceptedAt,
-        policy_version: normalizedPolicyVersion,
-      });
+      const { data: insertedTenant, error: insertError } = await supabase
+        .from("tenants")
+        .insert({
+          room_id: room.id,
+          full_name: fullName,
+          phone_number: phoneNumber,
+          line_user_id: userId,
+          move_in_date: normalizedMoveInDate,
+          status: "active",
+          security_deposit_amount: depositAmount,
+          advance_rent_amount: advanceAmount,
+          deposit_slip_url: shouldMarkAsNewTenant ? depositSlipUrl ?? null : null,
+          advance_rent_slip_url: shouldMarkAsNewTenant ? advanceRentSlipUrl ?? null : null,
+          policy_accepted: normalizedPolicyAccepted,
+          policy_accepted_at: normalizedPolicyAcceptedAt,
+          policy_version: normalizedPolicyVersion,
+        })
+        .select("id")
+        .single();
 
       if (insertError) {
         return NextResponse.json({ error: insertError.message }, { status: 500 });
       }
+      registeredTenantId = (insertedTenant as any)?.id ?? null;
     }
 
     if (room.status !== "occupied") {
       await supabase.from("rooms").update({ status: "occupied" }).eq("id", room.id);
+    }
+
+    // Self-reported referral: only recorded for an actual new-tenant sign-up
+    // (never overwritten/moved on a returning-tenant edit), and always left
+    // pending_approval — no points are granted until an admin reviews it from
+    // the Rewards admin page (fraud protection, since this is unverified).
+    // Best-effort: never fail registration itself if this lookup/insert breaks.
+    const referrerLookup = String(referrerRoomOrPhone ?? "").trim();
+    if (shouldMarkAsNewTenant && registeredTenantId && referrerLookup) {
+      try {
+        const { data: referrerByPhone } = await supabase
+          .from("tenants")
+          .select("id")
+          .eq("phone_number", referrerLookup)
+          .neq("id", registeredTenantId)
+          .maybeSingle();
+
+        let referrerTenantId = (referrerByPhone as any)?.id ?? null;
+
+        if (!referrerTenantId) {
+          const { data: referrerRoom } = await supabase
+            .from("rooms")
+            .select("id")
+            .eq("room_number", referrerLookup)
+            .maybeSingle();
+          if (referrerRoom?.id) {
+            const { data: referrerByRoom } = await supabase
+              .from("tenants")
+              .select("id")
+              .eq("room_id", referrerRoom.id)
+              .eq("status", "active")
+              .neq("id", registeredTenantId)
+              .maybeSingle();
+            referrerTenantId = (referrerByRoom as any)?.id ?? null;
+          }
+        }
+
+        if (referrerTenantId) {
+          await supabase.from("tenant_referrals").insert({
+            referrer_tenant_id: referrerTenantId,
+            new_tenant_id: registeredTenantId,
+            status: "pending_approval",
+          });
+        }
+      } catch (referralErr) {
+        console.error("[register] Failed to record self-reported referral:", referralErr);
+      }
     }
 
     return NextResponse.json({ success: true });

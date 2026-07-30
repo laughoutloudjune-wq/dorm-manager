@@ -149,6 +149,8 @@ const permissionLabelThai = (permission: (typeof PERMISSION_KEYS)[number]) => {
     "settings.payment_methods": "แก้ไขช่องทางชำระเงิน",
     "settings.rooms": "แก้ไขข้อมูลห้องในตั้งค่า",
     "settings.permissions": "แก้ไขสิทธิ์และบทบาท",
+    "rewards.view": "ดูคะแนนสะสมผู้เช่า",
+    "rewards.manage": "จัดการคะแนนสะสม/อนุมัติ",
   };
   return labels[permission] ?? PERMISSION_LABELS[permission];
 };

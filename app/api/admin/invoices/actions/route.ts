@@ -1,6 +1,28 @@
 import { NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/admin-api-auth";
 import { applyInvoicePaymentAllocation, syncInvoiceLedger } from "@/lib/invoice-ledger";
+import { syncPointsForTenant } from "@/lib/points-ledger";
+import { notifyTenantPointsEarned } from "@/lib/points-notify";
+import type { SupabaseClient } from "@supabase/supabase-js";
+
+/**
+ * Award any newly-earned rewards points (on-time payment, streak bonus) after
+ * a successful payment allocation, and push a LINE notification for whatever
+ * was newly earned. Never lets a points-sync/notify failure fail the payment
+ * response itself — the payment already succeeded.
+ */
+async function syncPointsAfterPayment(supabase: SupabaseClient, invoiceId: string) {
+  try {
+    const { data } = await supabase.from("invoices").select("tenant_id").eq("id", invoiceId).maybeSingle();
+    const tenantId = (data as any)?.tenant_id;
+    if (tenantId) {
+      const result = await syncPointsForTenant(supabase, tenantId);
+      await notifyTenantPointsEarned(supabase, tenantId, result.awardedEntries);
+    }
+  } catch (err) {
+    console.error("[rewards] Failed to sync points after payment for invoice:", invoiceId, err);
+  }
+}
 
 export async function POST(req: Request) {
   try {
@@ -32,6 +54,7 @@ export async function POST(req: Request) {
           mode: "full",
           source: "admin_status_paid",
         });
+        await syncPointsAfterPayment(auth.supabase, invoiceId);
         return NextResponse.json({ success: true, ...result });
       }
       const { error } = await auth.supabase.from("invoices").update({ status }).eq("id", invoiceId);
@@ -117,6 +140,7 @@ export async function POST(req: Request) {
             ? String((payment as any).idempotency_key)
             : null,
         });
+        await syncPointsAfterPayment(auth.supabase, invoiceId);
         return NextResponse.json({ success: true, ...result });
       }
       const { error } = await auth.supabase.from("invoices").update(payload).eq("id", invoiceId);

@@ -16,6 +16,8 @@ export const PERMISSION_KEYS = [
   "settings.payment_methods",
   "settings.rooms",
   "settings.permissions",
+  "rewards.view",
+  "rewards.manage",
 ] as const;
 
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
@@ -47,6 +49,8 @@ export const PERMISSION_LABELS: Record<PermissionKey, string> = {
   "settings.payment_methods": "Edit payment methods",
   "settings.rooms": "Edit rooms settings",
   "settings.permissions": "Edit permissions",
+  "rewards.view": "View tenant rewards/points",
+  "rewards.manage": "Manage rewards config, approvals & adjustments",
 };
 
 export const defaultRolePermissions = (): RolePermissionMap => {
@@ -69,6 +73,7 @@ export const defaultRolePermissions = (): RolePermissionMap => {
     "tenant.view": true,
     "room.view": true,
     "meter.edit": true,
+    "rewards.view": true,
   };
   const viewer = {
     ...allFalse,
