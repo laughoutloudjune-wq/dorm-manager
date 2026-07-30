@@ -1,10 +1,13 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase-admin";
 import {
+  couponCosts,
   getRewardsConfig,
+  getTenantLifetimeEarnedPoints,
   getTenantPointBalance,
   listTenantLedger,
   redeemPoints,
+  resolveTier,
   syncPointsForTenant,
 } from "@/lib/points-ledger";
 
@@ -46,12 +49,14 @@ export async function POST(req: Request) {
     const config = await getRewardsConfig(supabase);
 
     if (action === "get_balance") {
-      // Lightweight variant for the invoice detail page: just enough to show
-      // "you have N points, redeemable against this invoice" without paying
-      // for the full ledger history the points page needs.
+      // Lightweight variant for the invoice detail page (and the tier badge
+      // on the LIFF home page, where invoiceId is omitted) — just enough to
+      // show balance/tier/coupon affordability without the full ledger
+      // history the points page needs.
       const invoiceId = String(body?.invoiceId ?? "");
-      const [balance, history, invoiceRow] = await Promise.all([
+      const [balance, lifetimeEarnedPoints, history, invoiceRow] = await Promise.all([
         getTenantPointBalance(supabase, tenant.id),
+        getTenantLifetimeEarnedPoints(supabase, tenant.id),
         listTenantLedger(supabase, tenant.id),
         invoiceId
           ? supabase
@@ -76,8 +81,11 @@ export async function POST(req: Request) {
 
       return NextResponse.json({
         balance,
+        lifetimeEarnedPoints,
+        tier: resolveTier(lifetimeEarnedPoints, config),
         config,
-        canRedeem: invoiceEligible && balance > 0 && redemptionsThisMonth < config.max_redemptions_per_month,
+        coupons: couponCosts(config),
+        canRedeemThisInvoice: invoiceEligible && redemptionsThisMonth < config.max_redemptions_per_month,
       });
     }
 

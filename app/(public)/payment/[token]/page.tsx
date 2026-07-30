@@ -241,12 +241,10 @@ export default function PaymentTokenPage() {
   const hasAuthorizedInvoiceRef = useRef(false);
 
   const [pointsBalance, setPointsBalance] = useState(0);
-  const [pointsPerBaht, setPointsPerBaht] = useState(10);
-  const [maxRedemptionBaht, setMaxRedemptionBaht] = useState(0);
-  const [canRedeemPoints, setCanRedeemPoints] = useState(false);
-  const [redeemTarget, setRedeemTarget] = useState<"rent" | "utility">("rent");
-  const [redeemPointsInput, setRedeemPointsInput] = useState("");
-  const [redeeming, setRedeeming] = useState(false);
+  const [coupons, setCoupons] = useState({ rent: { cost: 3000, value: 300 }, utility: { cost: 1500, value: 150 } });
+  const [canRedeemThisInvoice, setCanRedeemThisInvoice] = useState(false);
+  const [appliedCoupon, setAppliedCoupon] = useState<"rent" | "utility" | null>(null);
+  const [redeemingTarget, setRedeemingTarget] = useState<"rent" | "utility" | null>(null);
 
   useEffect(() => {
     const init = async () => {
@@ -413,9 +411,8 @@ export default function PaymentTokenPage() {
         const data = await response.json().catch(() => ({}));
         if (response.ok) {
           setPointsBalance(data.balance ?? 0);
-          setPointsPerBaht(data.config?.points_per_baht ?? 10);
-          setMaxRedemptionBaht(data.config?.max_redemption_baht ?? 0);
-          setCanRedeemPoints(!!data.canRedeem);
+          if (data.coupons) setCoupons(data.coupons);
+          setCanRedeemThisInvoice(!!data.canRedeemThisInvoice);
         }
       } catch {
         // Best-effort — the redeem section simply won't show if this fails.
@@ -424,18 +421,14 @@ export default function PaymentTokenPage() {
     void loadPoints();
   }, [accessToken, invoice?.id, invoice?.status]);
 
-  const handleRedeemPoints = async () => {
+  const handleRedeemCoupon = async (target: "rent" | "utility") => {
     if (!invoice || !accessToken) return;
-    const points = Math.floor(Number(redeemPointsInput || 0));
-    if (!points || points <= 0) {
-      toast.error("กรุณาระบุจำนวนคะแนนที่ต้องการแลก");
-      return;
-    }
+    const points = coupons[target].cost;
     if (points > pointsBalance) {
       toast.error("คะแนนไม่เพียงพอ");
       return;
     }
-    setRedeeming(true);
+    setRedeemingTarget(target);
     try {
       const response = await fetch("/api/payment-liff/points", {
         method: "POST",
@@ -444,14 +437,16 @@ export default function PaymentTokenPage() {
           action: "redeem",
           accessToken,
           invoiceId: invoice.id,
-          target: redeemTarget,
+          target,
           pointsToRedeem: points,
         }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data?.error ?? "แลกคะแนนไม่สำเร็จ");
 
-      toast.success(`แลกคะแนนสำเร็จ ได้รับส่วนลด ฿${formatBaht(data.bahtApplied ?? 0)}`);
+      toast.success(`ใช้คูปองสำเร็จ ได้รับส่วนลด ฿${formatBaht(data.bahtApplied ?? 0)}`);
+      setAppliedCoupon(target);
+      setCanRedeemThisInvoice(false);
       setInvoice((prev) =>
         prev
           ? {
@@ -461,12 +456,10 @@ export default function PaymentTokenPage() {
           : prev
       );
       setPointsBalance(data.balance ?? 0);
-      setCanRedeemPoints(false);
-      setRedeemPointsInput("");
     } catch (error: any) {
       toast.error(error?.message ?? "แลกคะแนนไม่สำเร็จ");
     } finally {
-      setRedeeming(false);
+      setRedeemingTarget(null);
     }
   };
 
@@ -703,63 +696,62 @@ export default function PaymentTokenPage() {
           </div>
         </section>
 
-        {invoice.status !== "paid" && pointsBalance > 0 && (
+        {["pending", "overdue", "partial"].includes(invoice.status) && (
           <section className="rounded-3xl border border-white/60 bg-white/90 p-6 shadow-xl">
             <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-slate-900">แลกคะแนนสะสม</h2>
+              <h2 className="text-lg font-semibold text-slate-900">คูปองแลกคะแนนสะสม</h2>
               <span className="text-sm font-semibold text-blue-700">
                 {pointsBalance.toLocaleString("th-TH")} แต้มคงเหลือ
               </span>
             </div>
-            {!canRedeemPoints ? (
-              <p className="mt-3 text-sm text-slate-500">ใช้สิทธิ์แลกคะแนนของเดือนนี้ไปแล้ว หรือยังไม่มีบิลที่แลกได้</p>
+
+            {appliedCoupon ? (
+              <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+                ใช้คูปอง{appliedCoupon === "rent" ? "ส่วนลดค่าเช่า" : "ส่วนลดค่าน้ำ-ไฟ"}แล้ว — ยอดที่ต้องชำระด้านบนปรับส่วนลดให้แล้ว
+              </div>
+            ) : !canRedeemThisInvoice ? (
+              <p className="mt-3 text-sm text-slate-500">ใช้สิทธิ์แลกคะแนนของเดือนนี้ไปแล้ว</p>
             ) : (
-              <div className="mt-4 space-y-3">
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setRedeemTarget("rent")}
-                    className={`flex-1 rounded-xl border px-3 py-2 text-sm font-semibold ${
-                      redeemTarget === "rent" ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 text-slate-600"
-                    }`}
-                  >
-                    ส่วนลดค่าเช่า
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setRedeemTarget("utility")}
-                    className={`flex-1 rounded-xl border px-3 py-2 text-sm font-semibold ${
-                      redeemTarget === "utility" ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 text-slate-600"
-                    }`}
-                  >
-                    ส่วนลดค่าน้ำ-ไฟ
-                  </button>
-                </div>
-                <label className="block text-sm font-medium text-slate-700">
-                  จำนวนคะแนนที่ต้องการแลก
-                  <input
-                    type="number"
-                    min={0}
-                    max={pointsBalance}
-                    value={redeemPointsInput}
-                    onChange={(event) => setRedeemPointsInput(event.target.value)}
-                    className="mt-2 block w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
-                    placeholder={`สูงสุด ${maxRedemptionBaht} บาทต่อครั้ง`}
-                  />
-                </label>
-                {Number(redeemPointsInput || 0) > 0 && (
-                  <p className="text-xs text-slate-500">
-                    ≈ ฿{formatBaht((Number(redeemPointsInput || 0) / pointsPerBaht))} (ส่วนลดสูงสุด ฿{formatBaht(maxRedemptionBaht)} ต่อครั้ง)
-                  </p>
-                )}
-                <button
-                  type="button"
-                  onClick={() => void handleRedeemPoints()}
-                  disabled={redeeming}
-                  className="w-full rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
-                >
-                  {redeeming ? "กำลังแลกคะแนน..." : "แลกคะแนน"}
-                </button>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                {(
+                  [
+                    { key: "rent" as const, label: "ส่วนลดค่าเช่า" },
+                    { key: "utility" as const, label: "ส่วนลดค่าน้ำ-ไฟ" },
+                  ]
+                ).map(({ key, label }) => {
+                  const coupon = coupons[key];
+                  const affordable = pointsBalance >= coupon.cost;
+                  const previewTotal = Math.max(0, toNumber(invoice.total_amount) - coupon.value);
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      disabled={!affordable || redeemingTarget !== null}
+                      onClick={() => void handleRedeemCoupon(key)}
+                      className={`relative flex flex-col rounded-2xl border-2 border-dashed p-4 text-left transition-colors ${
+                        affordable
+                          ? "border-blue-300 bg-blue-50 hover:bg-blue-100"
+                          : "cursor-not-allowed border-slate-200 bg-slate-50 opacity-60"
+                      }`}
+                    >
+                      <span className="text-xs font-semibold uppercase tracking-wide text-blue-700">{label}</span>
+                      <span className="mt-1 text-2xl font-bold text-blue-900">-฿{formatBaht(coupon.value)}</span>
+                      <span className="mt-1 text-xs text-slate-500">ใช้ {coupon.cost.toLocaleString("th-TH")} แต้ม</span>
+                      {affordable ? (
+                        <span className="mt-2 text-xs font-medium text-slate-600">
+                          ยอดหลังใช้คูปอง ฿{formatBaht(previewTotal)}
+                        </span>
+                      ) : (
+                        <span className="mt-2 text-xs font-medium text-rose-600">
+                          ขาดอีก {(coupon.cost - pointsBalance).toLocaleString("th-TH")} แต้ม
+                        </span>
+                      )}
+                      {redeemingTarget === key && (
+                        <span className="mt-2 text-xs font-semibold text-blue-700">กำลังใช้คูปอง...</span>
+                      )}
+                    </button>
+                  );
+                })}
               </div>
             )}
           </section>

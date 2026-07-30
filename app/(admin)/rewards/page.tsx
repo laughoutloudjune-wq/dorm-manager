@@ -198,7 +198,7 @@ export default function RewardsPage() {
     try {
       const result = await callAction("sync_all");
       toast.success(
-        `ซิงค์คะแนนเรียบร้อย: ตรวจสอบ ${result.tenantsChecked} คน, ได้คะแนนใหม่ ${result.tenantsAwarded} คน (${result.entriesAwarded} รายการ)`
+        `ซิงค์คะแนนเรียบร้อย: ตรวจสอบ ${result.tenantsChecked} คน, ได้คะแนนใหม่ ${result.entriesAwarded} รายการ, ปรับคะแนนเดิมตามค่าตั้งค่าใหม่ ${result.entriesAdjusted ?? 0} รายการ`
       );
       if (result.errors?.length) {
         toast.error(`มีข้อผิดพลาด ${result.errors.length} รายการระหว่างซิงค์`);

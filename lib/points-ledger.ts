@@ -37,6 +37,14 @@ export type RewardsConfig = {
    * milestones that predate it. Null means no cutoff (award for full history).
    */
   program_start_date: string | null;
+  /**
+   * Tenure tiers, based on a tenant's *lifetime earned* points (every positive
+   * ledger entry ever, ignoring redemptions/deductions) — not their current
+   * spendable balance, so redeeming points never demotes a tenant's tier.
+   */
+  tier_silver_points: number;
+  tier_gold_points: number;
+  tier_platinum_points: number;
 };
 
 export const DEFAULT_REWARDS_CONFIG: RewardsConfig = {
@@ -52,6 +60,39 @@ export const DEFAULT_REWARDS_CONFIG: RewardsConfig = {
   max_redemptions_per_month: 1,
   point_expiry_months: 12,
   program_start_date: null,
+  tier_silver_points: 3000,
+  tier_gold_points: 5000,
+  tier_platinum_points: 10000,
+};
+
+export type TenantTier = "none" | "silver" | "gold" | "platinum";
+
+/** Tier is based on lifetime earned points, so spending points never demotes a tenant. */
+export const resolveTier = (lifetimeEarnedPoints: number, config: RewardsConfig): TenantTier => {
+  if (lifetimeEarnedPoints >= config.tier_platinum_points) return "platinum";
+  if (lifetimeEarnedPoints >= config.tier_gold_points) return "gold";
+  if (lifetimeEarnedPoints >= config.tier_silver_points) return "silver";
+  return "none";
+};
+
+export type CouponOption = { cost: number; value: number };
+
+/**
+ * Fixed-cost redemption coupons (shopping-app style), derived from the
+ * existing per-redemption cap rather than a separate hardcoded config: the
+ * rent coupon costs exactly enough points to redeem the full cap, and the
+ * utility coupon is half that (both cost and value) — so an admin tuning
+ * `max_redemption_baht` or `points_per_baht` scales both coupons together.
+ */
+export const couponCosts = (config: RewardsConfig): { rent: CouponOption; utility: CouponOption } => {
+  const rentValue = config.max_redemption_baht;
+  const rentCost = Math.round(rentValue * config.points_per_baht);
+  const utilityValue = Math.round((rentValue / 2) * 100) / 100;
+  const utilityCost = Math.round(rentCost / 2);
+  return {
+    rent: { cost: rentCost, value: rentValue },
+    utility: { cost: utilityCost, value: utilityValue },
+  };
 };
 
 const isDateOnlyString = (value: unknown): value is string =>
@@ -241,6 +282,22 @@ export async function getTenantPointBalance(supabase: SupabaseClient, tenantId: 
   return (data ?? []).reduce((sum, row: any) => sum + toNumber(row.points), 0);
 }
 
+/**
+ * Lifetime earned points — sum of every positive ledger entry ever (ignores
+ * redemptions/negative adjustments and expiry), used only to resolve a
+ * tenant's tier. Unlike getTenantPointBalance, this never decreases, so
+ * spending points on a coupon never demotes a tenant's tier.
+ */
+export async function getTenantLifetimeEarnedPoints(supabase: SupabaseClient, tenantId: string) {
+  const { data, error } = await supabase
+    .from("point_ledger_entries")
+    .select("points")
+    .eq("tenant_id", tenantId)
+    .gt("points", 0);
+  if (error) throw new Error(error.message);
+  return (data ?? []).reduce((sum, row: any) => sum + toNumber(row.points), 0);
+}
+
 export async function listTenantLedger(supabase: SupabaseClient, tenantId: string): Promise<PointLedgerRow[]> {
   const { data, error } = await supabase
     .from("point_ledger_entries")
@@ -258,17 +315,44 @@ const expiryFor = (config: RewardsConfig) => {
   return expires.toISOString();
 };
 
-async function insertIfMissing(
+type UpsertLedgerFactResult = { entry: PointLedgerRow; isNew: boolean; changed: boolean };
+
+/**
+ * Insert-or-recompute for a config-driven ledger fact (rent_on_time,
+ * streak_bonus, milestone_3mo, milestone_1yr — anything keyed by a
+ * deterministic idempotency_key). If the fact was already recorded, its
+ * `points`/`baht_equivalent` are recalculated from the *current* config and
+ * updated in place when they've drifted — e.g. an admin raising the on-time
+ * earning rate or a milestone bonus should be reflected the next time "sync"
+ * runs, not frozen forever at whatever the rate was on first award. Only the
+ * amount is ever touched; `expires_at`/`created_at` stay as originally set so
+ * a recalculation never resets a point's expiry clock.
+ */
+async function upsertLedgerFact(
   supabase: SupabaseClient,
   entry: Omit<PointLedgerRow, "id" | "created_at" | "expires_at"> & { expires_at?: string | null },
-): Promise<PointLedgerRow | null> {
+): Promise<UpsertLedgerFactResult | null> {
   const { data: existing, error: existingError } = await supabase
     .from("point_ledger_entries")
-    .select("id")
+    .select(LEDGER_COLUMNS)
     .eq("idempotency_key", entry.idempotency_key)
     .maybeSingle();
   if (existingError) throw new Error(existingError.message);
-  if (existing) return null;
+
+  if (existing) {
+    const existingRow = existing as PointLedgerRow;
+    if (existingRow.points === entry.points && existingRow.baht_equivalent === entry.baht_equivalent) {
+      return { entry: existingRow, isNew: false, changed: false };
+    }
+    const { data: updated, error: updateError } = await supabase
+      .from("point_ledger_entries")
+      .update({ points: entry.points, baht_equivalent: entry.baht_equivalent })
+      .eq("id", existingRow.id)
+      .select(LEDGER_COLUMNS)
+      .single();
+    if (updateError) throw new Error(updateError.message);
+    return { entry: updated as PointLedgerRow, isNew: false, changed: true };
+  }
 
   const { data: inserted, error: insertError } = await supabase
     .from("point_ledger_entries")
@@ -282,10 +366,10 @@ async function insertIfMissing(
     if (String(insertError.code) === "23505") return null;
     throw new Error(insertError.message);
   }
-  return inserted as PointLedgerRow;
+  return { entry: inserted as PointLedgerRow, isNew: true, changed: false };
 }
 
-export type SyncPointsResult = { awardedEntries: PointLedgerRow[] };
+export type SyncPointsResult = { awardedEntries: PointLedgerRow[]; adjustedEntries: PointLedgerRow[] };
 
 export async function syncPointsForTenant(
   supabase: SupabaseClient,
@@ -294,6 +378,7 @@ export async function syncPointsForTenant(
 ): Promise<SyncPointsResult> {
   const cfg = config ?? (await getRewardsConfig(supabase));
   const awardedEntries: PointLedgerRow[] = [];
+  const adjustedEntries: PointLedgerRow[] = [];
 
   const { data: tenant, error: tenantError } = await supabase
     .from("tenants")
@@ -301,7 +386,7 @@ export async function syncPointsForTenant(
     .eq("id", tenantId)
     .maybeSingle();
   if (tenantError) throw new Error(tenantError.message);
-  if (!tenant) return { awardedEntries };
+  if (!tenant) return { awardedEntries, adjustedEntries };
 
   const { data: paidInvoices, error: invoicesError } = await supabase
     .from("invoices")
@@ -325,7 +410,7 @@ export async function syncPointsForTenant(
     if (!isPaymentOnTime(invoice)) continue;
     const points = pointsForRentPayment(invoice.total_amount, cfg);
     if (points <= 0) continue;
-    const inserted = await insertIfMissing(supabase, {
+    const result = await upsertLedgerFact(supabase, {
       tenant_id: tenantId,
       points,
       reason: "rent_on_time",
@@ -337,14 +422,15 @@ export async function syncPointsForTenant(
       notes: null,
       expires_at: expiryFor(cfg),
     });
-    if (inserted) awardedEntries.push(inserted);
+    if (result?.isNew) awardedEntries.push(result.entry);
+    else if (result?.changed) adjustedEntries.push(result.entry);
   }
 
   // 2. Streak bonus every Nth consecutive on-time payment (resets on any late one).
   const progression = computeStreakProgression(invoicesAsc);
   for (const step of progression) {
     if (step.streak > 0 && step.streak % cfg.streak_length === 0) {
-      const inserted = await insertIfMissing(supabase, {
+      const result = await upsertLedgerFact(supabase, {
         tenant_id: tenantId,
         points: cfg.streak_bonus_points,
         reason: "streak_bonus",
@@ -356,7 +442,8 @@ export async function syncPointsForTenant(
         notes: null,
         expires_at: expiryFor(cfg),
       });
-      if (inserted) awardedEntries.push(inserted);
+      if (result?.isNew) awardedEntries.push(result.entry);
+      else if (result?.changed) adjustedEntries.push(result.entry);
     }
   }
 
@@ -373,7 +460,7 @@ export async function syncPointsForTenant(
       hasReachedThreeMonthMilestone(tenant.move_in_date, asOf) &&
       isOnOrAfterProgramStart(threeMoDate, cfg.program_start_date)
     ) {
-      const inserted = await insertIfMissing(supabase, {
+      const result = await upsertLedgerFact(supabase, {
         tenant_id: tenantId,
         points: cfg.milestone_3mo_points,
         reason: "milestone_3mo",
@@ -385,14 +472,15 @@ export async function syncPointsForTenant(
         notes: null,
         expires_at: expiryFor(cfg),
       });
-      if (inserted) awardedEntries.push(inserted);
+      if (result?.isNew) awardedEntries.push(result.entry);
+      else if (result?.changed) adjustedEntries.push(result.entry);
     }
 
     const yearsReached = yearMilestonesReached(tenant.move_in_date, asOf, cfg.milestone_1yr_repeats);
     for (let year = 1; year <= yearsReached; year += 1) {
       const yearDate = addMonthsToDate(tenant.move_in_date, year * 12);
       if (!isOnOrAfterProgramStart(yearDate, cfg.program_start_date)) continue;
-      const inserted = await insertIfMissing(supabase, {
+      const result = await upsertLedgerFact(supabase, {
         tenant_id: tenantId,
         points: cfg.milestone_1yr_points,
         reason: "milestone_1yr",
@@ -404,11 +492,12 @@ export async function syncPointsForTenant(
         notes: `Year ${year}`,
         expires_at: expiryFor(cfg),
       });
-      if (inserted) awardedEntries.push(inserted);
+      if (result?.isNew) awardedEntries.push(result.entry);
+      else if (result?.changed) adjustedEntries.push(result.entry);
     }
   }
 
-  return { awardedEntries };
+  return { awardedEntries, adjustedEntries };
 }
 
 const OPEN_FOR_REDEMPTION_STATUSES = ["pending", "overdue", "partial"];

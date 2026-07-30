@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, UploadCloud } from "lucide-react";
 
 type TenantInfo = {
   id: string;
@@ -114,6 +114,15 @@ export default function PaymentLiffCurrentInvoicesPage() {
   const [submitted, setSubmitted] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [slipFile, setSlipFile] = useState<File | null>(null);
+  const [slipPreview, setSlipPreview] = useState<string | null>(null);
+
+  const handleSlipChange = (file: File | null | undefined) => {
+    setSlipFile(file ?? null);
+    setSlipPreview((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return file ? URL.createObjectURL(file) : null;
+    });
+  };
 
   useEffect(() => {
     const boot = async () => {
@@ -361,17 +370,37 @@ export default function PaymentLiffCurrentInvoicesPage() {
                   <p className="mt-1 text-2xl font-semibold text-slate-900">฿{formatMoney(grandTotal)}</p>
                   <p className="mt-2 text-xs text-slate-500">เลือก {selectedIds.length} รายการ</p>
 
-                  <label className="mt-4 block text-sm font-medium text-slate-700">
-                    อัปโหลดสลิป
+                  <p className="mt-4 text-sm font-medium text-slate-700">อัปโหลดสลิปการโอน</p>
+                  <label className="mt-2 flex cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
+                    <UploadCloud size={24} />
+                    <span>{submitting ? `กำลังอัปโหลด... ${uploadProgress}%` : "แตะเพื่อเลือกไฟล์สลิป"}</span>
                     <input
                       type="file"
                       accept="image/*"
-                      onChange={(event) => setSlipFile(event.target.files?.[0] ?? null)}
-                      className="mt-2 block w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+                      className="hidden"
+                      disabled={submitting}
+                      onChange={(event) => handleSlipChange(event.target.files?.[0])}
                     />
                   </label>
 
-                  {submitting && <p className="mt-3 text-xs text-slate-500">กำลังอัปโหลด {uploadProgress}%</p>}
+                  {submitting && (
+                    <div className="mt-3 rounded-xl border border-slate-200 bg-white p-3">
+                      <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100">
+                        <div
+                          className="h-2 rounded-full bg-blue-600 transition-all duration-200"
+                          style={{ width: `${uploadProgress}%` }}
+                        />
+                      </div>
+                      <p className="mt-2 text-xs text-slate-500">กำลังอัปโหลดสลิป {uploadProgress}%</p>
+                    </div>
+                  )}
+
+                  {slipPreview && (
+                    <div className="mt-3 rounded-2xl border border-slate-200 bg-white p-3">
+                      <p className="text-xs text-slate-400">ตัวอย่างสลิป</p>
+                      <img src={slipPreview} alt="Payment slip preview" className="mt-2 w-full rounded-xl" />
+                    </div>
+                  )}
 
                   <button
                     type="button"

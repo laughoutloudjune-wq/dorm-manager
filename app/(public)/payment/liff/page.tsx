@@ -27,6 +27,14 @@ const moveOutStatusLabel = (status: string) => {
   return status;
 };
 
+type TenantTier = "none" | "silver" | "gold" | "platinum";
+
+const TIER_META: Record<Exclude<TenantTier, "none">, { label: string; emoji: string; className: string }> = {
+  silver: { label: "Silver", emoji: "🥈", className: "bg-slate-200 text-slate-700" },
+  gold: { label: "Gold", emoji: "🥇", className: "bg-amber-100 text-amber-800" },
+  platinum: { label: "Platinum", emoji: "💎", className: "bg-indigo-100 text-indigo-800" },
+};
+
 export default function PaymentLiffHomePage() {
   const [profile, setProfile] = useState<LiffProfile | null>(null);
   const [accessToken, setAccessToken] = useState("");
@@ -35,6 +43,7 @@ export default function PaymentLiffHomePage() {
   const [showRegisterButton, setShowRegisterButton] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
   const [moveOutStatus, setMoveOutStatus] = useState<string | null>(null);
+  const [tier, setTier] = useState<TenantTier>("none");
   const [loading, setLoading] = useState(true);
   const [isAcceptingPolicy, setIsAcceptingPolicy] = useState(false);
 
@@ -85,7 +94,7 @@ export default function PaymentLiffHomePage() {
         const nextAccessToken = liff.getAccessToken() || "";
         setAccessToken(nextAccessToken);
 
-        const [invoicesRes, moveOutRes] = await Promise.all([
+        const [invoicesRes, moveOutRes, pointsRes] = await Promise.all([
           fetch("/api/payment-liff/invoices", {
             method: "POST",
             headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" },
@@ -95,6 +104,11 @@ export default function PaymentLiffHomePage() {
             method: "POST",
             headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" },
             body: JSON.stringify({ action: "get_status", accessToken: nextAccessToken }),
+          }),
+          fetch("/api/payment-liff/points", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" },
+            body: JSON.stringify({ action: "get_balance", accessToken: nextAccessToken }),
           }),
         ]);
 
@@ -119,6 +133,11 @@ export default function PaymentLiffHomePage() {
         const moveOutData = await moveOutRes.json().catch(() => ({}));
         if (moveOutRes.ok && moveOutData?.move_out_request?.status) {
           setMoveOutStatus(String(moveOutData.move_out_request.status));
+        }
+
+        const pointsData = await pointsRes.json().catch(() => ({}));
+        if (pointsRes.ok && pointsData?.tier) {
+          setTier(pointsData.tier as TenantTier);
         }
 
         setLoading(false);
@@ -227,10 +246,17 @@ export default function PaymentLiffHomePage() {
                         {tenant.full_name.slice(0, 1)}
                       </div>
                     )}
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1">
                       <p className="truncate text-base font-semibold text-slate-900">{tenant.full_name}</p>
                       <p className="text-sm text-slate-500">ห้อง {tenant.room_number}</p>
                     </div>
+                    {tier !== "none" && (
+                      <span
+                        className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold ${TIER_META[tier].className}`}
+                      >
+                        {TIER_META[tier].emoji} {TIER_META[tier].label}
+                      </span>
+                    )}
                   </div>
                 </div>
 

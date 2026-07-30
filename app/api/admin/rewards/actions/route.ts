@@ -41,13 +41,15 @@ export async function POST(req: Request) {
 
       let tenantsAwarded = 0;
       let entriesAwarded = 0;
+      let entriesAdjusted = 0;
       const errors: { tenantId: string; message: string }[] = [];
       for (const row of tenantRows ?? []) {
         try {
           const result = await syncPointsForTenant(auth.supabase, (row as any).id, config);
-          if (result.awardedEntries.length > 0) {
+          if (result.awardedEntries.length > 0 || result.adjustedEntries.length > 0) {
             tenantsAwarded += 1;
             entriesAwarded += result.awardedEntries.length;
+            entriesAdjusted += result.adjustedEntries.length;
           }
         } catch (err: any) {
           errors.push({ tenantId: (row as any).id, message: err?.message ?? "Unknown error" });
@@ -58,6 +60,7 @@ export async function POST(req: Request) {
         tenantsChecked: (tenantRows ?? []).length,
         tenantsAwarded,
         entriesAwarded,
+        entriesAdjusted,
         errors,
       });
     }

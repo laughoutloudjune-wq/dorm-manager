@@ -14,6 +14,8 @@ import {
   isInvoiceWithinProgram,
   isOnOrAfterProgramStart,
   addMonthsToDate,
+  resolveTier,
+  couponCosts,
 } from "./points-ledger";
 
 const cfg = DEFAULT_REWARDS_CONFIG;
@@ -191,5 +193,39 @@ describe("milestone gating by program_start_date (via addMonthsToDate + isOnOrAf
     // Moved in 2024-01-01: year-1 milestone 2025-01-01 (before launch), year-2 milestone 2026-01-01 (after launch).
     expect(isOnOrAfterProgramStart(addMonthsToDate("2024-01-01", 12), "2025-06-01")).toBe(false);
     expect(isOnOrAfterProgramStart(addMonthsToDate("2024-01-01", 24), "2025-06-01")).toBe(true);
+  });
+});
+
+describe("resolveTier", () => {
+  it("is 'none' below the silver threshold", () => {
+    expect(resolveTier(2999, cfg)).toBe("none");
+  });
+  it("reaches each tier at its exact threshold, matching the spec (3000/5000/10000)", () => {
+    expect(resolveTier(3000, cfg)).toBe("silver");
+    expect(resolveTier(4999, cfg)).toBe("silver");
+    expect(resolveTier(5000, cfg)).toBe("gold");
+    expect(resolveTier(9999, cfg)).toBe("gold");
+    expect(resolveTier(10000, cfg)).toBe("platinum");
+  });
+  it("never demotes based on current spendable balance — callers must pass lifetime earned points", () => {
+    // A tenant who earned 6000 lifetime and redeemed down to a balance of 500 is still Gold.
+    expect(resolveTier(6000, cfg)).toBe("gold");
+  });
+});
+
+describe("couponCosts", () => {
+  it("derives the rent coupon from max_redemption_baht * points_per_baht (300 baht, 10 pts/baht -> 3000 pts)", () => {
+    const { rent } = couponCosts(cfg);
+    expect(rent).toEqual({ cost: 3000, value: 300 });
+  });
+  it("makes the utility coupon exactly half the rent coupon's cost and value (1500 pts / 150 baht)", () => {
+    const { utility } = couponCosts(cfg);
+    expect(utility).toEqual({ cost: 1500, value: 150 });
+  });
+  it("scales both coupons when the admin tunes the redemption cap or ratio", () => {
+    const tuned = { ...cfg, max_redemption_baht: 500, points_per_baht: 20 };
+    const { rent, utility } = couponCosts(tuned);
+    expect(rent).toEqual({ cost: 10000, value: 500 });
+    expect(utility).toEqual({ cost: 5000, value: 250 });
   });
 });
