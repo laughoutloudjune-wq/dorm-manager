@@ -240,6 +240,14 @@ export default function PaymentTokenPage() {
   const [liffReady, setLiffReady] = useState(false);
   const hasAuthorizedInvoiceRef = useRef(false);
 
+  const [pointsBalance, setPointsBalance] = useState(0);
+  const [pointsPerBaht, setPointsPerBaht] = useState(10);
+  const [maxRedemptionBaht, setMaxRedemptionBaht] = useState(0);
+  const [canRedeemPoints, setCanRedeemPoints] = useState(false);
+  const [redeemTarget, setRedeemTarget] = useState<"rent" | "utility">("rent");
+  const [redeemPointsInput, setRedeemPointsInput] = useState("");
+  const [redeeming, setRedeeming] = useState(false);
+
   useEffect(() => {
     const init = async () => {
       try {
@@ -391,6 +399,76 @@ export default function PaymentTokenPage() {
 
     if (token && liffReady) void load();
   }, [token, supabase, accessToken, liffReady]);
+
+  useEffect(() => {
+    const loadPoints = async () => {
+      if (!accessToken || !invoice?.id) return;
+      if (!["pending", "overdue", "partial"].includes(invoice.status)) return;
+      try {
+        const response = await fetch("/api/payment-liff/points", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "get_balance", accessToken, invoiceId: invoice.id }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (response.ok) {
+          setPointsBalance(data.balance ?? 0);
+          setPointsPerBaht(data.config?.points_per_baht ?? 10);
+          setMaxRedemptionBaht(data.config?.max_redemption_baht ?? 0);
+          setCanRedeemPoints(!!data.canRedeem);
+        }
+      } catch {
+        // Best-effort — the redeem section simply won't show if this fails.
+      }
+    };
+    void loadPoints();
+  }, [accessToken, invoice?.id, invoice?.status]);
+
+  const handleRedeemPoints = async () => {
+    if (!invoice || !accessToken) return;
+    const points = Math.floor(Number(redeemPointsInput || 0));
+    if (!points || points <= 0) {
+      toast.error("กรุณาระบุจำนวนคะแนนที่ต้องการแลก");
+      return;
+    }
+    if (points > pointsBalance) {
+      toast.error("คะแนนไม่เพียงพอ");
+      return;
+    }
+    setRedeeming(true);
+    try {
+      const response = await fetch("/api/payment-liff/points", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "redeem",
+          accessToken,
+          invoiceId: invoice.id,
+          target: redeemTarget,
+          pointsToRedeem: points,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data?.error ?? "แลกคะแนนไม่สำเร็จ");
+
+      toast.success(`แลกคะแนนสำเร็จ ได้รับส่วนลด ฿${formatBaht(data.bahtApplied ?? 0)}`);
+      setInvoice((prev) =>
+        prev
+          ? {
+              ...prev,
+              total_amount: toNumber(data.updatedInvoice?.total_amount ?? prev.total_amount),
+            }
+          : prev
+      );
+      setPointsBalance(data.balance ?? 0);
+      setCanRedeemPoints(false);
+      setRedeemPointsInput("");
+    } catch (error: any) {
+      toast.error(error?.message ?? "แลกคะแนนไม่สำเร็จ");
+    } finally {
+      setRedeeming(false);
+    }
+  };
 
   const method: PaymentMethod | null = invoice?.custom_payment_method ?? defaultMethod ?? null;
   const transferBreakdownItems = (invoice?.additional_fees_breakdown ?? []).filter((row: any) =>
@@ -624,6 +702,68 @@ export default function PaymentTokenPage() {
             ) : null}
           </div>
         </section>
+
+        {invoice.status !== "paid" && pointsBalance > 0 && (
+          <section className="rounded-3xl border border-white/60 bg-white/90 p-6 shadow-xl">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-slate-900">แลกคะแนนสะสม</h2>
+              <span className="text-sm font-semibold text-blue-700">
+                {pointsBalance.toLocaleString("th-TH")} แต้มคงเหลือ
+              </span>
+            </div>
+            {!canRedeemPoints ? (
+              <p className="mt-3 text-sm text-slate-500">ใช้สิทธิ์แลกคะแนนของเดือนนี้ไปแล้ว หรือยังไม่มีบิลที่แลกได้</p>
+            ) : (
+              <div className="mt-4 space-y-3">
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setRedeemTarget("rent")}
+                    className={`flex-1 rounded-xl border px-3 py-2 text-sm font-semibold ${
+                      redeemTarget === "rent" ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 text-slate-600"
+                    }`}
+                  >
+                    ส่วนลดค่าเช่า
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRedeemTarget("utility")}
+                    className={`flex-1 rounded-xl border px-3 py-2 text-sm font-semibold ${
+                      redeemTarget === "utility" ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 text-slate-600"
+                    }`}
+                  >
+                    ส่วนลดค่าน้ำ-ไฟ
+                  </button>
+                </div>
+                <label className="block text-sm font-medium text-slate-700">
+                  จำนวนคะแนนที่ต้องการแลก
+                  <input
+                    type="number"
+                    min={0}
+                    max={pointsBalance}
+                    value={redeemPointsInput}
+                    onChange={(event) => setRedeemPointsInput(event.target.value)}
+                    className="mt-2 block w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+                    placeholder={`สูงสุด ${maxRedemptionBaht} บาทต่อครั้ง`}
+                  />
+                </label>
+                {Number(redeemPointsInput || 0) > 0 && (
+                  <p className="text-xs text-slate-500">
+                    ≈ ฿{formatBaht((Number(redeemPointsInput || 0) / pointsPerBaht))} (ส่วนลดสูงสุด ฿{formatBaht(maxRedemptionBaht)} ต่อครั้ง)
+                  </p>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void handleRedeemPoints()}
+                  disabled={redeeming}
+                  className="w-full rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+                >
+                  {redeeming ? "กำลังแลกคะแนน..." : "แลกคะแนน"}
+                </button>
+              </div>
+            )}
+          </section>
+        )}
 
         <section className="rounded-3xl border border-white/60 bg-white/90 p-6 shadow-xl">
           <div className="flex items-center justify-between">

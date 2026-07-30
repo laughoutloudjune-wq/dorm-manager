@@ -73,22 +73,10 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: paidError.message }, { status: 500 });
     }
 
-    const { data: moveOutRequest, error: moveOutError } = await supabase
-      .from("move_out_requests")
-      .select(
-        "id,notice_date,requested_move_out_date,approved_move_out_date,actual_move_out_date,status,request_note,admin_note,created_at,updated_at"
-      )
-      .eq("tenant_id", tenant.id)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (moveOutError) {
-      return NextResponse.json({ error: moveOutError.message }, { status: 500 });
-    }
-
     const roomRel = Array.isArray((tenant as any).rooms) ? (tenant as any).rooms[0] : (tenant as any).rooms;
 
+    // Move-out request status/history has its own dedicated endpoint
+    // (app/api/payment-liff/move-out's get_status action) — not duplicated here.
     return NextResponse.json({
       tenant: {
         id: tenant.id,
@@ -100,7 +88,6 @@ export async function POST(req: Request) {
       invoices: visiblePendingInvoices,
       pending_invoices: visiblePendingInvoices,
       paid_invoices: paidInvoices ?? [],
-      move_out_request: moveOutRequest ?? null,
       message: null,
     });
   } catch (error: any) {

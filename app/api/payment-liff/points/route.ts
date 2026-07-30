@@ -45,6 +45,42 @@ export async function POST(req: Request) {
 
     const config = await getRewardsConfig(supabase);
 
+    if (action === "get_balance") {
+      // Lightweight variant for the invoice detail page: just enough to show
+      // "you have N points, redeemable against this invoice" without paying
+      // for the full ledger history the points page needs.
+      const invoiceId = String(body?.invoiceId ?? "");
+      const [balance, history, invoiceRow] = await Promise.all([
+        getTenantPointBalance(supabase, tenant.id),
+        listTenantLedger(supabase, tenant.id),
+        invoiceId
+          ? supabase
+              .from("invoices")
+              .select("id,tenant_id,status")
+              .eq("id", invoiceId)
+              .maybeSingle()
+              .then((r) => r.data)
+          : Promise.resolve(null),
+      ]);
+
+      const now = new Date();
+      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+      const redemptionsThisMonth = history.filter(
+        (row) => row.reason === "redemption" && row.created_at >= monthStart,
+      ).length;
+
+      const invoiceEligible =
+        !!invoiceRow &&
+        String((invoiceRow as any).tenant_id) === tenant.id &&
+        ["pending", "overdue", "partial"].includes(String((invoiceRow as any).status));
+
+      return NextResponse.json({
+        balance,
+        config,
+        canRedeem: invoiceEligible && balance > 0 && redemptionsThisMonth < config.max_redemptions_per_month,
+      });
+    }
+
     if (action === "redeem") {
       const invoiceId = String(body?.invoiceId ?? "");
       const target = body?.target === "utility" ? "utility" : "rent";
