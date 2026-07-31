@@ -1841,31 +1841,45 @@ export function useInvoicesState() {
       );
 
       const nextCarryItems: CarryForwardItem[] = [];
+      const nextLateFeeItems: LateFeeLineItem[] = [];
 
       for (const row of filteredCandidates) {
         const outstanding = row.outstanding_amount;
         if (outstanding > 0) {
-          const actualRent = outstanding;
+          nextCarryItems.push({
+            detail: `ยอดค้างชำระงวด ${formatPeriodLabel(String(row.start_date ?? ""))}`,
+            unit: 1,
+            price_per_unit: outstanding,
+            total_amount: outstanding,
+            source_invoice_id: String(row.id),
+          });
+        }
 
-          if (actualRent > 0) {
-            nextCarryItems.push({
-              detail: `ยอดค้างชำระงวด ${formatPeriodLabel(String(row.start_date ?? ""))}`,
-              unit: 1,
-              price_per_unit: actualRent,
-              total_amount: actualRent,
-              source_invoice_id: String(row.id),
-            });
-          }
+        const snapshotLateFee = toNumber(row.late_fee_snapshot_amount);
+        if (snapshotLateFee > 0) {
+          const daysOverdue = toNumber(row.late_fee_snapshot_days);
+          const dailyRate = toNumber(row.late_fee_per_day);
+          nextLateFeeItems.push({
+            detail: `ค่าปรับล่าช้างวด ${formatPeriodLabel(String(row.start_date ?? ""))}`,
+            unit: daysOverdue,
+            price_per_unit: dailyRate,
+            total_amount: snapshotLateFee,
+            source_invoice_id: String(row.id),
+            days_overdue: daysOverdue,
+            daily_rate: dailyRate,
+            original_amount: snapshotLateFee,
+            waived_amount: 0,
+          });
         }
       }
 
       // Preserve manual carry forward items (ones without a source_invoice_id)
       const manualCarryItems = carry.filter((item) => !item.source_invoice_id);
       setEditableCarryForwardItems([...nextCarryItems, ...manualCarryItems]);
-      
+
       // Preserve manual late fee items
       const manualLateFeeItems = late.filter((item) => !item.source_invoice_id);
-      setEditableLateFeeItems(manualLateFeeItems);
+      setEditableLateFeeItems([...nextLateFeeItems, ...manualLateFeeItems]);
 
       setForm((prev) => {
         const nextLateFee = calculateCurrentFormLateFee(prev);
@@ -2944,7 +2958,7 @@ export function useInvoicesState() {
         ? await supabase
             .from("invoices")
             .select(
-              "id,tenant_id,start_date,due_date,total_amount,paid_amount,status,late_fee_amount,late_fee_per_day,late_fee_start_date,waived_late_fee_amount,locked_late_fee_amount",
+              "id,tenant_id,start_date,due_date,total_amount,paid_amount,status,late_fee_amount,late_fee_per_day,late_fee_start_date,waived_late_fee_amount,locked_late_fee_amount,carry_forward_amount",
             )
             .in("tenant_id", tenantIdsToGenerate)
             .lt("start_date", toLocalDateString(startDate))
@@ -3010,10 +3024,16 @@ export function useInvoicesState() {
     const carryForwardByTenant = new Map<string, any[]>();
     for (const row of (previousUnpaidInvoices ?? []) as any[]) {
       // Do not skip carried invoices so they all appear in the checklist
-      const outstanding = Math.max(
+      const rawOutstanding = Math.max(
         0,
         toNumber(row.total_amount) - toNumber(row.paid_amount),
       );
+      // Each invoice's total_amount may already bundle an earlier month's carry-forward
+      // (see lib/invoice-ledger.ts's getCarryForwardCandidatesForTarget). Unbundle it here
+      // too, or summing every open invoice in the chain double/triple-counts the same debt.
+      const carryAmt = toNumber(row.carry_forward_amount);
+      const outstanding =
+        carryAmt > 0 ? Math.max(0, rawOutstanding - carryAmt) : rawOutstanding;
       if (outstanding <= 0) continue;
       const generationDateText = issueDateText;
       const tenantId = String(row.tenant_id ?? "");

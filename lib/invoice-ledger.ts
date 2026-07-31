@@ -289,8 +289,10 @@ export async function syncInvoiceLedger(
 
 /**
  * Overdue / unpaid invoices from prior periods that can be rolled into a new invoice.
- * @param targetInvoiceId When set (editing that draft), sources already linked to this target stay visible;
- *        only sources carried to a *different* invoice are excluded.
+ * Each candidate is reported at its own unbundled amount (its total minus whatever it
+ * already carried in from an earlier invoice), so every still-open period in the chain
+ * can be listed side by side without double counting — whether or not that period was
+ * previously carried into some other invoice.
  * @param valuationDateForLateFee Optional "as of" date for late-fee preview (e.g. new invoice issue_date); defaults to beforeStartDate.
  */
 export async function getCarryForwardCandidatesForTarget(
@@ -310,7 +312,7 @@ export async function getCarryForwardCandidatesForTarget(
   const { data: invoices, error } = await supabase
     .from("invoices")
     .select(
-      "id,tenant_id,start_date,due_date,total_amount,paid_amount,status,late_fee_amount,late_fee_per_day,late_fee_start_date,waived_late_fee_amount,locked_late_fee_amount",
+      "id,tenant_id,start_date,due_date,total_amount,paid_amount,status,late_fee_amount,late_fee_per_day,late_fee_start_date,waived_late_fee_amount,locked_late_fee_amount,carry_forward_amount",
     )
     .eq("tenant_id", tenantId)
     .lt("start_date", beforeStartDate)
@@ -321,28 +323,19 @@ export async function getCarryForwardCandidatesForTarget(
   const candidateIds = (invoices ?? []).map((row: any) => String(row.id));
   if (candidateIds.length === 0) return [];
 
-  const { data: existingCarryRows, error: carryError } = await supabase
-    .from("invoice_carry_forwards")
-    .select("source_invoice_id,target_invoice_id")
-    .in("source_invoice_id", candidateIds);
-  if (carryError) throw new Error(carryError.message);
-
-  // Build a set of which source invoices are already linked to a DIFFERENT target invoice.
-  // (If linked to the current targetInvoiceId, we keep them visible so admin can uncheck.)
-  const linkedElsewhere = new Set<string>();
-  for (const row of existingCarryRows ?? []) {
-    const sid = String((row as any).source_invoice_id ?? "");
-    const tid = String((row as any).target_invoice_id ?? "");
-    if (!sid || !tid) continue;
-    if (targetInvoiceId && tid === String(targetInvoiceId)) continue;
-    linkedElsewhere.add(sid);
-  }
-
-  // Bug #2 fix: Each invoice's outstanding is computed directly from its own
-  // total_amount vs paid_amount. We do NOT subtract sources from targets —
-  // that was causing 4/2026 to appear as 0 when 3/2026 was already carried into it.
-  // An invoice should appear as a candidate as long as it has an unpaid balance,
-  // regardless of whether it was previously carried forward into another invoice.
+  // Each invoice's own new charge (its total_amount minus whatever it already
+  // carried in from an even earlier invoice) is a fixed amount that never overlaps
+  // with a different period's own charge. So every still-open invoice in the chain
+  // can be shown as its own candidate — regardless of whether it was previously
+  // carried into a later invoice — without double counting, as long as we always
+  // report each invoice's own portion rather than its bundled total.
+  //
+  // "Own portion still outstanding" has to account for partial payments too: a
+  // payment on a bundled invoice pays down the total, not a specific line item, so
+  // we can't know for certain whether it paid off the carried-in portion or the
+  // invoice's own portion first. We assume payments retire the invoice's own charge
+  // first (min of own charge vs. current outstanding) — see room 114/1 case where a
+  // partial April payment left exactly its own 244 baht outstanding.
   const candidates = (invoices ?? []).map((row: any) => {
     let snapshotDays = 0;
     if (row.late_fee_start_date) {
@@ -353,14 +346,12 @@ export async function getCarryForwardCandidatesForTarget(
       }
     }
     const snapshotLateFee = calculateLateFeeAmount(row, asOfLateFee);
-    
-    let outstanding = getInvoiceOutstanding(row);
-    // Unbundle carry forwards: user wants each month's base debt separated
+
+    const currentOutstanding = getInvoiceOutstanding(row);
     const carryAmt = toNumber(row.carry_forward_amount);
-    if (carryAmt > 0) {
-      outstanding = Math.max(0, outstanding - carryAmt);
-    }
-    
+    const ownAmount = Math.max(0, toNumber(row.total_amount) - carryAmt);
+    const outstanding = Math.max(0, Math.min(ownAmount, currentOutstanding));
+
     return {
       ...row,
       outstanding_amount: outstanding,
@@ -370,7 +361,7 @@ export async function getCarryForwardCandidatesForTarget(
   });
 
   return candidates.filter(
-    (row: any) => (row.outstanding_amount > 0 || row.late_fee_snapshot_amount > 0) && !linkedElsewhere.has(String(row.id)),
+    (row: any) => row.outstanding_amount > 0 || row.late_fee_snapshot_amount > 0,
   );
 }
 

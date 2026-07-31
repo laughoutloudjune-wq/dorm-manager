@@ -173,10 +173,12 @@ export function AddManualMoveOutModal({ isOpen, onClose, onSuccess }: Props) {
                       key={t.id}
                       type="button"
                       onClick={() => handleSelectTenant(t)}
-                      className={buttonClasses({ variant: "subtle", fullWidth: true })}
+                      className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-slate-700 hover:bg-primary-50"
                     >
-                      {roomNumber ? <span className="font-semibold w-16 shrink-0 text-slate-500">ห้อง {roomNumber}</span> : null}
-                      <span className="font-medium">{t.full_name}</span>
+                      {roomNumber ? (
+                        <span className="shrink-0 font-semibold text-slate-500">ห้อง {roomNumber}</span>
+                      ) : null}
+                      <span className="min-w-0 flex-1 truncate font-medium">{t.full_name}</span>
                     </button>
                   );
                 })
