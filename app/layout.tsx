@@ -59,7 +59,21 @@ export default function RootLayout({
     >
       <body className="min-h-screen font-sans">
         {children}
-        <Toaster richColors position="top-center" />
+        <Toaster
+          richColors
+          position="top-center"
+          toastOptions={{
+            unstyled: false,
+            style: { fontFamily: "var(--font-app)" },
+            classNames: {
+              toast: "!text-base !px-5 !py-4 !gap-3 !rounded-card !shadow-float-lg",
+              title: "!text-base !font-semibold",
+              description: "!text-sm",
+              icon: "!w-5 !h-5",
+              closeButton: "!w-5 !h-5",
+            },
+          }}
+        />
       </body>
     </html>
   );
