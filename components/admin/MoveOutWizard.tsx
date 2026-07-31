@@ -5,7 +5,7 @@ import Link from "next/link";
 import { toast } from "sonner";
 import type { MoveOutRequestRow, SettingsRates, MoveOutFeeLine } from "@/types";
 import { toNumber, formatMoney } from "@/lib/format";
-import { getInvoiceOutstanding } from "@/lib/invoice-ledger";
+import { getInvoiceOwnOutstanding } from "@/lib/invoice-ledger";
 import { bangkokYmd, meets30DayMoveOutNotice } from "@/lib/move-out-notice";
 import { ConfirmActionModal } from "@/components/ui/ConfirmActionModal";
 import { buttonClasses } from "@/components/ui/Button";
@@ -163,28 +163,52 @@ function Step1RequestReview({
   activeMoveOutRequest,
   form,
   setForm,
+  forfeitDeposit,
+  roomNumber,
+  canEditTenant,
   isCancellingMoveOut,
   outstandingMoveOutInvoices,
   unpaidInvoicesSubtotal,
   onApprove,
   onDecline,
   onCancelMoveOut,
+  onAbandonRoom,
   onNext,
 }: {
   activeMoveOutRequest: MoveOutRequestRow | null;
   form: MoveOutWizardForm;
   setForm: Props["setForm"];
+  forfeitDeposit: boolean;
+  roomNumber: string;
+  canEditTenant: boolean;
   isCancellingMoveOut: boolean;
   outstandingMoveOutInvoices: InvoiceHistoryRow[];
   unpaidInvoicesSubtotal: number;
   onApprove: () => Promise<void> | void;
   onDecline: () => Promise<void> | void;
   onCancelMoveOut: () => Promise<void> | void;
+  onAbandonRoom: (forfeit: boolean, date: string) => Promise<void>;
   onNext: () => void;
 }) {
   const [confirmCancelOpen, setConfirmCancelOpen] = useState(false);
   const [isApproving, setIsApproving] = useState(false);
   const [isDeclining, setIsDeclining] = useState(false);
+  const [abandonOpen, setAbandonOpen] = useState(false);
+  const [abandonMode, setAbandonMode] = useState(false);
+  const [isAbandoning, setIsAbandoning] = useState(false);
+
+  const moveOutDate = form.final_move_out_date || new Date().toISOString().slice(0, 10);
+  const prepaid = (forfeitDeposit ? 0 : toNumber(form.security_deposit_amount)) + toNumber(form.advance_rent_amount);
+
+  const handleAbandonment = async () => {
+    setIsAbandoning(true);
+    try {
+      await onAbandonRoom(forfeitDeposit, moveOutDate);
+    } finally {
+      setIsAbandoning(false);
+      setAbandonOpen(false);
+    }
+  };
 
   const noticeYmd = useMemo(() => {
     if (!activeMoveOutRequest) return "";
@@ -370,7 +394,7 @@ function Step1RequestReview({
                   {String(inv.start_date ?? "").slice(0, 10)} → {String(inv.end_date ?? "").slice(0, 10)}
                   <span className="ml-1.5 rounded-md bg-warning-100 px-1.5 py-0.5 text-warning-700 font-medium">{inv.status}</span>
                 </span>
-                <span className="text-base font-bold text-warning-900">฿{formatMoney(getInvoiceOutstanding(inv))}</span>
+                <span className="text-base font-bold text-warning-900">฿{formatMoney(getInvoiceOwnOutstanding(inv))}</span>
               </div>
             ))}
           </div>
@@ -379,6 +403,43 @@ function Step1RequestReview({
             <span className="text-base font-bold text-warning-900">฿{formatMoney(unpaidInvoicesSubtotal)}</span>
           </div>
         </SectionCard>
+      )}
+
+      {/* Abandon room toggle */}
+      <label className="flex cursor-pointer items-start gap-3 rounded-card border border-warning-200 bg-warning-50/60 px-4 py-4">
+        <div className="relative mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center">
+          <input
+            type="checkbox"
+            checked={abandonMode}
+            onChange={e => setAbandonMode(e.target.checked)}
+            className="peer sr-only"
+          />
+          <div className="h-5 w-5 rounded-md border-2 border-warning-300 bg-white peer-checked:border-warning-600 peer-checked:bg-warning-600 transition-all" />
+          {abandonMode && (
+            <CheckCircle2 className="absolute h-3.5 w-3.5 text-white pointer-events-none" />
+          )}
+        </div>
+        <div>
+          <p className="text-base font-semibold text-warning-900">ผู้เช่าทิ้งห้อง</p>
+          <p className="mt-0.5 text-sm text-warning-700">
+            ระบบจะใช้เครดิต (ค่าเช่าล่วงหน้า{!forfeitDeposit ? " + เงินประกัน" : ""}) หักบิลค้างชำระตามลำดับ
+            บิลที่เหลือจะถูกยกเลิก และผู้เช่าถูกย้ายออกทันที (ไม่สร้างใบแจ้งหนี้สุดท้าย ข้ามขั้นตอนมิเตอร์และสรุปค่าใช้จ่าย)
+          </p>
+        </div>
+      </label>
+
+      {abandonMode && (
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={() => setAbandonOpen(true)}
+            disabled={!canEditTenant || isAbandoning}
+            className="inline-flex items-center gap-2 rounded-control bg-warning-600 px-5 py-2.5 text-base font-semibold text-white hover:bg-warning-700 shadow-sm transition-all disabled:opacity-50"
+          >
+            {isAbandoning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Ban className="h-4 w-4" />}
+            {isAbandoning ? "กำลังดำเนินการ…" : "ยืนยันทิ้งห้อง"}
+          </button>
+        </div>
       )}
 
       {/* Cancel move-out */}
@@ -412,6 +473,15 @@ function Step1RequestReview({
         title="ยืนยันการยกเลิกย้ายออก"
         message="ระบบจะล้างวันย้ายออกและยกเลิกคำขอที่รอ/อนุมัติแล้ว ผู้เช่าจะยังพักอยู่ตามปกติ"
         confirmLabel="ยืนยันการยกเลิก"
+      />
+      <ConfirmActionModal
+        isOpen={abandonOpen}
+        onCancel={() => setAbandonOpen(false)}
+        onConfirm={handleAbandonment}
+        title="ยืนยันผู้เช่าทิ้งห้อง"
+        message={`ยืนยันว่า "${form.full_name || "ผู้เช่า"}" ทิ้งห้อง ${roomNumber}? ระบบจะใช้เครดิต ฿${formatMoney(prepaid)} หักบิลค้างชำระตามลำดับ บิลที่เหลือถูกยกเลิก และผู้เช่าถูกย้ายออกทันที การดำเนินการนี้ไม่สามารถย้อนกลับได้`}
+        confirmLabel="ยืนยันทิ้งห้อง"
+        loading={isAbandoning}
       />
     </div>
   );
@@ -826,7 +896,6 @@ function Step4Confirm({
   outstandingMoveOutInvoices,
   onBack,
   onConfirmMoveOut,
-  onAbandonRoom,
   onCancelMoveOut,
 }: {
   form: MoveOutWizardForm;
@@ -846,14 +915,10 @@ function Step4Confirm({
   outstandingMoveOutInvoices: any[];
   onBack: () => void;
   onConfirmMoveOut: () => Promise<void> | void;
-  onAbandonRoom: (forfeit: boolean, date: string) => Promise<void>;
   onCancelMoveOut: () => Promise<void> | void;
 }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
-  const [abandonOpen, setAbandonOpen] = useState(false);
-  const [abandonMode, setAbandonMode] = useState(false);
   const [confirmCancelOpen, setConfirmCancelOpen] = useState(false);
-  const [isAbandoning, setIsAbandoning] = useState(false);
 
   const elecUsage = Math.max(toNumber(form.final_electricity_reading) - latestPrevElectricity, 0);
   const waterUsage = Math.max(toNumber(form.final_water_reading) - latestPrevWater, 0);
@@ -867,16 +932,6 @@ function Step4Confirm({
   const isRefund = net >= 0;
 
   const moveOutDate = form.final_move_out_date || new Date().toISOString().slice(0, 10);
-
-  const handleAbandonment = async () => {
-    setIsAbandoning(true);
-    try {
-      await onAbandonRoom(forfeitDeposit, moveOutDate);
-    } finally {
-      setIsAbandoning(false);
-      setAbandonOpen(false);
-    }
-  };
 
   return (
     <div className="space-y-5 animate-fade-in-up">
@@ -945,7 +1000,7 @@ function Step4Confirm({
               </div>
               <div className="pl-4 space-y-1 text-sm text-slate-500">
                 {outstandingMoveOutInvoices?.map((inv: any) => {
-                  const remaining = Math.max(0, inv.total_amount - (inv.paid_amount || 0));
+                  const remaining = getInvoiceOwnOutstanding(inv);
                   if (remaining <= 0) return null;
                   return (
                     <div key={inv.id} className="flex justify-between">
@@ -1006,29 +1061,6 @@ function Step4Confirm({
         </div>
       </SectionCard>
 
-      {/* Abandon room toggle */}
-      <label className="flex cursor-pointer items-start gap-3 rounded-card border border-warning-200 bg-warning-50/60 px-4 py-4">
-        <div className="relative mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center">
-          <input
-            type="checkbox"
-            checked={abandonMode}
-            onChange={e => setAbandonMode(e.target.checked)}
-            className="peer sr-only"
-          />
-          <div className="h-5 w-5 rounded-md border-2 border-warning-300 bg-white peer-checked:border-warning-600 peer-checked:bg-warning-600 transition-all" />
-          {abandonMode && (
-            <CheckCircle2 className="absolute h-3.5 w-3.5 text-white pointer-events-none" />
-          )}
-        </div>
-        <div>
-          <p className="text-base font-semibold text-warning-900">ผู้เช่าทิ้งห้อง</p>
-          <p className="mt-0.5 text-sm text-warning-700">
-            ระบบจะใช้เครดิต (ค่าเช่าล่วงหน้า{!forfeitDeposit ? " + เงินประกัน" : ""}) หักบิลค้างชำระตามลำดับ
-            บิลที่เหลือจะถูกยกเลิก และผู้เช่าถูกย้ายออกทันที (ไม่สร้างใบแจ้งหนี้สุดท้าย)
-          </p>
-        </div>
-      </label>
-
       {/* Action buttons */}
       <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-100">
         <button
@@ -1052,27 +1084,15 @@ function Step4Confirm({
             </button>
           )}
 
-          {abandonMode ? (
-            <button
-              type="button"
-              onClick={() => setAbandonOpen(true)}
-              disabled={!canEditTenant || isAbandoning}
-              className="inline-flex items-center gap-2 rounded-control bg-warning-600 px-5 py-2.5 text-base font-semibold text-white hover:bg-warning-700 shadow-sm transition-all disabled:opacity-50"
-            >
-              {isAbandoning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Ban className="h-4 w-4" />}
-              {isAbandoning ? "กำลังดำเนินการ…" : "ยืนยันทิ้งห้อง"}
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={() => setConfirmOpen(true)}
-              disabled={!canEditTenant || isMovingOut}
-              className={buttonClasses({ variant: "primary", size: "lg" })}
-            >
-              {isMovingOut ? <Loader2 className="h-4 w-4 animate-spin" /> : <Flag className="h-4 w-4" />}
-              {isMovingOut ? "กำลังบันทึก…" : "ยืนยันการย้ายออก"}
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={() => setConfirmOpen(true)}
+            disabled={!canEditTenant || isMovingOut}
+            className={buttonClasses({ variant: "primary", size: "lg" })}
+          >
+            {isMovingOut ? <Loader2 className="h-4 w-4 animate-spin" /> : <Flag className="h-4 w-4" />}
+            {isMovingOut ? "กำลังบันทึก…" : "ยืนยันการย้ายออก"}
+          </button>
         </div>
       </div>
 
@@ -1084,15 +1104,6 @@ function Step4Confirm({
         title="ยืนยันการย้ายออก"
         message={`ยืนยันการย้ายออกของ "${form.full_name || "ผู้เช่า"}" จากห้อง ${roomNumber}? ระบบจะสร้างใบแจ้งหนี้สุดท้าย เปลี่ยนสถานะผู้เช่าเป็น "ย้ายออกแล้ว" และเปลี่ยนสถานะห้องเป็น "ว่าง"`}
         confirmLabel="ยืนยันการย้ายออก"
-      />
-      <ConfirmActionModal
-        isOpen={abandonOpen}
-        onCancel={() => setAbandonOpen(false)}
-        onConfirm={handleAbandonment}
-        title="ยืนยันผู้เช่าทิ้งห้อง"
-        message={`ยืนยันว่า "${form.full_name || "ผู้เช่า"}" ทิ้งห้อง ${roomNumber}? ระบบจะใช้เครดิต ฿${formatMoney(prepaid)} หักบิลค้างชำระตามลำดับ บิลที่เหลือถูกยกเลิก และผู้เช่าถูกย้ายออกทันที การดำเนินการนี้ไม่สามารถย้อนกลับได้`}
-        confirmLabel="ยืนยันทิ้งห้อง"
-        loading={isAbandoning}
       />
       <ConfirmActionModal
         isOpen={confirmCancelOpen}
@@ -1169,12 +1180,16 @@ export function MoveOutWizard({
               activeMoveOutRequest={activeMoveOutRequest}
               form={form}
               setForm={setForm}
+              forfeitDeposit={forfeitDeposit}
+              roomNumber={roomNumber}
+              canEditTenant={canEditTenant}
               isCancellingMoveOut={isCancellingMoveOut}
               outstandingMoveOutInvoices={outstandingMoveOutInvoices}
               unpaidInvoicesSubtotal={unpaidInvoicesSubtotal}
               onApprove={onApprove}
               onDecline={onDecline}
               onCancelMoveOut={onCancelMoveOut}
+              onAbandonRoom={onAbandonRoom}
               onNext={() => goTo(2)}
             />
           )}
@@ -1232,7 +1247,6 @@ export function MoveOutWizard({
               outstandingMoveOutInvoices={outstandingMoveOutInvoices}
               onBack={() => goTo(3)}
               onConfirmMoveOut={onConfirmMoveOut}
-              onAbandonRoom={onAbandonRoom}
               onCancelMoveOut={onCancelMoveOut}
             />
           )}

@@ -1,28 +1,23 @@
 "use client";
 
-import { getInvoiceOutstanding } from "@/lib/invoice-ledger";
-import { bangkokYmd, meets30DayMoveOutNotice } from "@/lib/move-out-notice";
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Modal } from "@/components/ui/Modal";
 import { buttonClasses } from "@/components/ui/Button";
-import { MoveOutTab } from "@/components/admin/MoveOutTab";
-import { MoveOutWizard } from "@/components/admin/MoveOutWizard";
 import { MoveInWizard } from "@/components/admin/MoveInWizard";
 import { MoveRoomWizardModal } from "@/components/admin/MoveRoomWizardModal";
-import { MoveOutProcessingModal } from "@/components/admin/MoveOutProcessingModal";
 import { Input } from "@/components/ui/Input";
 import { Badge } from "@/components/ui/Badge";
 import { ConfirmActionModal } from "@/components/ui/ConfirmActionModal";
 import { createClient } from "@/lib/supabase-client";
 import { usePermissions } from "@/lib/use-permissions";
 import { useTenantEditor } from "@/lib/hooks/use-tenant-editor";
-import { Loader2, Plus, Printer, Save, Search, Trash2, Upload } from "lucide-react";
-import { TenantRow, RoomRow, PaymentMethod, ReceiptProfile, MoveOutRequestRow, SettingsRates, MoveOutFeeLine, TenantInvoiceHistoryRow } from "@/types";
+import { Loader2, Plus, Save, Search, Trash2, Upload } from "lucide-react";
+import { TenantRow, RoomRow, PaymentMethod, ReceiptProfile, MoveOutRequestRow, SettingsRates, TenantInvoiceHistoryRow } from "@/types";
 import { TransferCalcForm } from "@/lib/hooks/use-tenant-editor";
-import { toNumber, roundTo2, ymdToLocalDate, formatMoney, escapeHtml } from "@/lib/format";
-import { createMoveOutFeeLine, parseDepositSlipUrls, serializeDepositSlipUrls, roomNumberCompare, roomLabel, tenantRoomNumber, tenantRoomPrice, tenantBuildingName, leaseEndDateText, calculateTransferRentProration, tenantStatusLabel, sanitizeStorageFileName, tenantPaymentMethodLabel, findExistingActiveTenantInRoom } from "@/lib/tenant-utils";
+import { toNumber, roundTo2, formatMoney } from "@/lib/format";
+import { parseDepositSlipUrls, serializeDepositSlipUrls, roomNumberCompare, roomLabel, tenantRoomNumber, tenantBuildingName, leaseEndDateText, calculateTransferRentProration, tenantStatusLabel, sanitizeStorageFileName, tenantPaymentMethodLabel, findExistingActiveTenantInRoom } from "@/lib/tenant-utils";
 
 export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "info", onRefresh }: {
   isOpen: boolean;
@@ -55,7 +50,6 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
   const [status, setStatus] = useState<string | null>(null);
   const [latestPrevElectricity, setLatestPrevElectricity] = useState(0);
   const [latestPrevWater, setLatestPrevWater] = useState(0);
-  const [moveOutFeeLines, setMoveOutFeeLines] = useState<MoveOutFeeLine[]>([]);
   const [moveOutRequests, setMoveOutRequests] = useState<MoveOutRequestRow[]>([]);
   const [activeMoveOutRequest, setActiveMoveOutRequest] = useState<MoveOutRequestRow | null>(null);
   const [forfeitDeposit, setForfeitDeposit] = useState(false);
@@ -65,16 +59,11 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
   const [confirmSaveOpen, setConfirmSaveOpen] = useState(false);
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [confirmUnlinkOpen, setConfirmUnlinkOpen] = useState(false);
-  const [confirmMoveOutOpen, setConfirmMoveOutOpen] = useState(false);
   const [moveRoomWizardOpen, setMoveRoomWizardOpen] = useState(false);
-  const [confirmCancelMoveOutOpen, setConfirmCancelMoveOutOpen] = useState(false);
-  const [isCancellingMoveOut, setIsCancellingMoveOut] = useState(false);
-  const [useProrate, setUseProrate] = useState(true);
   const [isPageLoading, setIsPageLoading] = useState(true);
   const [isSavingTenant, setIsSavingTenant] = useState(false);
   const [isDeletingTenant, setIsDeletingTenant] = useState(false);
   const [isUnlinkingLine, setIsUnlinkingLine] = useState(false);
-  const [isMovingOut, setIsMovingOut] = useState(false);
   const [isUploadingDepositSlip, setIsUploadingDepositSlip] = useState(false);
   const [depositSlipUrls, setDepositSlipUrls] = useState<string[]>([]);
   const [transferCalc, setTransferCalc] = useState<TransferCalcForm>({
@@ -258,7 +247,7 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
   const loadTenantInvoiceHistory = async (tenantId: string) => {
     const { data, error } = await supabase
       .from("invoices")
-      .select("id,start_date,end_date,total_amount,paid_amount,status,slip_url,slip_uploaded_at,payment_history,created_at")
+      .select("id,start_date,end_date,total_amount,paid_amount,carry_forward_amount,status,slip_url,slip_uploaded_at,payment_history,created_at")
       .eq("tenant_id", tenantId)
       .order("start_date", { ascending: false });
 
@@ -369,8 +358,6 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
           "",
       });
       setDepositSlipUrls(parseDepositSlipUrls(tenant.deposit_slip_url));
-      setMoveOutFeeLines([]);
-      setUseProrate(true);
       setTransferCalc({
         transfer_date: new Date().toISOString().slice(0, 10),
         old_prev_electricity: 0,
@@ -427,8 +414,6 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
         final_move_out_date: "",
       });
       setDepositSlipUrls([]);
-      setMoveOutFeeLines([]);
-      setUseProrate(true);
       setTransferCalc({
         transfer_date: new Date().toISOString().slice(0, 10),
         old_prev_electricity: 0,
@@ -614,63 +599,6 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
     setIsSavingTenant(false);
   };
 
-  const cancelMoveOutProcess = async () => {
-    if (!activeTenant) return;
-    setIsCancellingMoveOut(true);
-    try {
-      await callTenantsAction("cancel_move_out_process", { tenantId: activeTenant.id });
-      await Promise.all([loadTenants(), loadMoveOutRequests()]);
-      const { data: refreshed } = await supabase
-        .from("tenants")
-        .select(
-          "id,full_name,address,phone_number,line_user_id,move_in_date,move_out_date,status,room_id,lease_months,initial_electricity_reading,initial_water_reading,advance_rent_amount,security_deposit_amount,deposit_slip_url,final_electricity_reading,final_water_reading,forfeit_security_deposit,custom_payment_method,custom_receipt_profile,rooms(room_number,price_month,buildings(name))"
-        )
-        .eq("id", activeTenant.id)
-        .maybeSingle();
-      if (refreshed) {
-        setActiveTenant(refreshed as TenantRow);
-      }
-      setActiveMoveOutRequest(null);
-      const today = new Date().toISOString().slice(0, 10);
-      setForm((prev) => ({
-        ...prev,
-        move_out_request_date: today,
-        final_move_out_date: today,
-      }));
-      setStatus("ยกเลิกกระบวนการย้ายออกแล้ว — ผู้เช่ายังพักอยู่ตามปกติ");
-    } catch (error: any) {
-      setStatus(error?.message ?? "ยกเลิกกระบวนการย้ายออกไม่สำเร็จ");
-    } finally {
-      setIsCancellingMoveOut(false);
-    }
-  };
-
-  const manageMoveOutRequest = async (requestStatus: "approved" | "rejected") => {
-    if (!activeMoveOutRequest) return;
-    try {
-      await callTenantsAction("manage_move_out_request", {
-        requestId: activeMoveOutRequest.id,
-        requestStatus,
-        approvedMoveOutDate: requestStatus === "approved" ? form.move_out_request_date : null,
-        adminNote: activeMoveOutRequest.admin_note ?? null,
-      });
-      await Promise.all([loadTenants(), loadMoveOutRequests()]);
-      setActiveMoveOutRequest((prev) =>
-        prev
-          ? {
-              ...prev,
-              status: requestStatus,
-              approved_move_out_date:
-                requestStatus === "approved" ? form.move_out_request_date : prev.approved_move_out_date,
-            }
-          : prev
-      );
-      setStatus(requestStatus === "approved" ? "อนุมัติคำขอย้ายออกเรียบร้อย" : "ปฏิเสธคำขอย้ายออกเรียบร้อย");
-    } catch (error: any) {
-      setStatus(error?.message ?? "จัดการคำขอย้ายออกไม่สำเร็จ");
-    }
-  };
-
   const deleteTenant = async () => {
     if (!activeTenant) return;
     setIsDeletingTenant(true);
@@ -701,138 +629,6 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
     setStatus("ยกเลิกการเชื่อม LINE เรียบร้อย");
     await loadTenants();
     setIsUnlinkingLine(false);
-  };
-
-  const confirmMoveOut = async () => {
-    if (!activeTenant) return;
-    setIsMovingOut(true);
-    const moveOutDate = form.final_move_out_date || new Date().toISOString().slice(0, 10);
-    try {
-      await callTenantsAction("final_move_out", {
-        tenantId: activeTenant.id,
-        roomId: activeTenant.room_id,
-        payload: {
-        status: "inactive",
-        move_out_date: moveOutDate,
-        useProrate,
-        final_electricity_reading: toNumber(form.final_electricity_reading),
-        final_water_reading: toNumber(form.final_water_reading),
-        forfeit_security_deposit: forfeitDeposit,
-        },
-      });
-    } catch (error: any) {
-      setStatus(error?.message ?? "ยืนยันการย้ายออกไม่สำเร็จ");
-      setIsMovingOut(false);
-      return;
-    }
-    setStatus("ยืนยันการย้ายออกเรียบร้อย");
-    onClose();
-    await loadTenants();
-    setIsMovingOut(false);
-  };
-
-  const printMoveOutReceipt = () => {
-    if (!activeTenant) return;
-    const roomNo = tenantRoomNumber(activeTenant, roomsById);
-    const building = tenantBuildingName(activeTenant, roomsById);
-    const todayText = new Date().toLocaleDateString("th-TH");
-    const netLabel = net >= 0 ? "คืนเงินผู้เช่า" : "ผู้เช่าค้างชำระ";
-    const netAmount = formatMoney(Math.abs(net));
-    const receiptRefundableDeposit = forfeitDeposit ? 0 : toNumber(form.security_deposit_amount);
-    const receiptForfeitedDeposit = forfeitDeposit ? toNumber(form.security_deposit_amount) : 0;
-    const feeRows = moveOutFeeLines
-      .filter((line) => line.label.trim() && toNumber(line.amount) > 0)
-      .map(
-        (line) =>
-          `<div class="row"><span class="label">${escapeHtml(line.label.trim())}</span><span class="value">฿${formatMoney(
-            toNumber(line.amount)
-          )}</span></div>`
-      )
-      .join("");
-    const rentLabel = !useProrate
-      ? "ค่าเช่า (ปิดการคำนวณ Pro-rate — ไม่นำมาหัก)"
-      : latestBilledEndYmd
-        ? `ค่าเช่า (Pro-rate หลังรอบบิล${tailDaysAfterBilledPeriod > 0 ? ` — ${tailDaysAfterBilledPeriod} วัน` : ""})`
-        : "ค่าเช่าห้อง (งวด/สรุป)";
-    const html = `<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <title>ใบสรุปย้ายออก - ห้อง ${roomNo}</title>
-    <style>
-      @page { size: A4; margin: 12mm; }
-      body { font-family: "Google Sans", "Google Sans Text", "Product Sans", "Noto Sans Thai", "Sarabun", "Tahoma", sans-serif; color: #0f172a; }
-      .card { border: 1px solid #cbd5e1; border-radius: 10px; padding: 14px; margin-bottom: 12px; }
-      .header { border: 2px solid #334155; background: #f8fafc; }
-      h1 { margin: 0; font-size: 24px; }
-      .sub { color: #475569; margin-top: 6px; }
-      .row { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px dashed #e2e8f0; }
-      .row:last-child { border-bottom: 0; }
-      .label { color: #475569; }
-      .value { font-weight: 700; }
-      .total { margin-top: 10px; padding-top: 10px; border-top: 1px solid #94a3b8; font-size: 18px; font-weight: 700; }
-    </style>
-  </head>
-  <body>
-    <div class="card header">
-      <h1>ใบสรุปย้ายออก</h1>
-      <div class="sub">วันที่พิมพ์: ${todayText}</div>
-      <div class="sub">ผู้เช่า: ${form.full_name || "-"}</div>
-      <div class="sub">ห้อง: ${roomNo}${building ? ` (${building})` : ""}</div>
-    </div>
-    <div class="card">
-      ${
-        unpaidInvoicesSubtotal > 0
-          ? `<div class="row"><span class="label">ยอดบิลค้างชำระ (รวม ${outstandingMoveOutInvoices.length} รายการ)</span><span class="value">฿${formatMoney(
-              unpaidInvoicesSubtotal
-            )}</span></div>`
-          : ""
-      }
-      <div class="row"><span class="label">${rentLabel}</span><span class="value">฿${formatMoney(appliedMoveOutRentBase)}</span></div>
-      ${
-        overstayRentCharge > 0
-          ? `<div class="row"><span class="label">ค่าเช่าคิดตามจำนวนวันค้าง (${overstayDays} วัน)</span><span class="value">฿${formatMoney(
-              overstayRentCharge
-            )}</span></div>`
-          : ""
-      }
-      <div class="row"><span class="label">ค่าไฟฟ้า (${electricityUsage} หน่วย)</span><span class="value">฿${formatMoney(electricityUsage * rates.electricity_rate)}</span></div>
-      <div class="row"><span class="label">ค่าน้ำ (${waterUsage} หน่วย)</span><span class="value">฿${formatMoney(waterUsage * rates.water_rate)}</span></div>
-      ${feeRows}
-      <div class="row"><span class="label">รวมค่าใช้จ่าย</span><span class="value">฿${formatMoney(totalCost)}</span></div>
-      <div class="row"><span class="label">ค่าเช่าล่วงหน้าที่นำมาหักได้</span><span class="value">฿${formatMoney(
-        toNumber(form.advance_rent_amount)
-      )}</span></div>
-      <div class="row"><span class="label">เงินประกันที่นำมาหักได้</span><span class="value">฿${formatMoney(
-        receiptRefundableDeposit
-      )}</span></div>
-      ${
-        receiptForfeitedDeposit > 0
-          ? `<div class="row"><span class="label">เงินประกันที่ไม่คืน</span><span class="value">฿${formatMoney(
-              receiptForfeitedDeposit
-            )}</span></div>`
-          : ""
-      }
-      <div class="row"><span class="label">รวมยอดที่หักคืนได้</span><span class="value">฿${formatMoney(prepaid)}</span></div>
-      <div class="total">${netLabel}: ฿${netAmount}</div>
-    </div>
-  </body>
-</html>`;
-
-    const win = window.open("about:blank", "_blank", "width=900,height=1100");
-    if (!win) {
-      setStatus("ไม่สามารถเปิดหน้าพิมพ์ได้ (กรุณาอนุญาต pop-up)");
-      return;
-    }
-    win.document.open();
-    win.document.write(html);
-    win.document.close();
-    const triggerPrint = () => {
-      win.focus();
-      win.print();
-    };
-    win.onload = triggerPrint;
-    setTimeout(triggerPrint, 250);
   };
 
   const roomsById = useMemo(() => new Map(rooms.map((room) => [room.id, room])), [rooms]);
@@ -917,121 +713,6 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
 
   const leaseEnd = form.move_in_date ? leaseEndDateText(form.move_in_date, toNumber(form.lease_months)) : "-";
   const leaseActive = form.move_in_date ? new Date() <= new Date(leaseEnd) : false;
-
-  const activeMoveOutNoticeYmd = useMemo(() => {
-    if (!activeMoveOutRequest) return "";
-    if (activeMoveOutRequest.notice_date) {
-      return String(activeMoveOutRequest.notice_date).slice(0, 10);
-    }
-    if (activeMoveOutRequest.created_at) {
-      return bangkokYmd(new Date(activeMoveOutRequest.created_at));
-    }
-    return "";
-  }, [activeMoveOutRequest]);
-
-  const moveOutShorterThan30DayNotice =
-    Boolean(activeMoveOutRequest && activeMoveOutNoticeYmd && activeMoveOutRequest.requested_move_out_date) &&
-    !meets30DayMoveOutNotice(
-      activeMoveOutNoticeYmd,
-      String(activeMoveOutRequest?.requested_move_out_date ?? "").slice(0, 10)
-    );
-
-  const electricityUsage = Math.max(toNumber(form.final_electricity_reading) - latestPrevElectricity, 0);
-  const waterUsage = Math.max(toNumber(form.final_water_reading) - latestPrevWater, 0);
-  const roomPrice = activeTenant ? tenantRoomPrice(activeTenant, roomsById) : 0;
-  const utilityTotal = electricityUsage * rates.electricity_rate + waterUsage * rates.water_rate;
-  const dailyRent = roomPrice > 0 ? roomPrice / 30 : 0;
-  const advanceCoveredDays =
-    dailyRent > 0 && toNumber(form.advance_rent_amount) > 0
-      ? Math.max(1, Math.round(toNumber(form.advance_rent_amount) / dailyRent))
-      : 0;
-  const moveOutRequestDate = form.move_out_request_date
-    ? new Date(form.move_out_request_date)
-    : null;
-  const advanceCoveredEndDate = moveOutRequestDate
-    ? new Date(moveOutRequestDate.getTime() + advanceCoveredDays * 24 * 60 * 60 * 1000)
-    : null;
-  const actualMoveOutDate = form.final_move_out_date ? new Date(form.final_move_out_date) : null;
-  const overstayDays =
-    useProrate && advanceCoveredEndDate && actualMoveOutDate
-      ? Math.max(
-          0,
-          Math.floor(
-            (actualMoveOutDate.getTime() - advanceCoveredEndDate.getTime()) / (24 * 60 * 60 * 1000)
-          )
-        )
-      : 0;
-  const overstayRentCharge = overstayDays * dailyRent;
-  const additionalFeesTotal = moveOutFeeLines.reduce((sum, line) => sum + toNumber(line.amount), 0);
-
-  const latestBilledEndYmd = useMemo(() => {
-    let best: string | null = null;
-    let bestT = 0;
-    for (const inv of tenantInvoiceHistory) {
-      const raw = String(inv.end_date || "").trim().slice(0, 10);
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) continue;
-      const t = ymdToLocalDate(raw).getTime();
-      if (Number.isNaN(t) || t < bestT) continue;
-      bestT = t;
-      best = raw;
-    }
-    return best;
-  }, [tenantInvoiceHistory]);
-
-  const moveOutYmdForTail = (form.final_move_out_date || form.move_out_request_date || "").trim().slice(0, 10);
-
-  const { tailDaysAfterBilledPeriod, moveOutRentBase } = useMemo(() => {
-    if (!latestBilledEndYmd) {
-      return { tailDaysAfterBilledPeriod: 0, moveOutRentBase: roomPrice };
-    }
-    if (!moveOutYmdForTail) {
-      return { tailDaysAfterBilledPeriod: 0, moveOutRentBase: 0 };
-    }
-    const dayAfter = ymdToLocalDate(latestBilledEndYmd);
-    if (Number.isNaN(dayAfter.getTime())) {
-      return { tailDaysAfterBilledPeriod: 0, moveOutRentBase: roomPrice };
-    }
-    dayAfter.setDate(dayAfter.getDate() + 1);
-    const out = ymdToLocalDate(moveOutYmdForTail);
-    if (Number.isNaN(out.getTime())) {
-      return { tailDaysAfterBilledPeriod: 0, moveOutRentBase: 0 };
-    }
-    if (out < dayAfter) {
-      return { tailDaysAfterBilledPeriod: 0, moveOutRentBase: 0 };
-    }
-    const days =
-      Math.floor((out.getTime() - dayAfter.getTime()) / (24 * 60 * 60 * 1000)) + 1;
-    return {
-      tailDaysAfterBilledPeriod: days,
-      moveOutRentBase: (roomPrice / 30) * days,
-    };
-  }, [latestBilledEndYmd, moveOutYmdForTail, roomPrice]);
-
-  const appliedMoveOutRentBase = useProrate ? moveOutRentBase : 0;
-
-  const outstandingMoveOutInvoices = useMemo(
-    () =>
-      tenantInvoiceHistory.filter(
-        (inv) => !["cancelled"].includes(String(inv.status)) && getInvoiceOutstanding(inv) > 0.001
-      ),
-    [tenantInvoiceHistory]
-  );
-
-  const unpaidInvoicesSubtotal = useMemo(
-    () => outstandingMoveOutInvoices.reduce((sum, inv) => sum + getInvoiceOutstanding(inv), 0),
-    [outstandingMoveOutInvoices]
-  );
-
-  const totalCost =
-    unpaidInvoicesSubtotal +
-    appliedMoveOutRentBase +
-    utilityTotal +
-    overstayRentCharge +
-    additionalFeesTotal;
-  const refundableDeposit = forfeitDeposit ? 0 : toNumber(form.security_deposit_amount);
-  const forfeitedDepositAmount = forfeitDeposit ? toNumber(form.security_deposit_amount) : 0;
-  const prepaid = refundableDeposit + toNumber(form.advance_rent_amount);
-  const net = prepaid - totalCost;
   const totalTenants = filtered.length;
   const paymentHistoryMonthOptions = useMemo(
     () =>
@@ -1394,32 +1075,6 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
         onConfirm={async () => {
           await unlinkTenantLine();
           setConfirmUnlinkOpen(false);
-        }}
-      />
-
-      <ConfirmActionModal
-        isOpen={confirmMoveOutOpen}
-        title="ยืนยันการย้ายออก"
-        message="ยืนยันการย้ายออกของผู้เช่าและปรับสถานะห้องเป็นว่างหรือไม่?"
-        confirmLabel="ยืนยัน"
-        loading={isMovingOut}
-        onCancel={() => setConfirmMoveOutOpen(false)}
-        onConfirm={async () => {
-          await confirmMoveOut();
-          setConfirmMoveOutOpen(false);
-        }}
-      />
-
-      <ConfirmActionModal
-        isOpen={confirmCancelMoveOutOpen}
-        title="ยกเลิกกระบวนการย้ายออก"
-        message="ล้างวันย้ายออกของผู้เช่า (ถ้ามี) และยกเลิกคำขอย้ายออกที่รอดำเนินการหรืออนุมัติแล้ว ผู้เช่าจะถือว่ายังพักอยู่ตามปกติ"
-        confirmLabel="ยกเลิกการย้ายออก"
-        loading={isCancellingMoveOut}
-        onCancel={() => setConfirmCancelMoveOutOpen(false)}
-        onConfirm={async () => {
-          await cancelMoveOutProcess();
-          setConfirmCancelMoveOutOpen(false);
         }}
       />
 

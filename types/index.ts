@@ -80,6 +80,7 @@ export type TenantInvoiceHistoryRow = {
   end_date: string;
   total_amount: number | null;
   paid_amount: number | null;
+  carry_forward_amount?: number | null;
   status: string;
   slip_url: string | null;
   slip_uploaded_at: string | null;

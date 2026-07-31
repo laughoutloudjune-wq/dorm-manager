@@ -22,6 +22,7 @@ type InvoiceLike = {
   due_date?: string | null;
   waived_late_fee_amount?: number | null;
   locked_late_fee_amount?: number | null;
+  carry_forward_amount?: number | null;
 };
 
 export type SyncLedgerOptions = {
@@ -80,6 +81,24 @@ export const getInvoiceOutstanding = (
   invoice: Pick<InvoiceLike, "total_amount" | "paid_amount">,
 ) =>
   Math.max(0, toNumber(invoice.total_amount) - toNumber(invoice.paid_amount));
+
+/**
+ * How much of THIS invoice's own charge (excluding whatever it already carried in
+ * from an earlier invoice) is still unpaid. Summing this across every open invoice
+ * in a tenant's carry-forward chain gives the true total owed — summing raw
+ * `getInvoiceOutstanding` instead double/triple-counts, since each invoice's total
+ * already bundles the debt from the invoice before it.
+ */
+export const getInvoiceOwnOutstanding = (
+  invoice: Pick<InvoiceLike, "total_amount" | "paid_amount" | "carry_forward_amount">,
+) => {
+  const currentOutstanding = getInvoiceOutstanding(invoice);
+  const ownAmount = Math.max(
+    0,
+    toNumber(invoice.total_amount) - toNumber(invoice.carry_forward_amount),
+  );
+  return Math.max(0, Math.min(ownAmount, currentOutstanding));
+};
 
 export const calculateLateFeeAmount = (
   invoice: Pick<
@@ -347,10 +366,7 @@ export async function getCarryForwardCandidatesForTarget(
     }
     const snapshotLateFee = calculateLateFeeAmount(row, asOfLateFee);
 
-    const currentOutstanding = getInvoiceOutstanding(row);
-    const carryAmt = toNumber(row.carry_forward_amount);
-    const ownAmount = Math.max(0, toNumber(row.total_amount) - carryAmt);
-    const outstanding = Math.max(0, Math.min(ownAmount, currentOutstanding));
+    const outstanding = getInvoiceOwnOutstanding(row);
 
     return {
       ...row,

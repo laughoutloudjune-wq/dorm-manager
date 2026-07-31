@@ -13,6 +13,7 @@ import type { MoveOutWizardForm } from "./MoveOutWizard";
 import type { MoveOutFeeLine } from "@/types";
 import { toNumber } from "@/lib/format";
 import { dailyRentRate } from "@/lib/invoice-utils";
+import { getInvoiceOwnOutstanding } from "@/lib/invoice-ledger";
 
 type MoveOutProcessingModalProps = {
   isOpen: boolean;
@@ -427,8 +428,7 @@ export function MoveOutProcessingModal({
             outstandingMoveOutInvoices={data.unpaidInvoices}
             unpaidInvoicesSubtotal={
               data.unpaidInvoices?.reduce(
-                (sum: number, inv: any) =>
-                  sum + Math.max(0, inv.total_amount - (inv.paid_amount || 0)),
+                (sum: number, inv: any) => sum + getInvoiceOwnOutstanding(inv),
                 0
               ) || 0
             }

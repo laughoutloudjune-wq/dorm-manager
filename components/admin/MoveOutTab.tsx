@@ -3,7 +3,7 @@
 import type { MoveOutRequestRow, SettingsRates, MoveOutFeeLine } from "@/types";
 import { toNumber, roundTo2, ymdToLocalDate, formatMoney } from "@/lib/format";
 
-import { getInvoiceOutstanding } from "@/lib/invoice-ledger";
+import { getInvoiceOwnOutstanding } from "@/lib/invoice-ledger";
 import { bangkokYmd, meets30DayMoveOutNotice } from "@/lib/move-out-notice";
 import { useMemo, useState } from "react";
 import Link from "next/link";
@@ -289,7 +289,7 @@ export function MoveOutTab({
                   งวด {String(inv.start_date ?? "").slice(0, 10)} → {String(inv.end_date ?? "").slice(0, 10)} ·{" "}
                   <span className="font-medium">{inv.status}</span>
                 </span>
-                <span className="font-semibold">ค้าง ฿{formatMoney(getInvoiceOutstanding(inv))}</span>
+                <span className="font-semibold">ค้าง ฿{formatMoney(getInvoiceOwnOutstanding(inv))}</span>
               </li>
             ))}
           </ul>
