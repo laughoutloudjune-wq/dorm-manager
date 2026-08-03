@@ -383,19 +383,26 @@ function Step1RequestReview({
               <ReceiptText className="h-4 w-4" />
               บิลค้างชำระ ({outstandingMoveOutInvoices.length} รายการ)
             </p>
-            <Link href="/invoices" className="text-sm font-medium text-warning-700 underline hover:text-warning-600">
+            <Link
+              href={`/invoices?tab=overdue&room=${encodeURIComponent(roomNumber)}`}
+              className="text-sm font-medium text-warning-700 underline hover:text-warning-600"
+            >
               ดูใบแจ้งหนี้
             </Link>
           </div>
           <div className="space-y-2">
             {outstandingMoveOutInvoices.map((inv) => (
-              <div key={inv.id} className="flex justify-between items-center rounded-control bg-white/70 px-3 py-2 border border-warning-100/80">
+              <Link
+                key={inv.id}
+                href={`/invoices?tab=overdue&room=${encodeURIComponent(roomNumber)}`}
+                className="flex justify-between items-center rounded-control bg-white/70 px-3 py-2 border border-warning-100/80 hover:border-warning-300 hover:bg-white transition-colors"
+              >
                 <span className="text-sm text-slate-600">
                   {String(inv.start_date ?? "").slice(0, 10)} → {String(inv.end_date ?? "").slice(0, 10)}
                   <span className="ml-1.5 rounded-md bg-warning-100 px-1.5 py-0.5 text-warning-700 font-medium">{inv.status}</span>
                 </span>
                 <span className="text-base font-bold text-warning-900">฿{formatMoney(getInvoiceOwnOutstanding(inv))}</span>
-              </div>
+              </Link>
             ))}
           </div>
           <div className="mt-3 flex items-center justify-between rounded-control bg-warning-100 px-3 py-2">

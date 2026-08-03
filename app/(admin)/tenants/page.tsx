@@ -53,7 +53,7 @@ export default function TenantsPage() {
     if (!canViewTenants) return [];
     return tenants.filter((tenant) => {
       if (statusFilter === "active" && tenant.status !== "active") return false;
-      if (statusFilter === "moved_out" && tenant.status !== "moved_out") return false;
+      if (statusFilter === "moved_out" && tenant.status === "active") return false;
 
       const room = roomsById.get(String(tenant.room_id));
       const building = Array.isArray(room?.buildings)

@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { createClient } from "@/lib/supabase-client";
 import { formatMoney, toLocalDateString } from "@/lib/format";
-import { statusLabelThai, statusPillClass, invoiceDisplayOutstanding } from "@/lib/invoice-utils";
+import { statusLabelThai, statusPillClass, invoiceDisplayOutstanding, normalizeInvoice } from "@/lib/invoice-utils";
 import { useInvoiceContext } from "./InvoiceContext";
 import { ChevronDown, ChevronUp, AlertCircle, Building, DoorOpen } from "lucide-react";
 
@@ -17,12 +17,16 @@ interface OverdueRoomGroup {
   invoices: RawInvoice[];
 }
 
-export function OverdueRoomsTab() {
+export function OverdueRoomsTab({ focusRoom }: { focusRoom?: string }) {
   const { openInvoice } = useInvoiceContext();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [invoices, setInvoices] = useState<RawInvoice[]>([]);
-  const [expandedRooms, setExpandedRooms] = useState<Set<string>>(new Set());
+  const [expandedRooms, setExpandedRooms] = useState<Set<string>>(
+    () => new Set(focusRoom ? [focusRoom] : []),
+  );
+  const focusedRef = useRef<HTMLDivElement | null>(null);
+  const hasScrolledRef = useRef(false);
 
   const supabase = createClient();
 
@@ -33,7 +37,7 @@ export function OverdueRoomsTab() {
       const { data, error: fetchError } = await supabase
         .from("invoices")
         .select(
-          "id, public_token, issue_date, start_date, due_date, total_amount, paid_amount, status, late_fee_amount, rent_amount, water_bill, electricity_bill, common_fee, additional_fees_total, carry_forward_amount, discount_amount, tenants(full_name, phone_number), rooms(room_number, buildings(name))"
+          "id,tenant_id,room_id,status,total_amount,paid_amount,payment_history,issue_date,due_date,start_date,end_date,rent_amount,water_bill,electricity_bill,common_fee,discount_amount,discount_breakdown,late_fee_amount,late_fee_per_day,late_fee_start_date,carry_forward_amount,additional_fees_total,additional_fees_breakdown,notes,public_token,slip_url,opened_count,first_opened_at,last_opened_at,tenants(full_name,phone_number,line_user_id,custom_payment_method,move_in_date,move_out_date,status),rooms(room_number,price_month,buildings(name))"
         )
         .in("status", ["pending", "partial", "overdue", "verifying"])
         .order("start_date", { ascending: true });
@@ -50,6 +54,12 @@ export function OverdueRoomsTab() {
   useEffect(() => {
     void loadData();
   }, []);
+
+  useEffect(() => {
+    if (!focusRoom || hasScrolledRef.current || !focusedRef.current) return;
+    focusedRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+    hasScrolledRef.current = true;
+  }, [focusRoom, invoices]);
 
   const grouped = useMemo(() => {
     const map = new Map<string, OverdueRoomGroup>();
@@ -135,10 +145,14 @@ export function OverdueRoomsTab() {
       <div className="space-y-3">
         {grouped.map((group) => {
           const isExpanded = expandedRooms.has(group.room_number);
+          const isFocused = focusRoom === group.room_number;
           return (
             <div
               key={group.room_number}
-              className="overflow-hidden rounded-card border border-slate-200 bg-white shadow-sm transition-all hover:border-slate-300"
+              ref={isFocused ? focusedRef : undefined}
+              className={`overflow-hidden rounded-card border bg-white shadow-sm transition-all hover:border-slate-300 ${
+                isFocused ? "border-primary-300 ring-2 ring-primary-200" : "border-slate-200"
+              }`}
             >
               <button
                 onClick={() => toggleExpand(group.room_number)}
@@ -180,7 +194,7 @@ export function OverdueRoomsTab() {
                       return (
                         <div
                           key={inv.id}
-                          onClick={() => openInvoice(inv)}
+                          onClick={() => openInvoice(normalizeInvoice(inv))}
                           className="flex cursor-pointer items-center justify-between rounded-control border border-slate-200 bg-white p-3 hover:border-primary-300 hover:shadow-sm transition-colors"
                         >
                           <div>

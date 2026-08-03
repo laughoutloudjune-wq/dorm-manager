@@ -1,5 +1,10 @@
-﻿import InvoicesPageView from "@/components/admin/InvoicesPageView";
+﻿import { Suspense } from "react";
+import InvoicesPageView from "@/components/admin/InvoicesPageView";
 
 export default function InvoicesPage() {
-  return <InvoicesPageView />;
+  return (
+    <Suspense fallback={null}>
+      <InvoicesPageView />
+    </Suspense>
+  );
 }

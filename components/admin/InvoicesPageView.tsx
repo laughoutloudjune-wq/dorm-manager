@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { Badge } from "@/components/ui/Badge";
 import { Card } from "@/components/ui/Card";
 import { Button, buttonClasses } from "@/components/ui/Button";
@@ -91,7 +92,11 @@ import { InvoiceDetailModal } from "./invoices/InvoiceDetailModal";
 import { OverdueRoomsTab } from "./invoices/OverdueRoomsTab";
 
 export default function InvoicesPage() {
-  const [viewMode, setViewMode] = useState<"monthly" | "overdue">("monthly");
+  const searchParams = useSearchParams();
+  const focusRoom = searchParams.get("room") ?? "";
+  const [viewMode, setViewMode] = useState<"monthly" | "overdue">(() =>
+    searchParams.get("tab") === "overdue" ? "overdue" : "monthly",
+  );
   const state = useInvoicesState();
   const {
 
@@ -263,7 +268,7 @@ export default function InvoicesPage() {
       />
 
       {viewMode === "overdue" ? (
-        <OverdueRoomsTab />
+        <OverdueRoomsTab focusRoom={focusRoom} />
       ) : (
         <>
           <div className="rounded-card border border-slate-200 bg-white p-4 shadow-sm">
