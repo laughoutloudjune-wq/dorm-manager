@@ -343,6 +343,27 @@ export default function ReportsPageView() {
     };
   }, [filteredIncomeRows]);
 
+  // Ratio of collected payments per receiving bank account ("transfer back"
+  // account) — only counts money actually paid, not billed, since an unpaid
+  // invoice hasn't gone into any account yet.
+  const paymentMethodBreakdown = useMemo(() => {
+    const totals = new Map<string, number>();
+    let totalPaid = 0;
+    for (const row of filteredIncomeRows) {
+      if (row.paid_amount <= 0) continue;
+      const key = row.paymentMethod || "-";
+      totals.set(key, (totals.get(key) ?? 0) + row.paid_amount);
+      totalPaid += row.paid_amount;
+    }
+    return Array.from(totals.entries())
+      .map(([method, amount]) => ({
+        method,
+        amount,
+        ratio: totalPaid > 0 ? (amount / totalPaid) * 100 : 0,
+      }))
+      .sort((a, b) => b.amount - a.amount);
+  }, [filteredIncomeRows]);
+
   const yearlyRows = useMemo(
     () =>
       Array.from({ length: 12 }, (_, index) => {
@@ -924,6 +945,31 @@ export default function ReportsPageView() {
               { label: "ค่าน้ำ", value: formatMoney(incomeSummary.waterCollected) },
             ]}
           />
+          {paymentMethodBreakdown.length > 0 && (
+            <Card>
+              <CardContent className="space-y-3">
+                <div>
+                  <h3 className="text-base font-semibold text-slate-900">สัดส่วนยอดโอนเข้าแต่ละบัญชี</h3>
+                  <p className="text-sm text-slate-500">คำนวณจากยอดที่ชำระแล้วในเดือนที่เลือก แยกตามบัญชีที่ผู้เช่าโอนเข้า</p>
+                </div>
+                <div className="space-y-2.5">
+                  {paymentMethodBreakdown.map((row) => (
+                    <div key={row.method} className="space-y-1">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="font-medium text-slate-700">{row.method}</span>
+                        <span className="text-slate-500">
+                          {formatMoney(row.amount)} · {row.ratio.toFixed(1)}%
+                        </span>
+                      </div>
+                      <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100">
+                        <div className="h-full rounded-full bg-primary-500" style={{ width: `${row.ratio}%` }} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
           <Card>
             <CardContent className="p-0">
               <div className="overflow-x-auto rounded-control">

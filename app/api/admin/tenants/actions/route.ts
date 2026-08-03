@@ -212,20 +212,27 @@ export async function POST(req: Request) {
       }
 
       if (roomId) {
+        // Editing an inactive tenant who's still mid-settlement (room_id stays set
+        // between "vacate" and "settle", see final_move_out) must not re-occupy the
+        // room just because roomId is present on the payload — only an active
+        // tenant actually occupies it.
+        const nextRoomStatus = payload.status === "active" ? "occupied" : "available";
         const { error: roomStatusError } = await auth.supabase
           .from("rooms")
-          .update({ status: "occupied" })
+          .update({ status: nextRoomStatus })
           .eq("id", roomId);
         if (roomStatusError) {
           return NextResponse.json({ error: roomStatusError.message }, { status: 500 });
         }
-        const { error: roomLogError } = await auth.supabase.from("room_logs").insert({
-          room_id: roomId,
-          event_type: "move_in",
-          created_at: new Date().toISOString(),
-        });
-        if (roomLogError) {
-          console.warn("room_logs insert failed:", roomLogError.message);
+        if (shouldLogMoveIn) {
+          const { error: roomLogError } = await auth.supabase.from("room_logs").insert({
+            room_id: roomId,
+            event_type: "move_in",
+            created_at: new Date().toISOString(),
+          });
+          if (roomLogError) {
+            console.warn("room_logs insert failed:", roomLogError.message);
+          }
         }
       }
       return NextResponse.json({ success: true });

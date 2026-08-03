@@ -39,7 +39,7 @@ export async function GET(req: Request) {
       supabase.from("rooms").select("id,room_number,status,buildings(name)").order("room_number"),
       supabase
         .from("tenants")
-        .select("id,full_name,room_id,status,move_in_date,move_out_date,created_at,rooms(room_number,buildings(name))")
+        .select("id,full_name,room_id,status,move_in_date,move_out_date,created_at,custom_payment_method,rooms(room_number,buildings(name))")
         .order("created_at", { ascending: false }),
       supabase
         .from("invoices")
@@ -156,6 +156,16 @@ export async function GET(req: Request) {
       if (latestMeterMonth && invoiceKeySet.has(`${roomId}:${latestMeterMonth}`) && !meterKeySet.has(`${roomId}:${latestMeterMonth}`)) {
         anomalies.push({ id: `invoice-no-meter-${roomId}`, text: `ห้อง ${roomNo} มีบิลเดือน ${latestMeterMonth} แต่ไม่มีมิเตอร์`, severity: "medium" });
       }
+    }
+    for (const tenant of activeTenants) {
+      if (tenant.custom_payment_method) continue;
+      const room = relationItem(tenant.rooms);
+      const roomNo = room?.room_number ?? "-";
+      anomalies.push({
+        id: `no-payment-method-${tenant.id}`,
+        text: `ห้อง ${roomNo} (${tenant.full_name ?? "-"}) ยังไม่ได้ตั้งบัญชีรับโอนเงินเฉพาะห้อง — ใช้บัญชีเริ่มต้นแทน`,
+        severity: "medium",
+      });
     }
 
     const recentActivities = [
