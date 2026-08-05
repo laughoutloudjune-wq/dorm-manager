@@ -426,7 +426,7 @@ export default function MoveOutsPage() {
                 ) : (
                   filteredList.map((row) => {
                     const days = daysUntil(row.move_out_date);
-                    const isUrgent = days >= 0 && days <= 3 && (row.status === "approved" || row.status === "manual");
+                    const isUrgent = days <= 3 && (row.status === "approved" || row.status === "manual");
                     return (
                       <tr
                         key={row.key}
@@ -449,9 +449,15 @@ export default function MoveOutsPage() {
                             <span className={`font-semibold ${isUrgent ? "text-danger-700" : row.status === "requested" ? "text-warning-700" : "text-slate-800"}`}>
                               {formatThai(row.move_out_date)}
                             </span>
-                            {(row.status === "approved" || row.status === "manual") && days >= 0 && (
-                              <span className={`text-2xs font-medium ${days <= 3 ? "text-danger-600" : days <= 7 ? "text-warning-600" : "text-slate-400"}`}>
-                                {days === 0 ? "วันนี้" : days === 1 ? "พรุ่งนี้" : `อีก ${days} วัน`}
+                            {(row.status === "approved" || row.status === "manual") && (
+                              <span className={`text-2xs font-medium ${days < 0 || days <= 3 ? "text-danger-600" : days <= 7 ? "text-warning-600" : "text-slate-400"}`}>
+                                {days < 0
+                                  ? `เลยกำหนด ${Math.abs(days)} วัน`
+                                  : days === 0
+                                  ? "วันนี้"
+                                  : days === 1
+                                  ? "พรุ่งนี้"
+                                  : `อีก ${days} วัน`}
                               </span>
                             )}
                             {row.notice_date && (

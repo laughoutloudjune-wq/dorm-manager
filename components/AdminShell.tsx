@@ -136,7 +136,7 @@ export default function AdminShell({ children }: { children: ReactNode }) {
               </div>
           </div>
         </header>
-        <main className="mx-auto w-full max-w-[1600px] px-4 py-5 md:pr-4 md:py-6 animate-fade-in-up">
+        <main className="mx-auto w-full max-w-[1600px] px-4 py-5 md:pr-4 md:py-6 animate-fade-in-plain">
           <ErrorBoundary>
             {children}
           </ErrorBoundary>
