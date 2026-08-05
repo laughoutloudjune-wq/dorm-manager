@@ -121,7 +121,6 @@ export default function AdminLiffPage() {
 
   const [moveOutRequests, setMoveOutRequests] = useState<MoveOutRequestRow[]>([]);
   const [expandedRequestId, setExpandedRequestId] = useState<string | null>(null);
-  const [approveDateByRequest, setApproveDateByRequest] = useState<Record<string, string>>({});
   const [adminNoteByRequest, setAdminNoteByRequest] = useState<Record<string, string>>({});
   const [moveOutSavingAction, setMoveOutSavingAction] = useState<string | null>(null);
 
@@ -200,13 +199,6 @@ export default function AdminLiffPage() {
     const data = await postJson("/api/admin-liff/move-outs", { accessToken });
     const rows = (data.requests ?? []) as MoveOutRequestRow[];
     setMoveOutRequests(rows);
-    setApproveDateByRequest((prev) => {
-      const next = { ...prev };
-      rows.forEach((row) => {
-        if (!next[row.id]) next[row.id] = row.requested_move_out_date;
-      });
-      return next;
-    });
   };
 
   useEffect(() => {
@@ -571,18 +563,11 @@ export default function AdminLiffPage() {
                     : request.created_at
                     ? String(request.created_at).slice(0, 10)
                     : "";
-                  // Defaults to the tenant's requested date (or the previously approved
-                  // date, if already approved) so hitting "approve" without touching
-                  // this field records what the tenant actually asked for — not
-                  // today's date. Still fully editable: if the tenant fat-fingered the
-                  // date, the admin corrects it here before saving.
-                  const approveDate =
-                    approveDateByRequest[request.id] ??
-                    request.approved_move_out_date ??
-                    request.requested_move_out_date;
                   const adminNote = adminNoteByRequest[request.id] ?? "";
                   const showDepositWarning =
-                    approveDate.length > 0 && noticeYmd.length > 0 && !meets30DayMoveOutNotice(noticeYmd, approveDate);
+                    request.requested_move_out_date.length > 0 &&
+                    noticeYmd.length > 0 &&
+                    !meets30DayMoveOutNotice(noticeYmd, request.requested_move_out_date);
                   const isApproving = moveOutSavingAction === `approve:${request.id}`;
                   const isRejecting = moveOutSavingAction === `reject:${request.id}`;
 
@@ -627,21 +612,9 @@ export default function AdminLiffPage() {
                           {request.status === "approved" && (
                             <div className="rounded-lg bg-blue-50 px-3 py-2 text-xs text-blue-900">
                               อนุมัติให้ย้ายออกวันที่ {fmtDate(request.approved_move_out_date)} แล้ว —
-                              ไปสรุปยอดที่หน้าเว็บแอดมินเมื่อถึงวันย้ายออกจริง หากวันที่ผิด แก้ไขและบันทึกใหม่ได้ด้านล่าง
+                              ไปสรุปยอดที่หน้าเว็บแอดมินเมื่อถึงวันย้ายออกจริง
                             </div>
                           )}
-
-                          <label className="block text-xs font-medium text-slate-700">
-                            {request.status === "requested" ? "วันที่อนุมัติให้ย้ายออก" : "แก้ไขวันที่ย้ายออก"}
-                            <input
-                              type="date"
-                              value={approveDate}
-                              onChange={(e) =>
-                                setApproveDateByRequest((prev) => ({ ...prev, [request.id]: e.target.value }))
-                              }
-                              className="mt-1 block w-full rounded-lg border border-slate-300 px-2 py-2 text-sm"
-                            />
-                          </label>
 
                           {showDepositWarning && (
                             <div className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-2xs text-red-900">
@@ -664,8 +637,8 @@ export default function AdminLiffPage() {
                             </label>
                           )}
 
-                          <div className={request.status === "requested" ? "grid grid-cols-2 gap-2" : ""}>
-                            {request.status === "requested" && (
+                          {request.status === "requested" && (
+                            <div className="grid grid-cols-2 gap-2">
                               <button
                                 type="button"
                                 onClick={() =>
@@ -677,26 +650,19 @@ export default function AdminLiffPage() {
                                 {isRejecting && <Loader2 size={14} className="animate-spin" />}
                                 {isRejecting ? "กำลังบันทึก..." : "ปฏิเสธ"}
                               </button>
-                            )}
-                            <button
-                              type="button"
-                              onClick={() =>
-                                void runMoveOutAction(request.id, "approve", {
-                                  approvedMoveOutDate: approveDate,
-                                  adminNote: request.status === "requested" ? adminNote || null : request.admin_note,
-                                })
-                              }
-                              disabled={!!moveOutSavingAction}
-                              className="inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-60"
-                            >
-                              {isApproving && <Loader2 size={14} className="animate-spin" />}
-                              {isApproving
-                                ? "กำลังบันทึก..."
-                                : request.status === "requested"
-                                ? "อนุมัติ"
-                                : "บันทึกวันที่แก้ไข"}
-                            </button>
-                          </div>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  void runMoveOutAction(request.id, "approve", { adminNote: adminNote || null })
+                                }
+                                disabled={!!moveOutSavingAction}
+                                className="inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-60"
+                              >
+                                {isApproving && <Loader2 size={14} className="animate-spin" />}
+                                {isApproving ? "กำลังบันทึก..." : "อนุมัติ"}
+                              </button>
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>

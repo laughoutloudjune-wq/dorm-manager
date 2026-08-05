@@ -39,7 +39,6 @@ export type MoveOutWizardForm = {
   security_deposit_amount: number;
   final_electricity_reading: number;
   final_water_reading: number;
-  move_out_request_date: string;
   final_move_out_date: string;
 };
 
@@ -217,12 +216,9 @@ function Step1RequestReview({
     return "";
   }, [activeMoveOutRequest]);
 
-  // Tracks the date the admin is *about* to approve (form.move_out_request_date),
-  // not the tenant's original ask — so if the admin corrects a wrong date, the
-  // 30-day warning updates to reflect what's actually about to be saved.
   const shortNotice =
-    Boolean(activeMoveOutRequest && noticeYmd && form.move_out_request_date) &&
-    !meets30DayMoveOutNotice(noticeYmd, form.move_out_request_date);
+    Boolean(activeMoveOutRequest?.requested_move_out_date && noticeYmd) &&
+    !meets30DayMoveOutNotice(noticeYmd, activeMoveOutRequest!.requested_move_out_date);
 
   const isPending = activeMoveOutRequest?.status === "requested";
   const isApproved = activeMoveOutRequest?.status === "approved";
@@ -302,26 +298,6 @@ function Step1RequestReview({
             </div>
           )}
 
-          {/* The date this admin is about to approve — defaults to what the tenant
-              asked for (see MoveOutProcessingModal's fetcher), but stays editable
-              here so a wrong date from the tenant can be corrected before saving,
-              and can be corrected again later even after approval. */}
-          <div className="mb-4">
-            <label className="block text-sm font-medium text-slate-500 mb-1.5">
-              {isPending ? "วันที่จะอนุมัติให้ย้ายออก" : "วันที่อนุมัติ (แก้ไขได้หากผิดพลาด)"}
-            </label>
-            <input
-              type="date"
-              value={form.move_out_request_date}
-              onChange={(e) => setField("move_out_request_date", e.target.value)}
-              className={`w-full rounded-control border px-3 py-2.5 text-base focus:outline-none focus:ring-2 ${
-                isApproved
-                  ? "border-success-200 bg-success-50/70 text-success-900 focus:border-success-400 focus:ring-success-200"
-                  : "border-slate-200 bg-white text-slate-800 focus:border-primary-400 focus:ring-primary-200"
-              }`}
-            />
-          </div>
-
           {shortNotice && (
             <div className="flex items-start gap-2 rounded-control bg-warning-100 px-3 py-2.5 text-sm text-warning-800 mb-4">
               <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
@@ -329,8 +305,10 @@ function Step1RequestReview({
             </div>
           )}
 
-          {/* Approve (pending) / re-save the corrected date (already approved) */}
-          {(isPending || isApproved) && (
+          {/* Approving just confirms the tenant's requested date above — there's
+              no separate admin-chosen date to set. If the tenant asked for the
+              wrong date, they submit a new request. */}
+          {isPending && (
             <div className="flex flex-wrap gap-2 mt-1">
               <button
                 type="button"
@@ -339,19 +317,17 @@ function Step1RequestReview({
                 className={buttonClasses({ variant: "success", size: "lg" })}
               >
                 {isApproving ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
-                {isApproving ? "กำลังบันทึก..." : isPending ? "อนุมัติคำขอ" : "บันทึกวันที่แก้ไข"}
+                {isApproving ? "กำลังบันทึก..." : "อนุมัติคำขอ"}
               </button>
-              {isPending && (
-                <button
-                  type="button"
-                  onClick={handleDecline}
-                  disabled={isApproving || isDeclining}
-                  className="inline-flex items-center gap-2 rounded-control border border-danger-200 bg-white px-4 py-2 text-base font-semibold text-danger-600 hover:bg-danger-50 transition-colors disabled:opacity-50"
-                >
-                  {isDeclining ? <Loader2 className="h-4 w-4 animate-spin" /> : <XCircle className="h-4 w-4" />}
-                  {isDeclining ? "กำลังปฏิเสธ..." : "ปฏิเสธ"}
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={handleDecline}
+                disabled={isApproving || isDeclining}
+                className="inline-flex items-center gap-2 rounded-control border border-danger-200 bg-white px-4 py-2 text-base font-semibold text-danger-600 hover:bg-danger-50 transition-colors disabled:opacity-50"
+              >
+                {isDeclining ? <Loader2 className="h-4 w-4 animate-spin" /> : <XCircle className="h-4 w-4" />}
+                {isDeclining ? "กำลังปฏิเสธ..." : "ปฏิเสธ"}
+              </button>
             </div>
           )}
         </SectionCard>

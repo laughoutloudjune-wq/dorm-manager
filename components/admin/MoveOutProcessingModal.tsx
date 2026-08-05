@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import useSWR from "swr";
 import { toast } from "sonner";
 import { Modal } from "@/components/ui/Modal";
@@ -35,7 +35,6 @@ export function MoveOutProcessingModal({
     security_deposit_amount: 0,
     final_electricity_reading: 0,
     final_water_reading: 0,
-    move_out_request_date: new Date().toISOString().slice(0, 10),
     final_move_out_date: new Date().toISOString().slice(0, 10),
   });
 
@@ -46,6 +45,18 @@ export function MoveOutProcessingModal({
   const [isCancellingMoveOut, setIsCancellingMoveOut] = useState(false);
   const [isQuickVacating, setIsQuickVacating] = useState(false);
   const [quickVacateConfirmOpen, setQuickVacateConfirmOpen] = useState(false);
+  const [autosaveStatus, setAutosaveStatus] = useState<"idle" | "saving" | "saved">("idle");
+  // Snapshot of the last known-persisted draft values, so the autosave effect
+  // can tell "the admin changed something" apart from "the fetcher just
+  // hydrated the form with what's already in the database" and skip a
+  // pointless save on open.
+  const draftHydratedRef = useRef<{
+    final_electricity_reading: number;
+    final_water_reading: number;
+    advance_rent_amount: number;
+    security_deposit_amount: number;
+    forfeit_security_deposit: boolean;
+  } | null>(null);
 
   // ── Data fetching ──────────────────────────────────────────────────────────
 
@@ -97,27 +108,27 @@ export function MoveOutProcessingModal({
       tenant.initial_water_reading ??
       0;
 
-    const latestRequest = (requestsRes.data || [])[0] ?? null;
-    // The date this form will submit on Approve must default to what the
-    // *tenant* asked for (or what was already approved, if editing after the
-    // fact) — never today's date. Before this fix, move_out_request_date sat
-    // at its initial today() value until an admin happened to notice and edit
-    // an unrelated-looking "(reference)" field, so an admin who clicked
-    // Approve without touching it silently approved the wrong date.
-    const requestDefaultDate =
-      latestRequest?.approved_move_out_date ?? latestRequest?.requested_move_out_date ?? null;
-
+    // A previously autosaved draft (tenant.final_electricity_reading/final_water_reading)
+    // takes priority over the previous meter reading, so reopening the wizard
+    // picks up where the admin left off instead of resetting usage to 0.
     setForm((prev) => ({
       ...prev,
       full_name: tenant.full_name,
       advance_rent_amount: tenant.advance_rent_amount || 0,
       security_deposit_amount: tenant.security_deposit_amount || 0,
-      move_out_request_date: requestDefaultDate ?? prev.move_out_request_date,
-      // Initialize finals to previous reading so usage = 0 until admin changes them
-      final_electricity_reading: prev.final_electricity_reading || prevElec,
-      final_water_reading: prev.final_water_reading || prevWater,
+      final_electricity_reading:
+        tenant.final_electricity_reading ?? (prev.final_electricity_reading || prevElec),
+      final_water_reading: tenant.final_water_reading ?? (prev.final_water_reading || prevWater),
     }));
     setForfeitDeposit(tenant.forfeit_security_deposit || false);
+    draftHydratedRef.current = {
+      final_electricity_reading:
+        tenant.final_electricity_reading ?? (prevElec || 0),
+      final_water_reading: tenant.final_water_reading ?? (prevWater || 0),
+      advance_rent_amount: tenant.advance_rent_amount || 0,
+      security_deposit_amount: tenant.security_deposit_amount || 0,
+      forfeit_security_deposit: tenant.forfeit_security_deposit || false,
+    };
 
     return {
       tenant: tenantRes.data,
@@ -158,6 +169,59 @@ export function MoveOutProcessingModal({
     return res.json();
   };
 
+  // ── Autosave ──────────────────────────────────────────────────────────────
+  // Resets the "known persisted" snapshot whenever the modal opens/switches
+  // tenant, so the debounce effect below doesn't compare against a previous
+  // tenant's values while this tenant's data is still loading.
+  useEffect(() => {
+    draftHydratedRef.current = null;
+    setAutosaveStatus("idle");
+  }, [isOpen, tenantId]);
+
+  useEffect(() => {
+    if (!isOpen || !tenantId) return;
+    const lastSaved = draftHydratedRef.current;
+    if (!lastSaved) return; // still hydrating from the initial fetch
+    if (isMovingOut || isQuickVacating || isCancellingMoveOut) return; // an explicit action owns the save right now
+
+    const current = {
+      final_electricity_reading: form.final_electricity_reading,
+      final_water_reading: form.final_water_reading,
+      advance_rent_amount: form.advance_rent_amount,
+      security_deposit_amount: form.security_deposit_amount,
+      forfeit_security_deposit: forfeitDeposit,
+    };
+    const changed =
+      current.final_electricity_reading !== lastSaved.final_electricity_reading ||
+      current.final_water_reading !== lastSaved.final_water_reading ||
+      current.advance_rent_amount !== lastSaved.advance_rent_amount ||
+      current.security_deposit_amount !== lastSaved.security_deposit_amount ||
+      current.forfeit_security_deposit !== lastSaved.forfeit_security_deposit;
+    if (!changed) return;
+
+    setAutosaveStatus("saving");
+    const timeout = setTimeout(() => {
+      void callTenantsAction("autosave_move_out_draft", { tenantId, payload: current })
+        .then(() => {
+          draftHydratedRef.current = current;
+          setAutosaveStatus("saved");
+        })
+        .catch(() => setAutosaveStatus("idle"));
+    }, 900);
+    return () => clearTimeout(timeout);
+  }, [
+    isOpen,
+    tenantId,
+    form.final_electricity_reading,
+    form.final_water_reading,
+    form.advance_rent_amount,
+    form.security_deposit_amount,
+    forfeitDeposit,
+    isMovingOut,
+    isQuickVacating,
+    isCancellingMoveOut,
+  ]);
+
   // ── Actions ───────────────────────────────────────────────────────────────
 
   const manageMoveOutRequest = async (requestStatus: "approved" | "rejected") => {
@@ -166,8 +230,6 @@ export function MoveOutProcessingModal({
       await callTenantsAction("manage_move_out_request", {
         requestId: data.moveOutRequests[0].id,
         requestStatus,
-        approvedMoveOutDate:
-          requestStatus === "approved" ? form.move_out_request_date : null,
         adminNote: data.moveOutRequests[0].admin_note ?? null,
       });
       toast.success(
@@ -389,6 +451,11 @@ export function MoveOutProcessingModal({
           <div className="rounded-card bg-danger-50 border border-danger-200 p-4 text-danger-600 text-sm">
             เกิดข้อผิดพลาด: {error.message}
           </div>
+        )}
+        {data && autosaveStatus !== "idle" && (
+          <p className="mb-3 text-right text-2xs text-slate-400">
+            {autosaveStatus === "saving" ? "กำลังบันทึกอัตโนมัติ..." : "บันทึกอัตโนมัติแล้ว"}
+          </p>
         )}
         {data && data.tenant?.status === "active" && (
           <div className="mb-4 flex items-start justify-between gap-3 rounded-card border border-slate-200 bg-slate-50 p-4">

@@ -12,8 +12,10 @@ import { requireLineAdminAccess } from "@/lib/line-admin-auth";
  * Deliberately does NOT expose "completed": that status is only set by the
  * desktop settlement wizard (final_move_out), which computes prorated rent,
  * utilities and deposit forfeiture from live meter readings. Mobile only
- * triages the request itself — approve (with a move-out date) or reject
- * (with a note) — then the admin finishes settlement on desktop.
+ * triages the request itself — approve (locking in the tenant's requested
+ * date) or reject (with a note) — then the admin finishes settlement on
+ * desktop. Approval always uses the tenant's own requested_move_out_date;
+ * there's no separate admin-chosen date to disagree with it.
  */
 export async function POST(req: Request) {
   try {
@@ -32,7 +34,7 @@ export async function POST(req: Request) {
 
     const { data: requestRow, error: fetchError } = await supabase
       .from("move_out_requests")
-      .select("id,tenant_id,status")
+      .select("id,tenant_id,status,requested_move_out_date")
       .eq("id", requestId)
       .maybeSingle();
 
@@ -42,9 +44,9 @@ export async function POST(req: Request) {
     }
 
     if (action === "approve") {
-      const approvedMoveOutDate = String(body?.approvedMoveOutDate ?? "").trim();
+      const approvedMoveOutDate = String(requestRow.requested_move_out_date ?? "").trim();
       if (!/^\d{4}-\d{2}-\d{2}$/.test(approvedMoveOutDate)) {
-        return NextResponse.json({ error: "Invalid or missing approved move-out date." }, { status: 400 });
+        return NextResponse.json({ error: "Move-out request is missing a requested date." }, { status: 400 });
       }
       const adminNote = body?.adminNote != null ? String(body.adminNote) : null;
 

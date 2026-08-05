@@ -171,6 +171,8 @@ export default function MoveOutsPage() {
         room,
         building,
         move_out_date,
+        requested_move_out_date: req.requested_move_out_date,
+        approved_move_out_date: req.approved_move_out_date,
         sort_date: new Date(`${move_out_date}T00:00:00`).getTime(),
         status: req.status,
         status_label: requestStatusThai(req.status),
@@ -186,6 +188,7 @@ export default function MoveOutsPage() {
 
       if (existingReq) {
         existingReq.move_out_date = t.move_out_date;
+        existingReq.approved_move_out_date = t.move_out_date;
         existingReq.sort_date = new Date(`${t.move_out_date}T00:00:00`).getTime();
       } else {
         const { room, building } = roomFromTenant(t);
@@ -196,6 +199,8 @@ export default function MoveOutsPage() {
           room,
           building,
           move_out_date: t.move_out_date,
+          requested_move_out_date: t.move_out_date,
+          approved_move_out_date: null,
           sort_date: new Date(`${t.move_out_date}T00:00:00`).getTime(),
           status: "manual",
           status_label: requestStatusThai("manual"),
@@ -209,12 +214,18 @@ export default function MoveOutsPage() {
       // A tenant vacated via the quick action may still have a stale "approved"/"requested"
       // move-out request row (that flow doesn't touch move_out_requests) — supersede it
       // rather than showing both a stale request AND a pending-settlement row.
+      //
+      // Quick-vacate is deliberately decoupled from the tenant's desired move-out
+      // date (CLAUDE.md's "Vacate" step — it just frees the room immediately,
+      // regardless of schedule) and writes the *actual* departure date into
+      // tenants.move_out_date for room-history purposes. That's a different
+      // concept from what the tenant originally asked for/was approved for, so
+      // don't let it clobber the request's requested/approved dates here — the
+      // move-outs list keeps showing the desired date until settlement changes it.
       const existing = Array.from(map.values()).find((u) => u.tenant_id === t.id);
       if (existing) {
         existing.status = "pending_settlement";
         existing.status_label = requestStatusThai("pending_settlement");
-        existing.move_out_date = t.move_out_date;
-        existing.sort_date = new Date(`${t.move_out_date}T00:00:00`).getTime();
         return;
       }
       const { room, building } = roomFromTenant(t);
@@ -225,6 +236,8 @@ export default function MoveOutsPage() {
         room,
         building,
         move_out_date: t.move_out_date,
+        requested_move_out_date: t.move_out_date,
+        approved_move_out_date: null,
         sort_date: new Date(`${t.move_out_date}T00:00:00`).getTime(),
         status: "pending_settlement",
         status_label: requestStatusThai("pending_settlement"),
@@ -426,7 +439,9 @@ export default function MoveOutsPage() {
                 ) : (
                   filteredList.map((row) => {
                     const days = daysUntil(row.move_out_date);
-                    const isUrgent = days <= 3 && (row.status === "approved" || row.status === "manual");
+                    const showsCountdown =
+                      row.status === "approved" || row.status === "manual" || row.status === "pending_settlement";
+                    const isUrgent = days <= 3 && showsCountdown;
                     return (
                       <tr
                         key={row.key}
@@ -447,9 +462,9 @@ export default function MoveOutsPage() {
                         <td className="px-5 py-3.5">
                           <div className="flex flex-col gap-0.5">
                             <span className={`font-semibold ${isUrgent ? "text-danger-700" : row.status === "requested" ? "text-warning-700" : "text-slate-800"}`}>
-                              {formatThai(row.move_out_date)}
+                              {formatThai(row.requested_move_out_date ?? row.move_out_date)}
                             </span>
-                            {(row.status === "approved" || row.status === "manual") && (
+                            {showsCountdown && (
                               <span className={`text-2xs font-medium ${days < 0 || days <= 3 ? "text-danger-600" : days <= 7 ? "text-warning-600" : "text-slate-400"}`}>
                                 {days < 0
                                   ? `เลยกำหนด ${Math.abs(days)} วัน`
@@ -460,6 +475,12 @@ export default function MoveOutsPage() {
                                   : `อีก ${days} วัน`}
                               </span>
                             )}
+                            {row.approved_move_out_date &&
+                              row.approved_move_out_date !== row.requested_move_out_date && (
+                                <span className="text-2xs text-slate-400">
+                                  อนุมัติ: {formatThai(row.approved_move_out_date)}
+                                </span>
+                              )}
                             {row.notice_date && (
                               <span className="text-2xs text-slate-400">แจ้งเมื่อ: {formatThai(row.notice_date)}</span>
                             )}

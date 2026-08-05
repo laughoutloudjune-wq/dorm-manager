@@ -238,6 +238,43 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: true });
     }
 
+    if (action === "autosave_move_out_draft") {
+      // Debounced draft save from the move-out settlement wizard, so meter
+      // readings/amounts entered mid-wizard survive a closed modal or a
+      // browser refresh instead of only persisting once "confirm" is
+      // clicked. Only touches the specific draft columns the wizard owns —
+      // never room/status fields — so it can safely fire on every edit.
+      const auth = await requireAdminPermission(req, "tenant.edit");
+      if ("error" in auth) return auth.error;
+      const tenantId = String(body?.tenantId ?? "");
+      if (!tenantId) {
+        return NextResponse.json({ error: "Missing tenantId." }, { status: 400 });
+      }
+      const payload = (body?.payload ?? {}) as Record<string, unknown>;
+      const updatePayload: Record<string, unknown> = {};
+      if (payload.final_electricity_reading !== undefined) {
+        updatePayload.final_electricity_reading = toNumber(payload.final_electricity_reading);
+      }
+      if (payload.final_water_reading !== undefined) {
+        updatePayload.final_water_reading = toNumber(payload.final_water_reading);
+      }
+      if (payload.advance_rent_amount !== undefined) {
+        updatePayload.advance_rent_amount = toNumber(payload.advance_rent_amount);
+      }
+      if (payload.security_deposit_amount !== undefined) {
+        updatePayload.security_deposit_amount = toNumber(payload.security_deposit_amount);
+      }
+      if (payload.forfeit_security_deposit !== undefined) {
+        updatePayload.forfeit_security_deposit = Boolean(payload.forfeit_security_deposit);
+      }
+      if (Object.keys(updatePayload).length === 0) {
+        return NextResponse.json({ success: true });
+      }
+      const { error } = await auth.supabase.from("tenants").update(updatePayload).eq("id", tenantId);
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ success: true });
+    }
+
     if (action === "delete_tenant") {
       const auth = await requireAdminPermission(req, "tenant.edit");
       if ("error" in auth) return auth.error;
@@ -320,9 +357,6 @@ export async function POST(req: Request) {
 
       const requestId = String(body?.requestId ?? "");
       const requestStatus = String(body?.requestStatus ?? "");
-      const approvedMoveOutDate = body?.approvedMoveOutDate
-        ? String(body.approvedMoveOutDate)
-        : null;
       const adminNote = body?.adminNote != null ? String(body.adminNote) : null;
 
       if (!requestId || !requestStatus) {
@@ -336,7 +370,7 @@ export async function POST(req: Request) {
 
       const { data: requestRow, error: requestFetchError } = await auth.supabase
         .from("move_out_requests")
-        .select("id,tenant_id")
+        .select("id,tenant_id,requested_move_out_date")
         .eq("id", requestId)
         .maybeSingle();
 
@@ -346,6 +380,10 @@ export async function POST(req: Request) {
       if (!requestRow?.id) {
         return NextResponse.json({ error: "Move-out request not found." }, { status: 404 });
       }
+
+      // Approval always locks in the tenant's own requested date — there's no
+      // separate admin-chosen date. If the date is wrong, the tenant re-requests.
+      const approvedMoveOutDate = String(requestRow.requested_move_out_date ?? "");
 
       const nowIso = new Date().toISOString();
       const updatePayload: Record<string, unknown> = {
