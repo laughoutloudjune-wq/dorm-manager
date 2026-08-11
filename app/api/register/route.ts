@@ -41,6 +41,23 @@ export async function POST(req: Request) {
 
     const supabase = createAdminClient();
 
+    // Already-registered guard: this LINE account may only be linked to one
+    // active tenancy at a time. Re-submitting for the same room is allowed (it
+    // acts as a profile edit); pointing it at a different room is not — that
+    // would silently leave the old room linked to nobody. A tenant who has
+    // moved out is `status='inactive'`, so they fall through and can register
+    // for a new room normally.
+    const { data: existingLink, error: existingLinkError } = await supabase
+      .from("tenants")
+      .select("id,room_id,rooms(room_number)")
+      .eq("line_user_id", userId)
+      .eq("status", "active")
+      .maybeSingle();
+
+    if (existingLinkError) {
+      return NextResponse.json({ error: existingLinkError.message }, { status: 500 });
+    }
+
     const trimmedRoomNumber = typeof roomNumber === "string" ? roomNumber.trim() : "";
     const trimmedRoomId = typeof roomId === "string" ? roomId.trim() : "";
 
@@ -81,6 +98,23 @@ export async function POST(req: Request) {
       room = rows[0];
     } else {
       return NextResponse.json({ error: "Missing required fields." }, { status: 400 });
+    }
+
+    if (existingLink?.id && String(existingLink.room_id ?? "") !== String(room.id)) {
+      const linkedRoom = Array.isArray((existingLink as any).rooms)
+        ? (existingLink as any).rooms[0]
+        : (existingLink as any).rooms;
+      const linkedRoomNumber = linkedRoom?.room_number ?? null;
+      return NextResponse.json(
+        {
+          error: linkedRoomNumber
+            ? `บัญชี LINE นี้ลงทะเบียนกับห้อง ${linkedRoomNumber} อยู่แล้ว หากต้องการเปลี่ยนห้องกรุณาติดต่อผู้ดูแลหอพัก`
+            : "บัญชี LINE นี้ลงทะเบียนกับห้องพักอื่นอยู่แล้ว กรุณาติดต่อผู้ดูแลหอพัก",
+          alreadyRegistered: true,
+          registeredRoomNumber: linkedRoomNumber,
+        },
+        { status: 409 }
+      );
     }
 
     const { data: tenant } = await supabase

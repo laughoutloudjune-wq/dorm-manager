@@ -11,6 +11,14 @@ type LiffProfile = {
   pictureUrl?: string;
 };
 
+type ExistingRegistration = {
+  fullName: string | null;
+  phoneNumber: string | null;
+  moveOutDate: string | null;
+  roomNumber: string | null;
+  buildingName: string | null;
+};
+
 type RoomSuggestion = {
   id: string;
   room_number: string;
@@ -111,6 +119,11 @@ export default function RegisterPage() {
   const [showSuccessOverlay, setShowSuccessOverlay] = useState(false);
   const [policyAccepted, setPolicyAccepted] = useState(false);
   const [policyModalOpen, setPolicyModalOpen] = useState(false);
+  // Set when this LINE account is already linked to an active tenancy — the
+  // form is replaced by a summary instead of inviting a duplicate registration.
+  const [existingRegistration, setExistingRegistration] = useState<ExistingRegistration | null>(
+    null
+  );
 
   useEffect(() => {
     const init = async () => {
@@ -147,6 +160,27 @@ export default function RegisterPage() {
           displayName: nextProfile.displayName,
           pictureUrl: nextProfile.pictureUrl,
         });
+
+        // Don't show a blank registration form to someone who is already a
+        // tenant — check the link before rendering anything.
+        try {
+          const statusResponse = await fetch("/api/register/status", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "ngrok-skip-browser-warning": "true",
+            },
+            body: JSON.stringify({ accessToken: liff.getAccessToken() }),
+          });
+          const statusData = await statusResponse.json();
+          if (statusResponse.ok && statusData?.registered && statusData?.tenant) {
+            setExistingRegistration(statusData.tenant as ExistingRegistration);
+          }
+        } catch {
+          // Network hiccup on the pre-check shouldn't block registration —
+          // the same rule is enforced server-side on submit.
+        }
+
         setLoading(false);
       } catch (error: any) {
         toast.error(error?.message ?? "เริ่มต้น LINE LIFF ไม่สำเร็จ");
@@ -278,6 +312,18 @@ export default function RegisterPage() {
     });
 
     const data = await response.json();
+    if (response.status === 409 && data?.alreadyRegistered) {
+      toast.error(data?.error ?? "บัญชี LINE นี้ลงทะเบียนไว้แล้ว");
+      setExistingRegistration({
+        fullName: null,
+        phoneNumber: null,
+        moveOutDate: null,
+        roomNumber: data?.registeredRoomNumber ?? null,
+        buildingName: null,
+      });
+      setSubmitting(false);
+      return;
+    }
     if (response.status === 409 && data?.takeoverRequestId) {
       toast.error(
         data?.error ??
@@ -317,6 +363,66 @@ export default function RegisterPage() {
 
         {loading ? (
           <p className="mt-6 text-sm text-slate-500">กำลังเริ่มต้นระบบ LINE Login...</p>
+        ) : profile && existingRegistration ? (
+          <div className="mt-6 space-y-4">
+            <div className="flex items-center gap-3 rounded-2xl border border-slate-100 bg-slate-50 p-3">
+              {profile.pictureUrl && (
+                <img
+                  src={profile.pictureUrl}
+                  alt={profile.displayName}
+                  className="h-12 w-12 rounded-full"
+                />
+              )}
+              <div>
+                <p className="text-sm font-semibold text-slate-900">{profile.displayName}</p>
+                <p className="text-xs text-slate-500">เชื่อมต่อ LINE แล้ว</p>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+              <p className="text-base font-semibold text-emerald-900">
+                บัญชี LINE นี้ลงทะเบียนเรียบร้อยแล้ว
+              </p>
+              <p className="mt-1 text-sm text-emerald-800">
+                ไม่ต้องลงทะเบียนซ้ำ — คุณสามารถดูใบแจ้งหนี้และแจ้งชำระเงินได้จากเมนูของหอพักได้เลย
+              </p>
+              <dl className="mt-4 space-y-2 text-sm text-emerald-900">
+                {existingRegistration.roomNumber && (
+                  <div className="flex justify-between gap-3">
+                    <dt className="text-emerald-700">ห้องพัก</dt>
+                    <dd className="font-semibold">
+                      {existingRegistration.roomNumber}
+                      {existingRegistration.buildingName
+                        ? ` (${existingRegistration.buildingName})`
+                        : ""}
+                    </dd>
+                  </div>
+                )}
+                {existingRegistration.fullName && (
+                  <div className="flex justify-between gap-3">
+                    <dt className="text-emerald-700">ชื่อผู้เช่า</dt>
+                    <dd className="font-semibold">{existingRegistration.fullName}</dd>
+                  </div>
+                )}
+                {existingRegistration.phoneNumber && (
+                  <div className="flex justify-between gap-3">
+                    <dt className="text-emerald-700">เบอร์โทรศัพท์</dt>
+                    <dd className="font-semibold">{existingRegistration.phoneNumber}</dd>
+                  </div>
+                )}
+                {existingRegistration.moveOutDate && (
+                  <div className="flex justify-between gap-3">
+                    <dt className="text-emerald-700">วันที่แจ้งย้ายออก</dt>
+                    <dd className="font-semibold">{existingRegistration.moveOutDate}</dd>
+                  </div>
+                )}
+              </dl>
+            </div>
+
+            <p className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+              หากข้อมูลไม่ถูกต้อง หรือต้องการเปลี่ยนห้องพัก กรุณาติดต่อผู้ดูแลหอพักโดยตรง
+            </p>
+          </div>
         ) : profile ? (
           <div className="mt-6 space-y-4">
             <div className="flex items-center gap-3 rounded-2xl border border-slate-100 bg-slate-50 p-3">
