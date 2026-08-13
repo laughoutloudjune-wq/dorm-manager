@@ -369,7 +369,18 @@ async function upsertLedgerFact(
   return { entry: inserted as PointLedgerRow, isNew: true, changed: false };
 }
 
-export type SyncPointsResult = { awardedEntries: PointLedgerRow[]; adjustedEntries: PointLedgerRow[] };
+export type SyncPointsResult = {
+  awardedEntries: PointLedgerRow[];
+  adjustedEntries: PointLedgerRow[];
+  revokedEntries: PointLedgerRow[];
+};
+
+/**
+ * Payment-derived reasons are the only ones sync is allowed to take back — see
+ * the revocation step at the end of syncPointsForTenant. Redemptions, referrals,
+ * manual adjustments and tenancy milestones are never auto-removed.
+ */
+const REVOCABLE_REASONS = ["rent_on_time", "streak_bonus"];
 
 export async function syncPointsForTenant(
   supabase: SupabaseClient,
@@ -379,6 +390,11 @@ export async function syncPointsForTenant(
   const cfg = config ?? (await getRewardsConfig(supabase));
   const awardedEntries: PointLedgerRow[] = [];
   const adjustedEntries: PointLedgerRow[] = [];
+  const revokedEntries: PointLedgerRow[] = [];
+  // Every payment-derived fact that still qualifies on this run. Anything the
+  // tenant holds under a REVOCABLE_REASONS key that isn't in here has stopped
+  // qualifying and gets removed by the revocation step below.
+  const expectedKeys = new Set<string>();
 
   const { data: tenant, error: tenantError } = await supabase
     .from("tenants")
@@ -386,7 +402,7 @@ export async function syncPointsForTenant(
     .eq("id", tenantId)
     .maybeSingle();
   if (tenantError) throw new Error(tenantError.message);
-  if (!tenant) return { awardedEntries, adjustedEntries };
+  if (!tenant) return { awardedEntries, adjustedEntries, revokedEntries };
 
   const { data: paidInvoices, error: invoicesError } = await supabase
     .from("invoices")
@@ -410,6 +426,7 @@ export async function syncPointsForTenant(
     if (!isPaymentOnTime(invoice)) continue;
     const points = pointsForRentPayment(invoice.total_amount, cfg);
     if (points <= 0) continue;
+    expectedKeys.add(`rent_on_time:${invoice.id}`);
     const result = await upsertLedgerFact(supabase, {
       tenant_id: tenantId,
       points,
@@ -430,6 +447,7 @@ export async function syncPointsForTenant(
   const progression = computeStreakProgression(invoicesAsc);
   for (const step of progression) {
     if (step.streak > 0 && step.streak % cfg.streak_length === 0) {
+      expectedKeys.add(`streak_bonus:${step.invoiceId}`);
       const result = await upsertLedgerFact(supabase, {
         tenant_id: tenantId,
         points: cfg.streak_bonus_points,
@@ -497,7 +515,38 @@ export async function syncPointsForTenant(
     }
   }
 
-  return { awardedEntries, adjustedEntries };
+  // 4. Revoke payment-derived awards that no longer qualify. The award loops
+  // above only `continue` past an invoice that fails isPaymentOnTime, so
+  // without this a point once granted could never be taken back: correcting a
+  // wrong due_date, re-dating a payment, un-paying an invoice or moving
+  // program_start_date forward would all leave the stale award standing
+  // forever, and re-running sync would never notice. Scoped to
+  // REVOCABLE_REASONS so redemptions, referrals, manual adjustments and
+  // milestones are never touched — a tenant must not silently lose points they
+  // spent or an admin granted by hand.
+  const { data: existingAwards, error: existingAwardsError } = await supabase
+    .from("point_ledger_entries")
+    .select(LEDGER_COLUMNS)
+    .eq("tenant_id", tenantId)
+    .in("reason", REVOCABLE_REASONS);
+  if (existingAwardsError) throw new Error(existingAwardsError.message);
+
+  const staleAwards = ((existingAwards ?? []) as PointLedgerRow[]).filter(
+    (row) => !row.idempotency_key || !expectedKeys.has(row.idempotency_key),
+  );
+  if (staleAwards.length > 0) {
+    const { error: revokeError } = await supabase
+      .from("point_ledger_entries")
+      .delete()
+      .in(
+        "id",
+        staleAwards.map((row) => row.id),
+      );
+    if (revokeError) throw new Error(revokeError.message);
+    revokedEntries.push(...staleAwards);
+  }
+
+  return { awardedEntries, adjustedEntries, revokedEntries };
 }
 
 const OPEN_FOR_REDEMPTION_STATUSES = ["pending", "overdue", "partial"];

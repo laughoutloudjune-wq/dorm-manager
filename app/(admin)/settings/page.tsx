@@ -448,11 +448,26 @@ export default function SettingsPage() {
       .filter((fee) => fee.label.trim().length > 0)
       .map((fee) => ({ ...fee, value: toNumber(fee.value) }));
 
+    const dueDay = toNumber(settings.due_day ?? 5);
+    const lateFeeStartDay = toNumber(settings.late_fee_start_day ?? 6);
+
+    // due_day is the LAST day that still counts as on time — an invoice paid on
+    // due_day earns rewards points and is not overdue. late_fee_start_day is the
+    // FIRST day a fee accrues. Setting them to the same number makes that day
+    // both "on time" and "already being charged", which is how a payment made
+    // after the real deadline once still earned on-time points.
+    if (lateFeeStartDay <= dueDay) {
+      setStatusMessage(
+        `วันเริ่มคิดค่าปรับต้องมากกว่าวันครบกำหนดชำระ — ถ้าวันสุดท้ายที่จ่ายได้คือวันที่ ${dueDay} ให้ตั้งวันเริ่มคิดค่าปรับเป็นวันที่ ${dueDay + 1}`,
+      );
+      return;
+    }
+
     const payload = {
       common_fee: settings.common_fee,
       billing_day: toNumber(settings.billing_day ?? 1),
-      due_day: toNumber(settings.due_day ?? 5),
-      late_fee_start_day: toNumber(settings.late_fee_start_day ?? 6),
+      due_day: dueDay,
+      late_fee_start_day: lateFeeStartDay,
       late_fee_per_day: toNumber(settings.late_fee_per_day ?? 0),
       additional_fees: cleaned,
       additional_discounts: cleanedDiscounts,
@@ -861,7 +876,7 @@ export default function SettingsPage() {
                   }
                 />
                 <Input
-                  label="วันครบกำหนดชำระ (1-28)"
+                  label="วันครบกำหนดชำระ (1-28) — วันสุดท้ายที่ถือว่าจ่ายตรงเวลา"
                   type="number"
                   value={settings.due_day ?? 5}
                   onChange={(event) =>
@@ -869,7 +884,7 @@ export default function SettingsPage() {
                   }
                 />
                 <Input
-                  label="วันเริ่มคิดค่าปรับ (1-28)"
+                  label="วันเริ่มคิดค่าปรับ (1-28) — วันแรกที่เริ่มปรับ ต้องหลังวันครบกำหนด"
                   type="number"
                   value={settings.late_fee_start_day ?? 6}
                   onChange={(event) =>
