@@ -98,6 +98,15 @@ const statusLabel = (s: string) =>
     cancelled: "ยกเลิก",
   } as Record<string, string>)[s] ?? s;
 
+/** Same set the web admin's SlipDeclineModal offers, so both surfaces send tenants identical wording. */
+const LIFF_DECLINE_REASONS = [
+  "ยอดเงินในสลิปไม่ตรงกับยอดที่ต้องชำระ",
+  "สลิปไม่ชัด อ่านรายละเอียดไม่ได้",
+  "เป็นสลิปของรอบบิลอื่นที่ชำระไปแล้ว",
+  "โอนเข้าบัญชีที่ไม่ถูกต้อง",
+  "ไม่พบรายการเงินเข้าตามสลิปนี้",
+];
+
 export default function AdminLiffPage() {
   const [profile, setProfile] = useState<LiffProfile | null>(null);
   const [accessToken, setAccessToken] = useState("");
@@ -115,6 +124,8 @@ export default function AdminLiffPage() {
   const [paymentDate, setPaymentDate] = useState(new Date().toISOString().slice(0, 10));
   const [savingAction, setSavingAction] = useState<string | null>(null);
   const [breakdownOpen, setBreakdownOpen] = useState(false);
+  const [declineOpen, setDeclineOpen] = useState(false);
+  const [declineReason, setDeclineReason] = useState("");
 
   const [tenantQuery, setTenantQuery] = useState("");
   const [tenants, setTenants] = useState<TenantRow[]>([]);
@@ -264,6 +275,36 @@ export default function AdminLiffPage() {
     }
   };
 
+  /**
+   * Sends the invoice back to the tenant for a new slip. Mirrors the web admin's
+   * decline flow (lib/slip-review.ts): status returns to pending/overdue/partial,
+   * the slip is unlinked but kept, and the tenant gets a LINE message with the
+   * reason.
+   */
+  const submitDecline = async () => {
+    if (!accessToken || !selectedInvoice) return;
+    const reason = declineReason.trim();
+    if (!reason) return;
+    const key = `decline_slip:${selectedInvoice.id}`;
+    setSavingAction(key);
+    try {
+      await postJson("/api/admin-liff/invoices/actions", {
+        accessToken,
+        invoiceId: selectedInvoice.id,
+        action: "decline_slip",
+        reason,
+      });
+      setMessage("ปฏิเสธสลิปแล้ว แจ้งผู้เช่าให้ส่งใหม่เรียบร้อย");
+      setDeclineOpen(false);
+      setDeclineReason("");
+      await Promise.all([loadInvoices(), loadDashboard()]);
+    } catch (error: any) {
+      setMessage(error?.message ?? "ปฏิเสธสลิปไม่สำเร็จ");
+    } finally {
+      setSavingAction(null);
+    }
+  };
+
   const runInvoiceAction = async (
     action: "approve_paid" | "update_status" | "resend_invoice",
     payload?: Record<string, unknown>
@@ -296,6 +337,7 @@ export default function AdminLiffPage() {
   const workingResend = savingAction === (selectedInvoice ? `resend_invoice:${selectedInvoice.id}` : "");
   const workingApprove = savingAction === (selectedInvoice ? `approve_paid:${selectedInvoice.id}` : "");
   const workingPending = savingAction === (selectedInvoice ? `update_status:${selectedInvoice.id}` : "");
+  const workingDecline = savingAction === (selectedInvoice ? `decline_slip:${selectedInvoice.id}` : "");
 
   return (
     <div className="min-h-screen bg-slate-100 px-3 py-4">
@@ -383,7 +425,7 @@ export default function AdminLiffPage() {
                   <div className="max-h-64 overflow-y-auto">
                     {visibleInvoices.map((inv) => {
                       const t = toArray(inv.tenants)[0]; const r = toArray(inv.rooms)[0]; const b = toArray(r?.buildings as any)[0];
-                      return <button key={inv.id} type="button" onClick={() => setSelectedInvoiceId(inv.id)} className={`w-full border-b border-slate-100 px-3 py-3 text-left ${selectedInvoiceId === inv.id ? "bg-blue-50" : "bg-white"}`}>
+                      return <button key={inv.id} type="button" onClick={() => { setSelectedInvoiceId(inv.id); setDeclineOpen(false); setDeclineReason(""); }} className={`w-full border-b border-slate-100 px-3 py-3 text-left ${selectedInvoiceId === inv.id ? "bg-blue-50" : "bg-white"}`}>
                         <p className="text-sm font-semibold">ห้อง {r?.room_number ?? "-"} {b?.name ? `• ${b.name}` : ""}</p>
                         <p className="text-xs text-slate-500">{t?.full_name ?? "-"}</p>
                         <p className="text-xs text-slate-600">{statusLabel(inv.status)} • คงเหลือ {fmtMoney(Number(inv.total_amount ?? 0) - Number(inv.paid_amount ?? 0))}</p>
@@ -519,7 +561,66 @@ export default function AdminLiffPage() {
                         {workingPending && <Loader2 size={14} className="animate-spin" />}
                         {workingPending ? "กำลังอัปเดต..." : "ตั้งเป็นรอชำระ"}
                       </button>
+                      {selectedInvoice.status === "verifying" && (
+                        <button
+                          type="button"
+                          onClick={() => setDeclineOpen(true)}
+                          disabled={!!savingAction}
+                          className="col-span-2 inline-flex items-center justify-center gap-2 rounded-lg border border-rose-300 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700 disabled:opacity-60"
+                        >
+                          {workingDecline && <Loader2 size={14} className="animate-spin" />}
+                          {workingDecline ? "กำลังปฏิเสธ..." : "ปฏิเสธสลิป (ให้ผู้เช่าส่งใหม่)"}
+                        </button>
+                      )}
                     </div>
+
+                    {declineOpen && selectedInvoice.status === "verifying" && (
+                      <div className="space-y-2 rounded-xl border border-rose-200 bg-rose-50 p-3">
+                        <p className="text-xs font-semibold text-rose-800">
+                          เหตุผลที่ปฏิเสธ (ผู้เช่าจะได้รับข้อความนี้ทาง LINE)
+                        </p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {LIFF_DECLINE_REASONS.map((preset) => (
+                            <button
+                              key={preset}
+                              type="button"
+                              onClick={() => setDeclineReason(preset)}
+                              className="rounded-lg border border-rose-200 bg-white px-2 py-1 text-[11px] font-semibold text-rose-700"
+                            >
+                              {preset}
+                            </button>
+                          ))}
+                        </div>
+                        <textarea
+                          value={declineReason}
+                          onChange={(e) => setDeclineReason(e.target.value)}
+                          rows={2}
+                          placeholder="ระบุเหตุผล"
+                          className="box-border w-full rounded-lg border border-rose-300 px-2 py-2 text-sm"
+                        />
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setDeclineOpen(false);
+                              setDeclineReason("");
+                            }}
+                            disabled={!!savingAction}
+                            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 disabled:opacity-60"
+                          >
+                            ยกเลิก
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void submitDecline()}
+                            disabled={!!savingAction || !declineReason.trim()}
+                            className="rounded-lg bg-rose-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-60"
+                          >
+                            ยืนยันปฏิเสธ
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

@@ -333,12 +333,24 @@ export function MoveOutProcessingModal({
 
   const abandonRoom = async (isForfeit: boolean, moveOutDate: string) => {
     try {
-      await callTenantsAction("abandon_room", {
+      const result = await callTenantsAction("abandon_room", {
         tenantId,
         forfeitDeposit: isForfeit,
         moveOutDate,
       });
-      toast.success("ดำเนินการผู้เช่าทิ้งห้องเรียบร้อยแล้ว");
+      const summary = result?.summary ?? {};
+      const baht = (value: unknown) => Number(value ?? 0).toLocaleString("th-TH");
+      const parts = [
+        `ตัดชำระ ฿${baht(summary.creditApplied)}`,
+        Number(summary.writtenOff ?? 0) > 0 ? `ตัดหนี้สูญ ฿${baht(summary.writtenOff)}` : "",
+        Number(summary.refundableCredit ?? 0) > 0
+          ? `เหลือเครดิตคืนผู้เช่า ฿${baht(summary.refundableCredit)}`
+          : "",
+      ].filter(Boolean);
+      toast.success(
+        `ดำเนินการผู้เช่าทิ้งห้องเรียบร้อยแล้ว - ${parts.join(" · ")}`,
+        { duration: 10000 }
+      );
       if (onSuccess) onSuccess();
       onClose();
     } catch (error: any) {

@@ -10,7 +10,17 @@ import { Modal } from "@/components/ui/Modal";
 import { EmptyState, PageHeader, Tabs } from "@/components/ui/Page";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/Table";
 import { createClient } from "@/lib/supabase-client";
-import { Building2, DoorOpen, MessageCircle, Send, Settings2 } from "lucide-react";
+import { formatMoney, toNumber } from "@/lib/format";
+import { statusLabelThai, statusPillClass } from "@/lib/invoice-utils";
+import {
+  ArrowLeft,
+  Building2,
+  ChevronRight,
+  DoorOpen,
+  MessageCircle,
+  Send,
+  Settings2,
+} from "lucide-react";
 
 type RoomRecord = {
   id: string;
@@ -29,9 +39,122 @@ type InvoiceRow = {
 
 type TenantMovementRow = {
   id: string;
+  tenant_id: string | null;
   tenant_name: string;
   move_in_date: string | null;
   move_out_date: string | null;
+};
+
+type TenantDetail = {
+  id: string;
+  room_id: string | null;
+  full_name: string;
+  phone_number: string | null;
+  email: string | null;
+  address: string | null;
+  line_user_id: string | null;
+  status: string;
+  move_in_date: string | null;
+  move_out_date: string | null;
+  lease_months: number | null;
+  security_deposit_amount: number | null;
+  advance_rent_amount: number | null;
+  forfeit_security_deposit: boolean | null;
+  initial_electricity_reading: number | null;
+  initial_water_reading: number | null;
+  final_electricity_reading: number | null;
+  final_water_reading: number | null;
+};
+
+type TenantInvoiceRow = {
+  id: string;
+  issue_date: string;
+  start_date: string | null;
+  total_amount: number;
+  paid_amount: number;
+  status: string;
+  public_token: string;
+  notes: string | null;
+};
+
+type MoveOutRequestRow = {
+  id: string;
+  requested_move_out_date: string | null;
+  approved_move_out_date: string | null;
+  actual_move_out_date: string | null;
+  status: string;
+  request_note: string | null;
+  admin_note: string | null;
+  created_at: string;
+};
+
+type MoveOutSummary = {
+  label: string;
+  variant: "success" | "warning" | "danger" | "default" | "info";
+  detail: string;
+};
+
+/**
+ * How the tenancy ended isn't stored as its own column — it's implied by what
+ * each move-out path wrote. `abandon_room` stamps "ทิ้งห้อง" on the invoices it
+ * settles/cancels, `final_move_out` issues a "ย้ายออก (…)" closing invoice, and
+ * a tenant who was only vacated (step 1 of the move-out flow) is inactive while
+ * still holding a room_id. Read in that order.
+ */
+const summarizeMoveOut = (
+  tenant: TenantDetail,
+  invoices: TenantInvoiceRow[]
+): MoveOutSummary => {
+  if (tenant.status === "active") {
+    return tenant.move_out_date
+      ? {
+          label: "แจ้งย้ายออกแล้ว",
+          variant: "warning",
+          detail: `ยังพักอยู่ กำหนดย้ายออก ${formatDate(tenant.move_out_date)}`,
+        }
+      : { label: "กำลังพักอาศัย", variant: "success", detail: "ยังไม่มีกำหนดย้ายออก" };
+  }
+
+  const notes = invoices.map((invoice) => invoice.notes ?? "");
+
+  if (notes.some((note) => note.includes("ทิ้งห้อง"))) {
+    return {
+      label: "ทิ้งห้อง",
+      variant: "danger",
+      detail: tenant.forfeit_security_deposit
+        ? "ปิดบัญชีด้วยการทิ้งห้อง และริบเงินประกัน"
+        : "ปิดบัญชีด้วยการทิ้งห้อง (หักเครดิตกับบิลค้าง)",
+    };
+  }
+
+  if (notes.some((note) => note.startsWith("ย้ายออก ("))) {
+    return {
+      label: "ย้ายออก - ปิดบัญชีแล้ว",
+      variant: "default",
+      detail: tenant.forfeit_security_deposit
+        ? "ออกบิลปิดบัญชีแล้ว และริบเงินประกัน"
+        : "ออกบิลปิดบัญชีแล้ว",
+    };
+  }
+
+  if (tenant.room_id) {
+    return {
+      label: "ย้ายออกแล้ว - รอปิดบัญชี",
+      variant: "warning",
+      detail: "ปลดล็อกห้องแล้ว แต่ยังไม่ได้คิดค่าใช้จ่ายปิดบัญชี",
+    };
+  }
+
+  return { label: "ย้ายออกแล้ว", variant: "default", detail: "ไม่มีบิลปิดบัญชีบันทึกไว้" };
+};
+
+const moveOutRequestStatusLabel = (status: string) => {
+  if (status === "requested") return "รออนุมัติ";
+  if (status === "approved") return "อนุมัติแล้ว";
+  if (status === "rejected") return "ปฏิเสธ";
+  if (status === "completed") return "ดำเนินการเสร็จสิ้น";
+  if (status === "cancelled") return "ยกเลิก";
+  return status;
 };
 
 const statusVariant: Record<string, "success" | "default" | "warning" | "info"> = {
@@ -47,6 +170,15 @@ const statusLabel = (status: string) => {
   if (status === "available" || status === "vacant") return "ว่าง";
   if (status === "maintenance") return "ซ่อมบำรุง";
   if (status === "short_term") return "ระยะสั้น";
+  return status;
+};
+
+const formatDate = (value: string | null | undefined) =>
+  value ? new Date(value).toLocaleDateString("th-TH") : "-";
+
+const tenantStatusLabel = (status: string) => {
+  if (status === "active") return "กำลังพักอาศัย";
+  if (status === "inactive") return "ย้ายออกแล้ว";
   return status;
 };
 
@@ -79,6 +211,13 @@ export default function RoomsPage() {
   const [selectedRoom, setSelectedRoom] = useState<RoomRecord | null>(null);
   const [movementLogs, setMovementLogs] = useState<TenantMovementRow[]>([]);
   const [movementLoading, setMovementLoading] = useState(false);
+  // Drill-in: the room modal swaps to a past-tenant detail view rather than
+  // stacking a second dialog (two <Modal>s share a z-index and an Esc handler).
+  const [selectedLog, setSelectedLog] = useState<TenantMovementRow | null>(null);
+  const [tenantDetail, setTenantDetail] = useState<TenantDetail | null>(null);
+  const [tenantInvoices, setTenantInvoices] = useState<TenantInvoiceRow[]>([]);
+  const [moveOutRequest, setMoveOutRequest] = useState<MoveOutRequestRow | null>(null);
+  const [tenantLoading, setTenantLoading] = useState(false);
 
   const callRoomsAction = async (action: string, payload: Record<string, unknown>) => {
     const { data } = await supabase.auth.getSession();
@@ -200,7 +339,7 @@ export default function RoomsPage() {
     setMovementLoading(true);
     const { data, error } = await supabase
       .from("room_tenant_logs")
-      .select("id,tenant_name,move_in_date,move_out_date")
+      .select("id,tenant_id,tenant_name,move_in_date,move_out_date")
       .eq("room_id", roomId)
       .order("move_in_date", { ascending: false });
 
@@ -222,6 +361,65 @@ export default function RoomsPage() {
     }
     void loadMovementLogs(selectedRoom.id);
   }, [selectedRoom?.id]);
+
+  const openTenantDetail = async (log: TenantMovementRow) => {
+    setSelectedLog(log);
+    setTenantDetail(null);
+    setTenantInvoices([]);
+    setMoveOutRequest(null);
+    // Legacy log rows carry only a name — there is no tenant record to load.
+    if (!log.tenant_id) return;
+
+    setTenantLoading(true);
+    const [
+      { data: tenant, error: tenantError },
+      { data: invoices, error: invoiceError },
+      { data: requests, error: requestError },
+    ] = await Promise.all([
+      supabase
+        .from("tenants")
+        .select(
+          "id,room_id,full_name,phone_number,email,address,line_user_id,status,move_in_date,move_out_date,lease_months,security_deposit_amount,advance_rent_amount,forfeit_security_deposit,initial_electricity_reading,initial_water_reading,final_electricity_reading,final_water_reading"
+        )
+        .eq("id", log.tenant_id)
+        .maybeSingle(),
+      supabase
+        .from("invoices")
+        .select("id,issue_date,start_date,total_amount,paid_amount,status,public_token,notes")
+        .eq("tenant_id", log.tenant_id)
+        .order("issue_date", { ascending: false }),
+      supabase
+        .from("move_out_requests")
+        .select(
+          "id,requested_move_out_date,approved_move_out_date,actual_move_out_date,status,request_note,admin_note,created_at"
+        )
+        .eq("tenant_id", log.tenant_id)
+        .order("created_at", { ascending: false })
+        .limit(1),
+    ]);
+
+    if (tenantError || invoiceError || requestError) {
+      toast.error(
+        tenantError?.message ??
+          invoiceError?.message ??
+          requestError?.message ??
+          "โหลดข้อมูลผู้เช่าไม่สำเร็จ"
+      );
+    }
+
+    setTenantDetail((tenant as TenantDetail | null) ?? null);
+    setTenantInvoices((invoices ?? []) as TenantInvoiceRow[]);
+    setMoveOutRequest(((requests ?? [])[0] as MoveOutRequestRow | undefined) ?? null);
+    setTenantLoading(false);
+  };
+
+  const closeRoomModal = () => {
+    setSelectedRoom(null);
+    setSelectedLog(null);
+    setTenantDetail(null);
+    setTenantInvoices([]);
+    setMoveOutRequest(null);
+  };
 
   return (
     <div className="space-y-6">
@@ -312,11 +510,225 @@ export default function RoomsPage() {
 
       <Modal
         isOpen={!!selectedRoom}
-        onClose={() => setSelectedRoom(null)}
-        title={`รายละเอียดผู้เช่า - ห้อง ${selectedRoom?.room_number ?? ""}`}
+        onClose={closeRoomModal}
+        title={
+          selectedLog
+            ? `ผู้เช่า ${selectedLog.tenant_name} - ห้อง ${selectedRoom?.room_number ?? ""}`
+            : `รายละเอียดผู้เช่า - ห้อง ${selectedRoom?.room_number ?? ""}`
+        }
         size="lg"
       >
-        {selectedRoom && (
+        {selectedRoom && selectedLog && (
+          <div className="space-y-5 text-sm text-slate-600">
+            <Button
+              variant="ghost"
+              size="sm"
+              icon={<ArrowLeft size={16} />}
+              onClick={() => setSelectedLog(null)}
+            >
+              กลับไปรายละเอียดห้อง
+            </Button>
+
+            {tenantLoading ? (
+              <p className="px-1 py-5 text-sm text-slate-500">กำลังโหลดข้อมูลผู้เช่า...</p>
+            ) : (
+              <>
+                <div className="rounded-card border border-slate-200/70 bg-slate-50/60 p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <p className="text-lg font-semibold text-slate-900">
+                      {tenantDetail?.full_name ?? selectedLog.tenant_name}
+                    </p>
+                    {tenantDetail && (
+                      <Badge
+                        variant={tenantDetail.status === "active" ? "success" : "default"}
+                        dot
+                      >
+                        {tenantStatusLabel(tenantDetail.status)}
+                      </Badge>
+                    )}
+                  </div>
+                  <dl className="mt-4 grid gap-x-6 gap-y-3 sm:grid-cols-2">
+                    <DetailItem
+                      label="วันที่เข้าอยู่"
+                      value={formatDate(tenantDetail?.move_in_date ?? selectedLog.move_in_date)}
+                    />
+                    <DetailItem
+                      label="วันที่ย้ายออก"
+                      value={formatDate(tenantDetail?.move_out_date ?? selectedLog.move_out_date)}
+                    />
+                    {tenantDetail && (
+                      <>
+                        <DetailItem label="เบอร์โทร" value={tenantDetail.phone_number || "-"} />
+                        <DetailItem label="อีเมล" value={tenantDetail.email || "-"} />
+                        <DetailItem
+                          label="ที่อยู่"
+                          value={tenantDetail.address || "-"}
+                          className="sm:col-span-2"
+                        />
+                        <DetailItem
+                          label="LINE"
+                          value={tenantDetail.line_user_id ? "เชื่อมแล้ว" : "ยังไม่เชื่อม"}
+                        />
+                        <DetailItem
+                          label="ระยะสัญญา"
+                          value={
+                            tenantDetail.lease_months ? `${tenantDetail.lease_months} เดือน` : "-"
+                          }
+                        />
+                        <DetailItem
+                          label="เงินประกัน"
+                          value={`฿${formatMoney(toNumber(tenantDetail.security_deposit_amount))}${
+                            tenantDetail.forfeit_security_deposit ? " (ยึดเงินประกัน)" : ""
+                          }`}
+                        />
+                        <DetailItem
+                          label="ค่าเช่าล่วงหน้า"
+                          value={`฿${formatMoney(toNumber(tenantDetail.advance_rent_amount))}`}
+                        />
+                        <DetailItem
+                          label="มิเตอร์ไฟ (เริ่ม → สิ้นสุด)"
+                          value={`${toNumber(tenantDetail.initial_electricity_reading)} → ${
+                            tenantDetail.final_electricity_reading === null
+                              ? "-"
+                              : toNumber(tenantDetail.final_electricity_reading)
+                          }`}
+                        />
+                        <DetailItem
+                          label="มิเตอร์น้ำ (เริ่ม → สิ้นสุด)"
+                          value={`${toNumber(tenantDetail.initial_water_reading)} → ${
+                            tenantDetail.final_water_reading === null
+                              ? "-"
+                              : toNumber(tenantDetail.final_water_reading)
+                          }`}
+                        />
+                      </>
+                    )}
+                  </dl>
+                  {!tenantDetail && (
+                    <p className="mt-4 text-sm text-slate-500">
+                      ประวัติรายการนี้ไม่ได้ผูกกับข้อมูลผู้เช่าในระบบแล้ว จึงแสดงได้เฉพาะชื่อและช่วงเวลาที่พัก
+                    </p>
+                  )}
+                </div>
+
+                {tenantDetail &&
+                  (() => {
+                    const summary = summarizeMoveOut(tenantDetail, tenantInvoices);
+                    return (
+                      <div className="rounded-card border border-slate-200/70 bg-white p-4 shadow-float">
+                        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
+                          การสิ้นสุดการเช่า
+                        </p>
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          <Badge variant={summary.variant} dot>
+                            {summary.label}
+                          </Badge>
+                          <span className="text-sm text-slate-600">{summary.detail}</span>
+                        </div>
+                        {moveOutRequest && (
+                          <dl className="mt-4 grid gap-x-6 gap-y-3 border-t border-slate-100 pt-4 sm:grid-cols-2">
+                            <DetailItem
+                              label="คำขอย้ายออกจากผู้เช่า"
+                              value={moveOutRequestStatusLabel(moveOutRequest.status)}
+                            />
+                            <DetailItem
+                              label="วันที่ผู้เช่าแจ้ง"
+                              value={formatDate(moveOutRequest.requested_move_out_date)}
+                            />
+                            <DetailItem
+                              label="วันที่อนุมัติ"
+                              value={formatDate(moveOutRequest.approved_move_out_date)}
+                            />
+                            <DetailItem
+                              label="วันที่ย้ายออกจริง"
+                              value={formatDate(moveOutRequest.actual_move_out_date)}
+                            />
+                            {moveOutRequest.request_note && (
+                              <DetailItem
+                                label="เหตุผลจากผู้เช่า"
+                                value={moveOutRequest.request_note}
+                                className="sm:col-span-2"
+                              />
+                            )}
+                            {moveOutRequest.admin_note && (
+                              <DetailItem
+                                label="บันทึกของแอดมิน"
+                                value={moveOutRequest.admin_note}
+                                className="sm:col-span-2"
+                              />
+                            )}
+                          </dl>
+                        )}
+                      </div>
+                    );
+                  })()}
+
+                <div className="overflow-hidden rounded-card border border-slate-200/70 bg-slate-50/60">
+                  <p className="border-b border-slate-200/70 px-4 py-3 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
+                    บิลของผู้เช่ารายนี้
+                  </p>
+                  {tenantInvoices.length === 0 ? (
+                    <EmptyState title="ไม่มีบิลของผู้เช่ารายนี้" className="py-8" />
+                  ) : (
+                    <div className="scrollbar-slim overflow-x-auto bg-white">
+                      <Table>
+                        <THead>
+                          <tr>
+                            <TH>รอบบิล</TH>
+                            <TH>ยอดรวม</TH>
+                            <TH>ชำระแล้ว</TH>
+                            <TH>สถานะ</TH>
+                            <TH> </TH>
+                          </tr>
+                        </THead>
+                        <TBody>
+                          {tenantInvoices.map((invoice) => (
+                            <TR key={invoice.id}>
+                              <TD className="font-medium text-slate-900">
+                                {formatDate(invoice.start_date ?? invoice.issue_date)}
+                                {invoice.notes ? (
+                                  <span className="mt-0.5 block text-xs font-normal text-slate-500">
+                                    {invoice.notes}
+                                  </span>
+                                ) : null}
+                              </TD>
+                              <TD>฿{formatMoney(toNumber(invoice.total_amount))}</TD>
+                              <TD>฿{formatMoney(toNumber(invoice.paid_amount))}</TD>
+                              <TD>
+                                <span
+                                  className={`inline-flex rounded-full border px-2.5 py-0.5 text-xs font-semibold ${statusPillClass(
+                                    invoice.status
+                                  )}`}
+                                >
+                                  {statusLabelThai(invoice.status)}
+                                </span>
+                              </TD>
+                              <TD className="text-right">
+                                {/* The receipt endpoint 400s on anything unpaid. */}
+                                {invoice.status === "paid" ? (
+                                  <a
+                                    className="text-xs font-semibold text-primary-600 hover:underline"
+                                    href={`/api/receipt/${invoice.public_token}`}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                  >
+                                    ดูใบเสร็จ
+                                  </a>
+                                ) : null}
+                              </TD>
+                            </TR>
+                          ))}
+                        </TBody>
+                      </Table>
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {selectedRoom && !selectedLog && (
           <div className="space-y-5 text-sm text-slate-600">
             <div className="grid gap-5 md:grid-cols-2">
               <div className="space-y-2">
@@ -371,21 +783,21 @@ export default function RoomsPage() {
                         <TH>ชื่อผู้เช่า</TH>
                         <TH>วันที่เข้าอยู่</TH>
                         <TH>วันที่ย้ายออก</TH>
+                        <TH> </TH>
                       </tr>
                     </THead>
                     <TBody>
                       {movementLogs.map((log) => (
-                        <TR key={log.id}>
+                        <TR
+                          key={log.id}
+                          className="cursor-pointer"
+                          onClick={() => void openTenantDetail(log)}
+                        >
                           <TD className="font-medium text-slate-900">{log.tenant_name}</TD>
-                          <TD>
-                            {log.move_in_date
-                              ? new Date(log.move_in_date).toLocaleDateString("th-TH")
-                              : "-"}
-                          </TD>
-                          <TD>
-                            {log.move_out_date
-                              ? new Date(log.move_out_date).toLocaleDateString("th-TH")
-                              : "-"}
+                          <TD>{formatDate(log.move_in_date)}</TD>
+                          <TD>{formatDate(log.move_out_date)}</TD>
+                          <TD className="text-right text-slate-400">
+                            <ChevronRight size={16} className="inline" />
                           </TD>
                         </TR>
                       ))}
@@ -397,6 +809,23 @@ export default function RoomsPage() {
           </div>
         )}
       </Modal>
+    </div>
+  );
+}
+
+function DetailItem({
+  label,
+  value,
+  className = "",
+}: {
+  label: string;
+  value: string;
+  className?: string;
+}) {
+  return (
+    <div className={className}>
+      <dt className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">{label}</dt>
+      <dd className="mt-0.5 text-sm text-slate-800">{value}</dd>
     </div>
   );
 }

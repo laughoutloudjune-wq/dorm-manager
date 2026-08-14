@@ -161,6 +161,8 @@ export function InvoiceDetailModal() {
     submitPayment,
     cancelPaymentEntry,
     deletePaymentSlip,
+    setDeclineModalOpen,
+    declineSubmitting,
     openInvoice,
     updateUtilityUnits,
     updateForm,
@@ -377,6 +379,51 @@ export function InvoiceDetailModal() {
                     <div className="flex-1">
                       <b className="block text-primary-900 mb-0.5">รอตรวจสอบการชำระเงิน</b>
                       <span>ผู้เช่าได้อัปโหลดหลักฐานการโอนเงินแล้ว กรุณาไปที่แท็บ <button onClick={() => setActiveTab('payments')} className="underline font-bold hover:text-primary-600">ประวัติการชำระเงิน</button> เพื่อตรวจสอบสลิปและยืนยัน</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setDeclineModalOpen(true)}
+                      disabled={!canRecordInvoicePayment || declineSubmitting}
+                      className={buttonClasses({ variant: "danger", size: "sm", className: "shrink-0" })}
+                    >
+                      ปฏิเสธสลิป
+                    </button>
+                  </div>
+                )}
+
+                {Array.isArray(activeInvoice.slip_rejections) && activeInvoice.slip_rejections.length > 0 && (
+                  <div className="rounded-card border border-danger-200 bg-danger-50 p-4 text-sm text-danger-800">
+                    <div className="flex gap-3">
+                      <AlertCircle className="shrink-0 text-danger-600" size={20} />
+                      <div className="flex-1 space-y-2">
+                        <b className="block text-danger-900">
+                          เคยปฏิเสธสลิป {activeInvoice.slip_rejections.length} ครั้ง
+                        </b>
+                        {activeInvoice.slip_rejections
+                          .slice()
+                          .reverse()
+                          .map((rejection: any, idx: number) => (
+                            <div key={idx} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                              <span className="text-xs font-semibold text-danger-700">
+                                {rejection?.rejected_at ? formatDateThai(rejection.rejected_at) : "-"}
+                              </span>
+                              <span className="text-xs text-danger-800">{rejection?.reason ?? "-"}</span>
+                              {rejection?.slip_url && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setSlipModalTitle("สลิปที่ถูกปฏิเสธ");
+                                    setSlipModalUrl(rejection.slip_url);
+                                    setSlipModalOpen(true);
+                                  }}
+                                  className="text-xs font-bold text-danger-600 underline hover:text-danger-800"
+                                >
+                                  ดูสลิปเดิม
+                                </button>
+                              )}
+                            </div>
+                          ))}
+                      </div>
                     </div>
                   </div>
                 )}

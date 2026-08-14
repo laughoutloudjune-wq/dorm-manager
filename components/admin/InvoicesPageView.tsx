@@ -86,6 +86,7 @@ import { statusVariant } from "@/lib/invoice-utils"; // Need this for the UI
 
 import { InvoiceProvider } from "./invoices/InvoiceContext";
 import { SlipViewerModal } from "./invoices/SlipViewerModal";
+import { SlipDeclineModal } from "./invoices/SlipDeclineModal";
 import { LineSendModal } from "./invoices/LineSendModal";
 import { InvoicePreviewModal } from "./invoices/InvoicePreviewModal";
 import { InvoiceDetailModal } from "./invoices/InvoiceDetailModal";
@@ -631,6 +632,8 @@ export default function InvoicesPage() {
         <InvoiceDetailModal />
 
         <SlipViewerModal />
+
+        <SlipDeclineModal />
 
         <LineSendModal />
 

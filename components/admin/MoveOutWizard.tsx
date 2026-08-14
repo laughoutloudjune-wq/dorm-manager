@@ -5,7 +5,7 @@ import Link from "next/link";
 import { toast } from "sonner";
 import type { MoveOutRequestRow, SettingsRates, MoveOutFeeLine } from "@/types";
 import { toNumber, formatMoney } from "@/lib/format";
-import { getInvoiceOwnOutstanding } from "@/lib/invoice-ledger";
+import { getInvoiceOwnOutstanding, planAbandonCredit } from "@/lib/invoice-ledger";
 import { bangkokYmd, meets30DayMoveOutNotice } from "@/lib/move-out-notice";
 import { ConfirmActionModal } from "@/components/ui/ConfirmActionModal";
 import { buttonClasses } from "@/components/ui/Button";
@@ -198,6 +198,29 @@ function Step1RequestReview({
 
   const moveOutDate = form.final_move_out_date || new Date().toISOString().slice(0, 10);
   const prepaid = (forfeitDeposit ? 0 : toNumber(form.security_deposit_amount)) + toNumber(form.advance_rent_amount);
+
+  // Preview of the abandon settlement, computed with the same planner the API
+  // runs, so what the admin approves here is exactly what gets written.
+  const abandonPlan = useMemo(
+    () =>
+      planAbandonCredit(
+        [...outstandingMoveOutInvoices].sort((a: any, b: any) =>
+          String(a.start_date ?? "").localeCompare(String(b.start_date ?? "")),
+        ) as any,
+        prepaid,
+      ),
+    [outstandingMoveOutInvoices, prepaid],
+  );
+  const abandonPeriodById = useMemo(
+    () =>
+      new Map(
+        outstandingMoveOutInvoices.map((inv: any) => [
+          String(inv.id),
+          String(inv.start_date ?? "").slice(0, 10),
+        ]),
+      ),
+    [outstandingMoveOutInvoices],
+  );
 
   const handleAbandonment = async () => {
     setIsAbandoning(true);
@@ -411,6 +434,75 @@ function Step1RequestReview({
         </div>
       </label>
 
+      {/* Abandon settlement preview */}
+      {abandonMode && (
+        <SectionCard>
+          <p className="text-base font-semibold text-slate-800">สรุปการตัดเครดิตเมื่อทิ้งห้อง</p>
+          <p className="mt-0.5 text-sm text-slate-500">
+            ยอดค้างของแต่ละงวดคิดเฉพาะค่าใช้จ่ายของงวดนั้น ไม่รวมยอดยกมาที่นับไว้ในงวดก่อนแล้ว
+          </p>
+
+          <div className="mt-3 space-y-1">
+            <LineItem
+              label={`เครดิตที่ใช้ได้ (ค่าเช่าล่วงหน้า${forfeitDeposit ? "" : " + เงินประกัน"})`}
+              value={`฿${formatMoney(abandonPlan.creditPool)}`}
+            />
+            <LineItem
+              label="ยอดค้างจริงทั้งหมด"
+              value={`฿${formatMoney(abandonPlan.totalOwed)}`}
+            />
+          </div>
+
+          {abandonPlan.lines.length > 0 && (
+            <div className="mt-3 space-y-2 border-t border-slate-100 pt-3">
+              {abandonPlan.lines.map((line) => (
+                <div
+                  key={line.invoiceId}
+                  className="flex flex-wrap items-baseline justify-between gap-2 text-sm"
+                >
+                  <span className="text-slate-600">
+                    งวด {abandonPeriodById.get(line.invoiceId) ?? "-"} · ค้าง ฿
+                    {formatMoney(line.owed)}
+                  </span>
+                  <span className="text-slate-800">
+                    {line.outcome === "already_clear" ? (
+                      <span className="text-slate-400">ไม่มียอดค้างของงวดนี้</span>
+                    ) : (
+                      <>
+                        หักเครดิต ฿{formatMoney(line.applied)}
+                        {line.writtenOff > 0 && (
+                          <span className="text-danger-700">
+                            {" "}
+                            · ตัดหนี้สูญ ฿{formatMoney(line.writtenOff)}
+                          </span>
+                        )}
+                      </>
+                    )}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="mt-3 space-y-1 border-t border-slate-100 pt-3">
+            <LineItem
+              label="รวมเครดิตที่ใช้"
+              value={`฿${formatMoney(abandonPlan.creditApplied)}`}
+            />
+            <LineItem
+              label="รวมตัดเป็นหนี้สูญ"
+              value={`฿${formatMoney(abandonPlan.writtenOff)}`}
+            />
+            {abandonPlan.refundableCredit > 0 && (
+              <LineItem
+                label="เครดิตคงเหลือ (ต้องคืนผู้เช่า)"
+                value={`฿${formatMoney(abandonPlan.refundableCredit)}`}
+              />
+            )}
+          </div>
+        </SectionCard>
+      )}
+
       {abandonMode && (
         <div className="flex justify-end">
           <button
@@ -462,7 +554,15 @@ function Step1RequestReview({
         onCancel={() => setAbandonOpen(false)}
         onConfirm={handleAbandonment}
         title="ยืนยันผู้เช่าทิ้งห้อง"
-        message={`ยืนยันว่า "${form.full_name || "ผู้เช่า"}" ทิ้งห้อง ${roomNumber}? ระบบจะใช้เครดิต ฿${formatMoney(prepaid)} หักบิลค้างชำระตามลำดับ บิลที่เหลือถูกยกเลิก และผู้เช่าถูกย้ายออกทันที การดำเนินการนี้ไม่สามารถย้อนกลับได้`}
+        message={`ยืนยันว่า "${form.full_name || "ผู้เช่า"}" ทิ้งห้อง ${roomNumber}? ระบบจะใช้เครดิต ฿${formatMoney(
+          abandonPlan.creditPool
+        )} หักยอดค้างจริง ฿${formatMoney(abandonPlan.totalOwed)} → ตัดชำระ ฿${formatMoney(
+          abandonPlan.creditApplied
+        )}, ตัดเป็นหนี้สูญ ฿${formatMoney(abandonPlan.writtenOff)}${
+          abandonPlan.refundableCredit > 0
+            ? `, เหลือเครดิตคืนผู้เช่า ฿${formatMoney(abandonPlan.refundableCredit)}`
+            : ""
+        } และผู้เช่าถูกย้ายออกทันที การดำเนินการนี้ไม่สามารถย้อนกลับได้`}
         confirmLabel="ยืนยันทิ้งห้อง"
         loading={isAbandoning}
       />

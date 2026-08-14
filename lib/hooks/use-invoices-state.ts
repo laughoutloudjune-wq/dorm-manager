@@ -179,6 +179,9 @@ export function useInvoicesState() {
   const [paymentDate, setPaymentDate] = useState(toLocalDateString(new Date()));
   const [paymentSlipFile, setPaymentSlipFile] = useState<File | null>(null);
   const [paymentSubmitting, setPaymentSubmitting] = useState(false);
+  const [declineModalOpen, setDeclineModalOpen] = useState(false);
+  const [declineReason, setDeclineReason] = useState("");
+  const [declineSubmitting, setDeclineSubmitting] = useState(false);
   const [lineSendModalOpen, setLineSendModalOpen] = useState(false);
   const [lineSendState, setLineSendState] = useState<
     "sending" | "success" | "error"
@@ -414,7 +417,7 @@ export function useInvoicesState() {
     const { data, error: fetchError } = await supabase
       .from("invoices")
       .select(
-        "id,tenant_id,room_id,status,total_amount,paid_amount,payment_history,issue_date,due_date,start_date,end_date,rent_amount,water_bill,electricity_bill,common_fee,discount_amount,discount_breakdown,late_fee_amount,late_fee_per_day,late_fee_start_date,carry_forward_amount,additional_fees_total,additional_fees_breakdown,notes,public_token,slip_url,opened_count,first_opened_at,last_opened_at,tenants(full_name,phone_number,line_user_id,custom_payment_method,move_in_date,move_out_date,status),rooms(room_number,price_month,buildings(name))",
+        "id,tenant_id,room_id,status,total_amount,paid_amount,payment_history,issue_date,due_date,start_date,end_date,rent_amount,water_bill,electricity_bill,common_fee,discount_amount,discount_breakdown,late_fee_amount,late_fee_per_day,late_fee_start_date,carry_forward_amount,additional_fees_total,additional_fees_breakdown,notes,public_token,slip_url,slip_rejections,opened_count,first_opened_at,last_opened_at,tenants(full_name,phone_number,line_user_id,custom_payment_method,move_in_date,move_out_date,status),rooms(room_number,price_month,buildings(name))",
       )
       .eq("start_date", periodStart)
       .eq("end_date", periodEnd)
@@ -1182,6 +1185,50 @@ export function useInvoicesState() {
       setError(null);
     } catch (error: any) {
       setError(error?.message ?? "ลบสลิปการชำระเงินไม่สำเร็จ");
+    }
+  };
+
+  /**
+   * Declines the slip a tenant uploaded, sending the invoice back to
+   * pending/overdue/partial so they can submit a new one. Unlike
+   * deletePaymentSlip this does not touch the storage bucket — the server keeps
+   * the rejected image referenced from slip_rejections for audit.
+   */
+  const declineSlip = async () => {
+    if (!can("invoice.payment.record")) {
+      setError("ไม่มีสิทธิ์ปฏิเสธสลิปการชำระเงิน");
+      return;
+    }
+    if (!activeInvoice) return;
+    const reason = declineReason.trim();
+    if (!reason) {
+      setError("กรุณาระบุเหตุผลที่ปฏิเสธสลิป");
+      return;
+    }
+
+    setDeclineSubmitting(true);
+    try {
+      const result = await callInvoiceAdminAction("decline_slip", {
+        invoiceId: activeInvoice.id,
+        reason,
+      });
+      const nextStatus = String(result?.nextStatus ?? "pending");
+      setForm((prev) => ({ ...prev, status: nextStatus as any }));
+      setSlipPreview(null);
+      setActiveInvoice((prev) =>
+        prev ? { ...prev, status: nextStatus as any, slip_url: null } : prev,
+      );
+      patchInvoiceInState(activeInvoice.id, {
+        status: nextStatus as any,
+        slip_url: null,
+      });
+      setDeclineModalOpen(false);
+      setDeclineReason("");
+      setError(null);
+    } catch (error: any) {
+      setError(error?.message ?? "ปฏิเสธสลิปไม่สำเร็จ");
+    } finally {
+      setDeclineSubmitting(false);
     }
   };
 
@@ -3349,6 +3396,12 @@ export function useInvoicesState() {
     const generatedRoomIds = new Set(
       insertPayload.map((row: any) => row.room_id),
     );
+    // Bookkeeping that fails AFTER the invoices are inserted used to be reported
+    // with a bare setError, which the alerts block at the end of this function
+    // then overwrote — so a carry-forward link that never got written looked
+    // like a clean run. That is how 9 of 17 links went missing for months.
+    // These survive to the end and are raised as a toast as well.
+    const bookkeepingFailures: string[] = [];
     if (insertPayload.length > 0) {
       const { data: insertedInvoices, error: insertError } = await supabase
         .from("invoices")
@@ -3390,7 +3443,11 @@ export function useInvoicesState() {
             .from("invoice_carry_forwards")
             .upsert(carryForwardInsertPayload, { onConflict: "source_invoice_id,target_invoice_id" });
           if (carryInsertError) {
-            setError(carryInsertError.message);
+            // Without these rows the new invoice has no recorded link to the
+            // bill it carried, so a payment on it never reaches the old one.
+            bookkeepingFailures.push(
+              `บันทึกการยกยอดค้างชำระไม่สำเร็จ (${carryForwardInsertPayload.length} รายการ) - ใบแจ้งหนี้ถูกสร้างแล้วแต่ยังไม่ได้เชื่อมกับบิลเดิม: ${carryInsertError.message}`,
+            );
           }
         }
         if (arrearsSnapshotPayload.length > 0) {
@@ -3398,7 +3455,9 @@ export function useInvoicesState() {
             .from("invoice_arrears_snapshots")
             .insert(arrearsSnapshotPayload);
           if (snapshotInsertError) {
-            setError(snapshotInsertError.message);
+            bookkeepingFailures.push(
+              `บันทึกสรุปยอดค้างชำระไม่สำเร็จ: ${snapshotInsertError.message}`,
+            );
           }
         }
 
@@ -3411,10 +3470,17 @@ export function useInvoicesState() {
           const freezeAmount = toNumber(carryRow.snapshot_late_fee_amount);
           // Only freeze if the late fee isn't already locked (avoid overwriting existing lock)
           if (carryRow.locked_late_fee_amount == null) {
-            await supabase
+            const { error: freezeError } = await supabase
               .from("invoices")
               .update({ locked_late_fee_amount: freezeAmount })
               .eq("id", carryRow.id);
+            if (freezeError) {
+              // An unfrozen source keeps accruing a late fee that has already
+              // been billed on the new invoice — the tenant gets charged twice.
+              bookkeepingFailures.push(
+                `ล็อกค่าปรับล่าช้าของบิลเดิมไม่สำเร็จ: ${freezeError.message}`,
+              );
+            }
           }
         }
       }
@@ -3455,6 +3521,12 @@ export function useInvoicesState() {
       alerts.push(
         `Billing audit failed. Occupied room(s) without invoice: ${rooms}`,
       );
+    }
+    if (bookkeepingFailures.length > 0) {
+      // Ahead of the audit alerts: these mean the ledger is inconsistent, not
+      // merely that a room was skipped.
+      alerts.unshift(...bookkeepingFailures);
+      toast.error(bookkeepingFailures.join(" | "), { duration: 15000 });
     }
     if (alerts.length > 0) {
       setError(alerts.join(" | "));
@@ -3856,6 +3928,12 @@ export function useInvoicesState() {
     submitPayment,
     cancelPaymentEntry,
     deletePaymentSlip,
+    declineModalOpen,
+    setDeclineModalOpen,
+    declineReason,
+    setDeclineReason,
+    declineSubmitting,
+    declineSlip,
     openInvoice,
     updateUtilityUnits,
     updateForm,

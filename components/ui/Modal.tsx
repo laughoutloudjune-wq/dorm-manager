@@ -1,6 +1,6 @@
 "use client";
 
-import { ReactNode, useEffect, useState } from "react";
+import { ReactNode, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 
@@ -12,6 +12,27 @@ const sizeClasses: Record<string, string> = {
   "3xl": "max-w-[96rem]",
   "4xl": "max-w-[112rem]",
 };
+
+/**
+ * Modals stack — a ConfirmActionModal opens on top of the dialog that raised it.
+ * Each one used to save `body.style.overflow` on open and write it back on
+ * close, so the inner modal captured "hidden" (set by the outer one) as the
+ * value to restore. Whenever the two unmounted in the wrong order, that
+ * "hidden" was the last write and the page behind them could never scroll
+ * again. Count the locks instead: the first modal to open records the real
+ * value, and only the last one to close puts it back.
+ */
+let scrollLockCount = 0;
+let scrollLockPrevious = "";
+
+/**
+ * Open modals, oldest first. Rendered later means painted on top, so the last
+ * entry is the dialog the user is actually looking at — and the only one
+ * Escape should close. Every open modal listens on `window`, so without this
+ * one Escape dismissed the confirm dialog and the page-level dialog behind it
+ * in the same keystroke.
+ */
+const modalStack: symbol[] = [];
 
 export function Modal({
   isOpen,
@@ -32,29 +53,52 @@ export function Modal({
   children: ReactNode;
 }) {
   const [mounted, setMounted] = useState(false);
+  const stackIdRef = useRef<symbol | null>(null);
+  if (stackIdRef.current === null) stackIdRef.current = Symbol("modal");
+  const stackId = stackIdRef.current;
 
   useEffect(() => {
     setMounted(true);
     return () => setMounted(false);
   }, []);
 
+  // Join the stack while open so the Escape handler below can tell whether this
+  // dialog is the topmost one.
+  useEffect(() => {
+    if (!isOpen) return;
+    modalStack.push(stackId);
+    return () => {
+      const index = modalStack.lastIndexOf(stackId);
+      if (index >= 0) modalStack.splice(index, 1);
+    };
+  }, [isOpen, stackId]);
+
   useEffect(() => {
     if (!isOpen) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key !== "Escape") return;
+      // Only the dialog on top responds; the ones underneath stay open.
+      if (modalStack[modalStack.length - 1] !== stackId) return;
+      onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [isOpen, onClose]);
+  }, [isOpen, onClose, stackId]);
 
   // Lock the page behind the dialog. Without this, scrolling past the end of
   // the modal body scrolls the admin page underneath it.
   useEffect(() => {
     if (!isOpen) return;
-    const previous = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
+    if (scrollLockCount === 0) {
+      scrollLockPrevious = document.body.style.overflow;
+      document.body.style.overflow = "hidden";
+    }
+    scrollLockCount += 1;
     return () => {
-      document.body.style.overflow = previous;
+      scrollLockCount = Math.max(0, scrollLockCount - 1);
+      if (scrollLockCount === 0) {
+        document.body.style.overflow = scrollLockPrevious;
+      }
     };
   }, [isOpen]);
 

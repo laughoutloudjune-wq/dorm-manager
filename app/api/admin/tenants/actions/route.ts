@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/admin-api-auth";
 import { dailyRentRate } from "@/lib/invoice-utils";
+import {
+  applyInvoicePaymentAllocation,
+  planAbandonCredit,
+} from "@/lib/invoice-ledger";
 
 const toNumber = (value: unknown) => {
   const parsed = typeof value === "number" ? value : Number(value ?? 0);
@@ -721,61 +725,90 @@ export async function POST(req: Request) {
         remainingCredit += toNumber(tenant.security_deposit_amount ?? 0);
       }
 
-      // Fetch all unpaid invoices for this tenant ordered by due_date asc
+      // Fetch every open invoice for this tenant, oldest period first.
       const { data: unpaidInvoices, error: invErr } = await auth.supabase
         .from("invoices")
-        .select("id,total_amount,paid_amount,status")
+        .select("id,total_amount,paid_amount,carry_forward_amount,status,start_date")
         .eq("tenant_id", tenantId)
         .in("status", ["pending", "overdue", "partial", "verifying", "draft"])
-        .order("due_date", { ascending: true });
+        .order("start_date", { ascending: true });
 
       if (invErr) return NextResponse.json({ error: invErr.message }, { status: 500 });
 
-      // Apply credit to invoices in order. Each update is checked — if one fails
-      // partway through, we stop immediately rather than continuing to "spend"
-      // remainingCredit against invoices that never actually got written.
-      for (const inv of unpaidInvoices ?? []) {
-        const outstanding = Math.max(0, toNumber(inv.total_amount) - toNumber(inv.paid_amount));
-        if (outstanding <= 0) continue;
+      const openInvoices = unpaidInvoices ?? [];
 
-        if (remainingCredit >= outstanding) {
-          // Fully pay this invoice
-          remainingCredit -= outstanding;
-          const { error: payError } = await auth.supabase
-            .from("invoices")
-            .update({
-              paid_amount: toNumber(inv.total_amount),
+      // Spend the credit against each invoice's OWN charge, never its bundled
+      // total. An invoice that carried an earlier bill forward already contains
+      // that bill's amount in `total_amount`, so measuring both by
+      // `total_amount - paid_amount` counts the carried debt twice and burns
+      // credit the tenant never owed. `getInvoiceOwnOutstanding` is the same
+      // figure the move-out screens show the admin.
+      //
+      // Allocation itself goes through applyInvoicePaymentAllocation so the
+      // payment lands in `payment_history` and `invoice_payment_allocations`
+      // like every other payment, instead of a bare `paid_amount` write. Going
+      // oldest-first means each invoice's carried-forward sources are already
+      // settled by the time we reach it, so nothing gets diverted twice.
+      const plan = planAbandonCredit(openInvoices as any, remainingCredit);
+
+      // Stays true while every invoice so far has been settled in full. Once the
+      // credit falls short, nothing later in the chain can be considered clear —
+      // a pure carry-forward invoice with no own charge of its own is clear only
+      // if everything it carried was cleared.
+      let chainFunded = true;
+      for (const line of plan.lines) {
+        if (line.applied > 0) {
+          try {
+            await applyInvoicePaymentAllocation(auth.supabase, {
+              invoiceId: line.invoiceId,
+              amount: line.applied,
+              paidAt: nowIso,
+              mode: "credit",
+              source: "abandon_room",
+              // A retried request replays the original allocation instead of
+              // spending the deposit a second time.
+              idempotencyKey: `abandon:${tenantId}:${moveOutDate}:${line.invoiceId}`,
+            });
+          } catch (allocationError: any) {
+            return NextResponse.json(
+              { error: allocationError?.message ?? "Failed to apply abandon credit." },
+              { status: 500 }
+            );
+          }
+        }
+
+        const covered = line.writtenOff <= 0 && chainFunded;
+        if (!covered) chainFunded = false;
+
+        // Label from what the plan applied, not from a re-read of paid_amount.
+        // When a chain settles, the carried portion's cash sits on the SOURCE
+        // invoice's row, so the target's own paid_amount stays short of its
+        // bundled total for good — re-deriving "still owed" from the row would
+        // cancel an invoice the credit had in fact covered in full.
+        //
+        // `invoices` has no updated_at column — writing one makes PostgREST
+        // reject the whole update.
+        const payload = covered
+          ? {
               status: "paid",
-              updated_at: nowIso,
               notes: "ชำระโดยเครดิตจากการทิ้งห้อง (Abandon Room)",
-            })
-            .eq("id", inv.id);
-          if (payError) return NextResponse.json({ error: payError.message }, { status: 500 });
-        } else if (remainingCredit > 0) {
-          // Partially pay then cancel remainder
-          const newPaid = toNumber(inv.paid_amount) + remainingCredit;
-          remainingCredit = 0;
-          const { error: partialPayError } = await auth.supabase
-            .from("invoices")
-            .update({
-              paid_amount: newPaid,
-              status: "cancelled",
-              updated_at: nowIso,
-              notes: "ชำระบางส่วนโดยเครดิตจากการทิ้งห้อง แล้วยกเลิกส่วนที่เหลือ",
-            })
-            .eq("id", inv.id);
-          if (partialPayError) return NextResponse.json({ error: partialPayError.message }, { status: 500 });
-        } else {
-          // No credit left — cancel the invoice
-          const { error: cancelError } = await auth.supabase
-            .from("invoices")
-            .update({
-              status: "cancelled",
-              updated_at: nowIso,
-              notes: "ยกเลิกเนื่องจากผู้เช่าทิ้งห้อง (Abandon Room)",
-            })
-            .eq("id", inv.id);
-          if (cancelError) return NextResponse.json({ error: cancelError.message }, { status: 500 });
+            }
+          : line.applied > 0
+            ? {
+                status: "cancelled",
+                notes: "ชำระบางส่วนโดยเครดิตจากการทิ้งห้อง แล้วยกเลิกส่วนที่เหลือ",
+              }
+            : {
+                status: "cancelled",
+                notes: "ยกเลิกเนื่องจากผู้เช่าทิ้งห้อง (Abandon Room)",
+              };
+
+        const { error: labelError } = await auth.supabase
+          .from("invoices")
+          .update(payload)
+          .eq("id", line.invoiceId);
+        if (labelError) {
+          return NextResponse.json({ error: labelError.message }, { status: 500 });
         }
       }
 
@@ -842,7 +875,21 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: closeRequestsError.message }, { status: 500 });
       }
 
-      return NextResponse.json({ success: true });
+      // Credit left after the real debt is covered belongs to the tenant. The
+      // old loop silently discarded it; surface it so the admin can refund.
+      return NextResponse.json({
+        success: true,
+        summary: {
+          creditPool: roundTo2(plan.creditPool),
+          totalOwed: roundTo2(plan.totalOwed),
+          creditApplied: roundTo2(plan.creditApplied),
+          writtenOff: roundTo2(plan.writtenOff),
+          refundableCredit: roundTo2(plan.refundableCredit),
+          lines: plan.lines,
+        },
+        creditApplied: roundTo2(plan.creditApplied),
+        refundableCredit: roundTo2(plan.refundableCredit),
+      });
     }
 
     return NextResponse.json({ error: "Unknown action." }, { status: 400 });

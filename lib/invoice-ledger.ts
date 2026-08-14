@@ -100,6 +100,94 @@ export const getInvoiceOwnOutstanding = (
   return Math.max(0, Math.min(ownAmount, currentOutstanding));
 };
 
+export type AbandonCreditLine = {
+  invoiceId: string;
+  /** This invoice's own charge still unpaid — never its bundled total. */
+  owed: number;
+  applied: number;
+  writtenOff: number;
+  outcome: "paid" | "partial_cancelled" | "cancelled" | "already_clear";
+};
+
+export type AbandonCreditPlan = {
+  lines: AbandonCreditLine[];
+  creditPool: number;
+  totalOwed: number;
+  creditApplied: number;
+  writtenOff: number;
+  /** Credit left once the real debt is covered — the tenant's to get back. */
+  refundableCredit: number;
+};
+
+/**
+ * Work out how an abandoning tenant's deposit + advance rent lands across their
+ * open invoices. Shared by the abandon API route and the move-out screen so the
+ * preview an admin approves is the arithmetic that actually runs.
+ *
+ * Every invoice is measured by its OWN charge (`getInvoiceOwnOutstanding`).
+ * Measuring by `total_amount - paid_amount` counts a carried-forward debt once
+ * on the invoice that owns it and again on the invoice that carried it,
+ * spending credit against money the tenant never owed.
+ *
+ * `invoices` must be oldest period first — credit clears the oldest debt first.
+ */
+export function planAbandonCredit(
+  invoices: Array<
+    Pick<InvoiceLike, "total_amount" | "paid_amount" | "carry_forward_amount"> & {
+      id: string;
+    }
+  >,
+  creditPool: number,
+): AbandonCreditPlan {
+  let remaining = Math.max(0, toNumber(creditPool));
+  let totalOwed = 0;
+  let creditApplied = 0;
+  let writtenOff = 0;
+
+  const lines: AbandonCreditLine[] = invoices.map((invoice) => {
+    const owed = getInvoiceOwnOutstanding(invoice);
+    totalOwed += owed;
+
+    if (owed <= 0) {
+      return {
+        invoiceId: String(invoice.id),
+        owed: 0,
+        applied: 0,
+        writtenOff: 0,
+        outcome: "already_clear" as const,
+      };
+    }
+
+    const applied = Math.min(owed, remaining);
+    remaining -= applied;
+    creditApplied += applied;
+    const shortfall = owed - applied;
+    writtenOff += shortfall;
+
+    return {
+      invoiceId: String(invoice.id),
+      owed,
+      applied,
+      writtenOff: shortfall,
+      outcome:
+        shortfall <= 0
+          ? ("paid" as const)
+          : applied > 0
+            ? ("partial_cancelled" as const)
+            : ("cancelled" as const),
+    };
+  });
+
+  return {
+    lines,
+    creditPool: Math.max(0, toNumber(creditPool)),
+    totalOwed,
+    creditApplied,
+    writtenOff,
+    refundableCredit: remaining,
+  };
+}
+
 export const calculateLateFeeAmount = (
   invoice: Pick<
     InvoiceLike,

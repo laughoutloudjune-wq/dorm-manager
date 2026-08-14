@@ -3,6 +3,8 @@ import { requireAdminPermission } from "@/lib/admin-api-auth";
 import { applyInvoicePaymentAllocation, syncInvoiceLedger } from "@/lib/invoice-ledger";
 import { syncPointsForTenant } from "@/lib/points-ledger";
 import { notifyTenantPointsEarned } from "@/lib/points-notify";
+import { declinePaymentSlip } from "@/lib/slip-review";
+import { notifyTenantSlipDeclined } from "@/lib/slip-notify";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 /**
@@ -146,6 +148,34 @@ export async function POST(req: Request) {
       const { error } = await auth.supabase.from("invoices").update(payload).eq("id", invoiceId);
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
       return NextResponse.json({ success: true });
+    }
+
+    if (action === "decline_slip") {
+      const auth = await requireAdminPermission(req, "invoice.payment.record");
+      if ("error" in auth) return auth.error;
+      const invoiceId = String(body?.invoiceId ?? "");
+      const reason = String(body?.reason ?? "");
+      if (!invoiceId) {
+        return NextResponse.json({ error: "Missing invoiceId." }, { status: 400 });
+      }
+      try {
+        const result = await declinePaymentSlip(auth.supabase, {
+          invoiceId,
+          reason,
+          reviewedBy: auth.user.id,
+        });
+        await notifyTenantSlipDeclined(auth.supabase, {
+          tenantId: result.tenantId,
+          invoiceId,
+          reason: result.reason,
+        });
+        return NextResponse.json({ success: true, ...result });
+      } catch (err: any) {
+        return NextResponse.json(
+          { error: err?.message ?? "Failed to decline the payment slip." },
+          { status: 400 },
+        );
+      }
     }
 
     if (action === "sync_overdue") {

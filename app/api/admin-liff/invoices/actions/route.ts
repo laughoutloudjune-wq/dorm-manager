@@ -5,6 +5,8 @@ import { requireLineAdminAccess } from "@/lib/line-admin-auth";
 import { applyInvoicePaymentAllocation } from "@/lib/invoice-ledger";
 import { syncPointsForTenant } from "@/lib/points-ledger";
 import { notifyTenantPointsEarned } from "@/lib/points-notify";
+import { declinePaymentSlip } from "@/lib/slip-review";
+import { notifyTenantSlipDeclined } from "@/lib/slip-notify";
 import { getPublicSiteOrigin } from "@/lib/public-site-url";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
@@ -82,6 +84,30 @@ export async function POST(req: Request) {
       });
       await syncPointsAfterPayment(supabase, invoiceId);
       return NextResponse.json({ success: true, ...result });
+    }
+
+    if (action === "decline_slip") {
+      const reason = String(body?.reason ?? "");
+      try {
+        // The LIFF admin has no Supabase user row — identify the reviewer by the
+        // LINE user id that requireLineAdminAccess already vetted.
+        const result = await declinePaymentSlip(supabase, {
+          invoiceId,
+          reason,
+          reviewedBy: `line:${auth.profile.userId}`,
+        });
+        await notifyTenantSlipDeclined(supabase, {
+          tenantId: result.tenantId,
+          invoiceId,
+          reason: result.reason,
+        });
+        return NextResponse.json({ success: true, ...result });
+      } catch (err: any) {
+        return NextResponse.json(
+          { error: err?.message ?? "Failed to decline the payment slip." },
+          { status: 400 },
+        );
+      }
     }
 
     if (action === "edit_invoice") {

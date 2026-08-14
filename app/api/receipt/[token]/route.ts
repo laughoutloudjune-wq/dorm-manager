@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase-admin";
 import chromium from "@sparticuz/chromium";
@@ -5,6 +6,54 @@ import puppeteer from "puppeteer-core";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+/**
+ * `@sparticuz/chromium` ships a Linux-only binary for the serverless runtime.
+ * On a Windows/macOS dev machine `executablePath()` points at a file that was
+ * never extracted (`spawn .../chromium ENOENT`), so fall back to whatever
+ * Chrome/Edge the developer already has installed.
+ */
+const localBrowserCandidates = () => {
+  if (process.platform === "win32") {
+    const programFiles = process.env["ProgramFiles"] ?? "C:\\Program Files";
+    const programFilesX86 = process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)";
+    const localAppData = process.env["LOCALAPPDATA"] ?? "";
+    return [
+      `${programFiles}\\Google\\Chrome\\Application\\chrome.exe`,
+      `${programFilesX86}\\Google\\Chrome\\Application\\chrome.exe`,
+      localAppData ? `${localAppData}\\Google\\Chrome\\Application\\chrome.exe` : "",
+      `${programFiles}\\Microsoft\\Edge\\Application\\msedge.exe`,
+      `${programFilesX86}\\Microsoft\\Edge\\Application\\msedge.exe`,
+    ].filter(Boolean);
+  }
+  if (process.platform === "darwin") {
+    return [
+      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    ];
+  }
+  return [];
+};
+
+const resolveBrowser = async () => {
+  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+    return { executablePath: process.env.PUPPETEER_EXECUTABLE_PATH, args: chromium.args };
+  }
+
+  if (process.platform === "linux") {
+    return { executablePath: await chromium.executablePath(), args: chromium.args };
+  }
+
+  const local = localBrowserCandidates().find((candidate) => existsSync(candidate));
+  if (!local) {
+    throw new Error(
+      "ไม่พบ Chrome หรือ Edge สำหรับสร้างไฟล์ PDF บนเครื่องนี้ กรุณาติดตั้ง Chrome หรือกำหนด PUPPETEER_EXECUTABLE_PATH ใน .env.local"
+    );
+  }
+  // chromium.args is tuned for the serverless sandbox (--single-process and
+  // friends) and destabilises a desktop Chrome — a desktop build needs none.
+  return { executablePath: local, args: [] as string[] };
+};
 
 const toNumber = (value: unknown) => {
   const parsed = Number(value ?? 0);
@@ -291,11 +340,10 @@ export async function GET(req: Request) {
   </body>
 </html>`;
 
-    const executablePath =
-      process.env.PUPPETEER_EXECUTABLE_PATH || (await chromium.executablePath());
+    const { executablePath, args } = await resolveBrowser();
 
     const browser = await puppeteer.launch({
-      args: chromium.args,
+      args,
       executablePath,
       headless: true,
     });

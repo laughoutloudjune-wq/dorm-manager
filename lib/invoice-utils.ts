@@ -616,6 +616,8 @@ export type InvoiceRecord = {
   notes: string | null;
   public_token: string;
   slip_url: string | null;
+  /** Append-only log of declined slips — see lib/slip-review.ts. Never contains accepted payments. */
+  slip_rejections: any[];
   opened_count: number;
   first_opened_at: string | null;
   last_opened_at: string | null;
@@ -697,6 +699,7 @@ export function normalizeInvoice(row: any): InvoiceRecord {
     notes: row.notes ?? null,
     public_token: row.public_token,
     slip_url: row.slip_url ?? null,
+    slip_rejections: Array.isArray(row.slip_rejections) ? row.slip_rejections : [],
     opened_count: toNumber(row.opened_count),
     first_opened_at: row.first_opened_at ?? null,
     last_opened_at: row.last_opened_at ?? null,
