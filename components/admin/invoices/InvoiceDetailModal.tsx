@@ -1505,7 +1505,7 @@ export function InvoiceDetailModal() {
                               <img
                                 src={slipPreview}
                                 alt="สลิป"
-                                className="max-h-64 w-full object-contain p-2"
+                                className="max-h-[32rem] w-full object-contain p-2"
                               />
                             </button>
                           </div>
