@@ -4,6 +4,7 @@ import {
   getInvoiceOutstanding,
   getInvoiceOwnOutstanding,
   planAbandonCredit,
+  planPaymentReplay,
   resolveInvoiceStatus,
 } from "./invoice-ledger";
 
@@ -151,5 +152,103 @@ describe("calculateLateFeeAmount", () => {
         "2026-01-03"
       )
     ).toBe(30);
+  });
+});
+
+describe("planPaymentReplay", () => {
+  const batch = (id: string, amount: number, paidAt: string) => ({
+    id,
+    amount_received: amount,
+    paid_at: paidAt,
+  });
+
+  it("re-splits a chain payment after an earlier invoice is edited down", () => {
+    // Room 116/1: ฿6,481 arrived against the May invoice while April was worth
+    // ฿6,144, so April was allocated ฿6,144 / May ฿337. April was later
+    // corrected down to ฿3,244, leaving the stored split claiming more had gone
+    // to April than the invoice was worth.
+    const { allocations, paidByInvoiceId, unallocated } = planPaymentReplay(
+      [
+        { id: "april", total_amount: 3244, start_date: "2026-04-01" },
+        { id: "may", total_amount: 6481, start_date: "2026-05-01" },
+      ],
+      [batch("b1", 6481, "2026-06-07T05:00:00Z")],
+    );
+
+    expect(paidByInvoiceId.get("april")).toBe(3244);
+    expect(paidByInvoiceId.get("may")).toBe(3237);
+    expect(allocations.map((row) => row.amount)).toEqual([3244, 3237]);
+    // Every baht received still lands somewhere.
+    expect(allocations.reduce((sum, row) => sum + row.amount, 0)).toBe(6481);
+    expect(unallocated).toBe(0);
+  });
+
+  it("fills the oldest invoice first", () => {
+    const { paidByInvoiceId } = planPaymentReplay(
+      [
+        { id: "old", total_amount: 1000, start_date: "2026-01-01" },
+        { id: "new", total_amount: 1000, start_date: "2026-02-01" },
+      ],
+      [batch("b1", 1500, "2026-03-01T00:00:00Z")],
+    );
+    expect(paidByInvoiceId.get("old")).toBe(1000);
+    expect(paidByInvoiceId.get("new")).toBe(500);
+  });
+
+  it("replays multiple batches in date order", () => {
+    const { paidByInvoiceId, unallocated } = planPaymentReplay(
+      [
+        { id: "a", total_amount: 500, start_date: "2026-01-01" },
+        { id: "b", total_amount: 500, start_date: "2026-02-01" },
+      ],
+      [
+        batch("late", 400, "2026-04-01T00:00:00Z"),
+        batch("early", 600, "2026-03-01T00:00:00Z"),
+      ].sort((l, r) => new Date(l.paid_at).getTime() - new Date(r.paid_at).getTime()),
+    );
+    expect(paidByInvoiceId.get("a")).toBe(500);
+    expect(paidByInvoiceId.get("b")).toBe(500);
+    expect(unallocated).toBe(0);
+  });
+
+  it("reports money that no longer fits as unallocated rather than dropping it", () => {
+    // Invoices edited down below what the tenant actually transferred.
+    const { allocations, unallocated } = planPaymentReplay(
+      [{ id: "only", total_amount: 1000, start_date: "2026-01-01" }],
+      [batch("b1", 2500, "2026-02-01T00:00:00Z")],
+    );
+    expect(allocations.reduce((sum, row) => sum + row.amount, 0)).toBe(1000);
+    expect(unallocated).toBe(1500);
+  });
+
+  it("never allocates more than an invoice is worth", () => {
+    const { allocations } = planPaymentReplay(
+      [{ id: "only", total_amount: 100, start_date: "2026-01-01" }],
+      [batch("b1", 100, "2026-02-01T00:00:00Z"), batch("b2", 100, "2026-03-01T00:00:00Z")],
+    );
+    expect(allocations).toHaveLength(1);
+    expect(allocations[0].amount).toBe(100);
+  });
+
+  it("carries the batch's frozen receiving account onto each allocation", () => {
+    const snapshot = { label: "บริษัท", bank_name: "ธนาคารกสิกรไทย" };
+    const { allocations } = planPaymentReplay(
+      [
+        { id: "a", total_amount: 100, start_date: "2026-01-01" },
+        { id: "b", total_amount: 100, start_date: "2026-02-01" },
+      ],
+      [
+        {
+          ...batch("b1", 200, "2026-03-01T00:00:00Z"),
+          payment_method_id: "m1",
+          payment_method_snapshot: snapshot,
+        },
+      ],
+    );
+    expect(allocations).toHaveLength(2);
+    for (const row of allocations) {
+      expect(row.payment_method_snapshot).toEqual(snapshot);
+      expect(row.payment_method_id).toBe("m1");
+    }
   });
 });

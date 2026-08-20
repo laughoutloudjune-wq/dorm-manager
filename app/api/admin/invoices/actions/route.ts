@@ -5,6 +5,9 @@ import {
   syncInvoiceLedger,
   snapshotFromPaymentMethodRow,
   getPaymentChainOutstanding,
+  reallocatePaymentsForInvoice,
+  calculateLateFeeAmount,
+  resolveFullyPaidAtDate,
 } from "@/lib/invoice-ledger";
 import { syncPointsForTenant } from "@/lib/points-ledger";
 import { notifyTenantPointsEarned } from "@/lib/points-notify";
@@ -62,9 +65,35 @@ export async function POST(req: Request) {
         // the status.
         const chainOutstanding = await getPaymentChainOutstanding(auth.supabase, invoiceId);
         if (chainOutstanding <= 0) {
+          const statusPayload: Record<string, unknown> = { status: "paid" };
+
+          // Re-freeze the late fee if it is currently unfrozen. Flipping an
+          // invoice away from paid clears `locked_late_fee_amount`, which puts
+          // the fee back on a live ฿/day calculation; leaving it unfrozen here
+          // would let an old invoice's fee keep growing from its original due
+          // date. `syncInvoiceLedger` normally does this on the transition to
+          // paid, but it skips invoices already marked paid, so it cannot
+          // recover it once this branch has run.
+          const { data: feeRow } = await auth.supabase
+            .from("invoices")
+            .select(
+              "locked_late_fee_amount,late_fee_start_date,late_fee_per_day,waived_late_fee_amount,payment_history,slip_uploaded_at",
+            )
+            .eq("id", invoiceId)
+            .maybeSingle();
+          if (feeRow && (feeRow as any).locked_late_fee_amount == null) {
+            statusPayload.locked_late_fee_amount = calculateLateFeeAmount(
+              feeRow as any,
+              resolveFullyPaidAtDate(
+                feeRow as any,
+                new Date().toISOString().slice(0, 10),
+              ),
+            );
+          }
+
           const { error: statusError } = await auth.supabase
             .from("invoices")
-            .update({ status: "paid" })
+            .update(statusPayload)
             .eq("id", invoiceId);
           if (statusError) {
             return NextResponse.json({ error: statusError.message }, { status: 500 });
@@ -144,7 +173,28 @@ export async function POST(req: Request) {
           }
         }
       }
-      return NextResponse.json({ success: true });
+
+      // Editing an invoice's amount (or its carry-forward links) changes how
+      // money already received should divide across the chain. The allocation
+      // was computed against the old totals, so re-derive it now — otherwise an
+      // invoice edited down keeps showing more allocated to it than it is
+      // worth, and the invoice after it keeps showing a balance that was in
+      // fact covered.
+      let reallocation: Awaited<ReturnType<typeof reallocatePaymentsForInvoice>> | null = null;
+      try {
+        reallocation = await reallocatePaymentsForInvoice(authEdit.supabase, invoiceId);
+      } catch (reallocError: any) {
+        console.error("[invoice-ledger] Reallocation after edit failed:", invoiceId, reallocError);
+      }
+
+      return NextResponse.json({
+        success: true,
+        reallocated: reallocation?.changed ?? false,
+        // Money the tenant paid that no longer fits anywhere, because the
+        // invoices were edited down below what was received. Surfaced rather
+        // than dropped silently.
+        unallocatedAmount: reallocation?.unallocated ?? 0,
+      });
     }
 
     if (action === "record_payment") {

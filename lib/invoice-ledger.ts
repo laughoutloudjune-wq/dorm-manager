@@ -245,6 +245,39 @@ export const calculateLateFeeAmount = (
   return Math.max(0, rawLateFee - waived);
 };
 
+/**
+ * The date an invoice actually finished being paid — the latest entry in its
+ * payment history, falling back to the slip upload date, then to `fallbackDate`.
+ *
+ * This is the "as of" date a late fee must be frozen at. Freezing at today's
+ * date instead would keep inflating an old invoice's fee by ฿/day for every day
+ * since, long after the tenant settled it.
+ */
+export const resolveFullyPaidAtDate = (
+  invoice: Pick<InvoiceLike, "payment_history" | "slip_uploaded_at">,
+  fallbackDate: string,
+) => {
+  const paymentHistory = Array.isArray(invoice.payment_history)
+    ? invoice.payment_history
+    : [];
+  let fullyPaidAt = invoice.slip_uploaded_at
+    ? String(invoice.slip_uploaded_at)
+    : fallbackDate;
+
+  if (paymentHistory.length > 0) {
+    const latestPayment = [...paymentHistory].sort(
+      (a: any, b: any) =>
+        new Date(b.paid_at || b.created_at).getTime() -
+        new Date(a.paid_at || a.created_at).getTime(),
+    )[0];
+    if (latestPayment && (latestPayment.paid_at || latestPayment.created_at)) {
+      fullyPaidAt = String(latestPayment.paid_at || latestPayment.created_at);
+    }
+  }
+
+  return fullyPaidAt.slice(0, 10);
+};
+
 export const resolveInvoiceStatus = (
   invoice: Pick<InvoiceLike, "total_amount" | "paid_amount" | "due_date">,
   asOfDateText: string,
@@ -492,17 +525,10 @@ export async function syncInvoiceLedger(
       // If the invoice is fully paid, we lock the late fee so it doesn't get carried forward anymore.
       // We must calculate the accrued late fee up to the date it was paid.
       if (nextStatus === "paid") {
-        const paymentHistory = Array.isArray(invoice.payment_history) ? invoice.payment_history : [];
-        let fullyPaidAt = invoice.slip_uploaded_at ? String(invoice.slip_uploaded_at) : todayText;
-        
-        if (paymentHistory.length > 0) {
-           const latestPayment = paymentHistory.sort((a: any, b: any) => new Date(b.paid_at || b.created_at).getTime() - new Date(a.paid_at || a.created_at).getTime())[0];
-           if (latestPayment && (latestPayment.paid_at || latestPayment.created_at)) {
-             fullyPaidAt = String(latestPayment.paid_at || latestPayment.created_at);
-           }
-        }
-        
-        updatePayload.locked_late_fee_amount = calculateLateFeeAmount(invoice, fullyPaidAt.slice(0, 10));
+        updatePayload.locked_late_fee_amount = calculateLateFeeAmount(
+          invoice,
+          resolveFullyPaidAtDate(invoice, todayText),
+        );
       } else if (
         nextStatus === "partial" ||
         nextStatus === "overdue" ||
@@ -628,6 +654,341 @@ export async function getCarryForwardCandidates(
  * Read-only: no `syncInvoiceLedger` call, because sync only touches `status` and
  * `locked_late_fee_amount`, neither of which affects this sum.
  */
+export type ReplayInvoice = {
+  id: string;
+  total_amount: number | null;
+  /** Oldest first. */
+  start_date?: string | null;
+};
+
+export type ReplayBatch = {
+  id: string;
+  amount_received: number | null;
+  paid_at: string;
+  trigger_invoice_id?: string | null;
+  slip_url?: string | null;
+  source?: string | null;
+  payment_method_id?: string | null;
+  payment_method_snapshot?: any;
+};
+
+export type ReplayAllocation = {
+  payment_batch_id: string;
+  trigger_invoice_id: string | null;
+  invoice_id: string;
+  amount: number;
+  paid_at: string;
+  slip_url: string | null;
+  source: string | null;
+  payment_method_id: string | null;
+  payment_method_snapshot: any;
+};
+
+/**
+ * Divide already-received payments across invoices using their CURRENT amounts:
+ * each batch in turn, oldest batch first, filling the oldest unpaid invoice
+ * first — the same order `applyInvoicePaymentAllocation` uses when the money
+ * first arrives.
+ *
+ * Pure, so the arithmetic is testable without a database. `invoices` must be
+ * oldest period first and must already exclude cancelled invoices.
+ */
+export function planPaymentReplay(
+  invoices: ReplayInvoice[],
+  batches: ReplayBatch[],
+): {
+  allocations: ReplayAllocation[];
+  paidByInvoiceId: Map<string, number>;
+  /** Received money that no longer fits anywhere, because invoices were edited down. */
+  unallocated: number;
+} {
+  const paidByInvoiceId = new Map<string, number>(
+    invoices.map((row) => [String(row.id), 0]),
+  );
+  const allocations: ReplayAllocation[] = [];
+  let unallocated = 0;
+
+  for (const batch of batches) {
+    let remaining = toNumber(batch.amount_received);
+    for (const invoice of invoices) {
+      if (remaining <= 0) break;
+      const id = String(invoice.id);
+      const outstanding = Math.max(
+        0,
+        toNumber(invoice.total_amount) - (paidByInvoiceId.get(id) ?? 0),
+      );
+      if (outstanding <= 0) continue;
+      const allocated = Math.min(outstanding, remaining);
+      paidByInvoiceId.set(id, (paidByInvoiceId.get(id) ?? 0) + allocated);
+      remaining -= allocated;
+      allocations.push({
+        payment_batch_id: String(batch.id),
+        trigger_invoice_id: batch.trigger_invoice_id
+          ? String(batch.trigger_invoice_id)
+          : null,
+        invoice_id: id,
+        amount: allocated,
+        paid_at: batch.paid_at,
+        slip_url: batch.slip_url ?? null,
+        source: batch.source ?? null,
+        payment_method_id: batch.payment_method_id ?? null,
+        payment_method_snapshot: batch.payment_method_snapshot ?? null,
+      });
+    }
+    // Money with nowhere left to go. Reported so the caller can surface it
+    // rather than it vanishing silently.
+    unallocated += Math.max(0, remaining);
+  }
+
+  return { allocations, paidByInvoiceId, unallocated };
+}
+
+/**
+ * Re-derive how already-received money is split across a group of invoices,
+ * using their CURRENT amounts.
+ *
+ * An allocation is computed once, when the payment is recorded, against the
+ * invoice totals as they stood at that moment. Edit an invoice afterwards and
+ * the split silently stops matching reality: room 116/1 took ฿6,481 against an
+ * April invoice then worth ฿6,144, April was later corrected down to ฿3,244,
+ * and the allocation still claimed ฿6,144 had gone to it — more than the
+ * invoice was worth.
+ *
+ * What is immutable is the `payment_batches` row: the tenant really did
+ * transfer that amount on that day into that account. How it divides across
+ * invoices is derived, so it is safe — and necessary — to recompute.
+ *
+ * Replays every batch touching this group in date order, oldest invoice first,
+ * exactly as `applyInvoicePaymentAllocation` would have. Returns without
+ * writing if the result is identical to what is already stored.
+ */
+export async function reallocatePaymentsForInvoice(
+  supabase: SupabaseClient,
+  invoiceId: string,
+): Promise<{
+  changed: boolean;
+  invoiceIds: string[];
+  batchIds: string[];
+  unallocated: number;
+}> {
+  // 1. Expand to the full settlement group: everything linked by carry-forward
+  //    (in either direction) and everything sharing a payment batch with it.
+  //    Iterated to a fixed point so a longer chain is captured whole.
+  const invoiceIds = new Set<string>([invoiceId]);
+  const batchIds = new Set<string>();
+
+  for (let pass = 0; pass < 6; pass += 1) {
+    const beforeInvoices = invoiceIds.size;
+    const beforeBatches = batchIds.size;
+    const ids = [...invoiceIds];
+
+    const [carryForward, carryBack, allocs] = await Promise.all([
+      supabase
+        .from("invoice_carry_forwards")
+        .select("source_invoice_id,target_invoice_id")
+        .in("target_invoice_id", ids),
+      supabase
+        .from("invoice_carry_forwards")
+        .select("source_invoice_id,target_invoice_id")
+        .in("source_invoice_id", ids),
+      supabase
+        .from("invoice_payment_allocations")
+        .select("payment_batch_id")
+        .in("invoice_id", ids),
+    ]);
+    if (carryForward.error) throw new Error(carryForward.error.message);
+    if (carryBack.error) throw new Error(carryBack.error.message);
+    if (allocs.error) throw new Error(allocs.error.message);
+
+    for (const row of [...(carryForward.data ?? []), ...(carryBack.data ?? [])]) {
+      invoiceIds.add(String((row as any).source_invoice_id));
+      invoiceIds.add(String((row as any).target_invoice_id));
+    }
+    for (const row of allocs.data ?? []) {
+      if ((row as any).payment_batch_id) {
+        batchIds.add(String((row as any).payment_batch_id));
+      }
+    }
+
+    // Any invoice those batches also paid belongs to the group too.
+    if (batchIds.size > 0) {
+      const { data: siblings, error: siblingError } = await supabase
+        .from("invoice_payment_allocations")
+        .select("invoice_id")
+        .in("payment_batch_id", [...batchIds]);
+      if (siblingError) throw new Error(siblingError.message);
+      for (const row of siblings ?? []) {
+        invoiceIds.add(String((row as any).invoice_id));
+      }
+    }
+
+    if (invoiceIds.size === beforeInvoices && batchIds.size === beforeBatches) {
+      break;
+    }
+  }
+
+  if (batchIds.size === 0) {
+    return { changed: false, invoiceIds: [...invoiceIds], batchIds: [], unallocated: 0 };
+  }
+
+  // 2. Load the group.
+  const [invoicesRes, batchesRes, existingRes] = await Promise.all([
+    supabase
+      .from("invoices")
+      .select("id,total_amount,paid_amount,status,payment_history,due_date,start_date")
+      .in("id", [...invoiceIds]),
+    supabase
+      .from("payment_batches")
+      .select(
+        "id,amount_received,paid_at,mode,source,slip_url,trigger_invoice_id,payment_method_id,payment_method_snapshot",
+      )
+      .in("id", [...batchIds]),
+    supabase
+      .from("invoice_payment_allocations")
+      .select("id,payment_batch_id,invoice_id,amount")
+      .in("payment_batch_id", [...batchIds]),
+  ]);
+  if (invoicesRes.error) throw new Error(invoicesRes.error.message);
+  if (batchesRes.error) throw new Error(batchesRes.error.message);
+  if (existingRes.error) throw new Error(existingRes.error.message);
+
+  // A cancelled invoice must not absorb money — the debt was written off.
+  // Draft is deliberately included: a draft invoice can legitimately already
+  // hold a payment (room 116/1's April invoice is exactly that).
+  const invoices = (invoicesRes.data ?? [])
+    .filter((row: any) => String(row.status ?? "") !== "cancelled")
+    .sort((a: any, b: any) =>
+      String(a.start_date ?? "").localeCompare(String(b.start_date ?? "")),
+    );
+  const batches = (batchesRes.data ?? []).sort((a: any, b: any) =>
+    new Date(a.paid_at).getTime() - new Date(b.paid_at).getTime(),
+  );
+  if (invoices.length === 0 || batches.length === 0) {
+    return { changed: false, invoiceIds: [...invoiceIds], batchIds: [...batchIds], unallocated: 0 };
+  }
+
+  // 3. Replay against current amounts.
+  const { allocations: nextAllocations, paidByInvoiceId: paidSoFar, unallocated } =
+    planPaymentReplay(invoices as any[], batches as any[]);
+
+  // 4. No-op if the split is already correct.
+  const key = (batchId: string, invId: string) => `${batchId}:${invId}`;
+  const existingMap = new Map<string, number>();
+  for (const row of existingRes.data ?? []) {
+    existingMap.set(
+      key(String((row as any).payment_batch_id), String((row as any).invoice_id)),
+      toNumber((row as any).amount),
+    );
+  }
+  const nextMap = new Map<string, number>();
+  for (const row of nextAllocations) {
+    nextMap.set(
+      key(row.payment_batch_id, row.invoice_id),
+      (nextMap.get(key(row.payment_batch_id, row.invoice_id)) ?? 0) + row.amount,
+    );
+  }
+  let identical = existingMap.size === nextMap.size;
+  if (identical) {
+    for (const [k, v] of nextMap) {
+      if (Math.abs((existingMap.get(k) ?? 0) - v) > 0.005) {
+        identical = false;
+        break;
+      }
+    }
+  }
+  if (identical) {
+    return {
+      changed: false,
+      invoiceIds: [...invoiceIds],
+      batchIds: [...batchIds],
+      unallocated,
+    };
+  }
+
+  // 5. Rewrite allocations for these batches, then bring each invoice's
+  //    paid_amount, status and payment_history cache back in line.
+  const { error: deleteError } = await supabase
+    .from("invoice_payment_allocations")
+    .delete()
+    .in("payment_batch_id", [...batchIds]);
+  if (deleteError) throw new Error(deleteError.message);
+
+  if (nextAllocations.length > 0) {
+    const { error: insertError } = await supabase
+      .from("invoice_payment_allocations")
+      .insert(
+        nextAllocations.map((row) => ({
+          ...row,
+          created_at: new Date().toISOString(),
+        })),
+      );
+    if (insertError) throw new Error(insertError.message);
+  }
+
+  const todayText = new Date().toISOString().slice(0, 10);
+  for (const invoice of invoices as any[]) {
+    const id = String(invoice.id);
+    const nextPaid = paidSoFar.get(id) ?? 0;
+
+    // Rebuild only the history entries belonging to the batches we just
+    // rewrote; anything else (legacy entries with no batch) is left alone.
+    const history = Array.isArray(invoice.payment_history)
+      ? invoice.payment_history
+      : [];
+    const preserved = history.filter(
+      (entry: any) => !batchIds.has(String(entry?.payment_batch_id ?? "")),
+    );
+    const regenerated = nextAllocations
+      .filter((row) => row.invoice_id === id)
+      .map((row) => {
+        const batch = (batches as any[]).find(
+          (b) => String(b.id) === row.payment_batch_id,
+        );
+        return {
+          amount: row.amount,
+          mode: batch?.mode ?? "full",
+          paid_at: row.paid_at,
+          slip_url: row.slip_url,
+          created_at: new Date().toISOString(),
+          source: row.source,
+          payment_batch_id: row.payment_batch_id,
+          trigger_invoice_id: row.trigger_invoice_id,
+          payment_method: row.payment_method_snapshot,
+          payment_method_id: row.payment_method_id,
+        };
+      });
+
+    const nextStatus =
+      String(invoice.status ?? "") === "cancelled"
+        ? String(invoice.status)
+        : resolveInvoiceStatus(
+            {
+              total_amount: invoice.total_amount,
+              paid_amount: nextPaid,
+              due_date: invoice.due_date ?? null,
+            },
+            todayText,
+          );
+
+    const { error: updateError } = await supabase
+      .from("invoices")
+      .update({
+        paid_amount: nextPaid,
+        status: nextStatus,
+        payment_history: [...preserved, ...regenerated],
+      })
+      .eq("id", id);
+    if (updateError) throw new Error(updateError.message);
+  }
+
+  return {
+    changed: true,
+    invoiceIds: [...invoiceIds],
+    batchIds: [...batchIds],
+    unallocated,
+  };
+}
+
 export async function getPaymentChainOutstanding(
   supabase: SupabaseClient,
   invoiceId: string,

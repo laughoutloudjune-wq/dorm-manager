@@ -5,6 +5,8 @@ import { requireLineAdminAccess } from "@/lib/line-admin-auth";
 import {
   applyInvoicePaymentAllocation,
   getPaymentChainOutstanding,
+  calculateLateFeeAmount,
+  resolveFullyPaidAtDate,
 } from "@/lib/invoice-ledger";
 import { syncPointsForTenant } from "@/lib/points-ledger";
 import { notifyTenantPointsEarned } from "@/lib/points-notify";
@@ -83,9 +85,27 @@ export async function POST(req: Request) {
       // allocate. Restore the status instead of throwing "already fully paid".
       const chainOutstanding = await getPaymentChainOutstanding(supabase, invoiceId);
       if (chainOutstanding <= 0) {
+        const statusPayload: Record<string, unknown> = { status: "paid" };
+
+        // Re-freeze the late fee if it is unfrozen — see the equivalent branch
+        // in app/api/admin/invoices/actions/route.ts.
+        const { data: feeRow } = await supabase
+          .from("invoices")
+          .select(
+            "locked_late_fee_amount,late_fee_start_date,late_fee_per_day,waived_late_fee_amount,payment_history,slip_uploaded_at",
+          )
+          .eq("id", invoiceId)
+          .maybeSingle();
+        if (feeRow && (feeRow as any).locked_late_fee_amount == null) {
+          statusPayload.locked_late_fee_amount = calculateLateFeeAmount(
+            feeRow as any,
+            resolveFullyPaidAtDate(feeRow as any, new Date().toISOString().slice(0, 10)),
+          );
+        }
+
         const { error: statusError } = await supabase
           .from("invoices")
-          .update({ status: "paid" })
+          .update(statusPayload)
           .eq("id", invoiceId);
         if (statusError) {
           return NextResponse.json({ error: statusError.message }, { status: 500 });
