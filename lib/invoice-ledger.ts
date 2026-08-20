@@ -31,6 +31,27 @@ export type SyncLedgerOptions = {
   beforeStartDate?: string;
 };
 
+/**
+ * A frozen copy of the account money was paid into. Snapshotted at payment time
+ * and never re-resolved: `payment_methods` rows are edited in place and a
+ * tenant's `custom_payment_method` can be re-assigned at any time, so deriving
+ * the account at read time silently rewrites the history of every past month.
+ */
+export type PaymentMethodSnapshot = {
+  type?: string | null;
+  methodId?: string | null;
+  label?: string | null;
+  bank_name?: string | null;
+  account_name?: string | null;
+  account_number?: string | null;
+  qr_url?: string | null;
+};
+
+export type ResolvedPaymentMethod = {
+  id: string | null;
+  snapshot: PaymentMethodSnapshot | null;
+};
+
 export type ApplyPaymentOptions = {
   invoiceId: string;
   amount: number;
@@ -40,6 +61,13 @@ export type ApplyPaymentOptions = {
   source?: string;
   /** Same key on retry returns the original allocation result (no double charge). */
   idempotencyKey?: string | null;
+  /**
+   * Receiving account. Omit and it is resolved from the tenant (their custom
+   * account, else the default) at the moment the payment is applied.
+   */
+  paymentMethod?: ResolvedPaymentMethod | null;
+  /** Admin user id, or `line:<userId>` for the LIFF admin. */
+  createdBy?: string | null;
 };
 
 export type AllocationBreakdownRow = {
@@ -51,6 +79,7 @@ export type AllocationBreakdownRow = {
 
 export type ApplyPaymentResult = {
   paymentBatchId: string;
+  paymentMethod?: ResolvedPaymentMethod | null;
   appliedAmount: number;
   updatedInvoices: any[];
   allocationBreakdown: AllocationBreakdownRow[];
@@ -240,11 +269,81 @@ type InvoiceRowSnapshot = {
   slip_uploaded_at: string | null;
 };
 
-async function findIdempotentPaymentResult(
+/**
+ * The account a tenant's money is expected to land in, right now: their assigned
+ * account if they have one, otherwise the house default (the oldest
+ * `payment_methods` row — the same one the tenant-facing payment page and the
+ * printed invoice fall back to).
+ *
+ * Call this ONCE, at the moment a payment is recorded, and store what it returns.
+ * Never call it to describe a payment that already happened.
+ */
+export async function resolvePaymentMethodForTenant(
+  supabase: SupabaseClient,
+  tenantId: string | null | undefined,
+): Promise<ResolvedPaymentMethod> {
+  const empty: ResolvedPaymentMethod = { id: null, snapshot: null };
+
+  if (tenantId) {
+    const { data: tenant } = await supabase
+      .from("tenants")
+      .select("custom_payment_method")
+      .eq("id", tenantId)
+      .maybeSingle();
+    const custom = (tenant as any)?.custom_payment_method;
+    if (custom && typeof custom === "object") {
+      return {
+        id: custom.methodId ? String(custom.methodId) : null,
+        snapshot: custom as PaymentMethodSnapshot,
+      };
+    }
+    // A legacy free-text method is still better than nothing — keep the label.
+    if (typeof custom === "string" && custom.trim()) {
+      return { id: null, snapshot: { label: custom } };
+    }
+  }
+
+  const { data: fallback } = await supabase
+    .from("payment_methods")
+    .select("id,label,bank_name,account_name,account_number,qr_url")
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (!fallback) return empty;
+
+  const row = fallback as any;
+  return {
+    id: row.id ? String(row.id) : null,
+    snapshot: {
+      type: row.qr_url ? "qr" : "bank",
+      methodId: row.id ? String(row.id) : null,
+      label: row.label ?? null,
+      bank_name: row.bank_name ?? null,
+      account_name: row.account_name ?? null,
+      account_number: row.account_number ?? null,
+      qr_url: row.qr_url ?? null,
+    },
+  };
+}
+
+/**
+ * Locate the batch a previous request with this idempotency key created.
+ * `payment_batches` is the record; the `payment_history` JSON scan behind it is
+ * only there so keys replayed from before the batch table existed still resolve.
+ */
+async function findIdempotentBatchId(
   supabase: SupabaseClient,
   triggerInvoiceId: string,
   idempotencyKey: string,
-): Promise<ApplyPaymentResult | null> {
+): Promise<string | null> {
+  const { data: batch } = await supabase
+    .from("payment_batches")
+    .select("id")
+    .eq("trigger_invoice_id", triggerInvoiceId)
+    .eq("idempotency_key", idempotencyKey)
+    .maybeSingle();
+  if ((batch as any)?.id) return String((batch as any).id);
+
   const { data: inv, error } = await supabase
     .from("invoices")
     .select("payment_history")
@@ -255,12 +354,24 @@ async function findIdempotentPaymentResult(
     ? (inv as any).payment_history
     : [];
   const entry = history.find((e: any) => e?.idempotency_key === idempotencyKey);
-  const batchId = entry?.payment_batch_id ? String(entry.payment_batch_id) : "";
+  return entry?.payment_batch_id ? String(entry.payment_batch_id) : null;
+}
+
+async function findIdempotentPaymentResult(
+  supabase: SupabaseClient,
+  triggerInvoiceId: string,
+  idempotencyKey: string,
+): Promise<ApplyPaymentResult | null> {
+  const batchId = await findIdempotentBatchId(
+    supabase,
+    triggerInvoiceId,
+    idempotencyKey,
+  );
   if (!batchId) return null;
 
   const { data: allocRows, error: allocError } = await supabase
     .from("invoice_payment_allocations")
-    .select("invoice_id,amount")
+    .select("invoice_id,amount,payment_method_id,payment_method_snapshot")
     .eq("payment_batch_id", batchId);
   if (allocError) return null;
 
@@ -297,8 +408,20 @@ async function findIdempotentPaymentResult(
     },
   );
 
+  const replayedMethodRow = (allocRows ?? []).find(
+    (row: any) => row.payment_method_snapshot || row.payment_method_id,
+  ) as any;
+
   return {
     paymentBatchId: batchId,
+    paymentMethod: replayedMethodRow
+      ? {
+          id: replayedMethodRow.payment_method_id
+            ? String(replayedMethodRow.payment_method_id)
+            : null,
+          snapshot: replayedMethodRow.payment_method_snapshot ?? null,
+        }
+      : null,
     appliedAmount,
     updatedInvoices: updatedInvoices ?? [],
     allocationBreakdown: breakdown,
@@ -494,6 +617,8 @@ export async function applyInvoicePaymentAllocation(
     mode = "full",
     source = "admin",
     idempotencyKey = null,
+    paymentMethod = null,
+    createdBy = null,
   } = options;
   const safeAmount = Math.max(0, toNumber(amount));
   if (safeAmount <= 0) {
@@ -561,6 +686,16 @@ export async function applyInvoicePaymentAllocation(
   }
   paymentTargets.push(freshTargetInvoice);
 
+  // Freeze the receiving account now. Resolved from the tenant only if the
+  // caller did not already resolve it — either way the value below is what gets
+  // stored, and nothing downstream re-derives it.
+  const resolvedMethod: ResolvedPaymentMethod =
+    paymentMethod ??
+    (await resolvePaymentMethodForTenant(
+      supabase,
+      (freshTargetInvoice as any).tenant_id,
+    ));
+
   const totalOutstanding = paymentTargets.reduce(
     (sum, invoice) => sum + getInvoiceOutstanding(invoice as InvoiceLike),
     0,
@@ -620,6 +755,11 @@ export async function applyInvoicePaymentAllocation(
       source,
       payment_batch_id: paymentBatchId,
       trigger_invoice_id: invoiceId,
+      // `payment_method` is what the reports read off the history entry. Before
+      // this existed they fell through to the tenant's CURRENT account, so
+      // re-assigning a room's account rewrote every past month's attribution.
+      payment_method: resolvedMethod.snapshot,
+      payment_method_id: resolvedMethod.id,
     };
     if (trimmedIdem) {
       paymentEntry.idempotency_key = trimmedIdem;
@@ -649,6 +789,8 @@ export async function applyInvoicePaymentAllocation(
       paid_at: paidAt,
       slip_url: slipUrl,
       source,
+      payment_method_id: resolvedMethod.id,
+      payment_method_snapshot: resolvedMethod.snapshot,
       created_at: new Date().toISOString(),
     });
 
@@ -656,16 +798,56 @@ export async function applyInvoicePaymentAllocation(
   }
 
   try {
+    // The batch row goes in first: it is the record of the money itself, and
+    // every allocation below is a slice of it.
+    const { error: batchError } = await supabase
+      .from("payment_batches")
+      .insert({
+        id: paymentBatchId,
+        tenant_id: (freshTargetInvoice as any).tenant_id ?? null,
+        trigger_invoice_id: invoiceId,
+        // Equal today — allocation is capped at the chain's outstanding, so a
+        // caller passing a sentinel "pay everything" amount does not record a
+        // fictional receipt. They diverge once overpayment is supported.
+        amount_received: amountToAllocate,
+        amount_allocated: amountToAllocate,
+        paid_at: paidAt,
+        mode,
+        source,
+        slip_url: slipUrl,
+        payment_method_id: resolvedMethod.id,
+        payment_method_snapshot: resolvedMethod.snapshot,
+        idempotency_key: trimmedIdem,
+        created_by: createdBy,
+      });
+    if (batchError) throw new Error(batchError.message);
+
     for (const update of updates) {
+      const updatePayload: Record<string, unknown> = {
+        paid_amount: update.paid_amount,
+        payment_history: update.payment_history,
+        status: update.status,
+      };
+
+      // `invoices.slip_url` means "a slip was submitted against THIS invoice".
+      // It used to be stamped onto every invoice in the carry-forward chain with
+      // the trigger payment's slip, so settling an August bill made a April
+      // invoice sprout an August slip and an August timestamp — the single
+      // biggest reason old invoices looked like they were being rewritten.
+      // Only the invoice the payment was recorded against gets the slip; the
+      // rest carry it on their payment_history entry (and on their allocation
+      // row), which is where per-payment evidence belongs.
+      //
+      // Only ever set, never clear: passing no slip (a cash payment, an
+      // abandon-room credit) must not wipe a slip the tenant already uploaded.
+      if (slipUrl && update.invoiceId === invoiceId) {
+        updatePayload.slip_url = slipUrl;
+        updatePayload.slip_uploaded_at = paidAt;
+      }
+
       const { error: updateError } = await supabase
         .from("invoices")
-        .update({
-          paid_amount: update.paid_amount,
-          payment_history: update.payment_history,
-          slip_url: slipUrl,
-          slip_uploaded_at: slipUrl ? paidAt : null,
-          status: update.status,
-        })
+        .update(updatePayload)
         .eq("id", update.invoiceId);
       if (updateError) throw new Error(updateError.message);
     }
@@ -677,6 +859,32 @@ export async function applyInvoicePaymentAllocation(
       if (allocationError) throw new Error(allocationError.message);
     }
   } catch (err) {
+    // Unwind newest-first: allocations, then the batch, then the invoice rows.
+    // Leaving a batch behind would let its idempotency key block the retry that
+    // is supposed to fix this.
+    const { error: allocCleanupError } = await supabase
+      .from("invoice_payment_allocations")
+      .delete()
+      .eq("payment_batch_id", paymentBatchId);
+    if (allocCleanupError) {
+      console.error(
+        "[invoice-ledger] Failed to clean up allocations after error:",
+        paymentBatchId,
+        allocCleanupError,
+      );
+    }
+    const { error: batchCleanupError } = await supabase
+      .from("payment_batches")
+      .delete()
+      .eq("id", paymentBatchId);
+    if (batchCleanupError) {
+      console.error(
+        "[invoice-ledger] Failed to clean up payment batch after error:",
+        paymentBatchId,
+        batchCleanupError,
+      );
+    }
+
     for (const [id, snap] of revertSnapshots) {
       const { error: revertError } = await supabase
         .from("invoices")
@@ -717,6 +925,7 @@ export async function applyInvoicePaymentAllocation(
 
   return {
     paymentBatchId,
+    paymentMethod: resolvedMethod,
     appliedAmount: amountToAllocate,
     updatedInvoices: updatedInvoices ?? [],
     allocationBreakdown,

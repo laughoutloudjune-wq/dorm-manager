@@ -72,6 +72,46 @@ raw `paid_amount` update. It resolves the full carry-forward chain for the targe
 allocates the payment oldest-first, and supports an idempotency key so a retried request replays
 the original result instead of double-charging.
 
+## Money received — batches, allocations, and frozen accounts
+
+A payment is three rows, not one. `applyInvoicePaymentAllocation` writes:
+
+1. **`payment_batches`** — one row per real money-in event (the transfer the tenant actually
+   made), holding the amount received, `paid_at`, slip, source, and the receiving account.
+2. **`invoice_payment_allocations`** — one row per invoice that batch was split across.
+3. A `payment_history` entry on each affected invoice — a *display cache*, not the record.
+
+Reporting reads 1 and 2. `invoices.paid_amount` is a running balance, not an income figure:
+it says how much an invoice has received in total, never *when* the money arrived. A tenant
+paying three months of arrears in one transfer moves `paid_amount` on three invoices across
+three billing periods while the bank saw one deposit on one day. The income report therefore
+has two explicit bases — **cash** (group allocations by `paid_at`) and **billing** (group by
+invoice period) — and the per-account breakdown is always cash basis, summed from
+`invoice_payment_allocations.amount`.
+
+**The receiving account is frozen at payment time and never re-resolved.**
+`payment_method_snapshot` (a full JSONB copy, on both the batch and every allocation) is the
+only valid source when describing a payment that already happened. Do not derive it from
+`tenants.custom_payment_method` or from the default `payment_methods` row at read time: both
+are mutable, so re-assigning a room's account silently rewrote the attribution of every past
+month. `resolvePaymentMethodForTenant` (lib/invoice-ledger.ts) is the *only* place that
+resolution happens, called once while recording the payment. Allocations written before this
+existed have `payment_method_snapshot = NULL` — report those as unknown; the real account is
+unrecoverable and the current tenant column is precisely the wrong answer.
+
+**`invoices.slip_url` belongs to the invoice the slip was submitted against — only.**
+`applyInvoicePaymentAllocation` writes it solely for the trigger invoice, and only when a slip
+is actually supplied. It used to stamp the trigger's slip onto every invoice in the chain,
+which is why settling a chain made older invoices sprout a slip and a `slip_uploaded_at` from
+months later — the main reason old invoices looked like they were being rewritten. It also
+wrote `slip_url: null` unconditionally, so a later cash payment wiped a slip the tenant had
+already uploaded. Per-payment evidence lives on the `payment_history` entry and the allocation
+row; `extractAllSlipUrls` is the helper for gathering every slip attached to an invoice.
+
+Idempotency lives on `payment_batches(trigger_invoice_id, idempotency_key)` as a partial
+unique index. The older `payment_history` JSON scan is still consulted as a fallback so keys
+issued before the table existed keep replaying instead of double-charging.
+
 ## Rent proration — one canonical rule
 
 **Daily rate = `dailyRentRate(monthlyRent)` = `Math.floor(monthlyRent / 30)`** — a fixed 30-day

@@ -522,6 +522,26 @@ export const serializeTransferBreakdownRows = (items: TransferBreakdownItem[]) =
     amount: 0,
   }));
 
+/** Shown for money whose receiving account was never recorded. */
+export const UNKNOWN_PAYMENT_METHOD = "ไม่ระบุบัญชี";
+
+/**
+ * Label a FROZEN payment-method snapshot (`payment_method_snapshot` on a
+ * payment batch or allocation). Deliberately resolves nothing: a missing
+ * snapshot means the receiving account is unrecoverable, and substituting the
+ * tenant's CURRENT account there is the bug this whole mechanism exists to
+ * prevent — it silently re-attributed every past month whenever a room's
+ * account was re-assigned. Use `parsePaymentMethodText` for the account an
+ * invoice should be paid INTO; use this for where money actually went.
+ */
+export const paymentMethodSnapshotLabel = (snapshot: any): string => {
+  if (!snapshot) return UNKNOWN_PAYMENT_METHOD;
+  if (typeof snapshot === "string")
+    return snapshot.trim() || UNKNOWN_PAYMENT_METHOD;
+  const label = snapshot.label ?? snapshot.bank_name ?? snapshot.type;
+  return label ? String(label) : UNKNOWN_PAYMENT_METHOD;
+};
+
 export const parsePaymentMethodText = (method: any): string => {
   if (!method) return "-";
   if (typeof method === "string") return method;

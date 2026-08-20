@@ -81,6 +81,7 @@ export async function POST(req: Request) {
         slipUrl: ((current as any).slip_url as string | null | undefined) ?? null,
         mode: "full",
         source: "admin_liff_approve",
+        createdBy: `line:${auth.profile.userId}`,
       });
       await syncPointsAfterPayment(supabase, invoiceId);
       return NextResponse.json({ success: true, ...result });

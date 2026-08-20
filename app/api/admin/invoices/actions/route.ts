@@ -55,6 +55,7 @@ export async function POST(req: Request) {
           slipUrl: ((invoice as any).slip_url as string | null | undefined) ?? null,
           mode: "full",
           source: "admin_status_paid",
+          createdBy: auth.user.id,
         });
         await syncPointsAfterPayment(auth.supabase, invoiceId);
         return NextResponse.json({ success: true, ...result });
@@ -141,6 +142,7 @@ export async function POST(req: Request) {
           idempotencyKey: (payment as any).idempotency_key
             ? String((payment as any).idempotency_key)
             : null,
+          createdBy: auth.user.id,
         });
         await syncPointsAfterPayment(auth.supabase, invoiceId);
         return NextResponse.json({ success: true, ...result });
