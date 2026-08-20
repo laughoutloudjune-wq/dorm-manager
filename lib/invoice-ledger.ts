@@ -613,6 +613,48 @@ export async function getCarryForwardCandidates(
   );
 }
 
+/**
+ * Total still owed across an invoice and every invoice carried forward into it —
+ * the same set `applyInvoicePaymentAllocation` would allocate against, and so
+ * the amount it has left to work with.
+ *
+ * Callers that mark an invoice paid as a STATUS change (rather than because new
+ * money arrived) must check this first. Flipping a paid invoice to another
+ * status only rewrites `status`; it never reverses `paid_amount`, so the money
+ * is still recorded. Sending that invoice back through the allocation path finds
+ * nothing left to allocate and throws "This invoice chain is already fully
+ * paid", which is correct for a payment but wrong for a status correction.
+ *
+ * Read-only: no `syncInvoiceLedger` call, because sync only touches `status` and
+ * `locked_late_fee_amount`, neither of which affects this sum.
+ */
+export async function getPaymentChainOutstanding(
+  supabase: SupabaseClient,
+  invoiceId: string,
+): Promise<number> {
+  const { data: carryRows, error: carryError } = await supabase
+    .from("invoice_carry_forwards")
+    .select("source_invoice_id")
+    .eq("target_invoice_id", invoiceId);
+  if (carryError) throw new Error(carryError.message);
+
+  const chainIds = [
+    invoiceId,
+    ...(carryRows ?? []).map((row: any) => String(row.source_invoice_id)),
+  ];
+
+  const { data: rows, error } = await supabase
+    .from("invoices")
+    .select("id,total_amount,paid_amount")
+    .in("id", chainIds);
+  if (error) throw new Error(error.message);
+
+  return (rows ?? []).reduce(
+    (sum, row: any) => sum + getInvoiceOutstanding(row),
+    0,
+  );
+}
+
 export async function applyInvoicePaymentAllocation(
   supabase: SupabaseClient,
   options: ApplyPaymentOptions,

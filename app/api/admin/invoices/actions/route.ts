@@ -4,6 +4,7 @@ import {
   applyInvoicePaymentAllocation,
   syncInvoiceLedger,
   snapshotFromPaymentMethodRow,
+  getPaymentChainOutstanding,
 } from "@/lib/invoice-ledger";
 import { syncPointsForTenant } from "@/lib/points-ledger";
 import { notifyTenantPointsEarned } from "@/lib/points-notify";
@@ -52,6 +53,26 @@ export async function POST(req: Request) {
         if (invoiceError || !invoice) {
           return NextResponse.json({ error: invoiceError?.message ?? "Invoice not found." }, { status: 404 });
         }
+
+        // Setting an invoice back to "paid" after it was flipped to some other
+        // status is a correction, not a new payment. The earlier flip never
+        // reversed `paid_amount`, so the money is still on record and there is
+        // nothing left to allocate — going through the allocation path here
+        // would throw "This invoice chain is already fully paid". Just restore
+        // the status.
+        const chainOutstanding = await getPaymentChainOutstanding(auth.supabase, invoiceId);
+        if (chainOutstanding <= 0) {
+          const { error: statusError } = await auth.supabase
+            .from("invoices")
+            .update({ status: "paid" })
+            .eq("id", invoiceId);
+          if (statusError) {
+            return NextResponse.json({ error: statusError.message }, { status: 500 });
+          }
+          await syncPointsAfterPayment(auth.supabase, invoiceId);
+          return NextResponse.json({ success: true, alreadySettled: true });
+        }
+
         const result = await applyInvoicePaymentAllocation(auth.supabase, {
           invoiceId,
           amount: Number.MAX_SAFE_INTEGER,

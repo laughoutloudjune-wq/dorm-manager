@@ -2,7 +2,10 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase-admin";
 import { Client, FlexMessage } from "@line/bot-sdk";
 import { requireLineAdminAccess } from "@/lib/line-admin-auth";
-import { applyInvoicePaymentAllocation } from "@/lib/invoice-ledger";
+import {
+  applyInvoicePaymentAllocation,
+  getPaymentChainOutstanding,
+} from "@/lib/invoice-ledger";
 import { syncPointsForTenant } from "@/lib/points-ledger";
 import { notifyTenantPointsEarned } from "@/lib/points-notify";
 import { declinePaymentSlip } from "@/lib/slip-review";
@@ -74,6 +77,23 @@ export async function POST(req: Request) {
       const nowIso = selectedDate
         ? new Date(`${selectedDate}T12:00:00`).toISOString()
         : new Date().toISOString();
+
+      // Already settled (e.g. approving an invoice whose status was flipped away
+      // from paid and back): the money is still recorded, nothing left to
+      // allocate. Restore the status instead of throwing "already fully paid".
+      const chainOutstanding = await getPaymentChainOutstanding(supabase, invoiceId);
+      if (chainOutstanding <= 0) {
+        const { error: statusError } = await supabase
+          .from("invoices")
+          .update({ status: "paid" })
+          .eq("id", invoiceId);
+        if (statusError) {
+          return NextResponse.json({ error: statusError.message }, { status: 500 });
+        }
+        await syncPointsAfterPayment(supabase, invoiceId);
+        return NextResponse.json({ success: true, alreadySettled: true });
+      }
+
       const result = await applyInvoicePaymentAllocation(supabase, {
         invoiceId,
         amount: Number.MAX_SAFE_INTEGER,
