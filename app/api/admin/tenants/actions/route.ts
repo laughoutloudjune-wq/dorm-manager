@@ -765,9 +765,20 @@ export async function POST(req: Request) {
               paidAt: nowIso,
               mode: "credit",
               source: "abandon_room",
+              // No bank account received this — it is the tenant's own deposit
+              // being spent. Recording their transfer account here would put
+              // money in a cash-basis report that never hit the bank.
+              paymentMethod: {
+                id: null,
+                snapshot: {
+                  type: "credit",
+                  label: "เครดิตจากการทิ้งห้อง (Abandon Room)",
+                },
+              },
               // A retried request replays the original allocation instead of
               // spending the deposit a second time.
               idempotencyKey: `abandon:${tenantId}:${moveOutDate}:${line.invoiceId}`,
+              createdBy: auth.user.id,
             });
           } catch (allocationError: any) {
             return NextResponse.json(

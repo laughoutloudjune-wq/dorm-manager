@@ -38,6 +38,8 @@ import {
   emptyFeeItem,
   calculateProratedRentByBillingDay,
   calculateLateFeePreview,
+  paymentMethodSnapshotLabel,
+  UNKNOWN_PAYMENT_METHOD,
 } from "@/lib/invoice-utils";
 
 export function InvoiceDetailModal() {
@@ -208,6 +210,213 @@ export function InvoiceDetailModal() {
   }, [activeInvoice, printSettings]);
 
   const [activeTab, setActiveTab] = React.useState('preview');
+
+  // ── Payment chain ─────────────────────────────────────────────────────────
+  // A payment is recorded against ONE invoice but settles a whole carry-forward
+  // chain oldest-first, so this invoice's own `payment_history` slice ("฿2,000
+  // on 12 Aug") is meaningless on its own — it looks like a partial payment even
+  // when the tenant paid in full. `invoice_payment_allocations` has always held
+  // the real split; nothing had ever read it. This loads the full batch behind
+  // every payment that touched this invoice.
+  type ChainLine = {
+    id: string;
+    invoiceId: string;
+    amount: number;
+    period: string;
+    /** Raw start_date — the label is "MM/YYYY" and sorts wrong. */
+    periodSortKey: string;
+    roomNumber: string;
+    isThisInvoice: boolean;
+  };
+  type PaymentChain = {
+    batchId: string;
+    paidAt: string | null;
+    amountReceived: number;
+    methodLabel: string;
+    slipUrl: string | null;
+    triggerInvoiceId: string | null;
+    appliedHere: number;
+    lines: ChainLine[];
+  };
+  const [paymentChains, setPaymentChains] = React.useState<PaymentChain[]>([]);
+  const [chainsLoading, setChainsLoading] = React.useState(false);
+
+  // Old payments recorded before payment_method_snapshot existed have no
+  // recoverable account — the admin is the only remaining source of truth if
+  // they happen to know (e.g. from an old bank statement) which account a
+  // specific transfer landed in. This lets them attach it after the fact.
+  const [assignableMethods, setAssignableMethods] = React.useState<
+    { id: string; label: string; bank_name: string; account_name: string; account_number: string }[]
+  >([]);
+  const [assigningBatchId, setAssigningBatchId] = React.useState<string | null>(null);
+  const [assignSelection, setAssignSelection] = React.useState<Record<string, string>>({});
+
+  React.useEffect(() => {
+    if (!detailOpen) return;
+    let cancelled = false;
+    void (async () => {
+      const { data } = await supabase
+        .from("payment_methods")
+        .select("id,label,bank_name,account_name,account_number")
+        .order("label", { ascending: true });
+      if (!cancelled) setAssignableMethods((data ?? []) as any[]);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [detailOpen, supabase]);
+
+  const assignPaymentBatchMethod = async (paymentBatchId: string) => {
+    const methodId = assignSelection[paymentBatchId];
+    if (!methodId) return;
+    setAssigningBatchId(paymentBatchId);
+    try {
+      await callInvoiceAdminAction("assign_payment_batch_method", {
+        paymentBatchId,
+        methodId,
+      });
+      // Re-derive the label locally instead of a full reload — the batch and
+      // every allocation sharing it just got the same snapshot.
+      const chosen = assignableMethods.find((m) => m.id === methodId);
+      const label = chosen?.label || chosen?.bank_name || null;
+      if (label) {
+        setPaymentChains((prev) =>
+          prev.map((chain) =>
+            chain.batchId === paymentBatchId
+              ? { ...chain, methodLabel: label }
+              : chain,
+          ),
+        );
+      }
+    } catch (err: any) {
+      setError(err?.message ?? "ไม่สามารถบันทึกบัญชีที่รับเงินได้");
+    } finally {
+      setAssigningBatchId(null);
+    }
+  };
+
+  const activeInvoiceId = activeInvoice?.id ? String(activeInvoice.id) : "";
+
+  React.useEffect(() => {
+    if (!activeInvoiceId || activeTab !== "payments") {
+      return;
+    }
+    let cancelled = false;
+
+    const loadChains = async () => {
+      setChainsLoading(true);
+      // Which payments touched this invoice…
+      const { data: mine } = await supabase
+        .from("invoice_payment_allocations")
+        .select("payment_batch_id")
+        .eq("invoice_id", activeInvoiceId);
+      const batchIds = [
+        ...new Set(
+          (mine ?? [])
+            .map((row: any) => String(row.payment_batch_id ?? ""))
+            .filter(Boolean),
+        ),
+      ];
+      if (cancelled) return;
+      if (batchIds.length === 0) {
+        setPaymentChains([]);
+        setChainsLoading(false);
+        return;
+      }
+
+      // …and everything else those same payments were split across. The FK hint
+      // is required — invoice_payment_allocations has two foreign keys to
+      // invoices (invoice_id and trigger_invoice_id), so a bare embed is
+      // ambiguous.
+      const [allocationsRes, batchesRes] = await Promise.all([
+        supabase
+          .from("invoice_payment_allocations")
+          .select(
+            "id,payment_batch_id,invoice_id,amount,paid_at,slip_url,payment_method_snapshot," +
+              "invoice:invoices!invoice_payment_allocations_invoice_id_fkey(id,start_date,rooms(room_number))",
+          )
+          .in("payment_batch_id", batchIds),
+        supabase
+          .from("payment_batches")
+          .select("id,amount_received,paid_at,slip_url,trigger_invoice_id,payment_method_snapshot")
+          .in("id", batchIds),
+      ]);
+      if (cancelled) return;
+
+      const batchById = new Map(
+        (batchesRes.data ?? []).map((row: any) => [String(row.id), row]),
+      );
+      const grouped = new Map<string, PaymentChain>();
+
+      for (const row of allocationsRes.data ?? []) {
+        const batchId = String((row as any).payment_batch_id ?? "");
+        if (!batchId) continue;
+        const batch = batchById.get(batchId) as any;
+        const invoice = Array.isArray((row as any).invoice)
+          ? (row as any).invoice[0]
+          : (row as any).invoice;
+        const room = Array.isArray(invoice?.rooms) ? invoice.rooms[0] : invoice?.rooms;
+
+        const chain =
+          grouped.get(batchId) ??
+          ({
+            batchId,
+            paidAt: batch?.paid_at ?? (row as any).paid_at ?? null,
+            // Fall back to summing the slices for legacy batches.
+            amountReceived: toNumber(batch?.amount_received),
+            methodLabel: paymentMethodSnapshotLabel(
+              batch?.payment_method_snapshot ?? (row as any).payment_method_snapshot,
+            ),
+            slipUrl: batch?.slip_url ?? (row as any).slip_url ?? null,
+            triggerInvoiceId: batch?.trigger_invoice_id
+              ? String(batch.trigger_invoice_id)
+              : null,
+            appliedHere: 0,
+            lines: [],
+          } as PaymentChain);
+
+        const invoiceId = String((row as any).invoice_id ?? "");
+        const amount = toNumber((row as any).amount);
+        const isThisInvoice = invoiceId === activeInvoiceId;
+        if (isThisInvoice) chain.appliedHere += amount;
+        chain.lines.push({
+          id: String((row as any).id),
+          invoiceId,
+          amount,
+          period: formatPeriodLabel(invoice?.start_date),
+          periodSortKey: String(invoice?.start_date ?? ""),
+          roomNumber: room?.room_number ?? "-",
+          isThisInvoice,
+        });
+        grouped.set(batchId, chain);
+      }
+
+      const chains = [...grouped.values()].map((chain) => ({
+        ...chain,
+        amountReceived:
+          chain.amountReceived > 0
+            ? chain.amountReceived
+            : chain.lines.reduce((sum, line) => sum + line.amount, 0),
+        lines: chain.lines.sort((a, b) =>
+          a.periodSortKey.localeCompare(b.periodSortKey),
+        ),
+      }));
+      chains.sort(
+        (a, b) =>
+          new Date(b.paidAt ?? 0).getTime() - new Date(a.paidAt ?? 0).getTime(),
+      );
+
+      setPaymentChains(chains);
+      setChainsLoading(false);
+    };
+
+    void loadChains();
+    return () => {
+      cancelled = true;
+    };
+    // activeInvoice.payment_history is in the deps so the chain refreshes right
+    // after a payment is recorded or cancelled.
+  }, [activeInvoiceId, activeTab, supabase, activeInvoice?.payment_history]);
 
   const TABS = [
     { id: 'preview', label: 'ภาพรวม', icon: <FileText size={18} /> },
@@ -1027,11 +1236,149 @@ export function InvoiceDetailModal() {
               <div className="max-w-3xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
                 <h3 className="text-2xl font-bold text-slate-900">ประวัติการชำระเงิน</h3>
                 
-                {(!Array.isArray(activeInvoice.payment_history) || activeInvoice.payment_history.length === 0) ? (
-                  <div className="rounded-panel border border-dashed border-slate-300 py-16 text-center bg-white shadow-sm">
-                    <p className="text-slate-500 font-bold">ยังไม่มีประวัติการชำระเงินสำหรับใบแจ้งหนี้นี้</p>
+                {chainsLoading ? (
+                  <div className="rounded-panel border border-slate-200 bg-white py-16 text-center shadow-sm">
+                    <Loader2 className="mx-auto animate-spin text-slate-400" size={28} />
                   </div>
-                ) : (
+                ) : paymentChains.length > 0 ? (
+                  <div className="space-y-4">
+                    {paymentChains.map((chain) => {
+                      const coversOthers = chain.lines.length > 1;
+                      return (
+                        <div
+                          key={chain.batchId}
+                          className="rounded-panel border border-slate-200 bg-white p-6 shadow-sm transition hover:shadow-float-md"
+                        >
+                          {/* What the tenant actually transferred */}
+                          <div className="flex items-start justify-between gap-4">
+                            <div className="flex items-center gap-5">
+                              <div className="h-14 w-14 rounded-full bg-success-100 flex items-center justify-center text-success-600 shadow-inner">
+                                <CheckCircle2 size={28} />
+                              </div>
+                              <div>
+                                <p className="font-black text-slate-900 text-lg">
+                                  รับชำระ {formatMoney(chain.amountReceived)}
+                                </p>
+                                <div className="mt-1 flex flex-wrap items-center gap-3">
+                                  <p className="text-sm font-semibold text-slate-500">
+                                    วันที่ชำระ: {chain.paidAt ? formatDateThai(chain.paidAt) : "-"}
+                                  </p>
+                                  {chain.methodLabel === UNKNOWN_PAYMENT_METHOD &&
+                                  canRecordInvoicePayment &&
+                                  assignableMethods.length > 0 ? (
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-sm font-semibold text-slate-400">
+                                        เข้าบัญชี: {UNKNOWN_PAYMENT_METHOD}
+                                      </span>
+                                      <select
+                                        value={assignSelection[chain.batchId] ?? ""}
+                                        onChange={(e) =>
+                                          setAssignSelection((prev) => ({
+                                            ...prev,
+                                            [chain.batchId]: e.target.value,
+                                          }))
+                                        }
+                                        className="h-8 rounded-control border border-slate-200 px-2 text-xs text-slate-700 focus:outline-none focus:ring-1 focus:ring-primary-500"
+                                      >
+                                        <option value="">ระบุบัญชีที่รับเงินจริง...</option>
+                                        {assignableMethods.map((m) => (
+                                          <option key={m.id} value={m.id}>
+                                            {m.label || m.bank_name} · {m.account_number}
+                                          </option>
+                                        ))}
+                                      </select>
+                                      <button
+                                        type="button"
+                                        onClick={() => assignPaymentBatchMethod(chain.batchId)}
+                                        disabled={
+                                          !assignSelection[chain.batchId] ||
+                                          assigningBatchId === chain.batchId
+                                        }
+                                        className={buttonClasses({ variant: "subtle", size: "sm" })}
+                                      >
+                                        {assigningBatchId === chain.batchId ? "กำลังบันทึก..." : "บันทึก"}
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <span
+                                      className={
+                                        chain.methodLabel === UNKNOWN_PAYMENT_METHOD
+                                          ? "text-sm font-semibold text-slate-400"
+                                          : "text-sm font-semibold text-slate-600"
+                                      }
+                                    >
+                                      เข้าบัญชี: {chain.methodLabel}
+                                    </span>
+                                  )}
+                                  {chain.slipUrl && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setSlipModalTitle(
+                                          `สลิปการชำระเงิน - จำนวน ${formatMoney(chain.amountReceived)}`,
+                                        );
+                                        setSlipModalUrl(chain.slipUrl);
+                                        setSlipModalOpen(true);
+                                      }}
+                                      className={buttonClasses({ variant: "subtle", size: "sm" })}
+                                    >
+                                      ดูสลิป
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                            <div className="text-right">
+                              <p className="text-xs font-bold uppercase tracking-wide text-slate-400">
+                                ตัดเข้าใบนี้
+                              </p>
+                              <p className="text-3xl font-black tracking-tighter text-success-600">
+                                {formatMoney(chain.appliedHere)}
+                              </p>
+                            </div>
+                          </div>
+
+                          {/* How that one payment was split. Shown whenever it covered
+                              more than this invoice — otherwise the amount above reads
+                              as a short payment when the tenant in fact settled several
+                              months at once. */}
+                          {coversOthers && (
+                            <div className="mt-5 rounded-card border border-slate-100 bg-slate-50 p-4">
+                              <p className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">
+                                เงินก้อนนี้ถูกแบ่งไปชำระ {chain.lines.length} ใบ (ตัดใบเก่าก่อน)
+                              </p>
+                              <div className="space-y-1.5">
+                                {chain.lines.map((line) => (
+                                  <div
+                                    key={line.id}
+                                    className={
+                                      line.isThisInvoice
+                                        ? "flex items-center justify-between rounded-control bg-white px-3 py-2 text-sm font-bold text-slate-900 ring-1 ring-primary-200"
+                                        : "flex items-center justify-between px-3 py-2 text-sm text-slate-600"
+                                    }
+                                  >
+                                    <span>
+                                      ห้อง {line.roomNumber} · งวด {line.period}
+                                      {line.isThisInvoice && (
+                                        <span className="ml-2 rounded-full bg-primary-100 px-2 py-0.5 text-2xs font-bold text-primary-700">
+                                          ใบนี้
+                                        </span>
+                                      )}
+                                    </span>
+                                    <span>{formatMoney(line.amount)}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : Array.isArray(activeInvoice.payment_history) &&
+                  activeInvoice.payment_history.length > 0 ? (
+                  /* Payments recorded before allocation rows existed: the split was
+                     never captured, so only this invoice's own slice can be shown. */
                   <div className="space-y-4">
                     {activeInvoice.payment_history.map((payment, idx) => (
                       <div key={idx} className="flex justify-between items-center p-6 rounded-panel border border-slate-200 shadow-sm bg-white transition hover:shadow-float-md">
@@ -1041,7 +1388,7 @@ export function InvoiceDetailModal() {
                           </div>
                           <div>
                             <p className="font-black text-slate-900 text-lg">
-                              {payment.amount === toNumber(activeInvoice.total_amount) ? "ชำระเต็มจำนวน" : "ชำระบางส่วน"}
+                              ตัดเข้าใบนี้ {formatMoney(toNumber(payment.amount))}
                             </p>
                             <div className="flex items-center gap-3 mt-1">
                               <p className="text-sm font-semibold text-slate-500">วันที่ชำระ: {payment.paid_at ? formatDateThai(payment.paid_at) : "-"}</p>
@@ -1064,17 +1411,20 @@ export function InvoiceDetailModal() {
                           </div>
                         </div>
                         <div className="text-right">
-                          <p className="text-3xl font-black text-success-600 tracking-tighter">{formatMoney(payment.amount)}</p>
                           <button
                             onClick={() => cancelPaymentEntry(idx)}
                             disabled={!canRecordInvoicePayment || paymentSubmitting}
-                            className="text-xs font-bold text-danger-500 hover:text-danger-700 mt-2 disabled:opacity-50 transition"
+                            className="text-xs font-bold text-danger-500 hover:text-danger-700 disabled:opacity-50 transition"
                           >
                             ยกเลิกรายการ
                           </button>
                         </div>
                       </div>
                     ))}
+                  </div>
+                ) : (
+                  <div className="rounded-panel border border-dashed border-slate-300 py-16 text-center bg-white shadow-sm">
+                    <p className="text-slate-500 font-bold">ยังไม่มีประวัติการชำระเงินสำหรับใบแจ้งหนี้นี้</p>
                   </div>
                 )}
                 

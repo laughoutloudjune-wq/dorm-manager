@@ -7,6 +7,10 @@ import { buttonClasses } from "@/components/ui/Button";
 import { Card, CardContent } from "@/components/ui/Card";
 import { createClient } from "@/lib/supabase-client";
 import { usePermissions } from "@/lib/use-permissions";
+import {
+  UNKNOWN_PAYMENT_METHOD,
+  paymentMethodSnapshotLabel,
+} from "@/lib/invoice-utils";
 
 type ReportTab = "income" | "arrears" | "move_in" | "move_out" | "yearly" | "utilities" | "movement";
 
@@ -61,12 +65,19 @@ const statusLabel = (status: string) =>
     cancelled: "ยกเลิก",
   } as Record<string, string>)[status] ?? status;
 
-const getPaymentMethod = (invoice: any) => {
-  const latestPayment = Array.isArray(invoice.payment_history) ? invoice.payment_history.at(-1) : null;
-  const method = latestPayment?.method ?? latestPayment?.payment_method ?? invoice.tenant_custom_payment_method;
-  if (!method) return "-";
-  if (typeof method === "string") return method;
-  return method.label ?? method.type ?? "-";
+const UNKNOWN_METHOD = UNKNOWN_PAYMENT_METHOD;
+
+/**
+ * Was this allocation money that arrived after its invoice was already overdue?
+ * Not "paid in a different calendar month than the invoice's period" — this
+ * dorm issues invoices on the 25th with a due date early the FOLLOWING month,
+ * so an on-time July payment routinely lands in August. Comparing calendar
+ * months flagged nearly every normal payment as arrears; comparing against the
+ * invoice's own `due_date` does not.
+ */
+const isLatePayment = (row: { paid_at: string; invoice_due_date: string | null }) => {
+  if (!row.invoice_due_date) return false;
+  return new Date(row.paid_at) > new Date(`${row.invoice_due_date}T23:59:59`);
 };
 
 const getAdditionalFees = (rows: any[]) =>
@@ -106,6 +117,12 @@ export default function ReportsPageView() {
   const [incomeBuildingFilter, setIncomeBuildingFilter] = useState("all");
   const [incomeStatusFilter, setIncomeStatusFilter] = useState("all");
   const [incomePaymentMethodFilter, setIncomePaymentMethodFilter] = useState("all");
+  // "billing" = money grouped by the period it was billed for (who owed what).
+  // "cash"    = money grouped by the date it actually arrived (what the bank saw).
+  // A back-payment settling three old invoices lands in three different months
+  // under "billing" and in one month under "cash"; conflating the two is what
+  // made back-payments look like the report was rewriting itself.
+  const [incomeBasis, setIncomeBasis] = useState<"billing" | "cash">("billing");
   const [selectedIncomeInvoice, setSelectedIncomeInvoice] = useState<any>(null);
   const [movementSearchQuery, setMovementSearchQuery] = useState("");
   const [movementTypeFilter, setMovementTypeFilter] = useState("all");
@@ -117,6 +134,7 @@ export default function ReportsPageView() {
   const [logs, setLogs] = useState<any[]>([]);
   const [transfers, setTransfers] = useState<any[]>([]);
   const [settlementInvoices, setSettlementInvoices] = useState<any[]>([]);
+  const [allocations, setAllocations] = useState<any[]>([]);
 
   const canViewReports = can("tenant.view") || can("room.view") || can("invoice.create");
 
@@ -132,7 +150,23 @@ export default function ReportsPageView() {
       setError(null);
       const start = yearStart(selectedYear);
       const end = yearEnd(selectedYear);
-      const [settingsRes, invoicesRes, tenantsRes, metersRes, logsRes, transfersRes, settlementInvoicesRes] = await Promise.all([
+      // Two allocation queries, because the two bases need different slices and
+      // a payment can sit in a different year from the invoice it settles:
+      //   - byPaidAt: everything RECEIVED this year (cash basis).
+      //   - byPeriod: everything applied to an invoice BILLED this year, whenever
+      //     it was received (so a Jan invoice paid next March still shows the
+      //     account it was paid into on the billing table).
+      // They overlap heavily; merged by allocation id below.
+      // The FK hint is required: invoice_payment_allocations has TWO foreign keys
+      // to invoices (invoice_id and trigger_invoice_id), so an unqualified
+      // `invoices(...)` embed is ambiguous and PostgREST rejects it. Aliased to
+      // `invoice` so the filter path below reads unambiguously too.
+      const ALLOCATION_SELECT =
+        "id,payment_batch_id,invoice_id,amount,paid_at,source,payment_method_id,payment_method_snapshot," +
+        "invoice:invoices!invoice_payment_allocations_invoice_id_fkey!inner(" +
+        "id,start_date,due_date,tenant_id,room_id,tenants(full_name),rooms(room_number,buildings(name)))";
+
+      const [settingsRes, invoicesRes, tenantsRes, metersRes, logsRes, transfersRes, settlementInvoicesRes, allocationsByPaidAtRes, allocationsByPeriodRes] = await Promise.all([
         supabase.from("settings").select("water_rate,electricity_rate").eq("id", 1).maybeSingle(),
         supabase
           .from("invoices")
@@ -170,6 +204,18 @@ export default function ReportsPageView() {
           .select("id,tenant_id,room_id,total_amount,discount_amount,notes,issue_date,rooms(room_number,buildings(name))")
           .ilike("notes", "ย้ายออก%")
           .order("issue_date", { ascending: false }),
+        supabase
+          .from("invoice_payment_allocations")
+          .select(ALLOCATION_SELECT)
+          .gte("paid_at", start)
+          .lt("paid_at", end)
+          .order("paid_at", { ascending: false }),
+        supabase
+          .from("invoice_payment_allocations")
+          .select(ALLOCATION_SELECT)
+          .gte("invoice.start_date", start)
+          .lt("invoice.start_date", end)
+          .order("paid_at", { ascending: false }),
       ]);
 
       if (!mounted) return;
@@ -180,7 +226,9 @@ export default function ReportsPageView() {
         metersRes.error ||
         logsRes.error ||
         transfersRes.error ||
-        settlementInvoicesRes.error;
+        settlementInvoicesRes.error ||
+        allocationsByPaidAtRes.error ||
+        allocationsByPeriodRes.error;
 
       if (firstError) {
         setError(firstError.message);
@@ -225,6 +273,43 @@ export default function ReportsPageView() {
       setLogs(logsRes.data ?? []);
       setTransfers(transfersRes.data ?? []);
       setSettlementInvoices(settlementInvoicesRes.data ?? []);
+
+      const allocationById = new Map<string, any>();
+      for (const row of [
+        ...(allocationsByPaidAtRes.data ?? []),
+        ...(allocationsByPeriodRes.data ?? []),
+      ]) {
+        allocationById.set(String((row as any).id), row);
+      }
+      setAllocations(
+        [...allocationById.values()].map((row: any) => {
+          const invoice = relationItem(row.invoice);
+          const tenant = relationItem(invoice?.tenants);
+          const room = relationItem(invoice?.rooms);
+          return {
+            id: String(row.id),
+            payment_batch_id: row.payment_batch_id ? String(row.payment_batch_id) : "",
+            invoice_id: String(row.invoice_id ?? ""),
+            amount: toNumber(row.amount),
+            paid_at: row.paid_at,
+            source: row.source ?? null,
+            // The frozen snapshot, used as-is. NULL for anything recorded before
+            // payment_batches existed — reported as UNKNOWN_METHOD, not guessed.
+            method: paymentMethodSnapshotLabel(row.payment_method_snapshot),
+            invoice_period: invoice?.start_date ? monthKey(invoice.start_date) : "-",
+            // Billing here always straddles two calendar months (issued the
+            // 25th, due the ~10th of the following month), so "invoice period
+            // month !== month paid" is normal for almost every on-time payment
+            // — it does NOT mean arrears. Whether a payment actually settled
+            // overdue rent is whether it arrived after that invoice's own due
+            // date, which is what `isLatePayment` below checks instead.
+            invoice_due_date: invoice?.due_date ?? null,
+            tenant_name: tenant?.full_name ?? "-",
+            room_number: room?.room_number ?? "-",
+            building_name: getBuildingName(room),
+          };
+        })
+      );
       setLoading(false);
     };
 
@@ -281,25 +366,129 @@ export default function ReportsPageView() {
     return map;
   }, [meters]);
 
+  // Which account(s) actually received money against each invoice, from the
+  // frozen allocation snapshots. An invoice settled by one transfer shows one
+  // account; a chain payment split across accounts shows both.
+  const methodsByInvoiceId = useMemo(() => {
+    const map = new Map<string, Set<string>>();
+    for (const row of allocations) {
+      if (!row.invoice_id || row.amount <= 0) continue;
+      const set = map.get(row.invoice_id) ?? new Set<string>();
+      set.add(row.method);
+      map.set(row.invoice_id, set);
+    }
+    return map;
+  }, [allocations]);
+
   const incomeRows = useMemo(
     () =>
       invoices.map((invoice) => {
         const meter = meterByRoomMonth.get(`${invoice.room_id}:${monthKey(invoice.start_date)}`);
+        const methods = methodsByInvoiceId.get(String(invoice.id));
         return {
           ...invoice,
           month: monthKey(invoice.start_date),
           building: invoice.building_name,
           electricityUsage: meter ? toNumber(meter.electricity_usage) : 0,
           waterUsage: meter ? toNumber(meter.water_usage) : 0,
-          paymentMethod: getPaymentMethod(invoice),
+          // Nothing received yet = no account, shown as "-". Never the tenant's
+          // currently-assigned account, which is not evidence of anything.
+          paymentMethod: methods && methods.size > 0 ? [...methods].join(", ") : "-",
           additionalFeeText: getAdditionalFees(invoice.additional_fees_breakdown) || "-",
         };
       }),
-    [invoices, meterByRoomMonth]
+    [invoices, meterByRoomMonth, methodsByInvoiceId]
   );
 
-  const incomeBuildingOptions = useMemo(() => Array.from(new Set(incomeRows.filter(r => r.month === selectedMonth).map((r) => r.building_name).filter(Boolean))), [incomeRows, selectedMonth]);
-  const incomePaymentMethodOptions = useMemo(() => Array.from(new Set(incomeRows.filter(r => r.month === selectedMonth).map((r) => r.paymentMethod).filter(Boolean))), [incomeRows, selectedMonth]);
+  // ── Cash basis ────────────────────────────────────────────────────────────
+  // One row per allocation, filed under the invoice's own billing period (not
+  // the calendar month the money happened to arrive in) — a July invoice paid
+  // in August still shows under 07-2026. `paid_at` stays on the row as the
+  // actual receipt date/account, so you can still see exactly when and how it
+  // was paid; it just isn't what decides which month tab it's under. Invoices
+  // here are issued the 25th with a due date early the FOLLOWING month, so
+  // grouping by receipt date instead would put most on-time rent one tab away
+  // from the period it belongs to.
+  const cashRows = useMemo(
+    () =>
+      allocations
+        .map((row) => ({ ...row, month: row.invoice_period }))
+        .filter((row) => row.amount > 0),
+    [allocations]
+  );
+
+  const filteredCashRows = useMemo(() => {
+    let rows = cashRows.filter((row) => row.month === selectedMonth);
+    if (incomeSearchQuery.trim()) {
+      const q = incomeSearchQuery.toLowerCase();
+      rows = rows.filter(
+        (row) =>
+          row.room_number.toLowerCase().includes(q) ||
+          row.tenant_name.toLowerCase().includes(q)
+      );
+    }
+    if (incomeBuildingFilter !== "all") {
+      rows = rows.filter((row) => row.building_name === incomeBuildingFilter);
+    }
+    if (incomePaymentMethodFilter !== "all") {
+      rows = rows.filter((row) => row.method === incomePaymentMethodFilter);
+    }
+    return rows.sort((a, b) => {
+      const order = new Date(b.paid_at).getTime() - new Date(a.paid_at).getTime();
+      if (order !== 0) return order;
+      return byBuildingAndRoom(a, b);
+    });
+  }, [cashRows, selectedMonth, incomeSearchQuery, incomeBuildingFilter, incomePaymentMethodFilter]);
+
+  const cashSummary = useMemo(() => {
+    const received = filteredCashRows.reduce((sum, row) => sum + row.amount, 0);
+    const batches = new Set(filteredCashRows.map((row) => row.payment_batch_id || row.id));
+    const invoicesTouched = new Set(filteredCashRows.map((row) => row.invoice_id));
+    // Money that arrived AFTER the invoice it settled was already due — genuine
+    // arrears, as opposed to rent paid on the normal cycle (invoices here are
+    // issued the 25th and due early the following month, so "paid next month"
+    // is routine and must not be flagged).
+    const backPaid = filteredCashRows
+      .filter((row) => isLatePayment(row))
+      .reduce((sum, row) => sum + row.amount, 0);
+    return {
+      received,
+      payments: batches.size,
+      invoicesTouched: invoicesTouched.size,
+      backPaid,
+      unattributed: filteredCashRows
+        .filter((row) => row.method === UNKNOWN_METHOD)
+        .reduce((sum, row) => sum + row.amount, 0),
+    };
+  }, [filteredCashRows, selectedMonth]);
+
+  const incomeBuildingOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          (incomeBasis === "cash"
+            ? cashRows.filter((r) => r.month === selectedMonth).map((r) => r.building_name)
+            : incomeRows.filter((r) => r.month === selectedMonth).map((r) => r.building_name)
+          ).filter(Boolean)
+        )
+      ),
+    [incomeBasis, cashRows, incomeRows, selectedMonth]
+  );
+  const incomePaymentMethodOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          (incomeBasis === "cash"
+            ? cashRows.filter((r) => r.month === selectedMonth).map((r) => r.method)
+            : incomeRows
+                .filter((r) => r.month === selectedMonth)
+                .map((r) => r.paymentMethod)
+                .filter((m) => m !== "-")
+          ).filter(Boolean)
+        )
+      ),
+    [incomeBasis, cashRows, incomeRows, selectedMonth]
+  );
 
   const filteredIncomeRows = useMemo(() => {
     let rows = incomeRows.filter((row) => row.month === selectedMonth);
@@ -343,26 +532,26 @@ export default function ReportsPageView() {
     };
   }, [filteredIncomeRows]);
 
-  // Ratio of collected payments per receiving bank account ("transfer back"
-  // account) — only counts money actually paid, not billed, since an unpaid
-  // invoice hasn't gone into any account yet.
+  // Ratio of money received per bank account, ALWAYS cash basis and always from
+  // allocation snapshots. Summing invoices.paid_amount instead (the old
+  // approach) attributed a back-payment to the month it was billed for rather
+  // than the month it arrived, and labelled it with the tenant's current
+  // account — so it could never be reconciled against a bank statement.
   const paymentMethodBreakdown = useMemo(() => {
     const totals = new Map<string, number>();
-    let totalPaid = 0;
-    for (const row of filteredIncomeRows) {
-      if (row.paid_amount <= 0) continue;
-      const key = row.paymentMethod || "-";
-      totals.set(key, (totals.get(key) ?? 0) + row.paid_amount);
-      totalPaid += row.paid_amount;
+    let totalReceived = 0;
+    for (const row of filteredCashRows) {
+      totals.set(row.method, (totals.get(row.method) ?? 0) + row.amount);
+      totalReceived += row.amount;
     }
     return Array.from(totals.entries())
       .map(([method, amount]) => ({
         method,
         amount,
-        ratio: totalPaid > 0 ? (amount / totalPaid) * 100 : 0,
+        ratio: totalReceived > 0 ? (amount / totalReceived) * 100 : 0,
       }))
       .sort((a, b) => b.amount - a.amount);
-  }, [filteredIncomeRows]);
+  }, [filteredCashRows]);
 
   const yearlyRows = useMemo(
     () =>
@@ -741,6 +930,27 @@ export default function ReportsPageView() {
       ])
     );
 
+  // One row per allocation, filed under the invoice's own billing period (see
+  // cashRows above) — the actual receipt date and account are still on every
+  // row, so this can still be checked against a bank statement, but a given
+  // period's total will include money that physically arrived the following
+  // month if that's when the invoice was paid.
+  const exportCash = () =>
+    downloadCsv(
+      `cash-received-${selectedMonth}.csv`,
+      ["วันที่รับเงิน", "อาคาร", "เลขห้อง", "ชื่อผู้เช่า", "งวดบิลที่ตัดชำระ", "จำนวนเงิน", "บัญชีที่รับเงิน", "รหัสการชำระ"],
+      filteredCashRows.map((row) => [
+        formatDate(row.paid_at),
+        row.building_name,
+        row.room_number,
+        row.tenant_name,
+        row.invoice_period,
+        row.amount,
+        row.method,
+        row.payment_batch_id,
+      ])
+    );
+
   const exportMoveIn = () =>
     downloadCsv(
       `move-in-report-${selectedMonth}.csv`,
@@ -899,9 +1109,29 @@ export default function ReportsPageView() {
                     ))}
                   </select>
                 )}
+                <div className="inline-flex rounded-control border border-slate-200 p-0.5">
+                  {([
+                    { key: "billing", label: "ตามงวดบิล" },
+                    { key: "cash", label: "ตามเงินเข้าจริง" },
+                  ] as const).map((option) => (
+                    <button
+                      key={option.key}
+                      type="button"
+                      onClick={() => setIncomeBasis(option.key)}
+                      className={
+                        incomeBasis === option.key
+                          ? "rounded-control bg-primary-500 px-3 py-1.5 text-sm font-medium text-white"
+                          : "rounded-control px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
+                      }
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
                 <select
                   value={incomeStatusFilter}
                   onChange={(e) => setIncomeStatusFilter(e.target.value)}
+                  disabled={incomeBasis === "cash"}
                   className="h-[38px] rounded-control border border-slate-200 px-3 py-1 text-sm text-slate-700 focus:outline-none focus:ring-1 focus:ring-primary-500"
                 >
                   <option value="all">ทุกสถานะ</option>
@@ -931,26 +1161,43 @@ export default function ReportsPageView() {
                     className="h-[38px] rounded-control border border-slate-200 px-3 py-2 text-slate-900"
                   />
                 </label>
-                <ExportButton onClick={exportIncome} />
+                <ExportButton onClick={incomeBasis === "cash" ? exportCash : exportIncome} />
               </div>
             </CardContent>
           </Card>
-          <SummaryCards
-            items={[
-              { label: "ยอดเรียกเก็บ", value: formatMoney(incomeSummary.billed) },
-              { label: "ยอดชำระ", value: formatMoney(incomeSummary.paid) },
-              { label: "ยอดค้าง", value: formatMoney(incomeSummary.outstanding) },
-              { label: "ค่าธรรมเนียมเพิ่ม", value: formatMoney(incomeSummary.additional) },
-              { label: "ค่าไฟ", value: formatMoney(incomeSummary.electricityCollected) },
-              { label: "ค่าน้ำ", value: formatMoney(incomeSummary.waterCollected) },
-            ]}
-          />
+          {incomeBasis === "cash" ? (
+            <SummaryCards
+              items={[
+                { label: "ยอดรับเงินจริง", value: formatMoney(cashSummary.received) },
+                { label: "จำนวนครั้งที่รับชำระ", value: String(cashSummary.payments) },
+                { label: "บิลที่ถูกตัดชำระ", value: String(cashSummary.invoicesTouched) },
+                { label: "ชำระเกินกำหนด", value: formatMoney(cashSummary.backPaid) },
+                { label: "ยังไม่ระบุบัญชี", value: formatMoney(cashSummary.unattributed) },
+              ]}
+            />
+          ) : (
+            <SummaryCards
+              items={[
+                { label: "ยอดเรียกเก็บ", value: formatMoney(incomeSummary.billed) },
+                { label: "ยอดชำระ", value: formatMoney(incomeSummary.paid) },
+                { label: "ยอดค้าง", value: formatMoney(incomeSummary.outstanding) },
+                { label: "ค่าธรรมเนียมเพิ่ม", value: formatMoney(incomeSummary.additional) },
+                { label: "ค่าไฟ", value: formatMoney(incomeSummary.electricityCollected) },
+                { label: "ค่าน้ำ", value: formatMoney(incomeSummary.waterCollected) },
+              ]}
+            />
+          )}
           {paymentMethodBreakdown.length > 0 && (
             <Card>
               <CardContent className="space-y-3">
                 <div>
                   <h3 className="text-base font-semibold text-slate-900">สัดส่วนยอดโอนเข้าแต่ละบัญชี</h3>
-                  <p className="text-sm text-slate-500">คำนวณจากยอดที่ชำระแล้วในเดือนที่เลือก แยกตามบัญชีที่ผู้เช่าโอนเข้า</p>
+                  <p className="text-sm text-slate-500">
+                    คำนวณจากเงินที่รับเข้าจริงสำหรับใบแจ้งหนี้งวดที่เลือก (นับตามงวดบิล ไม่ใช่วันที่รับเงิน) แยกตามบัญชีที่บันทึกไว้ ณ ตอนรับชำระ
+                  </p>
+                  <p className="text-xs text-slate-400">
+                    รายการที่ขึ้นว่า “{UNKNOWN_METHOD}” คือการชำระที่บันทึกไว้ก่อนระบบเริ่มเก็บบัญชีผู้รับ จึงไม่สามารถระบุย้อนหลังได้
+                  </p>
                 </div>
                 <div className="space-y-2.5">
                   {paymentMethodBreakdown.map((row) => (
@@ -970,6 +1217,64 @@ export default function ReportsPageView() {
               </CardContent>
             </Card>
           )}
+          {incomeBasis === "cash" ? (
+            <Card>
+              <CardContent className="p-0">
+                <div className="overflow-x-auto rounded-control">
+                  <table className="min-w-full text-left text-sm">
+                    <thead className="bg-slate-50 text-slate-500">
+                      <tr>
+                        <th className="px-3 py-2">วันที่รับเงิน</th>
+                        <th className="px-3 py-2">อาคาร</th>
+                        <th className="px-3 py-2">เลขห้อง</th>
+                        <th className="px-3 py-2">ชื่อผู้เช่า</th>
+                        <th className="px-3 py-2 text-center">งวดบิลที่ตัดชำระ</th>
+                        <th className="px-3 py-2 text-right">จำนวนเงิน</th>
+                        <th className="px-3 py-2 text-center">บัญชีที่รับเงิน</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredCashRows.length > 0 ? (
+                        filteredCashRows.map((row) => {
+                          const isBackPayment = isLatePayment(row);
+                          return (
+                            <tr key={row.id} className="border-t border-slate-100 hover:bg-slate-50">
+                              <td className="px-3 py-2">{formatDate(row.paid_at)}</td>
+                              <td className="px-3 py-2">{row.building_name}</td>
+                              <td className="px-3 py-2 font-medium">{row.room_number}</td>
+                              <td className="px-3 py-2">{row.tenant_name}</td>
+                              <td className="px-3 py-2 text-center">
+                                <span className="text-slate-700">{row.invoice_period}</span>
+                                {isBackPayment && (
+                                  <span className="ml-1.5 rounded-full bg-warning-100 px-2 py-0.5 text-2xs text-warning-700">
+                                    ชำระเกินกำหนด
+                                  </span>
+                                )}
+                              </td>
+                              <td className="px-3 py-2 text-right text-success-600">{formatMoney(row.amount)}</td>
+                              <td className="px-3 py-2 text-center">
+                                {row.method === UNKNOWN_METHOD ? (
+                                  <span className="text-slate-400">{row.method}</span>
+                                ) : (
+                                  row.method
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })
+                      ) : (
+                        <tr>
+                          <td colSpan={7} className="px-3 py-6 text-center text-slate-500">
+                            ไม่พบการรับเงินในเดือนนี้
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </CardContent>
+            </Card>
+          ) : (
           <Card>
             <CardContent className="p-0">
               <div className="overflow-x-auto rounded-control">
@@ -981,7 +1286,7 @@ export default function ReportsPageView() {
                       <th className="px-3 py-2">ชื่อผู้เช่า</th>
                       <th className="px-3 py-2 text-right">ยอดเรียกเก็บ</th>
                       <th className="px-3 py-2 text-right">ยอดชำระ</th>
-                      <th className="px-3 py-2 text-center">วิธีชำระ</th>
+                      <th className="px-3 py-2 text-center">บัญชีที่รับเงิน</th>
                       <th className="px-3 py-2 text-center">สถานะ</th>
                     </tr>
                   </thead>
@@ -1016,7 +1321,8 @@ export default function ReportsPageView() {
               </div>
             </CardContent>
           </Card>
-          
+          )}
+
           <Modal
             isOpen={!!selectedIncomeInvoice}
             onClose={() => setSelectedIncomeInvoice(null)}

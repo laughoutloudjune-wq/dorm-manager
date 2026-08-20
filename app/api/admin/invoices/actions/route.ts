@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/admin-api-auth";
-import { applyInvoicePaymentAllocation, syncInvoiceLedger } from "@/lib/invoice-ledger";
+import {
+  applyInvoicePaymentAllocation,
+  syncInvoiceLedger,
+  snapshotFromPaymentMethodRow,
+} from "@/lib/invoice-ledger";
 import { syncPointsForTenant } from "@/lib/points-ledger";
 import { notifyTenantPointsEarned } from "@/lib/points-notify";
 import { declinePaymentSlip } from "@/lib/slip-review";
@@ -55,6 +59,7 @@ export async function POST(req: Request) {
           slipUrl: ((invoice as any).slip_url as string | null | undefined) ?? null,
           mode: "full",
           source: "admin_status_paid",
+          createdBy: auth.user.id,
         });
         await syncPointsAfterPayment(auth.supabase, invoiceId);
         return NextResponse.json({ success: true, ...result });
@@ -141,6 +146,7 @@ export async function POST(req: Request) {
           idempotencyKey: (payment as any).idempotency_key
             ? String((payment as any).idempotency_key)
             : null,
+          createdBy: auth.user.id,
         });
         await syncPointsAfterPayment(auth.supabase, invoiceId);
         return NextResponse.json({ success: true, ...result });
@@ -216,6 +222,60 @@ export async function POST(req: Request) {
       const { error } = await auth.supabase.from("invoices").delete().in("id", invoiceIds);
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
       return NextResponse.json({ success: true });
+    }
+
+    // Manually attach the real receiving account to a payment recorded before
+    // payment_method_snapshot existed (or otherwise never resolved), when the
+    // admin actually knows which account it went to — e.g. checking an old
+    // bank statement. Same permission as recording the payment in the first
+    // place: this is correcting an existing record, not creating a new one.
+    // Applies to every allocation in the batch, since one transfer only ever
+    // lands in one account regardless of how many invoices it settled.
+    if (action === "assign_payment_batch_method") {
+      const auth = await requireAdminPermission(req, "invoice.payment.record");
+      if ("error" in auth) return auth.error;
+      const paymentBatchId = String(body?.paymentBatchId ?? "");
+      const methodId = String(body?.methodId ?? "");
+      if (!paymentBatchId || !methodId) {
+        return NextResponse.json(
+          { error: "Missing paymentBatchId or methodId." },
+          { status: 400 },
+        );
+      }
+
+      const { data: methodRow, error: methodError } = await auth.supabase
+        .from("payment_methods")
+        .select("id,label,bank_name,account_name,account_number,qr_url")
+        .eq("id", methodId)
+        .maybeSingle();
+      if (methodError) return NextResponse.json({ error: methodError.message }, { status: 500 });
+      if (!methodRow) {
+        return NextResponse.json({ error: "Payment method not found." }, { status: 404 });
+      }
+
+      const resolved = snapshotFromPaymentMethodRow(methodRow as any);
+
+      const { error: batchError } = await auth.supabase
+        .from("payment_batches")
+        .update({
+          payment_method_id: resolved.id,
+          payment_method_snapshot: resolved.snapshot,
+        })
+        .eq("id", paymentBatchId);
+      if (batchError) return NextResponse.json({ error: batchError.message }, { status: 500 });
+
+      const { error: allocationError } = await auth.supabase
+        .from("invoice_payment_allocations")
+        .update({
+          payment_method_id: resolved.id,
+          payment_method_snapshot: resolved.snapshot,
+        })
+        .eq("payment_batch_id", paymentBatchId);
+      if (allocationError) {
+        return NextResponse.json({ error: allocationError.message }, { status: 500 });
+      }
+
+      return NextResponse.json({ success: true, paymentMethod: resolved });
     }
 
     return NextResponse.json({ error: "Unknown action." }, { status: 400 });
