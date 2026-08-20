@@ -252,3 +252,74 @@ describe("planPaymentReplay", () => {
     }
   });
 });
+
+describe("planPaymentReplay — legacy payments", () => {
+  const batch = (id: string, amount: number, paidAt: string) => ({
+    id,
+    amount_received: amount,
+    paid_at: paidAt,
+  });
+
+  it("never redistributes away a payment no allocation accounts for", () => {
+    // The old invoice was settled before allocations were recorded, so it has
+    // paid_amount with no allocation row behind it. Replaying the chain must
+    // not treat it as unpaid and hand its money to a later invoice.
+    const { paidByInvoiceId, allocations } = planPaymentReplay(
+      [
+        { id: "legacy", total_amount: 1000, start_date: "2026-01-01", legacy_paid: 1000 },
+        { id: "recent", total_amount: 1000, start_date: "2026-02-01" },
+      ],
+      [batch("b1", 1000, "2026-03-01T00:00:00Z")],
+    );
+
+    expect(paidByInvoiceId.get("legacy")).toBe(1000);
+    expect(paidByInvoiceId.get("recent")).toBe(1000);
+    // The batch money goes to the invoice that actually still owes it.
+    expect(allocations).toHaveLength(1);
+    expect(allocations[0].invoice_id).toBe("recent");
+  });
+
+  it("only opens the unbacked remainder of a partly-legacy invoice", () => {
+    const { paidByInvoiceId, allocations } = planPaymentReplay(
+      [{ id: "part", total_amount: 1000, start_date: "2026-01-01", legacy_paid: 400 }],
+      [batch("b1", 1000, "2026-02-01T00:00:00Z")],
+    );
+    expect(paidByInvoiceId.get("part")).toBe(1000);
+    expect(allocations[0].amount).toBe(600);
+  });
+});
+
+describe("planPaymentReplay — phantom-receipt detection", () => {
+  it("flags surplus rather than pushing it onto later unpaid invoices", () => {
+    // Room 114/1: duplicate batches meant the group carried far more money than
+    // the tenant ever paid. Spreading it forward marked May/June/July — genuinely
+    // overdue with ฿0 received — as fully paid. The surplus must surface as
+    // `unallocated` so the caller can refuse to write.
+    const { paidByInvoiceId, unallocated } = planPaymentReplay(
+      [
+        { id: "apr", total_amount: 6244, start_date: "2026-04-01" },
+        { id: "may", total_amount: 5294, start_date: "2026-05-01" },
+      ],
+      [
+        { id: "real", amount_received: 6000, paid_at: "2026-05-30T05:00:00Z" },
+        { id: "phantom1", amount_received: 6000, paid_at: "2026-05-30T05:00:00Z" },
+        { id: "phantom2", amount_received: 6000, paid_at: "2026-05-30T05:00:00Z" },
+      ],
+    );
+    // Capacity is 11,538 against 18,000 recorded.
+    expect(paidByInvoiceId.get("apr")).toBe(6244);
+    expect(paidByInvoiceId.get("may")).toBe(5294);
+    expect(unallocated).toBeCloseTo(6462, 2);
+  });
+
+  it("reports no surplus for a clean chain", () => {
+    const { unallocated } = planPaymentReplay(
+      [
+        { id: "april", total_amount: 3244, start_date: "2026-04-01" },
+        { id: "may", total_amount: 6481, start_date: "2026-05-01" },
+      ],
+      [{ id: "b1", amount_received: 6481, paid_at: "2026-06-07T05:00:00Z" }],
+    );
+    expect(unallocated).toBe(0);
+  });
+});

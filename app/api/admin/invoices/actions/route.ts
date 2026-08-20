@@ -5,7 +5,6 @@ import {
   syncInvoiceLedger,
   snapshotFromPaymentMethodRow,
   getPaymentChainOutstanding,
-  reallocatePaymentsForInvoice,
   calculateLateFeeAmount,
   resolveFullyPaidAtDate,
 } from "@/lib/invoice-ledger";
@@ -174,27 +173,15 @@ export async function POST(req: Request) {
         }
       }
 
-      // Editing an invoice's amount (or its carry-forward links) changes how
-      // money already received should divide across the chain. The allocation
-      // was computed against the old totals, so re-derive it now — otherwise an
-      // invoice edited down keeps showing more allocated to it than it is
-      // worth, and the invoice after it keeps showing a balance that was in
-      // fact covered.
-      let reallocation: Awaited<ReturnType<typeof reallocatePaymentsForInvoice>> | null = null;
-      try {
-        reallocation = await reallocatePaymentsForInvoice(authEdit.supabase, invoiceId);
-      } catch (reallocError: any) {
-        console.error("[invoice-ledger] Reallocation after edit failed:", invoiceId, reallocError);
-      }
-
-      return NextResponse.json({
-        success: true,
-        reallocated: reallocation?.changed ?? false,
-        // Money the tenant paid that no longer fits anywhere, because the
-        // invoices were edited down below what was received. Surfaced rather
-        // than dropped silently.
-        unallocatedAmount: reallocation?.unallocated ?? 0,
-      });
+      // NOT re-deriving allocations here yet. `reallocatePaymentsForInvoice`
+      // treats each invoice's `total_amount` as its capacity, but a
+      // carry-forward target's total already BUNDLES its source's debt (206/1
+      // March: total 11,753 = own charge 7,942 + 3,811 carried from February).
+      // Replaying against the bundled figure counts the source payment twice.
+      // Enabling this needs the capacity model switched to each invoice's own
+      // charge — and `paid_amount` is not consistent about which of the two it
+      // means across existing rows, so that has to be settled first.
+      return NextResponse.json({ success: true });
     }
 
     if (action === "record_payment") {

@@ -659,6 +659,15 @@ export type ReplayInvoice = {
   total_amount: number | null;
   /** Oldest first. */
   start_date?: string | null;
+  /**
+   * Money already on this invoice that NO allocation row accounts for — a
+   * payment recorded before `invoice_payment_allocations` existed, or written
+   * straight to `paid_amount`. There is no batch to replay for it, so replay
+   * treats it as a floor: it stays put, and only the remainder of the invoice
+   * is open to allocation. Without this, replaying a chain that happens to
+   * include a legacy-paid invoice would wipe that payment.
+   */
+  legacy_paid?: number | null;
 };
 
 export type ReplayBatch = {
@@ -702,8 +711,13 @@ export function planPaymentReplay(
   /** Received money that no longer fits anywhere, because invoices were edited down. */
   unallocated: number;
 } {
+  // Legacy (unbacked) money is the starting balance, not zero — see
+  // `ReplayInvoice.legacy_paid`.
   const paidByInvoiceId = new Map<string, number>(
-    invoices.map((row) => [String(row.id), 0]),
+    invoices.map((row) => [
+      String(row.id),
+      Math.max(0, toNumber(row.legacy_paid)),
+    ]),
   );
   const allocations: ReplayAllocation[] = [];
   let unallocated = 0;
@@ -767,6 +781,8 @@ export async function reallocatePaymentsForInvoice(
   invoiceId: string,
 ): Promise<{
   changed: boolean;
+  /** Batch data could not be trusted; nothing written. See the guard below. */
+  needsReview?: boolean;
   invoiceIds: string[];
   batchIds: string[];
   unallocated: number;
@@ -852,11 +868,39 @@ export async function reallocatePaymentsForInvoice(
   if (batchesRes.error) throw new Error(batchesRes.error.message);
   if (existingRes.error) throw new Error(existingRes.error.message);
 
+  // Money on these invoices that no allocation row explains — payments made
+  // before allocations were recorded, or written directly to `paid_amount`.
+  // There is no batch to replay for it, so it must survive the replay rather
+  // than being redistributed away. Measured against EVERY allocation on the
+  // invoice, not just the batches being replayed.
+  const { data: allAllocRows, error: allAllocError } = await supabase
+    .from("invoice_payment_allocations")
+    .select("invoice_id,amount")
+    .in("invoice_id", [...invoiceIds]);
+  if (allAllocError) throw new Error(allAllocError.message);
+
+  const allocatedByInvoice = new Map<string, number>();
+  for (const row of allAllocRows ?? []) {
+    const id = String((row as any).invoice_id);
+    allocatedByInvoice.set(
+      id,
+      (allocatedByInvoice.get(id) ?? 0) + toNumber((row as any).amount),
+    );
+  }
+
   // A cancelled invoice must not absorb money — the debt was written off.
-  // Draft is deliberately included: a draft invoice can legitimately already
-  // hold a payment (room 116/1's April invoice is exactly that).
+  // Draft invoices DO take part: a draft can legitimately already hold a payment
+  // (room 116/1's April invoice is exactly that). Their status is preserved
+  // below, so taking part never publishes them.
   const invoices = (invoicesRes.data ?? [])
     .filter((row: any) => String(row.status ?? "") !== "cancelled")
+    .map((row: any) => ({
+      ...row,
+      legacy_paid: Math.max(
+        0,
+        toNumber(row.paid_amount) - (allocatedByInvoice.get(String(row.id)) ?? 0),
+      ),
+    }))
     .sort((a: any, b: any) =>
       String(a.start_date ?? "").localeCompare(String(b.start_date ?? "")),
     );
@@ -870,6 +914,24 @@ export async function reallocatePaymentsForInvoice(
   // 3. Replay against current amounts.
   const { allocations: nextAllocations, paidByInvoiceId: paidSoFar, unallocated } =
     planPaymentReplay(invoices as any[], batches as any[]);
+
+  // SAFETY: if the batches carry more money than these invoices can absorb, the
+  // batch data itself is untrustworthy — almost always duplicate receipts, which
+  // this codebase produced for months by recording a fresh batch every time an
+  // invoice's status was flipped back to paid. Redistributing that surplus does
+  // real damage: it flows onto later invoices and marks genuinely unpaid months
+  // as settled (room 114/1's May/June/July, overdue with nothing received, were
+  // all marked paid this way). Refuse to write and let a human resolve the
+  // duplicates first.
+  if (unallocated > 0.005) {
+    return {
+      changed: false,
+      needsReview: true,
+      invoiceIds: [...invoiceIds],
+      batchIds: [...batchIds],
+      unallocated,
+    };
+  }
 
   // 4. No-op if the split is already correct.
   const key = (batchId: string, invId: string) => `${batchId}:${invId}`;
@@ -959,7 +1021,9 @@ export async function reallocatePaymentsForInvoice(
       });
 
     const nextStatus =
-      String(invoice.status ?? "") === "cancelled"
+      // Cancelled is a written-off debt and draft is not yet issued; neither
+      // should be republished as a side effect of re-deriving a split.
+      ["cancelled", "draft"].includes(String(invoice.status ?? ""))
         ? String(invoice.status)
         : resolveInvoiceStatus(
             {
