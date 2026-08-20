@@ -67,6 +67,19 @@ const statusLabel = (status: string) =>
 
 const UNKNOWN_METHOD = UNKNOWN_PAYMENT_METHOD;
 
+/**
+ * Was this allocation money that arrived after its invoice was already overdue?
+ * Not "paid in a different calendar month than the invoice's period" — this
+ * dorm issues invoices on the 25th with a due date early the FOLLOWING month,
+ * so an on-time July payment routinely lands in August. Comparing calendar
+ * months flagged nearly every normal payment as arrears; comparing against the
+ * invoice's own `due_date` does not.
+ */
+const isLatePayment = (row: { paid_at: string; invoice_due_date: string | null }) => {
+  if (!row.invoice_due_date) return false;
+  return new Date(row.paid_at) > new Date(`${row.invoice_due_date}T23:59:59`);
+};
+
 const getAdditionalFees = (rows: any[]) =>
   (Array.isArray(rows) ? rows : [])
     .filter((row) => String(row?.item_type ?? row?.type ?? "").toLowerCase() !== "transfer_detail")
@@ -151,7 +164,7 @@ export default function ReportsPageView() {
       const ALLOCATION_SELECT =
         "id,payment_batch_id,invoice_id,amount,paid_at,source,payment_method_id,payment_method_snapshot," +
         "invoice:invoices!invoice_payment_allocations_invoice_id_fkey!inner(" +
-        "id,start_date,tenant_id,room_id,tenants(full_name),rooms(room_number,buildings(name)))";
+        "id,start_date,due_date,tenant_id,room_id,tenants(full_name),rooms(room_number,buildings(name)))";
 
       const [settingsRes, invoicesRes, tenantsRes, metersRes, logsRes, transfersRes, settlementInvoicesRes, allocationsByPaidAtRes, allocationsByPeriodRes] = await Promise.all([
         supabase.from("settings").select("water_rate,electricity_rate").eq("id", 1).maybeSingle(),
@@ -284,6 +297,13 @@ export default function ReportsPageView() {
             // payment_batches existed — reported as UNKNOWN_METHOD, not guessed.
             method: paymentMethodSnapshotLabel(row.payment_method_snapshot),
             invoice_period: invoice?.start_date ? monthKey(invoice.start_date) : "-",
+            // Billing here always straddles two calendar months (issued the
+            // 25th, due the ~10th of the following month), so "invoice period
+            // month !== month paid" is normal for almost every on-time payment
+            // — it does NOT mean arrears. Whether a payment actually settled
+            // overdue rent is whether it arrived after that invoice's own due
+            // date, which is what `isLatePayment` below checks instead.
+            invoice_due_date: invoice?.due_date ?? null,
             tenant_name: tenant?.full_name ?? "-",
             room_number: room?.room_number ?? "-",
             building_name: getBuildingName(room),
@@ -420,10 +440,12 @@ export default function ReportsPageView() {
     const received = filteredCashRows.reduce((sum, row) => sum + row.amount, 0);
     const batches = new Set(filteredCashRows.map((row) => row.payment_batch_id || row.id));
     const invoicesTouched = new Set(filteredCashRows.map((row) => row.invoice_id));
-    // Money received this month that settled an EARLIER period — the back-payments
-    // that used to be invisible.
+    // Money that arrived AFTER the invoice it settled was already due — genuine
+    // arrears, as opposed to rent paid on the normal cycle (invoices here are
+    // issued the 25th and due early the following month, so "paid next month"
+    // is routine and must not be flagged).
     const backPaid = filteredCashRows
-      .filter((row) => row.invoice_period !== "-" && row.invoice_period < selectedMonth)
+      .filter((row) => isLatePayment(row))
       .reduce((sum, row) => sum + row.amount, 0);
     return {
       received,
@@ -1142,7 +1164,7 @@ export default function ReportsPageView() {
                 { label: "ยอดรับเงินจริง", value: formatMoney(cashSummary.received) },
                 { label: "จำนวนครั้งที่รับชำระ", value: String(cashSummary.payments) },
                 { label: "บิลที่ถูกตัดชำระ", value: String(cashSummary.invoicesTouched) },
-                { label: "ตัดยอดค้างเดือนก่อน", value: formatMoney(cashSummary.backPaid) },
+                { label: "ชำระเกินกำหนด", value: formatMoney(cashSummary.backPaid) },
                 { label: "ยังไม่ระบุบัญชี", value: formatMoney(cashSummary.unattributed) },
               ]}
             />
@@ -1207,8 +1229,7 @@ export default function ReportsPageView() {
                     <tbody>
                       {filteredCashRows.length > 0 ? (
                         filteredCashRows.map((row) => {
-                          const isBackPayment =
-                            row.invoice_period !== "-" && row.invoice_period < row.month;
+                          const isBackPayment = isLatePayment(row);
                           return (
                             <tr key={row.id} className="border-t border-slate-100 hover:bg-slate-50">
                               <td className="px-3 py-2">{formatDate(row.paid_at)}</td>
@@ -1219,7 +1240,7 @@ export default function ReportsPageView() {
                                 <span className="text-slate-700">{row.invoice_period}</span>
                                 {isBackPayment && (
                                   <span className="ml-1.5 rounded-full bg-warning-100 px-2 py-0.5 text-2xs text-warning-700">
-                                    ตัดยอดค้าง
+                                    ชำระเกินกำหนด
                                   </span>
                                 )}
                               </td>
