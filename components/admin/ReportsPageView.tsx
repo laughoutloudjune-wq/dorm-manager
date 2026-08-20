@@ -401,14 +401,18 @@ export default function ReportsPageView() {
   );
 
   // ── Cash basis ────────────────────────────────────────────────────────────
-  // One row per allocation: money that arrived on `paid_at`, applied to the
-  // invoice for `invoice_period`. This is the view that reconciles against a
-  // bank statement, and the only one where a back-payment appears once, on the
-  // day it was actually received.
+  // One row per allocation, filed under the invoice's own billing period (not
+  // the calendar month the money happened to arrive in) — a July invoice paid
+  // in August still shows under 07-2026. `paid_at` stays on the row as the
+  // actual receipt date/account, so you can still see exactly when and how it
+  // was paid; it just isn't what decides which month tab it's under. Invoices
+  // here are issued the 25th with a due date early the FOLLOWING month, so
+  // grouping by receipt date instead would put most on-time rent one tab away
+  // from the period it belongs to.
   const cashRows = useMemo(
     () =>
       allocations
-        .map((row) => ({ ...row, month: monthKey(String(row.paid_at ?? "")) }))
+        .map((row) => ({ ...row, month: row.invoice_period }))
         .filter((row) => row.amount > 0),
     [allocations]
   );
@@ -926,8 +930,11 @@ export default function ReportsPageView() {
       ])
     );
 
-  // Cash basis exports one row per allocation — the shape you can tick off
-  // against a bank statement line by line.
+  // One row per allocation, filed under the invoice's own billing period (see
+  // cashRows above) — the actual receipt date and account are still on every
+  // row, so this can still be checked against a bank statement, but a given
+  // period's total will include money that physically arrived the following
+  // month if that's when the invoice was paid.
   const exportCash = () =>
     downloadCsv(
       `cash-received-${selectedMonth}.csv`,
@@ -1186,7 +1193,7 @@ export default function ReportsPageView() {
                 <div>
                   <h3 className="text-base font-semibold text-slate-900">สัดส่วนยอดโอนเข้าแต่ละบัญชี</h3>
                   <p className="text-sm text-slate-500">
-                    คำนวณจากเงินที่รับเข้าจริงในเดือนที่เลือก (ตามวันที่รับเงิน) แยกตามบัญชีที่บันทึกไว้ ณ ตอนรับชำระ
+                    คำนวณจากเงินที่รับเข้าจริงสำหรับใบแจ้งหนี้งวดที่เลือก (นับตามงวดบิล ไม่ใช่วันที่รับเงิน) แยกตามบัญชีที่บันทึกไว้ ณ ตอนรับชำระ
                   </p>
                   <p className="text-xs text-slate-400">
                     รายการที่ขึ้นว่า “{UNKNOWN_METHOD}” คือการชำระที่บันทึกไว้ก่อนระบบเริ่มเก็บบัญชีผู้รับ จึงไม่สามารถระบุย้อนหลังได้

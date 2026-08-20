@@ -241,6 +241,60 @@ export function InvoiceDetailModal() {
   const [paymentChains, setPaymentChains] = React.useState<PaymentChain[]>([]);
   const [chainsLoading, setChainsLoading] = React.useState(false);
 
+  // Old payments recorded before payment_method_snapshot existed have no
+  // recoverable account — the admin is the only remaining source of truth if
+  // they happen to know (e.g. from an old bank statement) which account a
+  // specific transfer landed in. This lets them attach it after the fact.
+  const [assignableMethods, setAssignableMethods] = React.useState<
+    { id: string; label: string; bank_name: string; account_name: string; account_number: string }[]
+  >([]);
+  const [assigningBatchId, setAssigningBatchId] = React.useState<string | null>(null);
+  const [assignSelection, setAssignSelection] = React.useState<Record<string, string>>({});
+
+  React.useEffect(() => {
+    if (!detailOpen) return;
+    let cancelled = false;
+    void (async () => {
+      const { data } = await supabase
+        .from("payment_methods")
+        .select("id,label,bank_name,account_name,account_number")
+        .order("label", { ascending: true });
+      if (!cancelled) setAssignableMethods((data ?? []) as any[]);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [detailOpen, supabase]);
+
+  const assignPaymentBatchMethod = async (paymentBatchId: string) => {
+    const methodId = assignSelection[paymentBatchId];
+    if (!methodId) return;
+    setAssigningBatchId(paymentBatchId);
+    try {
+      await callInvoiceAdminAction("assign_payment_batch_method", {
+        paymentBatchId,
+        methodId,
+      });
+      // Re-derive the label locally instead of a full reload — the batch and
+      // every allocation sharing it just got the same snapshot.
+      const chosen = assignableMethods.find((m) => m.id === methodId);
+      const label = chosen?.label || chosen?.bank_name || null;
+      if (label) {
+        setPaymentChains((prev) =>
+          prev.map((chain) =>
+            chain.batchId === paymentBatchId
+              ? { ...chain, methodLabel: label }
+              : chain,
+          ),
+        );
+      }
+    } catch (err: any) {
+      setError(err?.message ?? "ไม่สามารถบันทึกบัญชีที่รับเงินได้");
+    } finally {
+      setAssigningBatchId(null);
+    }
+  };
+
   const activeInvoiceId = activeInvoice?.id ? String(activeInvoice.id) : "";
 
   React.useEffect(() => {
@@ -1209,15 +1263,53 @@ export function InvoiceDetailModal() {
                                   <p className="text-sm font-semibold text-slate-500">
                                     วันที่ชำระ: {chain.paidAt ? formatDateThai(chain.paidAt) : "-"}
                                   </p>
-                                  <span
-                                    className={
-                                      chain.methodLabel === UNKNOWN_PAYMENT_METHOD
-                                        ? "text-sm font-semibold text-slate-400"
-                                        : "text-sm font-semibold text-slate-600"
-                                    }
-                                  >
-                                    เข้าบัญชี: {chain.methodLabel}
-                                  </span>
+                                  {chain.methodLabel === UNKNOWN_PAYMENT_METHOD &&
+                                  canRecordInvoicePayment &&
+                                  assignableMethods.length > 0 ? (
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-sm font-semibold text-slate-400">
+                                        เข้าบัญชี: {UNKNOWN_PAYMENT_METHOD}
+                                      </span>
+                                      <select
+                                        value={assignSelection[chain.batchId] ?? ""}
+                                        onChange={(e) =>
+                                          setAssignSelection((prev) => ({
+                                            ...prev,
+                                            [chain.batchId]: e.target.value,
+                                          }))
+                                        }
+                                        className="h-8 rounded-control border border-slate-200 px-2 text-xs text-slate-700 focus:outline-none focus:ring-1 focus:ring-primary-500"
+                                      >
+                                        <option value="">ระบุบัญชีที่รับเงินจริง...</option>
+                                        {assignableMethods.map((m) => (
+                                          <option key={m.id} value={m.id}>
+                                            {m.label || m.bank_name} · {m.account_number}
+                                          </option>
+                                        ))}
+                                      </select>
+                                      <button
+                                        type="button"
+                                        onClick={() => assignPaymentBatchMethod(chain.batchId)}
+                                        disabled={
+                                          !assignSelection[chain.batchId] ||
+                                          assigningBatchId === chain.batchId
+                                        }
+                                        className={buttonClasses({ variant: "subtle", size: "sm" })}
+                                      >
+                                        {assigningBatchId === chain.batchId ? "กำลังบันทึก..." : "บันทึก"}
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <span
+                                      className={
+                                        chain.methodLabel === UNKNOWN_PAYMENT_METHOD
+                                          ? "text-sm font-semibold text-slate-400"
+                                          : "text-sm font-semibold text-slate-600"
+                                      }
+                                    >
+                                      เข้าบัญชี: {chain.methodLabel}
+                                    </span>
+                                  )}
                                   {chain.slipUrl && (
                                     <button
                                       type="button"

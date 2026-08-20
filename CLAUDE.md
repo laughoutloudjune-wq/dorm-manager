@@ -84,10 +84,21 @@ A payment is three rows, not one. `applyInvoicePaymentAllocation` writes:
 Reporting reads 1 and 2. `invoices.paid_amount` is a running balance, not an income figure:
 it says how much an invoice has received in total, never *when* the money arrived. A tenant
 paying three months of arrears in one transfer moves `paid_amount` on three invoices across
-three billing periods while the bank saw one deposit on one day. The income report therefore
-has two explicit bases — **cash** (group allocations by `paid_at`) and **billing** (group by
-invoice period) — and the per-account breakdown is always cash basis, summed from
-`invoice_payment_allocations.amount`.
+three billing periods while the bank saw one deposit on one day.
+
+The income report has two views over the same allocation data, both filed under the
+**invoice's own billing period** (not the calendar month the money happened to arrive in —
+invoices here are issued the 25th with a due date early the *following* month, so grouping by
+receipt date instead would put most on-time rent one tab away from the period it belongs to).
+**Billing** shows one aggregated row per invoice (billed vs. paid). **Cash** shows one row per
+individual allocation — the actual amount, `paid_at`, and receiving account for that specific
+payment — so a July invoice paid in August still shows under July, with August visible as the
+date on the row. Because grouping follows the invoice's period rather than the deposit date, a
+given period's cash total is not necessarily what the bank statement shows for that same
+calendar month; check the row-level `paid_at` for that. The per-account breakdown is always
+cash basis, summed from `invoice_payment_allocations.amount`. A payment counts as *late*
+(`ชำระเกินกำหนด`) when its `paid_at` is after that invoice's own `due_date` — never by
+comparing calendar months, which routinely flags normal on-time rent under this billing cycle.
 
 **The receiving account is frozen at payment time and never re-resolved.**
 `payment_method_snapshot` (a full JSONB copy, on both the batch and every allocation) is the

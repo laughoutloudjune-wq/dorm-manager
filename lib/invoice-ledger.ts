@@ -278,6 +278,27 @@ type InvoiceRowSnapshot = {
  * Call this ONCE, at the moment a payment is recorded, and store what it returns.
  * Never call it to describe a payment that already happened.
  */
+/** Turn a `payment_methods` row into the frozen shape stored on batches/allocations. */
+export const snapshotFromPaymentMethodRow = (row: {
+  id?: string | null;
+  label?: string | null;
+  bank_name?: string | null;
+  account_name?: string | null;
+  account_number?: string | null;
+  qr_url?: string | null;
+}): ResolvedPaymentMethod => ({
+  id: row.id ? String(row.id) : null,
+  snapshot: {
+    type: row.qr_url ? "qr" : "bank",
+    methodId: row.id ? String(row.id) : null,
+    label: row.label ?? null,
+    bank_name: row.bank_name ?? null,
+    account_name: row.account_name ?? null,
+    account_number: row.account_number ?? null,
+    qr_url: row.qr_url ?? null,
+  },
+});
+
 export async function resolvePaymentMethodForTenant(
   supabase: SupabaseClient,
   tenantId: string | null | undefined,
@@ -310,20 +331,7 @@ export async function resolvePaymentMethodForTenant(
     .limit(1)
     .maybeSingle();
   if (!fallback) return empty;
-
-  const row = fallback as any;
-  return {
-    id: row.id ? String(row.id) : null,
-    snapshot: {
-      type: row.qr_url ? "qr" : "bank",
-      methodId: row.id ? String(row.id) : null,
-      label: row.label ?? null,
-      bank_name: row.bank_name ?? null,
-      account_name: row.account_name ?? null,
-      account_number: row.account_number ?? null,
-      qr_url: row.qr_url ?? null,
-    },
-  };
+  return snapshotFromPaymentMethodRow(fallback as any);
 }
 
 /**
