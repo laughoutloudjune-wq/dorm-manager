@@ -72,6 +72,22 @@ raw `paid_amount` update. It resolves the full carry-forward chain for the targe
 allocates the payment oldest-first, and supports an idempotency key so a retried request replays
 the original result instead of double-charging.
 
+**Changing an invoice's status to `paid` must never fabricate a payment.** Both status-change
+endpoints (`update_status` in `app/api/admin/invoices/actions/route.ts` and `approve_paid` in
+`app/api/admin-liff/invoices/actions/route.ts`) only call `applyInvoicePaymentAllocation` when
+`status === "verifying"` **and** `slip_url` is set — i.e. a tenant has actually uploaded a slip
+that is now being reviewed and confirmed. Any other case (no slip, or a slip from a much earlier
+review that's stale) is rejected; the admin must record the payment explicitly through the
+Payments tab, with a real amount and optional slip, instead. Before this guard existed, picking
+"paid" from the status dropdown on a partially-paid invoice — with no review step — would treat
+the whole remaining balance as cash received and fabricate a batch for it, even copying the
+invoice's existing slip image onto the fake batch so it looked backed by evidence. This produced
+฿150,000+ of fake payment_batches rows in production before it was caught (cleaned up
+2026-08-20; see `payment_batches_backup_20260820` in Supabase). When `getPaymentChainOutstanding`
+is already `0` (the invoice was flipped away from paid and back with nothing left owing), neither
+endpoint touches the allocation path at all — it just restores `status` and re-freezes the late
+fee via `resolveFullyPaidAtDate`.
+
 ## Money received — batches, allocations, and frozen accounts
 
 A payment is three rows, not one. `applyInvoicePaymentAllocation` writes:

@@ -49,7 +49,7 @@ export async function POST(req: Request) {
       if (status === "paid") {
         const { data: invoice, error: invoiceError } = await auth.supabase
           .from("invoices")
-          .select("id,total_amount,paid_amount,slip_url,slip_uploaded_at")
+          .select("id,status,total_amount,paid_amount,slip_url,slip_uploaded_at")
           .eq("id", invoiceId)
           .single();
         if (invoiceError || !invoice) {
@@ -99,6 +99,30 @@ export async function POST(req: Request) {
           }
           await syncPointsAfterPayment(auth.supabase, invoiceId);
           return NextResponse.json({ success: true, alreadySettled: true });
+        }
+
+        // SAFEGUARD: the status dropdown may only turn a REVIEWED slip into a
+        // recorded payment — it must never fabricate one for whatever is still
+        // outstanding. This is exactly how the ledger accumulated fake
+        // batches: an admin picked "paid" from the dropdown as a shortcut on
+        // an invoice with no slip (or a real partial payment already on it),
+        // and the remaining balance got recorded as if cash had arrived, with
+        // no evidence behind it. `status === "verifying"` is set only when a
+        // tenant has actually uploaded a slip pending review, so it plus a
+        // non-empty `slip_url` is the one legitimate case for creating money
+        // from this endpoint. Anything else must go through the Payments tab,
+        // where an amount and (optionally) a slip are entered explicitly.
+        if (
+          String((invoice as any).status ?? "") !== "verifying" ||
+          !(invoice as any).slip_url
+        ) {
+          return NextResponse.json(
+            {
+              error:
+                "ไม่สามารถเปลี่ยนสถานะเป็นชำระแล้วได้ เนื่องจากยังไม่มีสลิปที่รอตรวจสอบ กรุณาบันทึกการชำระเงินผ่านแท็บการชำระเงินแทน",
+            },
+            { status: 400 },
+          );
         }
 
         const result = await applyInvoicePaymentAllocation(auth.supabase, {

@@ -70,7 +70,7 @@ export async function POST(req: Request) {
         : null;
       const { data: current, error: fetchError } = await supabase
         .from("invoices")
-        .select("total_amount,paid_amount,payment_history,slip_url")
+        .select("status,total_amount,paid_amount,payment_history,slip_url")
         .eq("id", invoiceId)
         .single();
       if (fetchError || !current) {
@@ -112,6 +112,27 @@ export async function POST(req: Request) {
         }
         await syncPointsAfterPayment(supabase, invoiceId);
         return NextResponse.json({ success: true, alreadySettled: true });
+      }
+
+      // SAFEGUARD: "approve" may only turn a REVIEWED slip into a recorded
+      // payment. It must never fabricate a payment for whatever is still
+      // outstanding — that is exactly how this system accumulated fake
+      // batches: an admin tapped "approve" on an invoice with no slip, or one
+      // still mid-conversation, and the remaining balance got treated as cash
+      // received. `status === "verifying"` is set only when a tenant has
+      // actually uploaded a slip pending review, so it plus a non-empty
+      // `slip_url` is the one legitimate trigger for creating money here.
+      if (
+        String((current as any).status ?? "") !== "verifying" ||
+        !(current as any).slip_url
+      ) {
+        return NextResponse.json(
+          {
+            error:
+              "ไม่สามารถอนุมัติได้ เนื่องจากใบแจ้งหนี้นี้ไม่มีสลิปที่รอตรวจสอบ กรุณาให้ผู้เช่าอัปโหลดสลิปก่อน",
+          },
+          { status: 400 },
+        );
       }
 
       const result = await applyInvoicePaymentAllocation(supabase, {
