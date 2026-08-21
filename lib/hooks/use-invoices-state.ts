@@ -6,6 +6,10 @@ import { Modal } from "@/components/ui/Modal";
 import { Input } from "@/components/ui/Input";
 import { ConfirmActionModal } from "@/components/ui/ConfirmActionModal";
 import { createClient } from "@/lib/supabase-client";
+import {
+  computeInvoiceTotal,
+  chargesFromInvoiceRow,
+} from "@/lib/invoice-total";
 import { usePermissions } from "@/lib/use-permissions";
 import {
   getCarryForwardCandidatesForTarget,
@@ -46,7 +50,6 @@ import {
   isTransferBreakdownRow,
   isCarryForwardBreakdownRow,
   isLateFeeBreakdownRow,
-  lateFeeLineTotal,
   toChargeFeeRows,
   toCarryForwardRows,
   toLateFeeRows,
@@ -348,25 +351,15 @@ export function useInvoicesState() {
           (sum, fee) => sum + toNumber(fee.amount),
           0,
         );
-        // `late_fee_amount` and `additional_fees_total` BOTH include the
-        // invoice's late-fee line items, so adding the two columns charges the
-        // late fee twice. This runs on every invoice-list load, which is why an
-        // affected invoice silently re-inflated moments after being saved
-        // (212/2 April: saved 4,490, reloaded as 5,890). Subtract the overlap
-        // once so the late fee is counted exactly one time.
-        const duplicatedLateFee = lateFeeLineTotal(
-          (invoice as any).additional_fees_breakdown,
-        );
-        const totalAmount =
-          toNumber(invoice.rent_amount) +
-          toNumber(invoice.water_bill) +
-          toNumber(invoice.electricity_bill) +
-          toNumber(invoice.common_fee) +
-          toNumber(invoice.additional_fees_total) -
-          duplicatedLateFee +
-          toNumber(invoice.late_fee_amount) +
-          toNumber(invoice.carry_forward_amount) -
-          discountAmount;
+        // Unpack the stored row into non-overlapping charges, then apply the
+        // freshly-computed discount. `chargesFromInvoiceRow` is the one place
+        // the late_fee_amount / additional_fees_total overlap is resolved, so
+        // this can no longer double-charge the late fee the way it used to on
+        // every invoice-list load.
+        const totalAmount = computeInvoiceTotal({
+          ...chargesFromInvoiceRow(invoice as any),
+          discount: discountAmount,
+        });
 
         const currentDiscount = toNumber(invoice.discount_amount);
         const currentTotal = toNumber(invoice.total_amount);
@@ -1465,14 +1458,19 @@ export function useInvoicesState() {
           ? units * electricityRate
           : toNumber(next.electricity_units) * electricityRate;
 
-      const total =
-        toNumber(next.rent_amount) +
-        nextWaterBill +
-        nextElectricityBill +
-        toNumber(next.common_fee) +
-        toNumber(next.discount_amount) * -1 +
-        calculateCurrentFormLateFee(next) +
-        toNumber(next.additional_fees_total);
+      // Previously omitted carry-forward, so editing a meter reading silently
+      // erased a tenant's carried debt from the bill.
+      const total = computeInvoiceTotal({
+        rent: toNumber(next.rent_amount),
+        water: nextWaterBill,
+        electricity: nextElectricityBill,
+        commonFee: toNumber(next.common_fee),
+        nativeLateFee: calculateCurrentFormLateFee(next),
+        lateFeeItems: feeItemsTotal(editableLateFeeItems),
+        fees: feeItemsTotal(editableFeeItems),
+        carryForward: feeItemsTotal(editableCarryForwardItems),
+        discount: feeItemsTotal(editableDiscountItems),
+      });
 
       return {
         ...next,
@@ -1539,15 +1537,17 @@ export function useInvoicesState() {
       const nextCarry = feeItemsTotal(editableCarryForwardItems);
       const nativeLateFee = calculateCurrentFormLateFee(next);
       const nextLateFee = nativeLateFee + nextLateFeeItems;
-      const total =
-        computedRent +
-        toNumber(next.water_bill) +
-        toNumber(next.electricity_bill) +
-        toNumber(next.common_fee) +
-        nextDiscount * -1 +
-        nextLateFee +
-        nextAdditional +
-        nextCarry;
+      const total = computeInvoiceTotal({
+        rent: computedRent,
+        water: toNumber(next.water_bill),
+        electricity: toNumber(next.electricity_bill),
+        commonFee: toNumber(next.common_fee),
+        nativeLateFee,
+        lateFeeItems: nextLateFeeItems,
+        fees: nextAdditional,
+        carryForward: nextCarry,
+        discount: nextDiscount,
+      });
       return {
         ...next,
         rent_amount: computedRent,
@@ -1654,15 +1654,19 @@ export function useInvoicesState() {
 
   const applyRoundDownTotal = () => {
     if (activeInvoice && !isInvoiceDetailEditable(activeInvoice.status)) return;
-    const currentTotal =
-      toNumber(form.rent_amount) +
-      toNumber(form.water_bill) +
-      toNumber(form.electricity_bill) +
-      toNumber(form.common_fee) +
-      feeItemsTotal(editableLateFeeItems) +
-      feeItemsTotal(editableFeeItems) +
-      feeItemsTotal(editableCarryForwardItems) -
-      feeItemsTotal(editableDiscountItems);
+    // Previously omitted the invoice's own late fee, so the round-down
+    // discount was calculated against a total that was too low.
+    const currentTotal = computeInvoiceTotal({
+      rent: toNumber(form.rent_amount),
+      water: toNumber(form.water_bill),
+      electricity: toNumber(form.electricity_bill),
+      commonFee: toNumber(form.common_fee),
+      nativeLateFee: calculateCurrentFormLateFee(form),
+      lateFeeItems: feeItemsTotal(editableLateFeeItems),
+      fees: feeItemsTotal(editableFeeItems),
+      carryForward: feeItemsTotal(editableCarryForwardItems),
+      discount: feeItemsTotal(editableDiscountItems),
+    });
     const roundedTotal = Math.floor(currentTotal);
     const roundDownAmount = Number((currentTotal - roundedTotal).toFixed(2));
     if (roundDownAmount <= 0) return;
@@ -1949,15 +1953,19 @@ export function useInvoicesState() {
         const nextAdditional = feeItemsTotal(editableFeeItems);
         const nextDiscount = feeItemsTotal(editableDiscountItems);
         const nextCarry = feeItemsTotal(nextCarryItems);
-        const total =
-          toNumber(prev.rent_amount) +
-          toNumber(prev.water_bill) +
-          toNumber(prev.electricity_bill) +
-          toNumber(prev.common_fee) +
-          nextDiscount * -1 +
-          nextLateFee +
-          nextCarry +
-          nextAdditional;
+        const total = computeInvoiceTotal({
+          rent: toNumber(prev.rent_amount),
+          water: toNumber(prev.water_bill),
+          electricity: toNumber(prev.electricity_bill),
+          commonFee: toNumber(prev.common_fee),
+          // `nextLateFee` here is already own penalty + carried lines, so it
+          // is passed whole and the line component left at zero.
+          nativeLateFee: nextLateFee,
+          lateFeeItems: 0,
+          fees: nextAdditional,
+          carryForward: nextCarry,
+          discount: nextDiscount,
+        });
         return {
           ...prev,
           late_fee_amount: nextLateFee,
@@ -2031,14 +2039,19 @@ export function useInvoicesState() {
       const nextAdditional = feeItemsTotal(editableFeeItems);
       const nextDiscount = feeItemsTotal(editableDiscountItems);
       const nextLateFee = calculateCurrentFormLateFee(prev);
-      const total =
-        nextRent +
-        toNumber(prev.water_bill) +
-        toNumber(prev.electricity_bill) +
-        toNumber(prev.common_fee) +
-        nextDiscount * -1 +
-        nextLateFee +
-        nextAdditional;
+      // Previously omitted carry-forward and carried late-fee lines, so
+      // toggling proration wiped both out of the total.
+      const total = computeInvoiceTotal({
+        rent: nextRent,
+        water: toNumber(prev.water_bill),
+        electricity: toNumber(prev.electricity_bill),
+        commonFee: toNumber(prev.common_fee),
+        nativeLateFee: nextLateFee,
+        lateFeeItems: feeItemsTotal(editableLateFeeItems),
+        fees: nextAdditional,
+        carryForward: feeItemsTotal(editableCarryForwardItems),
+        discount: nextDiscount,
+      });
       return { ...prev, rent_amount: nextRent, total_amount: total };
     });
   };
@@ -2142,6 +2155,22 @@ export function useInvoicesState() {
     }
     setSaving(true);
 
+    // One total, used for both the stored amount and the paid_amount cap.
+    const savedTotal = computeInvoiceTotal({
+      rent: toNumber(form.rent_amount),
+      water: toNumber(form.water_bill),
+      electricity: toNumber(form.electricity_bill),
+      commonFee: toNumber(form.common_fee),
+      // `form.late_fee_amount` is already own penalty + carried lines, so it is
+      // passed whole with the line component at zero — the engine must never be
+      // handed the same figure twice.
+      nativeLateFee: toNumber(form.late_fee_amount),
+      lateFeeItems: 0,
+      fees: feeItemsTotal(editableFeeItems),
+      carryForward: feeItemsTotal(editableCarryForwardItems),
+      discount: feeItemsTotal(editableDiscountItems),
+    });
+
     const payload = {
       issue_date: form.issue_date,
       due_date: form.due_date,
@@ -2214,32 +2243,12 @@ export function useInvoicesState() {
         })),
         ...serializeTransferBreakdownRows(transferBreakdownItems),
       ],
-      // Bug #3 fix: form.late_fee_amount already includes both:
-      //   - native late fee for this invoice (from late_fee_start_date × rate - waived)
-      //   - editableLateFeeItems (carry-forward late fees from other invoices)
-      // (set together by updateForm via nativeLateFee + nextLateFeeItems)
-      // So we must NOT add editableLateFeeItems again here.
-      total_amount:
-        toNumber(form.rent_amount) +
-        toNumber(form.water_bill) +
-        toNumber(form.electricity_bill) +
-        toNumber(form.common_fee) +
-        toNumber(form.late_fee_amount) +
-        feeItemsTotal(editableFeeItems) -
-        feeItemsTotal(editableDiscountItems) +
-        feeItemsTotal(editableCarryForwardItems),
-      paid_amount: Math.min(
-        toNumber(form.paid_amount),
-        toNumber(form.rent_amount) +
-          toNumber(form.water_bill) +
-          toNumber(form.electricity_bill) +
-          toNumber(form.common_fee) +
-          toNumber(form.late_fee_amount) +
-          feeItemsTotal(editableFeeItems) +
-          feeItemsTotal(editableLateFeeItems) -
-          feeItemsTotal(editableDiscountItems) +
-          feeItemsTotal(editableCarryForwardItems),
-      ),
+      total_amount: savedTotal,
+      // Capped by the SAME total, not a second hand-rolled copy of it. The old
+      // cap added `form.late_fee_amount` (already own penalty + carried lines)
+      // and then the carried lines a second time, so it sat one late fee above
+      // the real total and could let paid_amount exceed what was owed.
+      paid_amount: Math.min(toNumber(form.paid_amount), savedTotal),
       status: form.status,
       notes: form.notes,
     };
@@ -3755,15 +3764,17 @@ export function useInvoicesState() {
       const nextLateFeeItems = feeItemsTotal(editableLateFeeItems);
       const nativeLateFee = calculateCurrentFormLateFee(prev);
       const nextLateFee = nativeLateFee + nextLateFeeItems;
-      const total =
-        toNumber(prev.rent_amount) +
-        toNumber(prev.water_bill) +
-        toNumber(prev.electricity_bill) +
-        toNumber(prev.common_fee) +
-        nextLateFee +
-        nextAdditional +
-        nextCarry -
-        nextDiscount;
+      const total = computeInvoiceTotal({
+        rent: toNumber(prev.rent_amount),
+        water: toNumber(prev.water_bill),
+        electricity: toNumber(prev.electricity_bill),
+        commonFee: toNumber(prev.common_fee),
+        nativeLateFee,
+        lateFeeItems: nextLateFeeItems,
+        fees: nextAdditional,
+        carryForward: nextCarry,
+        discount: nextDiscount,
+      });
       return {
         ...prev,
         additional_fees_total: nextAdditional,
@@ -3796,15 +3807,17 @@ export function useInvoicesState() {
     setForm((prev) => {
       const nativeLateFee = calculateCurrentFormLateFee(prev);
       const nextLateFee = nativeLateFee + nextLateFeeItems;
-      const total =
-        transferRentTotal +
-        toNumber(prev.water_bill) +
-        toNumber(prev.electricity_bill) +
-        toNumber(prev.common_fee) +
-        nextLateFee +
-        nextAdditional +
-        nextCarry -
-        nextDiscount;
+      const total = computeInvoiceTotal({
+        rent: transferRentTotal,
+        water: toNumber(prev.water_bill),
+        electricity: toNumber(prev.electricity_bill),
+        commonFee: toNumber(prev.common_fee),
+        nativeLateFee,
+        lateFeeItems: nextLateFeeItems,
+        fees: nextAdditional,
+        carryForward: nextCarry,
+        discount: nextDiscount,
+      });
       return {
         ...prev,
         rent_amount: transferRentTotal,

@@ -157,6 +157,32 @@ Idempotency lives on `payment_batches(trigger_invoice_id, idempotency_key)` as a
 unique index. The older `payment_history` JSON scan is still consulted as a fallback so keys
 issued before the table existed keep replaying instead of double-charging.
 
+## Invoice totals — one engine
+
+**`lib/invoice-total.ts` is the only place an invoice total is calculated.** Never add up
+charges inline. `computeInvoiceTotal(charges)` takes an `InvoiceCharges` object in which every
+component is a **required field** — rent, water, electricity, commonFee, nativeLateFee,
+lateFeeItems, fees, carryForward, discount. That is deliberate: omitting a term used to be
+invisible and merely produce a wrong number; it is now a compile error.
+
+This replaced ten hand-written copies of the same sum that had drifted apart, each forgetting
+something different: `updateUtilityUnits` omitted carry-forward (so editing a meter reading
+erased a tenant's carried debt), `toggleProrateInModal` omitted carry-forward *and* carried
+late-fee lines, `applyRoundDownTotal` omitted the invoice's own late fee, `saveInvoice`'s
+`paid_amount` cap double-counted late-fee lines (letting `paid_amount` exceed the real total),
+and `syncMonthInvoicesWithSettings` added `late_fee_amount` to `additional_fees_total` — which
+double-charged the late fee on **every invoice-list load**, silently re-inflating invoices
+moments after they were saved (212/2 April: saved 4,490, reappeared as 5,890).
+
+**The two money columns overlap, and only the engine knows it.** `late_fee_amount` is the
+invoice's own penalty *plus* carried late-fee lines; `additional_fees_total` is other fees
+*plus those same lines*. Adding both columns charges the late fee twice.
+`chargesFromInvoiceRow(row)` is the single place that overlap is unpacked — it subtracts the
+shared figure to recover `nativeLateFee` and `fees` separately, after which nothing overlaps.
+Read a stored invoice through it; never add the raw columns yourself.
+`toInvoiceMoneyColumns(charges)` derives all five stored columns back from one set of charges,
+so they cannot disagree with the total or with each other.
+
 ## Rent proration — one canonical rule
 
 **Daily rate = `dailyRentRate(monthlyRent)` = `Math.floor(monthlyRent / 30)`** — a fixed 30-day

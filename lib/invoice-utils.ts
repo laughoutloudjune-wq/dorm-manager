@@ -526,26 +526,12 @@ export const serializeTransferBreakdownRows = (items: TransferBreakdownItem[]) =
 /**
  * Total of the late-fee LINE items inside an invoice's `additional_fees_breakdown`.
  *
- * These are double-counted by design of the two columns: `late_fee_amount`
- * already includes them (it is native late fee + line items), and
- * `additional_fees_total` also includes them (fee items + late-fee items). Any
- * formula that adds both columns must subtract this figure once, or the late
- * fee is charged twice — which is exactly what
- * `syncMonthInvoicesWithSettings` did on every invoice-list load, silently
- * re-inflating totals after each save.
+ * Re-exported from the invoice total engine, which owns this calculation. Kept
+ * here only so existing importers keep working — there must be exactly one
+ * implementation, since two copies drifting apart is the bug this whole engine
+ * was built to end.
  */
-export const lateFeeLineTotal = (breakdown: any): number => {
-  const rows = Array.isArray(breakdown) ? breakdown : [];
-  return rows
-    .filter(
-      (row) =>
-        String(row?.item_type ?? row?.type ?? "").toLowerCase() === "late_fee_line",
-    )
-    .reduce(
-      (sum, row) => sum + toNumber(row?.total_amount ?? row?.amount ?? 0),
-      0,
-    );
-};
+export { lateFeeLineTotalOf as lateFeeLineTotal } from "./invoice-total";
 
 export const UNKNOWN_PAYMENT_METHOD = "ไม่ระบุบัญชี";
 
