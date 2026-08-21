@@ -107,6 +107,14 @@ export function useInvoicesState() {
   const [invoices, setInvoices] = useState<InvoiceRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // `error` still drives existing conditional rendering (loading/empty-state
+  // checks elsewhere), so it's kept as-is rather than removed — but every
+  // failure now ALSO surfaces as a toast, since some callers (e.g. the
+  // invoice list) were rendering it as a permanently-visible inline banner
+  // that sat over the page content instead of a dismissing notification.
+  useEffect(() => {
+    if (error) toast.error(error);
+  }, [error]);
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [detailOpen, setDetailOpen] = useState(false);

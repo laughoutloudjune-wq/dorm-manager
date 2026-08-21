@@ -332,8 +332,6 @@ export default function InvoicesPage() {
         </div>
       )}
 
-      {error && <span className="text-sm text-danger-600">{error}</span>}
-
       {loading ? (
         <div className="space-y-4 animate-pulse">
           {Array.from({ length: 3 }).map((_, i) => (
