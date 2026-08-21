@@ -240,6 +240,8 @@ export function InvoiceDetailModal() {
   };
   const [paymentChains, setPaymentChains] = React.useState<PaymentChain[]>([]);
   const [chainsLoading, setChainsLoading] = React.useState(false);
+  const [chainReloadToken, setChainReloadToken] = React.useState(0);
+  const [deletingBatchId, setDeletingBatchId] = React.useState<string | null>(null);
 
   // Old payments recorded before payment_method_snapshot existed have no
   // recoverable account — the admin is the only remaining source of truth if
@@ -415,8 +417,46 @@ export function InvoiceDetailModal() {
       cancelled = true;
     };
     // activeInvoice.payment_history is in the deps so the chain refreshes right
-    // after a payment is recorded or cancelled.
-  }, [activeInvoiceId, activeTab, supabase, activeInvoice?.payment_history]);
+    // after a payment is recorded or cancelled. chainReloadToken is bumped
+    // after a manual batch delete to force a refetch without needing
+    // activeInvoice's own fields to have changed.
+  }, [
+    activeInvoiceId,
+    activeTab,
+    supabase,
+    activeInvoice?.payment_history,
+    chainReloadToken,
+  ]);
+
+  const deletePaymentBatch = async (batchId: string) => {
+    const confirmed = window.confirm(
+      "ยืนยันการลบรายการชำระเงินนี้?\n\nการลบนี้จะลบรายการออกจากทุกใบแจ้งหนี้ที่เงินก้อนนี้ถูกแบ่งไปชำระ และไม่สามารถย้อนกลับได้ผ่านหน้านี้",
+    );
+    if (!confirmed) return;
+    setDeletingBatchId(batchId);
+    try {
+      const result = await callInvoiceAdminAction("delete_payment_batch", {
+        paymentBatchId: batchId,
+      });
+      const mismatches = Array.isArray(result?.mismatches) ? result.mismatches : [];
+      if (mismatches.length > 0) {
+        const isSelf = mismatches.some(
+          (m: any) => String(m.invoiceId) === activeInvoiceId,
+        );
+        setError(
+          (isSelf
+            ? "ลบรายการชำระเงินแล้ว แต่ยอดที่ชำระของใบแจ้งหนี้นี้ยังไม่ตรงกับรายการที่เหลืออยู่ กรุณาตรวจสอบและแก้ไขยอดในแท็บรายละเอียด"
+            : "ลบรายการชำระเงินแล้ว แต่มีใบแจ้งหนี้อื่นที่เงินก้อนนี้เคยตัดชำระ ซึ่งยอดที่ชำระอาจไม่ตรงกับรายการที่เหลืออยู่ กรุณาตรวจสอบใบแจ้งหนี้ที่เกี่ยวข้อง") +
+            ` (${mismatches.length} ใบ)`,
+        );
+      }
+      setChainReloadToken((n) => n + 1);
+    } catch (err: any) {
+      setError(err?.message ?? "ไม่สามารถลบรายการชำระเงินได้");
+    } finally {
+      setDeletingBatchId(null);
+    }
+  };
 
   const TABS = [
     { id: 'preview', label: 'ภาพรวม', icon: <FileText size={18} /> },
@@ -1335,6 +1375,18 @@ export function InvoiceDetailModal() {
                               <p className="text-3xl font-black tracking-tighter text-success-600">
                                 {formatMoney(chain.appliedHere)}
                               </p>
+                              {canRecordInvoicePayment && (
+                                <button
+                                  type="button"
+                                  onClick={() => void deletePaymentBatch(chain.batchId)}
+                                  disabled={deletingBatchId === chain.batchId}
+                                  className="mt-2 text-xs font-bold text-danger-500 hover:text-danger-700 disabled:opacity-50 transition"
+                                >
+                                  {deletingBatchId === chain.batchId
+                                    ? "กำลังลบ..."
+                                    : "ลบรายการนี้ (พบว่าซ้ำ/ผิดพลาด)"}
+                                </button>
+                              )}
                             </div>
                           </div>
 
