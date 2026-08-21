@@ -725,13 +725,15 @@ export async function POST(req: Request) {
         remainingCredit += toNumber(tenant.security_deposit_amount ?? 0);
       }
 
-      // Fetch every open invoice for this tenant, oldest period first.
+      // Fetch every open invoice for this tenant, FINAL PERIOD FIRST. A tenant
+      // moving out has their closing bill settled before anything else; only
+      // credit left over after that reaches earlier periods.
       const { data: unpaidInvoices, error: invErr } = await auth.supabase
         .from("invoices")
         .select("id,total_amount,paid_amount,carry_forward_amount,status,start_date")
         .eq("tenant_id", tenantId)
         .in("status", ["pending", "overdue", "partial", "verifying", "draft"])
-        .order("start_date", { ascending: true });
+        .order("start_date", { ascending: false });
 
       if (invErr) return NextResponse.json({ error: invErr.message }, { status: 500 });
 
@@ -745,10 +747,8 @@ export async function POST(req: Request) {
       // figure the move-out screens show the admin.
       //
       // Allocation itself goes through applyInvoicePaymentAllocation so the
-      // payment lands in `payment_history` and `invoice_payment_allocations`
-      // like every other payment, instead of a bare `paid_amount` write. Going
-      // oldest-first means each invoice's carried-forward sources are already
-      // settled by the time we reach it, so nothing gets diverted twice.
+      // credit lands in `payment_history` and `invoice_payment_allocations`
+      // like every other payment, instead of a bare `paid_amount` write.
       const plan = planAbandonCredit(openInvoices as any, remainingCredit);
 
       // Stays true while every invoice so far has been settled in full. Once the
@@ -791,6 +791,14 @@ export async function POST(req: Request) {
         const covered = line.writtenOff <= 0 && chainFunded;
         if (!covered) chainFunded = false;
 
+        // An invoice the credit could not clear KEEPS its debt and its current
+        // status. Abandoning a room does not forgive what is owed: an overdue
+        // invoice stays overdue so it keeps showing up in arrears. Only a fully
+        // covered invoice is relabelled, and only to "paid".
+        if (!covered) {
+          continue;
+        }
+
         // Label from what the plan applied, not from a re-read of paid_amount.
         // When a chain settles, the carried portion's cash sits on the SOURCE
         // invoice's row, so the target's own paid_amount stays short of its
@@ -799,20 +807,10 @@ export async function POST(req: Request) {
         //
         // `invoices` has no updated_at column — writing one makes PostgREST
         // reject the whole update.
-        const payload = covered
-          ? {
-              status: "paid",
-              notes: "ชำระโดยเครดิตจากการทิ้งห้อง (Abandon Room)",
-            }
-          : line.applied > 0
-            ? {
-                status: "cancelled",
-                notes: "ชำระบางส่วนโดยเครดิตจากการทิ้งห้อง แล้วยกเลิกส่วนที่เหลือ",
-              }
-            : {
-                status: "cancelled",
-                notes: "ยกเลิกเนื่องจากผู้เช่าทิ้งห้อง (Abandon Room)",
-              };
+        const payload = {
+          status: "paid",
+          notes: "ชำระโดยเครดิตจากการทิ้งห้อง (Abandon Room)",
+        };
 
         const { error: labelError } = await auth.supabase
           .from("invoices")

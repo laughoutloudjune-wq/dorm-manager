@@ -135,7 +135,14 @@ export type AbandonCreditLine = {
   owed: number;
   applied: number;
   writtenOff: number;
-  outcome: "paid" | "partial_cancelled" | "cancelled" | "already_clear";
+  /**
+   * `paid` — own charge fully covered by credit.
+   * `partial` — some credit applied, a real balance remains.
+   * `unpaid` — no credit reached it; it still owes everything.
+   * `already_clear` — nothing was owed to begin with.
+   * Nothing is ever written off: an unpaid invoice stays a debt.
+   */
+  outcome: "paid" | "partial" | "unpaid" | "already_clear";
 };
 
 export type AbandonCreditPlan = {
@@ -143,6 +150,10 @@ export type AbandonCreditPlan = {
   creditPool: number;
   totalOwed: number;
   creditApplied: number;
+  /**
+   * Debt the credit could not reach. NOT written off — the invoices keep it and
+   * stay overdue; this is only the total for reporting.
+   */
   writtenOff: number;
   /** Credit left once the real debt is covered — the tenant's to get back. */
   refundableCredit: number;
@@ -158,7 +169,14 @@ export type AbandonCreditPlan = {
  * on the invoice that owns it and again on the invoice that carried it,
  * spending credit against money the tenant never owed.
  *
- * `invoices` must be oldest period first — credit clears the oldest debt first.
+ * `invoices` must be ordered FINAL INVOICE FIRST. A tenant who moves out has
+ * their closing bill settled before anything else; whatever credit is left then
+ * goes to the remaining periods. Ordering is the caller's job so the preview an
+ * admin approves is the order that actually runs.
+ *
+ * Credit never cancels a debt. An invoice the credit could not cover keeps its
+ * balance and its existing status (overdue stays overdue) — `writtenOff` is
+ * reported for visibility only, never applied.
  */
 export function planAbandonCredit(
   invoices: Array<
@@ -202,8 +220,8 @@ export function planAbandonCredit(
         shortfall <= 0
           ? ("paid" as const)
           : applied > 0
-            ? ("partial_cancelled" as const)
-            : ("cancelled" as const),
+            ? ("partial" as const)
+            : ("unpaid" as const),
     };
   });
 

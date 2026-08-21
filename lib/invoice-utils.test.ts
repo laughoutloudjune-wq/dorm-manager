@@ -5,6 +5,7 @@ import {
   calculateInvoiceTransferRentProration,
   paymentSourceLabel,
   isNonCashPaymentSource,
+  lateFeeLineTotal,
 } from "./invoice-utils";
 
 describe("dailyRentRate", () => {
@@ -75,5 +76,43 @@ describe("isNonCashPaymentSource", () => {
     expect(isNonCashPaymentSource("admin_webapp")).toBe(false);
     expect(isNonCashPaymentSource("admin_liff_approve")).toBe(false);
     expect(isNonCashPaymentSource(null)).toBe(false);
+  });
+});
+
+describe("lateFeeLineTotal", () => {
+  // Room 212/2 April: a 14-day late fee stored BOTH in `late_fee_amount` and as
+  // a breakdown line. Summing the two columns charged it twice (4,490 -> 5,890).
+  const breakdown = [
+    {
+      item_type: "late_fee_line",
+      detail: "ค่าปรับล่าช้า",
+      unit: 14,
+      price_per_unit: 100,
+      total_amount: 1400,
+    },
+    { detail: "ค่าบริการอื่น", unit: 1, price_per_unit: 250, total_amount: 250 },
+  ];
+
+  it("totals only the late-fee lines, not other charges", () => {
+    expect(lateFeeLineTotal(breakdown)).toBe(1400);
+  });
+
+  it("ignores carry-forward and transfer rows", () => {
+    expect(
+      lateFeeLineTotal([
+        { item_type: "carry_forward", total_amount: 3300 },
+        { item_type: "transfer_detail", total_amount: 900 },
+      ]),
+    ).toBe(0);
+  });
+
+  it("is zero for an invoice with no breakdown", () => {
+    expect(lateFeeLineTotal(null)).toBe(0);
+    expect(lateFeeLineTotal([])).toBe(0);
+    expect(lateFeeLineTotal(undefined)).toBe(0);
+  });
+
+  it("falls back to `amount` when `total_amount` is absent", () => {
+    expect(lateFeeLineTotal([{ item_type: "late_fee_line", amount: 800 }])).toBe(800);
   });
 });

@@ -46,6 +46,7 @@ import {
   isTransferBreakdownRow,
   isCarryForwardBreakdownRow,
   isLateFeeBreakdownRow,
+  lateFeeLineTotal,
   toChargeFeeRows,
   toCarryForwardRows,
   toLateFeeRows,
@@ -305,7 +306,7 @@ export function useInvoicesState() {
     const { data: invoicesInMonth, error: invoiceError } = await supabase
       .from("invoices")
       .select(
-        "id,room_id,status,rent_amount,water_bill,electricity_bill,common_fee,late_fee_amount,carry_forward_amount,additional_fees_total,discount_amount,discount_breakdown,total_amount",
+        "id,room_id,status,rent_amount,water_bill,electricity_bill,common_fee,late_fee_amount,carry_forward_amount,additional_fees_total,additional_fees_breakdown,discount_amount,discount_breakdown,total_amount",
       )
       .eq("start_date", periodStart)
       .eq("end_date", periodEnd);
@@ -347,12 +348,22 @@ export function useInvoicesState() {
           (sum, fee) => sum + toNumber(fee.amount),
           0,
         );
+        // `late_fee_amount` and `additional_fees_total` BOTH include the
+        // invoice's late-fee line items, so adding the two columns charges the
+        // late fee twice. This runs on every invoice-list load, which is why an
+        // affected invoice silently re-inflated moments after being saved
+        // (212/2 April: saved 4,490, reloaded as 5,890). Subtract the overlap
+        // once so the late fee is counted exactly one time.
+        const duplicatedLateFee = lateFeeLineTotal(
+          (invoice as any).additional_fees_breakdown,
+        );
         const totalAmount =
           toNumber(invoice.rent_amount) +
           toNumber(invoice.water_bill) +
           toNumber(invoice.electricity_bill) +
           toNumber(invoice.common_fee) +
-          toNumber(invoice.additional_fees_total) +
+          toNumber(invoice.additional_fees_total) -
+          duplicatedLateFee +
           toNumber(invoice.late_fee_amount) +
           toNumber(invoice.carry_forward_amount) -
           discountAmount;

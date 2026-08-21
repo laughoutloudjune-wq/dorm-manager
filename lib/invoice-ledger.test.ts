@@ -54,41 +54,47 @@ describe("getInvoiceOwnOutstanding", () => {
 });
 
 describe("planAbandonCredit", () => {
-  // Room 212/2 again: June ฿3,300 unpaid, July ฿7,925 of which ฿4,625 is its own.
-  const chain = [
-    { id: "june", total_amount: 3300, paid_amount: 0, carry_forward_amount: 0 },
+  // Room 212/2: June ฿3,300 unpaid, July ฿7,925 of which ฿4,625 is its own.
+  // Ordered FINAL INVOICE FIRST, which is how the route now queries them.
+  const finalFirst = [
     { id: "july", total_amount: 7925, paid_amount: 0, carry_forward_amount: 3300 },
+    { id: "june", total_amount: 3300, paid_amount: 0, carry_forward_amount: 0 },
   ];
 
-  it("spends credit oldest-first against own charges", () => {
-    const plan = planAbandonCredit(chain, 5900);
+  it("settles the final invoice before earlier periods", () => {
+    const plan = planAbandonCredit(finalFirst, 5900);
     expect(plan.totalOwed).toBe(7925);
-    expect(plan.lines.map((line) => line.applied)).toEqual([3300, 2600]);
-    expect(plan.lines.map((line) => line.outcome)).toEqual([
-      "paid",
-      "partial_cancelled",
-    ]);
-    // Measuring by bundled totals would have written off 5,325.
-    expect(plan.writtenOff).toBe(2025);
+    // July's own charge 4,625 is covered first; June gets the remaining 1,275.
+    expect(plan.lines.map((line) => line.applied)).toEqual([4625, 1275]);
+    expect(plan.lines.map((line) => line.outcome)).toEqual(["paid", "partial"]);
+    expect(plan.creditApplied).toBe(5900);
     expect(plan.refundableCredit).toBe(0);
   });
 
+  it("never marks a shortfall as cancelled — the debt survives", () => {
+    const plan = planAbandonCredit(finalFirst, 5900);
+    // June keeps 2,025 owing. It must stay a real debt, not a write-off.
+    expect(plan.writtenOff).toBe(2025);
+    expect(plan.lines.map((line) => line.outcome)).not.toContain("cancelled");
+    expect(plan.lines.map((line) => line.outcome)).not.toContain(
+      "partial_cancelled",
+    );
+  });
+
+  it("leaves every invoice unpaid when the deposit is forfeited", () => {
+    const plan = planAbandonCredit(finalFirst, 0);
+    expect(plan.creditApplied).toBe(0);
+    expect(plan.writtenOff).toBe(7925);
+    // Previously these became "cancelled"; they now stay owing.
+    expect(plan.lines.map((line) => line.outcome)).toEqual(["unpaid", "unpaid"]);
+  });
+
   it("returns leftover credit instead of burning it on double-counted debt", () => {
-    const plan = planAbandonCredit(chain, 9000);
+    const plan = planAbandonCredit(finalFirst, 9000);
     expect(plan.creditApplied).toBe(7925);
     expect(plan.writtenOff).toBe(0);
     expect(plan.refundableCredit).toBe(1075);
     expect(plan.lines.every((line) => line.outcome === "paid")).toBe(true);
-  });
-
-  it("cancels everything when the deposit is forfeited and nothing is left", () => {
-    const plan = planAbandonCredit(chain, 0);
-    expect(plan.creditApplied).toBe(0);
-    expect(plan.writtenOff).toBe(7925);
-    expect(plan.lines.map((line) => line.outcome)).toEqual([
-      "cancelled",
-      "cancelled",
-    ]);
   });
 
   it("skips an invoice whose own charge is already settled", () => {
