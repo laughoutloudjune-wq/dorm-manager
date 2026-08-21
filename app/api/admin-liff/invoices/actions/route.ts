@@ -58,8 +58,22 @@ export async function POST(req: Request) {
       if (!allowed.includes(status)) {
         return NextResponse.json({ error: "Invalid status" }, { status: 400 });
       }
+      const { data: beforeRow } = await supabase
+        .from("invoices")
+        .select("status")
+        .eq("id", invoiceId)
+        .maybeSingle();
+      const wasPaid = String((beforeRow as any)?.status ?? "") === "paid";
+
       const { error } = await supabase.from("invoices").update({ status }).eq("id", invoiceId);
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+      // Same fix as the web admin route: points must be revoked when status
+      // LEAVES paid, not just awarded when it becomes paid.
+      if (status === "paid" || wasPaid) {
+        await syncPointsAfterPayment(supabase, invoiceId);
+      }
+
       return NextResponse.json({ success: true });
     }
 

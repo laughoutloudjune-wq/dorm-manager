@@ -58,6 +58,16 @@ export async function POST(req: Request) {
       // invoice's existing slip image onto it so it looked evidenced. That
       // produced ฿150,000+ of fake receipts before it was found. Every status
       // is now freely selectable and none of them move money.
+
+      // Needed to detect a PAID -> not-paid transition below, so rewards
+      // points earned for this invoice get revoked, not just awarded.
+      const { data: beforeRow } = await auth.supabase
+        .from("invoices")
+        .select("status")
+        .eq("id", invoiceId)
+        .maybeSingle();
+      const wasPaid = String((beforeRow as any)?.status ?? "") === "paid";
+
       const updatePayload: Record<string, unknown> = { status };
 
       if (status === "paid") {
@@ -92,9 +102,15 @@ export async function POST(req: Request) {
         .eq("id", invoiceId);
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-      if (status === "paid") {
-        // Rewards points are derived from the ledger, so re-syncing keeps them
-        // consistent with the new status without recording any money.
+      // Rewards points are derived entirely from invoice status
+      // (syncPointsForTenant reads status='paid' to award on-time/streak
+      // points, and revokes anything no longer justified). Re-sync on BOTH
+      // directions: becoming paid awards; LEAVING paid must revoke, or a
+      // tenant keeps points for a bill the system no longer calls settled.
+      // Room 119/2's July invoice sat as `draft` while still holding 32
+      // "on-time rent" points from when it was briefly marked paid, because
+      // this used to only fire on the -> paid direction.
+      if (status === "paid" || wasPaid) {
         await syncPointsAfterPayment(auth.supabase, invoiceId);
       }
 
@@ -109,15 +125,31 @@ export async function POST(req: Request) {
       if (!invoiceId || !payload || typeof payload !== "object") {
         return NextResponse.json({ error: "Invalid save payload." }, { status: 400 });
       }
+      let wasPaidBeforeSave = false;
       if ("status" in payload) {
         const authStatus = await requireAdminPermission(req, "invoice.status.update");
         if ("error" in authStatus) return authStatus.error;
         if (!["paid", "verifying", "cancelled"].includes(String(payload.status))) {
           payload.locked_late_fee_amount = null;
         }
+        const { data: beforeRow } = await authEdit.supabase
+          .from("invoices")
+          .select("status")
+          .eq("id", invoiceId)
+          .maybeSingle();
+        wasPaidBeforeSave = String((beforeRow as any)?.status ?? "") === "paid";
       }
       const { error } = await authEdit.supabase.from("invoices").update(payload).eq("id", invoiceId);
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+      // Same rewards-revocation gap as update_status: this form can also move
+      // status away from "paid" (or into it), and points must follow.
+      if (
+        "status" in payload &&
+        (String(payload.status) === "paid" || wasPaidBeforeSave)
+      ) {
+        await syncPointsAfterPayment(authEdit.supabase, invoiceId);
+      }
       if ("additional_fees_breakdown" in payload) {
         const rows = Array.isArray((payload as any).additional_fees_breakdown)
           ? ((payload as any).additional_fees_breakdown as any[])
@@ -387,11 +419,18 @@ export async function POST(req: Request) {
     if (action === "assign_payment_batch_method") {
       const auth = await requireAdminPermission(req, "invoice.payment.record");
       if ("error" in auth) return auth.error;
-      const paymentBatchId = String(body?.paymentBatchId ?? "");
+      const paymentBatchId = body?.paymentBatchId ? String(body.paymentBatchId) : null;
+      // Alternative entry point for a payment recorded BEFORE payment_batches
+      // existed: it has a payment_history entry but no batch/allocation row at
+      // all, so there is nothing for the paymentBatchId path to update. Room
+      // 210/1's March invoice is exactly this — paid via slip in March, before
+      // the ledger tables were introduced, so it has no source and no way to
+      // attach a receiving account.
+      const invoiceId = body?.invoiceId ? String(body.invoiceId) : null;
       const methodId = String(body?.methodId ?? "");
-      if (!paymentBatchId || !methodId) {
+      if ((!paymentBatchId && !invoiceId) || !methodId) {
         return NextResponse.json(
-          { error: "Missing paymentBatchId or methodId." },
+          { error: "Missing paymentBatchId (or invoiceId) or methodId." },
           { status: 400 },
         );
       }
@@ -408,27 +447,133 @@ export async function POST(req: Request) {
 
       const resolved = snapshotFromPaymentMethodRow(methodRow as any);
 
-      const { error: batchError } = await auth.supabase
-        .from("payment_batches")
-        .update({
-          payment_method_id: resolved.id,
-          payment_method_snapshot: resolved.snapshot,
-        })
-        .eq("id", paymentBatchId);
-      if (batchError) return NextResponse.json({ error: batchError.message }, { status: 500 });
+      if (paymentBatchId) {
+        const { error: batchError } = await auth.supabase
+          .from("payment_batches")
+          .update({
+            payment_method_id: resolved.id,
+            payment_method_snapshot: resolved.snapshot,
+          })
+          .eq("id", paymentBatchId);
+        if (batchError) return NextResponse.json({ error: batchError.message }, { status: 500 });
 
-      const { error: allocationError } = await auth.supabase
-        .from("invoice_payment_allocations")
-        .update({
-          payment_method_id: resolved.id,
-          payment_method_snapshot: resolved.snapshot,
-        })
-        .eq("payment_batch_id", paymentBatchId);
-      if (allocationError) {
-        return NextResponse.json({ error: allocationError.message }, { status: 500 });
+        const { error: allocationError } = await auth.supabase
+          .from("invoice_payment_allocations")
+          .update({
+            payment_method_id: resolved.id,
+            payment_method_snapshot: resolved.snapshot,
+          })
+          .eq("payment_batch_id", paymentBatchId);
+        if (allocationError) {
+          return NextResponse.json({ error: allocationError.message }, { status: 500 });
+        }
+
+        return NextResponse.json({ success: true, paymentMethod: resolved });
       }
 
-      return NextResponse.json({ success: true, paymentMethod: resolved });
+      // Backfill path: build a real payment_batches row (and one allocation)
+      // for every payment_history entry that predates the ledger, then attach
+      // the chosen account to each. This is the only place a batch is created
+      // retroactively for money that was NEVER unaccounted for — the
+      // invoice's own paid_amount already reflects it; only the batch/
+      // allocation/source records were missing. Source defaults to
+      // "admin_webapp" when the entry predates that field existing, since
+      // every pre-ledger entry inspected so far was in fact recorded that way.
+      const { data: invoiceRow, error: invoiceError } = await auth.supabase
+        .from("invoices")
+        .select("id,tenant_id,payment_history")
+        .eq("id", invoiceId as string)
+        .maybeSingle();
+      if (invoiceError) return NextResponse.json({ error: invoiceError.message }, { status: 500 });
+      if (!invoiceRow) {
+        return NextResponse.json({ error: "Invoice not found." }, { status: 404 });
+      }
+
+      const history = Array.isArray((invoiceRow as any).payment_history)
+        ? [...(invoiceRow as any).payment_history]
+        : [];
+      const legacyIndexes = history
+        .map((entry: any, index: number) => ({ entry, index }))
+        .filter(({ entry }) => !entry?.payment_batch_id);
+
+      if (legacyIndexes.length === 0) {
+        return NextResponse.json(
+          { error: "ไม่พบรายการชำระเงินที่ยังไม่มีบันทึกการโอนสำหรับใบแจ้งหนี้นี้" },
+          { status: 404 },
+        );
+      }
+
+      const newBatchIds: string[] = [];
+      for (const { entry, index } of legacyIndexes) {
+        const amount = Number(entry?.amount ?? 0);
+        if (!(amount > 0)) continue;
+        const paidAt = String(entry?.paid_at ?? entry?.created_at ?? new Date().toISOString());
+        const source = entry?.source ? String(entry.source) : "admin_webapp";
+        const slipUrl = entry?.slip_url ? String(entry.slip_url) : null;
+        const newBatchId = crypto.randomUUID();
+
+        const { error: insertBatchError } = await auth.supabase
+          .from("payment_batches")
+          .insert({
+            id: newBatchId,
+            tenant_id: (invoiceRow as any).tenant_id ?? null,
+            trigger_invoice_id: invoiceId,
+            amount_received: amount,
+            amount_allocated: amount,
+            paid_at: paidAt,
+            mode: entry?.mode ?? "full",
+            source,
+            slip_url: slipUrl,
+            payment_method_id: resolved.id,
+            payment_method_snapshot: resolved.snapshot,
+            created_at: entry?.created_at ?? new Date().toISOString(),
+          });
+        if (insertBatchError) {
+          return NextResponse.json({ error: insertBatchError.message }, { status: 500 });
+        }
+
+        const { error: insertAllocError } = await auth.supabase
+          .from("invoice_payment_allocations")
+          .insert({
+            payment_batch_id: newBatchId,
+            trigger_invoice_id: invoiceId,
+            invoice_id: invoiceId,
+            amount,
+            paid_at: paidAt,
+            slip_url: slipUrl,
+            source,
+            payment_method_id: resolved.id,
+            payment_method_snapshot: resolved.snapshot,
+            created_at: new Date().toISOString(),
+          });
+        if (insertAllocError) {
+          return NextResponse.json({ error: insertAllocError.message }, { status: 500 });
+        }
+
+        history[index] = {
+          ...entry,
+          source,
+          payment_batch_id: newBatchId,
+          trigger_invoice_id: invoiceId,
+          payment_method: resolved.snapshot,
+          payment_method_id: resolved.id,
+        };
+        newBatchIds.push(newBatchId);
+      }
+
+      const { error: historyError } = await auth.supabase
+        .from("invoices")
+        .update({ payment_history: history })
+        .eq("id", invoiceId as string);
+      if (historyError) {
+        return NextResponse.json({ error: historyError.message }, { status: 500 });
+      }
+
+      return NextResponse.json({
+        success: true,
+        paymentMethod: resolved,
+        backfilledBatchIds: newBatchIds,
+      });
     }
 
     return NextResponse.json({ error: "Unknown action." }, { status: 400 });

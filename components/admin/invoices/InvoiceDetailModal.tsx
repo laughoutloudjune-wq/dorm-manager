@@ -174,7 +174,6 @@ export function InvoiceDetailModal() {
     updateCarryForwardItem,
     updateLateFeeItem,
     updateTransferBreakdownAmount,
-    applyRoundDownTotal,
     recalculateTransferBreakdown,
     recalculateCurrentInvoiceArrears,
     toggleCarryOverFromCandidate,
@@ -303,6 +302,33 @@ export function InvoiceDetailModal() {
   };
 
   const activeInvoiceId = activeInvoice?.id ? String(activeInvoice.id) : "";
+
+  /**
+   * Backfill path for a payment recorded BEFORE payment_batches existed — it
+   * has a payment_history entry but no batch/allocation row, so there is
+   * nothing for `assignPaymentBatchMethod` to update. This creates the
+   * missing batch and allocation from the history entry itself, then attaches
+   * the chosen account. After it succeeds the chain reload picks up the new
+   * allocation and the payments tab switches from the legacy fallback view to
+   * the normal chain card automatically.
+   */
+  const assignLegacyPaymentMethod = async () => {
+    const key = `legacy:${activeInvoiceId}`;
+    const methodId = assignSelection[key];
+    if (!methodId || !activeInvoiceId) return;
+    setAssigningBatchId(key);
+    try {
+      await callInvoiceAdminAction("assign_payment_batch_method", {
+        invoiceId: activeInvoiceId,
+        methodId,
+      });
+      setChainReloadToken((n) => n + 1);
+    } catch (err: any) {
+      setError(err?.message ?? "ไม่สามารถบันทึกบัญชีที่รับเงินได้");
+    } finally {
+      setAssigningBatchId(null);
+    }
+  };
 
   React.useEffect(() => {
     if (!activeInvoiceId || activeTab !== "payments") {
@@ -709,14 +735,6 @@ export function InvoiceDetailModal() {
                       <div className="text-right">
                         <p className="text-xs uppercase tracking-widest text-slate-400 font-bold">ยอดรวมทั้งสิ้น</p>
                         <p className="text-5xl font-black text-success-600 mt-2 tracking-tighter">{formatMoney(toNumber(form.total_amount))}</p>
-                        <button
-                          type="button"
-                          onClick={applyRoundDownTotal}
-                          disabled={!canEditDetails || saving}
-                          className="text-xs font-bold text-slate-500 hover:text-slate-800 underline mt-1 transition disabled:opacity-50"
-                        >
-                          ปัดเศษลง
-                        </button>
                       </div>
                     </div>
                     
@@ -1479,6 +1497,46 @@ export function InvoiceDetailModal() {
                             >
                               ที่มา: {paymentSourceLabel((payment as any).source)}
                             </p>
+                            {/* This entry predates payment_batches, so there is
+                                no receiving-account record at all — offer to
+                                create one from this payment. */}
+                            {canRecordInvoicePayment && assignableMethods.length > 0 && (
+                              <div className="mt-1.5 flex items-center gap-2">
+                                <span className="text-xs font-semibold text-slate-400">
+                                  ยังไม่ระบุบัญชีที่รับเงิน:
+                                </span>
+                                <select
+                                  value={assignSelection[`legacy:${activeInvoiceId}`] ?? ""}
+                                  onChange={(e) =>
+                                    setAssignSelection((prev) => ({
+                                      ...prev,
+                                      [`legacy:${activeInvoiceId}`]: e.target.value,
+                                    }))
+                                  }
+                                  className="h-8 rounded-control border border-slate-200 px-2 text-xs text-slate-700 focus:outline-none focus:ring-1 focus:ring-primary-500"
+                                >
+                                  <option value="">ระบุบัญชีที่รับเงินจริง...</option>
+                                  {assignableMethods.map((m) => (
+                                    <option key={m.id} value={m.id}>
+                                      {m.label || m.bank_name} · {m.account_number}
+                                    </option>
+                                  ))}
+                                </select>
+                                <button
+                                  type="button"
+                                  onClick={() => void assignLegacyPaymentMethod()}
+                                  disabled={
+                                    !assignSelection[`legacy:${activeInvoiceId}`] ||
+                                    assigningBatchId === `legacy:${activeInvoiceId}`
+                                  }
+                                  className={buttonClasses({ variant: "subtle", size: "sm" })}
+                                >
+                                  {assigningBatchId === `legacy:${activeInvoiceId}`
+                                    ? "กำลังบันทึก..."
+                                    : "บันทึก"}
+                                </button>
+                              </div>
+                            )}
                             <div className="flex items-center gap-3 mt-1">
                               <p className="text-sm font-semibold text-slate-500">วันที่ชำระ: {payment.paid_at ? formatDateThai(payment.paid_at) : "-"}</p>
                               {payment.slip_url && (

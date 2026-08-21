@@ -152,7 +152,6 @@ export function InvoicePreviewModal() {
     updateCarryForwardItem,
     updateLateFeeItem,
     updateTransferBreakdownAmount,
-    applyRoundDownTotal,
     recalculateTransferBreakdown,
     recalculateCurrentInvoiceArrears,
     toggleCarryOverFromCandidate,

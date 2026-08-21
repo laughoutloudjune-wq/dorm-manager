@@ -138,7 +138,6 @@ export function LineSendModal() {
     updateCarryForwardItem,
     updateLateFeeItem,
     updateTransferBreakdownAmount,
-    applyRoundDownTotal,
     recalculateTransferBreakdown,
     recalculateCurrentInvoiceArrears,
     toggleCarryOverFromCandidate,

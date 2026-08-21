@@ -226,7 +226,6 @@ export default function InvoicesPage() {
     updateCarryForwardItem,
     updateLateFeeItem,
     updateTransferBreakdownAmount,
-    applyRoundDownTotal,
     recalculateTransferBreakdown,
     recalculateCurrentInvoiceArrears,
     toggleCarryOverFromCandidate,

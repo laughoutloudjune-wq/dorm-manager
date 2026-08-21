@@ -46,7 +46,6 @@ import {
   emptyCarryForwardItem,
   emptyLateFeeItem,
   feeItemsTotal,
-  ROUND_DOWN_DISCOUNT_LABEL,
   isTransferBreakdownRow,
   isCarryForwardBreakdownRow,
   isLateFeeBreakdownRow,
@@ -1650,54 +1649,6 @@ export function useInvoicesState() {
           : item,
       ),
     );
-  };
-
-  const applyRoundDownTotal = () => {
-    if (activeInvoice && !isInvoiceDetailEditable(activeInvoice.status)) return;
-    // Previously omitted the invoice's own late fee, so the round-down
-    // discount was calculated against a total that was too low.
-    const currentTotal = computeInvoiceTotal({
-      rent: toNumber(form.rent_amount),
-      water: toNumber(form.water_bill),
-      electricity: toNumber(form.electricity_bill),
-      commonFee: toNumber(form.common_fee),
-      nativeLateFee: calculateCurrentFormLateFee(form),
-      lateFeeItems: feeItemsTotal(editableLateFeeItems),
-      fees: feeItemsTotal(editableFeeItems),
-      carryForward: feeItemsTotal(editableCarryForwardItems),
-      discount: feeItemsTotal(editableDiscountItems),
-    });
-    const roundedTotal = Math.floor(currentTotal);
-    const roundDownAmount = Number((currentTotal - roundedTotal).toFixed(2));
-    if (roundDownAmount <= 0) return;
-
-    setEditableDiscountItems((prev) => {
-      const existingIndex = prev.findIndex(
-        (item) =>
-          String(item.detail ?? "").trim() === ROUND_DOWN_DISCOUNT_LABEL,
-      );
-      if (existingIndex >= 0) {
-        return prev.map((item, index) =>
-          index === existingIndex
-            ? {
-                ...item,
-                unit: 1,
-                price_per_unit: roundDownAmount,
-                total_amount: roundDownAmount,
-              }
-            : item,
-        );
-      }
-      return [
-        ...prev,
-        {
-          detail: ROUND_DOWN_DISCOUNT_LABEL,
-          unit: 1,
-          price_per_unit: roundDownAmount,
-          total_amount: roundDownAmount,
-        },
-      ];
-    });
   };
 
   const recalculateTransferBreakdown = async () => {
@@ -3969,7 +3920,6 @@ export function useInvoicesState() {
     updateCarryForwardItem,
     updateLateFeeItem,
     updateTransferBreakdownAmount,
-    applyRoundDownTotal,
     recalculateTransferBreakdown,
     recalculateCurrentInvoiceArrears,
     toggleCarryOverFromCandidate,

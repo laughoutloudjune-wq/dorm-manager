@@ -85,7 +85,12 @@ export async function GET(req: Request) {
 
     const outstandingStatuses = ["pending", "partial", "overdue", "verifying"];
     const pendingInvoices = invoices.filter((invoice) => ["pending", "partial", "overdue"].includes(String(invoice.status)));
-    const verifyingInvoices = invoices.filter((invoice) => String(invoice.status) === "verifying" || (!!invoice.slip_url && String(invoice.status) !== "paid"));
+    // Genuinely status='verifying' only — a slip attached to a partial/overdue
+    // invoice from an earlier payment is not awaiting review. The old
+    // "has a slip AND isn't paid" heuristic over-counted every such invoice;
+    // live data checked at time of writing showed 4/4 counted invoices were
+    // false positives, zero of them actually verifying.
+    const verifyingInvoices = invoices.filter((invoice) => String(invoice.status) === "verifying");
     const overdueInvoices = invoices.filter((invoice) => String(invoice.status) === "overdue");
     const outstandingInvoices = invoices.filter((invoice) => outstandingStatuses.includes(String(invoice.status)));
 
