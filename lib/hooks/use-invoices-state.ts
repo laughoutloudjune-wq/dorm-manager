@@ -921,22 +921,27 @@ export function useInvoicesState() {
       total_amount: total,
       paid_amount: currentPaid,
     });
-    if (remaining <= 0) {
-      setError("This invoice is already fully paid.");
+
+    const inputAmount = toNumber(paymentAmountInput);
+    // This invoice's own balance is a DEFAULT, never a cap, and never a reason
+    // to refuse. A payment recorded here is allocated across the whole
+    // carry-forward chain server-side (oldest invoice first), so an invoice
+    // that looks settled on its own row can still legitimately take money for
+    // the invoices carried into it — room 212/2's May invoice reads
+    // 7,594/7,594 while April, carried into it, still owes 1,400. Capping at
+    // `remaining` made that payment impossible to record.
+    // `applyInvoicePaymentAllocation` caps at the chain's real outstanding and
+    // rejects the payment outright if nothing is owed anywhere, so the server
+    // stays the authority on what can actually be applied.
+    const amountToPay = inputAmount > 0 ? inputAmount : remaining;
+
+    if (amountToPay <= 0) {
+      setError("กรุณากรอกจำนวนเงินที่ต้องการบันทึก");
       return;
     }
 
-    const inputAmount = toNumber(paymentAmountInput);
-    const amountToPay = inputAmount > 0 
-      ? Math.min(remaining, inputAmount) 
-      : remaining;
-      
-    if (amountToPay <= 0) {
-      setError("Please enter a valid payment amount.");
-      return;
-    }
-    
-    const finalPaymentMode = amountToPay >= remaining ? "full" : "partial";
+    const finalPaymentMode =
+      remaining > 0 && amountToPay >= remaining ? "full" : "partial";
 
     if (!paymentDate) {
       setError("Please select payment date.");

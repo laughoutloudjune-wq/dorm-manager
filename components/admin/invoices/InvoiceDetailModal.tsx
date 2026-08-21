@@ -21,6 +21,7 @@ import {
   AlertCircle,
   Send,
   RefreshCw,
+  X,
 } from "lucide-react";
 import { formatMoney, toLocalDateString, toNumber } from "@/lib/format";
 import {
@@ -1398,11 +1399,20 @@ export function InvoiceDetailModal() {
                                   type="button"
                                   onClick={() => void deletePaymentBatch(chain.batchId)}
                                   disabled={deletingBatchId === chain.batchId}
-                                  className="mt-2 text-xs font-bold text-danger-500 hover:text-danger-700 disabled:opacity-50 transition"
+                                  title="ลบรายการชำระเงินนี้"
+                                  aria-label="ลบรายการชำระเงินนี้"
+                                  className={buttonClasses({
+                                    variant: "ghost",
+                                    size: "icon",
+                                    className:
+                                      "mt-2 ml-auto text-danger-500 hover:bg-danger-50 hover:text-danger-700",
+                                  })}
                                 >
-                                  {deletingBatchId === chain.batchId
-                                    ? "กำลังลบ..."
-                                    : "ลบรายการนี้ (พบว่าซ้ำ/ผิดพลาด)"}
+                                  {deletingBatchId === chain.batchId ? (
+                                    <Loader2 size={16} className="animate-spin" />
+                                  ) : (
+                                    <X size={16} />
+                                  )}
                                 </button>
                               )}
                             </div>
