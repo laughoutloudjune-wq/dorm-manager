@@ -4,7 +4,6 @@ import {
   applyInvoicePaymentAllocation,
   syncInvoiceLedger,
   snapshotFromPaymentMethodRow,
-  getPaymentChainOutstanding,
   calculateLateFeeAmount,
   resolveFullyPaidAtDate,
 } from "@/lib/invoice-ledger";
@@ -46,99 +45,59 @@ export async function POST(req: Request) {
       if (!invoiceId || !status) {
         return NextResponse.json({ error: "Missing invoiceId or status." }, { status: 400 });
       }
+
+      // Changing status NEVER creates a payment — not even to "paid", and not
+      // even when a slip is sitting there awaiting review. Status is a
+      // bookkeeping label; money is recorded only through the Payments tab
+      // (`record_payment`), where an admin enters a real amount, or by
+      // confirming a tenant's slip in that same tab.
+      //
+      // This endpoint used to call applyInvoicePaymentAllocation with the
+      // entire outstanding balance whenever someone picked "paid", inventing a
+      // payment_batches row for money nobody had received and copying the
+      // invoice's existing slip image onto it so it looked evidenced. That
+      // produced ฿150,000+ of fake receipts before it was found. Every status
+      // is now freely selectable and none of them move money.
+      const updatePayload: Record<string, unknown> = { status };
+
       if (status === "paid") {
-        const { data: invoice, error: invoiceError } = await auth.supabase
+        // Re-freeze the late fee if it is currently unfrozen. Flipping an
+        // invoice away from paid clears `locked_late_fee_amount`, which puts
+        // the fee back on a live ฿/day calculation; leaving it unfrozen would
+        // let an old invoice's fee keep growing from its original due date.
+        // `syncInvoiceLedger` normally freezes it on the transition to paid,
+        // but it skips invoices already marked paid, so it cannot recover this
+        // afterwards. Freezing a fee is bookkeeping, not a payment.
+        const { data: feeRow } = await auth.supabase
           .from("invoices")
-          .select("id,status,total_amount,paid_amount,slip_url,slip_uploaded_at")
+          .select(
+            "locked_late_fee_amount,late_fee_start_date,late_fee_per_day,waived_late_fee_amount,payment_history,slip_uploaded_at",
+          )
           .eq("id", invoiceId)
-          .single();
-        if (invoiceError || !invoice) {
-          return NextResponse.json({ error: invoiceError?.message ?? "Invoice not found." }, { status: 404 });
-        }
-
-        // Setting an invoice back to "paid" after it was flipped to some other
-        // status is a correction, not a new payment. The earlier flip never
-        // reversed `paid_amount`, so the money is still on record and there is
-        // nothing left to allocate — going through the allocation path here
-        // would throw "This invoice chain is already fully paid". Just restore
-        // the status.
-        const chainOutstanding = await getPaymentChainOutstanding(auth.supabase, invoiceId);
-        if (chainOutstanding <= 0) {
-          const statusPayload: Record<string, unknown> = { status: "paid" };
-
-          // Re-freeze the late fee if it is currently unfrozen. Flipping an
-          // invoice away from paid clears `locked_late_fee_amount`, which puts
-          // the fee back on a live ฿/day calculation; leaving it unfrozen here
-          // would let an old invoice's fee keep growing from its original due
-          // date. `syncInvoiceLedger` normally does this on the transition to
-          // paid, but it skips invoices already marked paid, so it cannot
-          // recover it once this branch has run.
-          const { data: feeRow } = await auth.supabase
-            .from("invoices")
-            .select(
-              "locked_late_fee_amount,late_fee_start_date,late_fee_per_day,waived_late_fee_amount,payment_history,slip_uploaded_at",
-            )
-            .eq("id", invoiceId)
-            .maybeSingle();
-          if (feeRow && (feeRow as any).locked_late_fee_amount == null) {
-            statusPayload.locked_late_fee_amount = calculateLateFeeAmount(
+          .maybeSingle();
+        if (feeRow && (feeRow as any).locked_late_fee_amount == null) {
+          updatePayload.locked_late_fee_amount = calculateLateFeeAmount(
+            feeRow as any,
+            resolveFullyPaidAtDate(
               feeRow as any,
-              resolveFullyPaidAtDate(
-                feeRow as any,
-                new Date().toISOString().slice(0, 10),
-              ),
-            );
-          }
-
-          const { error: statusError } = await auth.supabase
-            .from("invoices")
-            .update(statusPayload)
-            .eq("id", invoiceId);
-          if (statusError) {
-            return NextResponse.json({ error: statusError.message }, { status: 500 });
-          }
-          await syncPointsAfterPayment(auth.supabase, invoiceId);
-          return NextResponse.json({ success: true, alreadySettled: true });
-        }
-
-        // SAFEGUARD: the status dropdown may only turn a REVIEWED slip into a
-        // recorded payment — it must never fabricate one for whatever is still
-        // outstanding. This is exactly how the ledger accumulated fake
-        // batches: an admin picked "paid" from the dropdown as a shortcut on
-        // an invoice with no slip (or a real partial payment already on it),
-        // and the remaining balance got recorded as if cash had arrived, with
-        // no evidence behind it. `status === "verifying"` is set only when a
-        // tenant has actually uploaded a slip pending review, so it plus a
-        // non-empty `slip_url` is the one legitimate case for creating money
-        // from this endpoint. Anything else must go through the Payments tab,
-        // where an amount and (optionally) a slip are entered explicitly.
-        if (
-          String((invoice as any).status ?? "") !== "verifying" ||
-          !(invoice as any).slip_url
-        ) {
-          return NextResponse.json(
-            {
-              error:
-                "ไม่สามารถเปลี่ยนสถานะเป็นชำระแล้วได้ เนื่องจากยังไม่มีสลิปที่รอตรวจสอบ กรุณาบันทึกการชำระเงินผ่านแท็บการชำระเงินแทน",
-            },
-            { status: 400 },
+              new Date().toISOString().slice(0, 10),
+            ),
           );
         }
-
-        const result = await applyInvoicePaymentAllocation(auth.supabase, {
-          invoiceId,
-          amount: Number.MAX_SAFE_INTEGER,
-          paidAt: String((invoice as any).slip_uploaded_at ?? new Date().toISOString()),
-          slipUrl: ((invoice as any).slip_url as string | null | undefined) ?? null,
-          mode: "full",
-          source: "admin_status_paid",
-          createdBy: auth.user.id,
-        });
-        await syncPointsAfterPayment(auth.supabase, invoiceId);
-        return NextResponse.json({ success: true, ...result });
       }
-      const { error } = await auth.supabase.from("invoices").update({ status }).eq("id", invoiceId);
+
+      const { error } = await auth.supabase
+        .from("invoices")
+        .update(updatePayload)
+        .eq("id", invoiceId);
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+      if (status === "paid") {
+        // Rewards points are derived from the ledger, so re-syncing keeps them
+        // consistent with the new status without recording any money.
+        await syncPointsAfterPayment(auth.supabase, invoiceId);
+      }
+
       return NextResponse.json({ success: true });
     }
 

@@ -72,21 +72,39 @@ raw `paid_amount` update. It resolves the full carry-forward chain for the targe
 allocates the payment oldest-first, and supports an idempotency key so a retried request replays
 the original result instead of double-charging.
 
-**Changing an invoice's status to `paid` must never fabricate a payment.** Both status-change
-endpoints (`update_status` in `app/api/admin/invoices/actions/route.ts` and `approve_paid` in
-`app/api/admin-liff/invoices/actions/route.ts`) only call `applyInvoicePaymentAllocation` when
-`status === "verifying"` **and** `slip_url` is set — i.e. a tenant has actually uploaded a slip
-that is now being reviewed and confirmed. Any other case (no slip, or a slip from a much earlier
-review that's stale) is rejected; the admin must record the payment explicitly through the
-Payments tab, with a real amount and optional slip, instead. Before this guard existed, picking
-"paid" from the status dropdown on a partially-paid invoice — with no review step — would treat
-the whole remaining balance as cash received and fabricate a batch for it, even copying the
-invoice's existing slip image onto the fake batch so it looked backed by evidence. This produced
-฿150,000+ of fake payment_batches rows in production before it was caught (cleaned up
-2026-08-20; see `payment_batches_backup_20260820` in Supabase). When `getPaymentChainOutstanding`
-is already `0` (the invoice was flipped away from paid and back with nothing left owing), neither
-endpoint touches the allocation path at all — it just restores `status` and re-freezes the late
-fee via `resolveFullyPaidAtDate`.
+**Changing an invoice's status never moves money — no status, including `paid`.**
+`update_status` (both `app/api/admin/invoices/actions/route.ts` and the LIFF equivalent) only
+writes `status`. Every status is freely selectable; none of them call
+`applyInvoicePaymentAllocation`. Money is recorded in exactly two places: `record_payment`,
+where an admin enters a real amount through the Payments tab, and `approve_paid` in
+`app/api/admin-liff/invoices/actions/route.ts`, which confirms a tenant-uploaded slip and is
+guarded on `status === "verifying"` **and** a non-empty `slip_url`.
+
+Before this, picking "paid" from the status dropdown called
+`applyInvoicePaymentAllocation` with the entire outstanding balance — inventing a
+`payment_batches` row for money nobody had received, and copying the invoice's existing slip
+image onto the fabricated batch so it looked backed by evidence. Repeatedly flipping an invoice
+away from paid and back minted a fresh fake batch each time. This produced ฿150,000+ of fake
+receipts in production before it was caught (cleaned up 2026-08-20; see
+`payment_batches_backup_20260820` and `realloc_backup_212_2_20260821` in Supabase).
+
+Setting status to `paid` still re-freezes `locked_late_fee_amount` when it is null, via
+`resolveFullyPaidAtDate` — flipping away from paid clears the freeze, and `syncInvoiceLedger`
+skips invoices already marked paid so it cannot recover it afterwards. Freezing a fee is
+bookkeeping, not a payment.
+
+Recording a payment is never capped by the open invoice's own balance. `submitPayment`
+(lib/hooks/use-invoices-state.ts) uses `total_amount - paid_amount` as a *default* for the
+amount field only. A payment is allocated across the whole carry-forward chain oldest-first, so
+an invoice reading fully paid on its own row can still legitimately receive money for the
+invoices carried into it (212/2's May invoice reads 7,594/7,594 while April, carried into it,
+still owed 1,400). `applyInvoicePaymentAllocation` caps at the chain's real outstanding and
+rejects the payment when nothing is owed anywhere, so the server stays the authority.
+
+Every payment carries a `source` naming its origin, rendered on each payment card via
+`paymentSourceLabel` (lib/invoice-utils.ts). `isNonCashPaymentSource` marks the ones where no
+money reached a bank account (`abandon_room`, `credit`) — those render as "หักเครดิต" and
+suppress the receiving-account control, since there is no account to assign.
 
 ## Money received — batches, allocations, and frozen accounts
 
