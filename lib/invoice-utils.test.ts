@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { dailyRentRate, calculateProratedRentByBillingDay, calculateInvoiceTransferRentProration } from "./invoice-utils";
+import {
+  dailyRentRate,
+  calculateProratedRentByBillingDay,
+  calculateInvoiceTransferRentProration,
+  paymentSourceLabel,
+  isNonCashPaymentSource,
+} from "./invoice-utils";
 
 describe("dailyRentRate", () => {
   it("splits monthly rent over a fixed 30-day cycle, rounded down to a whole baht", () => {
@@ -35,5 +41,39 @@ describe("calculateInvoiceTransferRentProration", () => {
     // New room: Jun 16-30 (15 days) at floor(4000/30)=133/day.
     expect(result.newRoomDays).toBe(15);
     expect(result.newRentAmount).toBe(133 * 15);
+  });
+});
+
+describe("paymentSourceLabel", () => {
+  it("names every source the app actually writes", () => {
+    // These four are the only values present in production.
+    expect(paymentSourceLabel("admin_webapp")).toContain("แอดมิน");
+    expect(paymentSourceLabel("admin_liff_approve")).toContain("LINE");
+    expect(paymentSourceLabel("admin_status_paid")).toContain("ชำระแล้ว");
+    expect(paymentSourceLabel("abandon_room")).toContain("ทิ้งห้อง");
+  });
+
+  it("never renders an empty remark", () => {
+    expect(paymentSourceLabel(null)).toBe("ไม่ระบุที่มา");
+    expect(paymentSourceLabel("")).toBe("ไม่ระบุที่มา");
+    expect(paymentSourceLabel("   ")).toBe("ไม่ระบุที่มา");
+  });
+
+  it("falls back to the raw value for an unrecognised source", () => {
+    // Better to surface an unknown tag than to hide where money came from.
+    expect(paymentSourceLabel("some_future_source")).toBe("some_future_source");
+  });
+});
+
+describe("isNonCashPaymentSource", () => {
+  it("flags deposit credit, which never touched a bank account", () => {
+    expect(isNonCashPaymentSource("abandon_room")).toBe(true);
+    expect(isNonCashPaymentSource("credit")).toBe(true);
+  });
+
+  it("treats real transfers as cash", () => {
+    expect(isNonCashPaymentSource("admin_webapp")).toBe(false);
+    expect(isNonCashPaymentSource("admin_liff_approve")).toBe(false);
+    expect(isNonCashPaymentSource(null)).toBe(false);
   });
 });

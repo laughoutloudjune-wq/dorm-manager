@@ -526,6 +526,40 @@ export const serializeTransferBreakdownRows = (items: TransferBreakdownItem[]) =
 export const UNKNOWN_PAYMENT_METHOD = "ไม่ระบุบัญชี";
 
 /**
+ * Where a recorded payment came from — `payment_batches.source`.
+ *
+ * Every transaction must state its origin. Without this, a deposit
+ * write-off from an abandoned room renders identically to a real bank
+ * transfer, and an entry created by the status dropdown looks the same as one
+ * an admin keyed in against a slip. Those are very different things and the
+ * difference matters when auditing where money actually came from.
+ */
+export const PAYMENT_SOURCE_LABELS: Record<string, string> = {
+  admin_webapp: "บันทึกโดยแอดมิน (หน้าเว็บ)",
+  admin_liff_approve: "แอดมินอนุมัติสลิปผ่าน LINE",
+  admin_status_paid: "เปลี่ยนสถานะเป็น “ชำระแล้ว”",
+  abandon_room: "เครดิตจากการทิ้งห้อง (ไม่ใช่เงินโอน)",
+  // Legacy/rare values kept so nothing renders as unknown unnecessarily.
+  admin: "บันทึกโดยแอดมิน",
+  tenant: "ผู้เช่าแจ้งชำระ",
+  credit: "หักจากเครดิต (ไม่ใช่เงินโอน)",
+};
+
+export const paymentSourceLabel = (source: string | null | undefined): string => {
+  const key = String(source ?? "").trim();
+  if (!key) return "ไม่ระบุที่มา";
+  return PAYMENT_SOURCE_LABELS[key] ?? key;
+};
+
+/**
+ * True when the "payment" moved no actual money — a deposit/advance-rent
+ * credit applied when a tenant abandoned the room. Nothing landed in a bank
+ * account, so asking which account received it is meaningless.
+ */
+export const isNonCashPaymentSource = (source: string | null | undefined): boolean =>
+  ["abandon_room", "credit"].includes(String(source ?? "").trim());
+
+/**
  * Label a FROZEN payment-method snapshot (`payment_method_snapshot` on a
  * payment batch or allocation). Deliberately resolves nothing: a missing
  * snapshot means the receiving account is unrecoverable, and substituting the

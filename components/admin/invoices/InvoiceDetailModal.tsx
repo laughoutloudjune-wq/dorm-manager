@@ -40,6 +40,8 @@ import {
   calculateLateFeePreview,
   paymentMethodSnapshotLabel,
   UNKNOWN_PAYMENT_METHOD,
+  paymentSourceLabel,
+  isNonCashPaymentSource,
 } from "@/lib/invoice-utils";
 
 export function InvoiceDetailModal() {
@@ -235,6 +237,8 @@ export function InvoiceDetailModal() {
     methodLabel: string;
     slipUrl: string | null;
     triggerInvoiceId: string | null;
+    /** payment_batches.source — where this money came from. */
+    source: string | null;
     appliedHere: number;
     lines: ChainLine[];
   };
@@ -340,7 +344,7 @@ export function InvoiceDetailModal() {
           .in("payment_batch_id", batchIds),
         supabase
           .from("payment_batches")
-          .select("id,amount_received,paid_at,slip_url,trigger_invoice_id,payment_method_snapshot")
+          .select("id,amount_received,paid_at,slip_url,source,trigger_invoice_id,payment_method_snapshot")
           .in("id", batchIds),
       ]);
       if (cancelled) return;
@@ -373,6 +377,7 @@ export function InvoiceDetailModal() {
             triggerInvoiceId: batch?.trigger_invoice_id
               ? String(batch.trigger_invoice_id)
               : null,
+            source: batch?.source ?? (row as any).source ?? null,
             appliedHere: 0,
             lines: [],
           } as PaymentChain);
@@ -1297,13 +1302,26 @@ export function InvoiceDetailModal() {
                               </div>
                               <div>
                                 <p className="font-black text-slate-900 text-lg">
-                                  รับชำระ {formatMoney(chain.amountReceived)}
+                                  {isNonCashPaymentSource(chain.source)
+                                    ? `หักเครดิต ${formatMoney(chain.amountReceived)}`
+                                    : `รับชำระ ${formatMoney(chain.amountReceived)}`}
+                                </p>
+                                {/* Every transaction states where it came from. */}
+                                <p
+                                  className={
+                                    isNonCashPaymentSource(chain.source)
+                                      ? "mt-0.5 inline-block rounded-full bg-warning-100 px-2 py-0.5 text-2xs font-bold text-warning-700"
+                                      : "mt-0.5 inline-block rounded-full bg-slate-100 px-2 py-0.5 text-2xs font-bold text-slate-600"
+                                  }
+                                >
+                                  ที่มา: {paymentSourceLabel(chain.source)}
                                 </p>
                                 <div className="mt-1 flex flex-wrap items-center gap-3">
                                   <p className="text-sm font-semibold text-slate-500">
                                     วันที่ชำระ: {chain.paidAt ? formatDateThai(chain.paidAt) : "-"}
                                   </p>
                                   {chain.methodLabel === UNKNOWN_PAYMENT_METHOD &&
+                                  !isNonCashPaymentSource(chain.source) &&
                                   canRecordInvoicePayment &&
                                   assignableMethods.length > 0 ? (
                                     <div className="flex items-center gap-2">
@@ -1339,7 +1357,7 @@ export function InvoiceDetailModal() {
                                         {assigningBatchId === chain.batchId ? "กำลังบันทึก..." : "บันทึก"}
                                       </button>
                                     </div>
-                                  ) : (
+                                  ) : isNonCashPaymentSource(chain.source) ? null : (
                                     <span
                                       className={
                                         chain.methodLabel === UNKNOWN_PAYMENT_METHOD
@@ -1441,6 +1459,15 @@ export function InvoiceDetailModal() {
                           <div>
                             <p className="font-black text-slate-900 text-lg">
                               ตัดเข้าใบนี้ {formatMoney(toNumber(payment.amount))}
+                            </p>
+                            <p
+                              className={
+                                isNonCashPaymentSource((payment as any).source)
+                                  ? "mt-0.5 inline-block rounded-full bg-warning-100 px-2 py-0.5 text-2xs font-bold text-warning-700"
+                                  : "mt-0.5 inline-block rounded-full bg-slate-100 px-2 py-0.5 text-2xs font-bold text-slate-600"
+                              }
+                            >
+                              ที่มา: {paymentSourceLabel((payment as any).source)}
                             </p>
                             <div className="flex items-center gap-3 mt-1">
                               <p className="text-sm font-semibold text-slate-500">วันที่ชำระ: {payment.paid_at ? formatDateThai(payment.paid_at) : "-"}</p>
