@@ -87,6 +87,7 @@ export const statusLabelThai = (status: string) => {
   if (status === "paid") return "ชำระแล้ว";
   if (status === "overdue") return "เกินกำหนด";
   if (status === "cancelled") return "ยกเลิก";
+  if (status === "abandoned") return "ทิ้งห้อง";
   return status;
 };
 
@@ -651,6 +652,11 @@ export const statusVariant = {
   paid: "success",
   overdue: "danger",
   cancelled: "default",
+  // Settled (fully or partially) by a departing tenant's deposit/advance-rent
+  // credit, not real cash — kept visually apart from `paid`/`partial` (which
+  // both imply money actually moved) with a neutral tone, same family as
+  // `draft`/`cancelled`.
+  abandoned: "default",
 } as const;
 
 export type InvoiceRecord = {

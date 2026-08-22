@@ -20,6 +20,8 @@ const translateInvoiceStatus = (status: string) => {
       return "รอชำระ";
     case "draft":
       return "ฉบับร่าง";
+    case "abandoned":
+      return "ทิ้งห้อง";
     default:
       return status;
   }

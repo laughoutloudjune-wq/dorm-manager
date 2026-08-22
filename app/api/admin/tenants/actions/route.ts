@@ -791,11 +791,10 @@ export async function POST(req: Request) {
         const covered = line.writtenOff <= 0 && chainFunded;
         if (!covered) chainFunded = false;
 
-        // An invoice the credit could not clear KEEPS its debt and its current
-        // status. Abandoning a room does not forgive what is owed: an overdue
-        // invoice stays overdue so it keeps showing up in arrears. Only a fully
-        // covered invoice is relabelled, and only to "paid".
-        if (!covered) {
+        // No credit reached this invoice at all — it KEEPS its debt and its
+        // current status (overdue stays overdue, so it keeps showing up in
+        // arrears). Only an invoice the credit actually touched gets relabelled.
+        if (line.applied <= 0) {
           continue;
         }
 
@@ -805,11 +804,18 @@ export async function POST(req: Request) {
         // bundled total for good — re-deriving "still owed" from the row would
         // cancel an invoice the credit had in fact covered in full.
         //
+        // Status "abandoned" (not "paid"/"partial") on ANY invoice the credit
+        // touched — fully covered or not — so a deposit/advance-rent write-off
+        // never reads as if real cash was collected. `writtenOff` tells you
+        // whether real debt still remains.
+        //
         // `invoices` has no updated_at column — writing one makes PostgREST
         // reject the whole update.
         const payload = {
-          status: "paid",
-          notes: "ชำระโดยเครดิตจากการทิ้งห้อง (Abandon Room)",
+          status: "abandoned",
+          notes: covered
+            ? "ชำระโดยเครดิตจากการทิ้งห้อง (Abandon Room)"
+            : "ชำระบางส่วนโดยเครดิตจากการทิ้งห้อง (Abandon Room) — ยังมียอดค้างชำระ",
         };
 
         const { error: labelError } = await auth.supabase
