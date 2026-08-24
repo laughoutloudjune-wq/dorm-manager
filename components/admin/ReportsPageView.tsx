@@ -10,7 +10,10 @@ import { usePermissions } from "@/lib/use-permissions";
 import {
   UNKNOWN_PAYMENT_METHOD,
   paymentMethodSnapshotLabel,
+  paymentSourceLabel,
+  isNonCashPaymentSource,
 } from "@/lib/invoice-utils";
+import { chargesFromInvoiceRow } from "@/lib/invoice-total";
 
 type ReportTab = "income" | "arrears" | "move_in" | "move_out" | "yearly" | "utilities" | "movement";
 
@@ -161,10 +164,17 @@ export default function ReportsPageView() {
       // to invoices (invoice_id and trigger_invoice_id), so an unqualified
       // `invoices(...)` embed is ambiguous and PostgREST rejects it. Aliased to
       // `invoice` so the filter path below reads unambiguously too.
+      // Money columns on the embedded invoice are pulled in so each allocation
+      // can be prorated into rent/utilities/late-fee shares via chargesFromInvoiceRow
+      // — payments aren't itemized by line item in the ledger, so this is an
+      // apportionment of the received amount by the invoice's own charge mix,
+      // not a record of which line item a specific baht paid off.
       const ALLOCATION_SELECT =
         "id,payment_batch_id,invoice_id,amount,paid_at,source,payment_method_id,payment_method_snapshot," +
         "invoice:invoices!invoice_payment_allocations_invoice_id_fkey!inner(" +
-        "id,start_date,due_date,tenant_id,room_id,tenants(full_name),rooms(room_number,buildings(name)))";
+        "id,start_date,due_date,tenant_id,room_id,rent_amount,water_bill,electricity_bill,common_fee," +
+        "late_fee_amount,additional_fees_total,additional_fees_breakdown,carry_forward_amount,discount_amount," +
+        "tenants(full_name),rooms(room_number,buildings(name)))";
 
       const [settingsRes, invoicesRes, tenantsRes, metersRes, logsRes, transfersRes, settlementInvoicesRes, allocationsByPaidAtRes, allocationsByPeriodRes] = await Promise.all([
         supabase.from("settings").select("water_rate,electricity_rate").eq("id", 1).maybeSingle(),
@@ -286,16 +296,51 @@ export default function ReportsPageView() {
           const invoice = relationItem(row.invoice);
           const tenant = relationItem(invoice?.tenants);
           const room = relationItem(invoice?.rooms);
+          const amount = toNumber(row.amount);
+
+          // Payments aren't itemized by line item in the ledger — a batch
+          // pays down "the invoice", not "this month's rent, then water".
+          // So the rent/utilities/late-fee split below is an APPORTIONMENT:
+          // this allocation's amount, spread across the invoice's own charge
+          // mix (via the one total engine, chargesFromInvoiceRow) in the same
+          // proportions the invoice was originally billed in. It reconciles
+          // exactly to `amount` but is not a record of which baht paid what.
+          const charges = chargesFromInvoiceRow(invoice ?? {});
+          const billedTotal =
+            charges.rent +
+            charges.water +
+            charges.electricity +
+            charges.commonFee +
+            charges.nativeLateFee +
+            charges.lateFeeItems +
+            charges.fees +
+            charges.carryForward;
+          const shareRatio = billedTotal > 0 ? amount / billedTotal : 0;
+          const rentShare = charges.rent * shareRatio;
+          const utilitiesShare = (charges.water + charges.electricity + charges.commonFee) * shareRatio;
+          const lateFeeShare = (charges.nativeLateFee + charges.lateFeeItems) * shareRatio;
+          const otherShare = (charges.fees + charges.carryForward) * shareRatio;
+
+          const dueDate = invoice?.due_date ?? null;
+          const isLate = dueDate ? new Date(row.paid_at) > new Date(`${dueDate}T23:59:59`) : false;
+          const method = paymentMethodSnapshotLabel(row.payment_method_snapshot);
+          const noteParts: string[] = [];
+          if (isNonCashPaymentSource(row.source)) noteParts.push(paymentSourceLabel(row.source));
+          if (isLate) noteParts.push("ชำระเกินกำหนด (หลังวันครบกำหนดของบิลนี้)");
+          if (method === UNKNOWN_PAYMENT_METHOD) {
+            noteParts.push("ไม่ทราบบัญชีที่รับเงิน (บันทึกก่อนระบบเริ่มเก็บบัญชีผู้รับ)");
+          }
+
           return {
             id: String(row.id),
             payment_batch_id: row.payment_batch_id ? String(row.payment_batch_id) : "",
             invoice_id: String(row.invoice_id ?? ""),
-            amount: toNumber(row.amount),
+            amount,
             paid_at: row.paid_at,
             source: row.source ?? null,
             // The frozen snapshot, used as-is. NULL for anything recorded before
             // payment_batches existed — reported as UNKNOWN_METHOD, not guessed.
-            method: paymentMethodSnapshotLabel(row.payment_method_snapshot),
+            method,
             invoice_period: invoice?.start_date ? monthKey(invoice.start_date) : "-",
             // Billing here always straddles two calendar months (issued the
             // 25th, due the ~10th of the following month), so "invoice period
@@ -307,6 +352,11 @@ export default function ReportsPageView() {
             tenant_name: tenant?.full_name ?? "-",
             room_number: room?.room_number ?? "-",
             building_name: getBuildingName(room),
+            rentShare,
+            utilitiesShare,
+            lateFeeShare,
+            otherShare,
+            notes: noteParts.length > 0 ? noteParts.join("; ") : "-",
           };
         })
       );
@@ -935,10 +985,30 @@ export default function ReportsPageView() {
   // row, so this can still be checked against a bank statement, but a given
   // period's total will include money that physically arrived the following
   // month if that's when the invoice was paid.
+  // The rent/utilities/late-fee columns apportion each allocation's amount by
+  // the invoice's own charge mix (see the `allocations` mapping above) — they
+  // always sum to "จำนวนเงิน" on the same row, but are an apportionment, not a
+  // record of which baht paid which line item, since payments aren't itemized
+  // in the ledger. "อื่นๆ" covers non-late-fee additional charges and any
+  // carried-forward balance the allocation also covered.
   const exportCash = () =>
     downloadCsv(
       `cash-received-${selectedMonth}.csv`,
-      ["วันที่รับเงิน", "อาคาร", "เลขห้อง", "ชื่อผู้เช่า", "งวดบิลที่ตัดชำระ", "จำนวนเงิน", "บัญชีที่รับเงิน", "รหัสการชำระ"],
+      [
+        "วันที่รับเงิน",
+        "อาคาร",
+        "เลขห้อง",
+        "ชื่อผู้เช่า",
+        "งวดบิลที่ตัดชำระ",
+        "จำนวนเงิน",
+        "ค่าเช่า",
+        "ค่าน้ำ/ค่าไฟ/ส่วนกลาง",
+        "ค่าปรับชำระล่าช้า",
+        "อื่นๆ",
+        "บัญชีที่รับเงิน",
+        "รหัสการชำระ",
+        "หมายเหตุ",
+      ],
       filteredCashRows.map((row) => [
         formatDate(row.paid_at),
         row.building_name,
@@ -946,8 +1016,13 @@ export default function ReportsPageView() {
         row.tenant_name,
         row.invoice_period,
         row.amount,
+        Math.round(row.rentShare * 100) / 100,
+        Math.round(row.utilitiesShare * 100) / 100,
+        Math.round(row.lateFeeShare * 100) / 100,
+        Math.round(row.otherShare * 100) / 100,
         row.method,
         row.payment_batch_id,
+        row.notes,
       ])
     );
 
@@ -1230,7 +1305,11 @@ export default function ReportsPageView() {
                         <th className="px-3 py-2">ชื่อผู้เช่า</th>
                         <th className="px-3 py-2 text-center">งวดบิลที่ตัดชำระ</th>
                         <th className="px-3 py-2 text-right">จำนวนเงิน</th>
+                        <th className="px-3 py-2 text-right">ค่าเช่า</th>
+                        <th className="px-3 py-2 text-right">ค่าน้ำ/ไฟ/ส่วนกลาง</th>
+                        <th className="px-3 py-2 text-right">ค่าปรับล่าช้า</th>
                         <th className="px-3 py-2 text-center">บัญชีที่รับเงิน</th>
+                        <th className="px-3 py-2">หมายเหตุ</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1252,6 +1331,9 @@ export default function ReportsPageView() {
                                 )}
                               </td>
                               <td className="px-3 py-2 text-right text-success-600">{formatMoney(row.amount)}</td>
+                              <td className="px-3 py-2 text-right text-slate-600">{formatMoney(row.rentShare)}</td>
+                              <td className="px-3 py-2 text-right text-slate-600">{formatMoney(row.utilitiesShare)}</td>
+                              <td className="px-3 py-2 text-right text-slate-600">{formatMoney(row.lateFeeShare)}</td>
                               <td className="px-3 py-2 text-center">
                                 {row.method === UNKNOWN_METHOD ? (
                                   <span className="text-slate-400">{row.method}</span>
@@ -1259,12 +1341,15 @@ export default function ReportsPageView() {
                                   row.method
                                 )}
                               </td>
+                              <td className="px-3 py-2 text-xs text-slate-500" title={row.notes}>
+                                {row.notes}
+                              </td>
                             </tr>
                           );
                         })
                       ) : (
                         <tr>
-                          <td colSpan={7} className="px-3 py-6 text-center text-slate-500">
+                          <td colSpan={11} className="px-3 py-6 text-center text-slate-500">
                             ไม่พบการรับเงินในเดือนนี้
                           </td>
                         </tr>
