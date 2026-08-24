@@ -317,7 +317,9 @@ export default function ReportsPageView() {
             charges.carryForward;
           const shareRatio = billedTotal > 0 ? amount / billedTotal : 0;
           const rentShare = charges.rent * shareRatio;
-          const utilitiesShare = (charges.water + charges.electricity + charges.commonFee) * shareRatio;
+          const electricityShare = charges.electricity * shareRatio;
+          const waterShare = charges.water * shareRatio;
+          const commonFeeShare = charges.commonFee * shareRatio;
           const lateFeeShare = (charges.nativeLateFee + charges.lateFeeItems) * shareRatio;
           const otherShare = (charges.fees + charges.carryForward) * shareRatio;
 
@@ -353,7 +355,9 @@ export default function ReportsPageView() {
             room_number: room?.room_number ?? "-",
             building_name: getBuildingName(room),
             rentShare,
-            utilitiesShare,
+            electricityShare,
+            waterShare,
+            commonFeeShare,
             lateFeeShare,
             otherShare,
             notes: noteParts.length > 0 ? noteParts.join("; ") : "-",
@@ -985,12 +989,13 @@ export default function ReportsPageView() {
   // row, so this can still be checked against a bank statement, but a given
   // period's total will include money that physically arrived the following
   // month if that's when the invoice was paid.
-  // The rent/utilities/late-fee columns apportion each allocation's amount by
-  // the invoice's own charge mix (see the `allocations` mapping above) — they
-  // always sum to "จำนวนเงิน" on the same row, but are an apportionment, not a
-  // record of which baht paid which line item, since payments aren't itemized
-  // in the ledger. "อื่นๆ" covers non-late-fee additional charges and any
-  // carried-forward balance the allocation also covered.
+  // The rent/electricity/water/common-fee/late-fee columns apportion each
+  // allocation's amount by the invoice's own charge mix (see the `allocations`
+  // mapping above) — they always sum to "จำนวนเงิน" on the same row, but are an
+  // apportionment, not a record of which baht paid which line item, since
+  // payments aren't itemized in the ledger. "อื่นๆ" covers non-late-fee
+  // additional charges and any carried-forward balance the allocation also
+  // covered.
   const exportCash = () =>
     downloadCsv(
       `cash-received-${selectedMonth}.csv`,
@@ -1002,7 +1007,9 @@ export default function ReportsPageView() {
         "งวดบิลที่ตัดชำระ",
         "จำนวนเงิน",
         "ค่าเช่า",
-        "ค่าน้ำ/ค่าไฟ/ส่วนกลาง",
+        "ค่าไฟ",
+        "ค่าน้ำ",
+        "ค่าส่วนกลาง",
         "ค่าปรับชำระล่าช้า",
         "อื่นๆ",
         "บัญชีที่รับเงิน",
@@ -1017,7 +1024,9 @@ export default function ReportsPageView() {
         row.invoice_period,
         row.amount,
         Math.round(row.rentShare * 100) / 100,
-        Math.round(row.utilitiesShare * 100) / 100,
+        Math.round(row.electricityShare * 100) / 100,
+        Math.round(row.waterShare * 100) / 100,
+        Math.round(row.commonFeeShare * 100) / 100,
         Math.round(row.lateFeeShare * 100) / 100,
         Math.round(row.otherShare * 100) / 100,
         row.method,
@@ -1306,7 +1315,9 @@ export default function ReportsPageView() {
                         <th className="px-3 py-2 text-center">งวดบิลที่ตัดชำระ</th>
                         <th className="px-3 py-2 text-right">จำนวนเงิน</th>
                         <th className="px-3 py-2 text-right">ค่าเช่า</th>
-                        <th className="px-3 py-2 text-right">ค่าน้ำ/ไฟ/ส่วนกลาง</th>
+                        <th className="px-3 py-2 text-right">ค่าไฟ</th>
+                        <th className="px-3 py-2 text-right">ค่าน้ำ</th>
+                        <th className="px-3 py-2 text-right">ค่าส่วนกลาง</th>
                         <th className="px-3 py-2 text-right">ค่าปรับล่าช้า</th>
                         <th className="px-3 py-2 text-center">บัญชีที่รับเงิน</th>
                         <th className="px-3 py-2">หมายเหตุ</th>
@@ -1332,7 +1343,9 @@ export default function ReportsPageView() {
                               </td>
                               <td className="px-3 py-2 text-right text-success-600">{formatMoney(row.amount)}</td>
                               <td className="px-3 py-2 text-right text-slate-600">{formatMoney(row.rentShare)}</td>
-                              <td className="px-3 py-2 text-right text-slate-600">{formatMoney(row.utilitiesShare)}</td>
+                              <td className="px-3 py-2 text-right text-slate-600">{formatMoney(row.electricityShare)}</td>
+                              <td className="px-3 py-2 text-right text-slate-600">{formatMoney(row.waterShare)}</td>
+                              <td className="px-3 py-2 text-right text-slate-600">{formatMoney(row.commonFeeShare)}</td>
                               <td className="px-3 py-2 text-right text-slate-600">{formatMoney(row.lateFeeShare)}</td>
                               <td className="px-3 py-2 text-center">
                                 {row.method === UNKNOWN_METHOD ? (
@@ -1349,7 +1362,7 @@ export default function ReportsPageView() {
                         })
                       ) : (
                         <tr>
-                          <td colSpan={11} className="px-3 py-6 text-center text-slate-500">
+                          <td colSpan={13} className="px-3 py-6 text-center text-slate-500">
                             ไม่พบการรับเงินในเดือนนี้
                           </td>
                         </tr>
