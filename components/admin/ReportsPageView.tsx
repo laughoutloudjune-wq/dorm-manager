@@ -13,7 +13,7 @@ import {
   paymentSourceLabel,
   isNonCashPaymentSource,
 } from "@/lib/invoice-utils";
-import { chargesFromInvoiceRow } from "@/lib/invoice-total";
+import { chargesFromInvoiceRow, computeInvoiceTotal } from "@/lib/invoice-total";
 
 type ReportTab = "income" | "arrears" | "move_in" | "move_out" | "yearly" | "utilities" | "movement";
 
@@ -309,30 +309,22 @@ export default function ReportsPageView() {
           const room = relationItem(invoice?.rooms);
           const amount = toNumber(row.amount);
 
-          // Payments aren't itemized by line item in the ledger — a batch
-          // pays down "the invoice", not "this month's rent, then water".
-          // So the rent/utilities/late-fee split below is an APPORTIONMENT:
-          // this allocation's amount, spread across the invoice's own charge
-          // mix (via the one total engine, chargesFromInvoiceRow) in the same
-          // proportions the invoice was originally billed in. It reconciles
-          // exactly to `amount` but is not a record of which baht paid what.
+          // Payments aren't itemized by line item in the ledger, and a single
+          // invoice can be settled by more than one payment (partial, then a
+          // top-up) — there is no real basis for splitting "how much of THIS
+          // payment was rent vs. water," so we don't try. The rent/utilities/
+          // late-fee breakdown belongs to the INVOICE, not to any one payment;
+          // it's attached once (see `showBreakdown` in filteredCashRows below)
+          // to the first row a multi-payment invoice appears on, and left
+          // blank on the rest so summing the column doesn't double-count.
           const charges = chargesFromInvoiceRow(invoice ?? {});
-          const billedTotal =
-            charges.rent +
-            charges.water +
-            charges.electricity +
-            charges.commonFee +
-            charges.nativeLateFee +
-            charges.lateFeeItems +
-            charges.fees +
-            charges.carryForward;
-          const shareRatio = billedTotal > 0 ? amount / billedTotal : 0;
-          const rentShare = charges.rent * shareRatio;
-          const electricityShare = charges.electricity * shareRatio;
-          const waterShare = charges.water * shareRatio;
-          const commonFeeShare = charges.commonFee * shareRatio;
-          const lateFeeShare = (charges.nativeLateFee + charges.lateFeeItems) * shareRatio;
-          const otherShare = (charges.fees + charges.carryForward) * shareRatio;
+          const invoiceRent = charges.rent;
+          const invoiceElectricity = charges.electricity;
+          const invoiceWater = charges.water;
+          const invoiceCommonFee = charges.commonFee;
+          const invoiceLateFee = charges.nativeLateFee + charges.lateFeeItems;
+          const invoiceOther = charges.fees + charges.carryForward;
+          const invoiceTotal = computeInvoiceTotal(charges);
 
           const dueDate = invoice?.due_date ?? null;
           const isLate = dueDate ? new Date(row.paid_at) > new Date(`${dueDate}T23:59:59`) : false;
@@ -370,12 +362,13 @@ export default function ReportsPageView() {
             tenant_name: tenant?.full_name ?? "-",
             room_number: room?.room_number ?? "-",
             building_name: getBuildingName(room),
-            rentShare,
-            electricityShare,
-            waterShare,
-            commonFeeShare,
-            lateFeeShare,
-            otherShare,
+            invoiceRent,
+            invoiceElectricity,
+            invoiceWater,
+            invoiceCommonFee,
+            invoiceLateFee,
+            invoiceOther,
+            invoiceTotal,
             notes: noteParts.length > 0 ? noteParts.join("; ") : "-",
           };
         })
@@ -503,10 +496,31 @@ export default function ReportsPageView() {
     if (incomePaymentMethodFilter !== "all") {
       rows = rows.filter((row) => row.method === incomePaymentMethodFilter);
     }
-    return rows.sort((a, b) => {
+    const sorted = rows.sort((a, b) => {
       const order = new Date(b.paid_at).getTime() - new Date(a.paid_at).getTime();
       if (order !== 0) return order;
       return byBuildingAndRoom(a, b);
+    });
+
+    // The rent/utilities/late-fee breakdown belongs to the invoice, not to any
+    // one payment, and an invoice can be settled by more than one payment (a
+    // partial, then a top-up) — there's no real basis for dividing "how much
+    // of THIS payment was rent." So it's shown once per invoice, on the
+    // chronologically earliest visible payment, and left blank on any later
+    // payment(s) so summing the column in a spreadsheet doesn't double-count.
+    const oldestPaidAtByInvoice = new Map<string, number>();
+    for (const row of sorted) {
+      const paidAtMs = new Date(row.paid_at).getTime();
+      const prev = oldestPaidAtByInvoice.get(row.invoice_id);
+      if (prev == null || paidAtMs < prev) oldestPaidAtByInvoice.set(row.invoice_id, paidAtMs);
+    }
+    const invoiceIdsWithBreakdownShown = new Set<string>();
+    return sorted.map((row) => {
+      const isOldestForInvoice =
+        new Date(row.paid_at).getTime() === oldestPaidAtByInvoice.get(row.invoice_id);
+      const showBreakdown = isOldestForInvoice && !invoiceIdsWithBreakdownShown.has(row.invoice_id);
+      if (showBreakdown) invoiceIdsWithBreakdownShown.add(row.invoice_id);
+      return { ...row, showBreakdown };
     });
   }, [cashRows, selectedMonth, incomeSearchQuery, incomeBuildingFilter, incomePaymentMethodFilter]);
 
@@ -1005,13 +1019,15 @@ export default function ReportsPageView() {
   // row, so this can still be checked against a bank statement, but a given
   // period's total will include money that physically arrived the following
   // month if that's when the invoice was paid.
-  // The rent/electricity/water/common-fee/late-fee columns apportion each
-  // allocation's amount by the invoice's own charge mix (see the `allocations`
-  // mapping above) — they always sum to "จำนวนเงิน" on the same row, but are an
-  // apportionment, not a record of which baht paid which line item, since
-  // payments aren't itemized in the ledger. "อื่นๆ" covers non-late-fee
-  // additional charges and any carried-forward balance the allocation also
-  // covered.
+  // The rent/electricity/water/common-fee/late-fee/total columns are the
+  // INVOICE's own figures — not a per-payment split, since payments aren't
+  // itemized by line item and there's no real basis for dividing "how much of
+  // THIS payment was rent." When one invoice was settled by more than one
+  // payment, these columns are filled in once, on that invoice's earliest
+  // payment row (see `showBreakdown` in filteredCashRows), and left blank on
+  // any later payment(s) for the same invoice so a spreadsheet SUM() over the
+  // column doesn't double-count. "อื่นๆ" covers non-late-fee additional
+  // charges and any carried-forward balance.
   const exportCash = () =>
     downloadCsv(
       `cash-received-${selectedMonth}.csv`,
@@ -1028,6 +1044,7 @@ export default function ReportsPageView() {
         "ค่าส่วนกลาง",
         "ค่าปรับชำระล่าช้า",
         "อื่นๆ",
+        "รวม",
         "บัญชีที่รับเงิน",
         "รหัสการชำระ",
         "หมายเหตุ",
@@ -1039,12 +1056,13 @@ export default function ReportsPageView() {
         row.tenant_name,
         row.invoice_period,
         row.amount,
-        Math.round(row.rentShare * 100) / 100,
-        Math.round(row.electricityShare * 100) / 100,
-        Math.round(row.waterShare * 100) / 100,
-        Math.round(row.commonFeeShare * 100) / 100,
-        Math.round(row.lateFeeShare * 100) / 100,
-        Math.round(row.otherShare * 100) / 100,
+        row.showBreakdown ? Math.round(row.invoiceRent * 100) / 100 : "-",
+        row.showBreakdown ? Math.round(row.invoiceElectricity * 100) / 100 : "-",
+        row.showBreakdown ? Math.round(row.invoiceWater * 100) / 100 : "-",
+        row.showBreakdown ? Math.round(row.invoiceCommonFee * 100) / 100 : "-",
+        row.showBreakdown ? Math.round(row.invoiceLateFee * 100) / 100 : "-",
+        row.showBreakdown ? Math.round(row.invoiceOther * 100) / 100 : "-",
+        row.showBreakdown ? Math.round(row.invoiceTotal * 100) / 100 : "-",
         row.method,
         row.payment_batch_id,
         row.notes,
@@ -1335,6 +1353,7 @@ export default function ReportsPageView() {
                         <th className="px-3 py-2 text-right">ค่าน้ำ</th>
                         <th className="px-3 py-2 text-right">ค่าส่วนกลาง</th>
                         <th className="px-3 py-2 text-right">ค่าปรับล่าช้า</th>
+                        <th className="px-3 py-2 text-right">รวม</th>
                         <th className="px-3 py-2 text-center">บัญชีที่รับเงิน</th>
                         <th className="px-3 py-2">หมายเหตุ</th>
                       </tr>
@@ -1358,11 +1377,24 @@ export default function ReportsPageView() {
                                 )}
                               </td>
                               <td className="px-3 py-2 text-right text-success-600">{formatMoney(row.amount)}</td>
-                              <td className="px-3 py-2 text-right text-slate-600">{formatMoney(row.rentShare)}</td>
-                              <td className="px-3 py-2 text-right text-slate-600">{formatMoney(row.electricityShare)}</td>
-                              <td className="px-3 py-2 text-right text-slate-600">{formatMoney(row.waterShare)}</td>
-                              <td className="px-3 py-2 text-right text-slate-600">{formatMoney(row.commonFeeShare)}</td>
-                              <td className="px-3 py-2 text-right text-slate-600">{formatMoney(row.lateFeeShare)}</td>
+                              <td className="px-3 py-2 text-right text-slate-600">
+                                {row.showBreakdown ? formatMoney(row.invoiceRent) : "-"}
+                              </td>
+                              <td className="px-3 py-2 text-right text-slate-600">
+                                {row.showBreakdown ? formatMoney(row.invoiceElectricity) : "-"}
+                              </td>
+                              <td className="px-3 py-2 text-right text-slate-600">
+                                {row.showBreakdown ? formatMoney(row.invoiceWater) : "-"}
+                              </td>
+                              <td className="px-3 py-2 text-right text-slate-600">
+                                {row.showBreakdown ? formatMoney(row.invoiceCommonFee) : "-"}
+                              </td>
+                              <td className="px-3 py-2 text-right text-slate-600">
+                                {row.showBreakdown ? formatMoney(row.invoiceLateFee) : "-"}
+                              </td>
+                              <td className="px-3 py-2 text-right font-medium text-slate-700">
+                                {row.showBreakdown ? formatMoney(row.invoiceTotal) : "-"}
+                              </td>
                               <td className="px-3 py-2 text-center">
                                 {row.method === UNKNOWN_METHOD ? (
                                   <span className="text-slate-400">{row.method}</span>
@@ -1378,7 +1410,7 @@ export default function ReportsPageView() {
                         })
                       ) : (
                         <tr>
-                          <td colSpan={13} className="px-3 py-6 text-center text-slate-500">
+                          <td colSpan={14} className="px-3 py-6 text-center text-slate-500">
                             ไม่พบการรับเงินในเดือนนี้
                           </td>
                         </tr>
