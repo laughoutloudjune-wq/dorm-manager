@@ -525,6 +525,50 @@ export const calculateLateFeePreview = (
   return { days, amount: days * rate };
 };
 
+/**
+ * The calendar date a late-fee accrual window started on, derived from its
+ * "calculated through" date and day count. Carried-in late-fee line items
+ * already store both of those (`snapshot_as_of`, `days_overdue`) — deriving
+ * the start date from them means not needing a separate stored start-date
+ * column that could drift out of sync with the two numbers that actually
+ * determine the charged amount.
+ */
+export const lateFeeWindowStartDate = (
+  asOfDateText: string | null | undefined,
+  days: number | null | undefined
+): string | null => {
+  const dayCount = toNumber(days);
+  if (!asOfDateText || dayCount <= 0) return null;
+  return toLocalDateString(addDays(fromDateText(asOfDateText), -(dayCount - 1)));
+};
+
+/** "12/06/2569 – 26/06/2569"-style label for a late-fee accrual window. */
+export const formatLateFeeWindow = (
+  asOfDateText: string | null | undefined,
+  days: number | null | undefined
+): string | null => {
+  const startDateText = lateFeeWindowStartDate(asOfDateText, days);
+  if (!startDateText || !asOfDateText) return null;
+  return `${formatDateThai(startDateText)} – ${formatDateThai(asOfDateText)}`;
+};
+
+/**
+ * The one place a carried-in late-fee line item's label/detail text is
+ * built, so the invoice editor, the print template, and the bulk monthly
+ * generator can't drift into showing different wording for the same thing.
+ */
+export const buildLateFeeLineDetail = (
+  sourcePeriodStartDate: string | null | undefined,
+  days: number,
+  dailyRate: number,
+  asOfDateText: string | null | undefined
+): string => {
+  const period = formatPeriodLabel(sourcePeriodStartDate);
+  const window = formatLateFeeWindow(asOfDateText, days);
+  const daysRate = `${days.toLocaleString("th-TH")} วัน × ${dailyRate.toFixed(0)} บาท`;
+  return `ค่าปรับล่าช้างวด ${period} (${daysRate}${window ? `, ${window}` : ""})`;
+};
+
 // ── Meter reading helpers ─────────────────────────────────────────────────────
 
 export type MeterReadingRow = {

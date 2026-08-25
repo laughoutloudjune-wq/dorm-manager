@@ -39,6 +39,7 @@ import {
   emptyFeeItem,
   calculateProratedRentByBillingDay,
   calculateLateFeePreview,
+  formatLateFeeWindow,
   paymentMethodSnapshotLabel,
   UNKNOWN_PAYMENT_METHOD,
   paymentSourceLabel,
@@ -1057,6 +1058,13 @@ export function InvoiceDetailModal() {
                           <div>
                             <p className="text-xs font-bold text-danger-800/60 uppercase tracking-wider">ค่าปรับล่าช้าอัตโนมัติ</p>
                             <p className="text-sm text-slate-600 mt-1">คำนวณจากยอดค้างชำระ (สรุปยอดเมื่อออกบิลรอบถัดไป)</p>
+                            {form.late_fee_start_date && (
+                              <p className="text-xs text-slate-500 mt-1">
+                                เริ่มนับค่าปรับตั้งแต่วันที่ {formatDateThai(form.late_fee_start_date)}
+                                {form.locked_late_fee_amount === null &&
+                                  " — ยังไม่ล็อก จะคำนวณยอดสุทธิ ณ วันที่ชำระครบหรือวันออกบิลถัดไป"}
+                              </p>
+                            )}
                           </div>
                           <div className="flex items-center gap-3">
                             <div className="flex items-center gap-2">
@@ -1103,39 +1111,50 @@ export function InvoiceDetailModal() {
                         <p className="text-sm text-danger-700/50 text-center py-6 font-bold">ไม่มีรายการค่าปรับเพิ่มเติม</p>
                       ) : (
                         <div className="space-y-4">
-                          {editableLateFeeItems.map((item, index) => (
-                            <div key={index} className="flex gap-3 items-center group">
-                              <input
-                                type="text"
-                                value={item.detail}
-                                onChange={(e) => updateLateFeeItem(index, "detail", e.target.value)}
-                                placeholder="รายละเอียดค่าปรับ"
-                                className="flex-1 rounded-control border border-danger-200 px-4 py-3 text-sm font-semibold transition focus:border-danger-400 focus:ring-1 focus:ring-danger-400"
-                              />
-                              <input
-                                type="number"
-                                value={item.unit}
-                                onChange={(e) => updateLateFeeItem(index, "unit", e.target.value)}
-                                placeholder="หน่วย"
-                                className="w-24 rounded-control border border-danger-200 px-4 py-3 text-sm text-right font-bold transition focus:border-danger-400 focus:ring-1 focus:ring-danger-400"
-                              />
-                              <span className="text-danger-300 font-bold">x</span>
-                              <input
-                                type="number"
-                                value={item.price_per_unit}
-                                onChange={(e) => updateLateFeeItem(index, "price_per_unit", e.target.value)}
-                                placeholder="ราคา"
-                                className="w-32 rounded-control border border-danger-300 px-4 py-3 text-sm text-right font-black text-danger-700 transition focus:border-danger-400 focus:ring-1 focus:ring-danger-400"
-                              />
-                              <button
-                                type="button"
-                                onClick={() => setEditableLateFeeItems((prev) => prev.filter((_, idx) => idx !== index))}
-                                className="text-danger-400 p-3 hover:bg-danger-50 hover:text-danger-600 rounded-control transition opacity-50 group-hover:opacity-100"
-                              >
-                                <Trash2 size={18} />
-                              </button>
-                            </div>
-                          ))}
+                          {editableLateFeeItems.map((item, index) => {
+                            const window = formatLateFeeWindow(
+                              item.snapshot_as_of,
+                              item.days_overdue ?? item.unit
+                            );
+                            return (
+                              <div key={index} className="space-y-1">
+                                <div className="flex gap-3 items-center group">
+                                  <input
+                                    type="text"
+                                    value={item.detail}
+                                    onChange={(e) => updateLateFeeItem(index, "detail", e.target.value)}
+                                    placeholder="รายละเอียดค่าปรับ"
+                                    className="flex-1 rounded-control border border-danger-200 px-4 py-3 text-sm font-semibold transition focus:border-danger-400 focus:ring-1 focus:ring-danger-400"
+                                  />
+                                  <input
+                                    type="number"
+                                    value={item.unit}
+                                    onChange={(e) => updateLateFeeItem(index, "unit", e.target.value)}
+                                    placeholder="หน่วย"
+                                    className="w-24 rounded-control border border-danger-200 px-4 py-3 text-sm text-right font-bold transition focus:border-danger-400 focus:ring-1 focus:ring-danger-400"
+                                  />
+                                  <span className="text-danger-300 font-bold">x</span>
+                                  <input
+                                    type="number"
+                                    value={item.price_per_unit}
+                                    onChange={(e) => updateLateFeeItem(index, "price_per_unit", e.target.value)}
+                                    placeholder="ราคา"
+                                    className="w-32 rounded-control border border-danger-300 px-4 py-3 text-sm text-right font-black text-danger-700 transition focus:border-danger-400 focus:ring-1 focus:ring-danger-400"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => setEditableLateFeeItems((prev) => prev.filter((_, idx) => idx !== index))}
+                                    className="text-danger-400 p-3 hover:bg-danger-50 hover:text-danger-600 rounded-control transition opacity-50 group-hover:opacity-100"
+                                  >
+                                    <Trash2 size={18} />
+                                  </button>
+                                </div>
+                                {window && (
+                                  <p className="pl-1 text-2xs text-danger-600/70">คำนวณช่วง {window}</p>
+                                )}
+                              </div>
+                            );
+                          })}
                         </div>
                       )}
                     </div>

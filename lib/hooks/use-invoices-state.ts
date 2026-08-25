@@ -33,6 +33,9 @@ import {
   shortInvoiceId,
   formatDateThai,
   formatPeriodLabel,
+  formatLateFeeWindow,
+  lateFeeWindowStartDate,
+  buildLateFeeLineDetail,
   parseMoneyString,
   monthStartFromDate,
   statusLabelThai,
@@ -476,26 +479,14 @@ export function useInvoicesState() {
           const invoiceMonth = invoice.start_date
             ? String(invoice.start_date).slice(0, 7)
             : null;
-          const moveInDate = invoice.tenant_move_in_date
-            ? new Date(invoice.tenant_move_in_date)
-            : null;
-          const invoiceDate = invoice.start_date
-            ? new Date(invoice.start_date)
-            : null;
 
-          let diffMonths = -1;
-          if (moveInDate && invoiceDate) {
-            diffMonths =
-              (invoiceDate.getFullYear() - moveInDate.getFullYear()) * 12 +
-              (invoiceDate.getMonth() - moveInDate.getMonth());
-          }
-
-          const isFirstInvoice = Boolean(
-            invoiceMonth &&
-            (invoiceMonth === earliestMonth ||
-              diffMonths === 0 ||
-              diffMonths === 1),
-          );
+          // The "new tenant" badge marks the tenant's actual first invoice
+          // only — not a second month afterward. It used to also flag any
+          // invoice exactly one calendar month after move-in, which kept the
+          // badge showing on a completely normal second invoice (and, for a
+          // tenant who moved in on the 1st with no proration at all, made
+          // both their first AND second invoice look "new").
+          const isFirstInvoice = Boolean(invoiceMonth && invoiceMonth === earliestMonth);
 
           const isWaitingMoveOut = Boolean(
             invoice.tenant_move_out_date && invoice.tenant_status === "active",
@@ -1849,12 +1840,13 @@ export function useInvoicesState() {
 
     setSaving(true);
     try {
+      const valuationDate = activeInvoice.issue_date || activeInvoice.start_date;
       const candidates = await getCarryForwardCandidatesForTarget(
         supabase,
         activeInvoice.tenant_id,
         activeInvoice.start_date,
         activeInvoice.id,
-        activeInvoice.issue_date || activeInvoice.start_date,
+        valuationDate,
       );
 
       const filteredCandidates = candidates.filter((c) =>
@@ -1881,13 +1873,14 @@ export function useInvoicesState() {
           const daysOverdue = toNumber(row.late_fee_snapshot_days);
           const dailyRate = toNumber(row.late_fee_per_day);
           nextLateFeeItems.push({
-            detail: `ค่าปรับล่าช้างวด ${formatPeriodLabel(String(row.start_date ?? ""))}`,
+            detail: buildLateFeeLineDetail(String(row.start_date ?? ""), daysOverdue, dailyRate, valuationDate),
             unit: daysOverdue,
             price_per_unit: dailyRate,
             total_amount: snapshotLateFee,
             source_invoice_id: String(row.id),
             days_overdue: daysOverdue,
             daily_rate: dailyRate,
+            snapshot_as_of: valuationDate,
             original_amount: snapshotLateFee,
             waived_amount: 0,
           });
@@ -2584,7 +2577,10 @@ export function useInvoicesState() {
               .map(
                 (row) => `
                   <tr>
-                    <td>ค่าปรับล่าช้า - บิล ${shortInvoiceId(row.source_invoice_id)} (คำนวณถึง ${formatDateThai(row.snapshot_as_of)})</td>
+                    <td>ค่าปรับล่าช้า - บิล ${shortInvoiceId(row.source_invoice_id)}${(() => {
+                      const window = formatLateFeeWindow(row.snapshot_as_of, row.days_overdue);
+                      return window ? ` (${window})` : ` (คำนวณถึง ${formatDateThai(row.snapshot_as_of)})`;
+                    })()}</td>
                     <td class="text-right">${row.days_overdue.toLocaleString("th-TH")} วัน</td>
                     <td class="text-right">${formatMoney(row.daily_rate)}</td>
                     <td class="text-right">${formatMoney(row.late_fee_amount)}</td>
@@ -3256,20 +3252,31 @@ export function useInvoicesState() {
       // Carried late fees — one line item per source invoice that has an accrued late fee
       const lateFeeBreakdown = carryForwardRows
         .filter((row: any) => toNumber(row.snapshot_late_fee_amount) > 0)
-        .map((row: any) => ({
-          item_type: "late_fee",
-          source_invoice_id: row.id,
-          label: `ค่าปรับล่าช้างวด ${formatPeriodLabel(String(row.start_date ?? ""))} (${row.snapshot_days_overdue} วัน × ${toNumber(row.snapshot_daily_rate).toFixed(0)} บาท)`,
-          detail: `ค่าปรับล่าช้างวด ${formatPeriodLabel(String(row.start_date ?? ""))}`,
-          unit: toNumber(row.snapshot_days_overdue),
-          price_per_unit: toNumber(row.snapshot_daily_rate),
-          total_amount: toNumber(row.snapshot_late_fee_amount),
-          amount: toNumber(row.snapshot_late_fee_amount),
-          days_overdue: toNumber(row.snapshot_days_overdue),
-          daily_rate: toNumber(row.snapshot_daily_rate),
-          original_amount: toNumber(row.snapshot_late_fee_amount),
-          waived_amount: 0,
-        }));
+        .map((row: any) => {
+          const daysOverdue = toNumber(row.snapshot_days_overdue);
+          const dailyRate = toNumber(row.snapshot_daily_rate);
+          const detail = buildLateFeeLineDetail(
+            String(row.start_date ?? ""),
+            daysOverdue,
+            dailyRate,
+            row.snapshot_as_of,
+          );
+          return {
+            item_type: "late_fee",
+            source_invoice_id: row.id,
+            label: detail,
+            detail,
+            unit: daysOverdue,
+            price_per_unit: dailyRate,
+            total_amount: toNumber(row.snapshot_late_fee_amount),
+            amount: toNumber(row.snapshot_late_fee_amount),
+            days_overdue: daysOverdue,
+            daily_rate: dailyRate,
+            snapshot_as_of: row.snapshot_as_of,
+            original_amount: toNumber(row.snapshot_late_fee_amount),
+            waived_amount: 0,
+          };
+        });
 
       const carriedLateFeeTotal = lateFeeBreakdown.reduce(
         (sum: number, item: any) => sum + toNumber(item.total_amount),

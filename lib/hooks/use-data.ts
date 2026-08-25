@@ -196,10 +196,14 @@ export const useMeterReadingsRawData = (selectedMonth: string) => {
     const activeTenantIds = ((activeTenants ?? []) as any[]).map((item) => String(item?.id ?? "")).filter(Boolean);
     let tenantInvoices: any[] = [];
     if (activeTenantIds.length > 0) {
+      // Up through the end of the currently-viewed month, not just before it —
+      // otherwise a regular invoice already generated FOR this month is
+      // invisible to this check, and the room keeps showing the "first
+      // billing cycle" banner even after it's no longer true.
       const { data } = await supabase.from("invoices")
         .select("tenant_id,start_date,status")
         .in("tenant_id", activeTenantIds)
-        .lt("start_date", currentMonthKey)
+        .lt("start_date", nextMonthKey)
         .neq("status", "cancelled");
       tenantInvoices = data ?? [];
     }
