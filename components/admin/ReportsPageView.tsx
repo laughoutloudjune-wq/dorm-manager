@@ -89,6 +89,17 @@ const getAdditionalFees = (rows: any[]) =>
     .map((row) => `${String(row?.detail ?? row?.label ?? "ค่าธรรมเนียม")} (${formatMoney(toNumber(row?.total_amount ?? row?.amount))})`)
     .join(", ");
 
+// A mid-month room transfer doesn't split into two invoices — the whole
+// month's rent/water/electricity is folded into ONE invoice under the
+// destination room, with the old-room/new-room split surviving only as these
+// informational `transfer_detail` lines (not separate ledger amounts). So any
+// report grouped by room, cash breakdown included, is showing blended figures
+// for that month, not figures purely belonging to the listed room.
+const hasRoomTransferDetail = (rows: any) =>
+  (Array.isArray(rows) ? rows : []).some(
+    (row: any) => String(row?.item_type ?? row?.type ?? "").toLowerCase() === "transfer_detail"
+  );
+
 const csvCell = (value: any) => {
   const text = String(value ?? "");
   return text.includes(",") || text.includes("\"") || text.includes("\n")
@@ -331,6 +342,11 @@ export default function ReportsPageView() {
           if (isLate) noteParts.push("ชำระเกินกำหนด (หลังวันครบกำหนดของบิลนี้)");
           if (method === UNKNOWN_PAYMENT_METHOD) {
             noteParts.push("ไม่ทราบบัญชีที่รับเงิน (บันทึกก่อนระบบเริ่มเก็บบัญชีผู้รับ)");
+          }
+          if (hasRoomTransferDetail(invoice?.additional_fees_breakdown)) {
+            noteParts.push(
+              "บิลนี้รวมค่าเช่า/ค่าน้ำ-ไฟช่วงย้ายห้อง (ห้องเดิม+ห้องใหม่ในบิลเดียว) ตัวเลขข้างต้นจึงไม่ใช่ของห้องนี้ล้วนๆ"
+            );
           }
 
           return {

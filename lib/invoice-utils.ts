@@ -173,7 +173,15 @@ export type TransferBreakdownItem = {
   value: string;
   amount?: number | null;
   editable?: boolean;
-  kind?: "old_rent" | "new_rent" | "old_water" | "new_water" | "old_elec" | "new_elec" | null;
+  kind?:
+    | "old_rent"
+    | "new_rent"
+    | "old_water"
+    | "new_water"
+    | "old_elec"
+    | "new_elec"
+    | "water_min_adjustment"
+    | null;
 };
 
 export const emptyFeeItem = (): FeeLineItem => ({
@@ -318,14 +326,20 @@ export const toTransferBreakdownItems = (rows: any[]): TransferBreakdownItem[] =
     .map((row) => {
       const label = String(row?.label ?? row?.detail ?? "").trim();
       const transferKindRaw = String(row?.transfer_kind ?? "").toLowerCase();
-      const utilityKinds = ["old_water", "new_water", "old_elec", "new_elec"] as const;
+      const utilityKinds = [
+        "old_water",
+        "new_water",
+        "old_elec",
+        "new_elec",
+        "water_min_adjustment",
+      ] as const;
       const inferredKind: TransferBreakdownItem["kind"] =
         transferKindRaw === "old_rent" || label.includes("ค่าเช่าห้องเดิม")
           ? "old_rent"
           : transferKindRaw === "new_rent" || label.includes("ค่าเช่าห้องใหม่")
             ? "new_rent"
             : (utilityKinds as readonly string[]).includes(transferKindRaw)
-              ? (transferKindRaw as "old_water" | "new_water" | "old_elec" | "new_elec")
+              ? (transferKindRaw as (typeof utilityKinds)[number])
               : null;
       const isEditable = inferredKind === "old_rent" || inferredKind === "new_rent";
       const hasStoredAmount = row?.amount_value != null;
@@ -433,6 +447,65 @@ export const calculateWaterBillWithMinimum = (
     return Math.max(usageBill, minimumFloor);
   }
   return usageBill;
+};
+
+/**
+ * Water line items for a mid-month room-transfer invoice's display breakdown
+ * ONLY — these feed `additional_fees_breakdown` (item_type "transfer_detail",
+ * `total_amount` always 0), never a money column. The real invoice water_bill
+ * floors the WHOLE month's combined usage once, via `calculateWaterBillWithMinimum`
+ * on old+new units together — that is unaffected by this function.
+ *
+ * Flooring each room's usage separately here, as this used to do, silently
+ * replaced "units × rate" with the minimum charge while still labeling it as
+ * that multiplication (e.g. "3 หน่วย × 17.00 = 170.00", which is false — 3×17
+ * is 51), and the two rows no longer summed to the real bill. So the two
+ * per-room rows below show genuine, honest unit × rate math, and any gap
+ * against the real combined-and-floored bill is called out as its own
+ * clearly-labeled minimum-charge line instead of being hidden inside a lie.
+ */
+export const buildTransferWaterBreakdown = (
+  oldUnits: number,
+  newUnits: number,
+  waterRate: number,
+  waterMinUnits: number,
+  waterMinPrice: number
+): TransferBreakdownItem[] => {
+  const oldRaw = oldUnits * waterRate;
+  const newRaw = newUnits * waterRate;
+  const combinedBill = calculateWaterBillWithMinimum(
+    oldUnits + newUnits,
+    waterRate,
+    waterMinUnits,
+    waterMinPrice
+  );
+  const shortfall = Math.max(0, combinedBill - (oldRaw + newRaw));
+
+  const items: TransferBreakdownItem[] = [
+    {
+      label: `ค่าน้ำห้องเดิม (${oldUnits} หน่วย)`,
+      value: `${oldUnits} หน่วย × ${formatMoney(waterRate)} = ${formatMoney(oldRaw)}`,
+      amount: oldRaw,
+      kind: "old_water",
+    },
+    {
+      label: `ค่าน้ำห้องใหม่ (${newUnits} หน่วย)`,
+      value: `${newUnits} หน่วย × ${formatMoney(waterRate)} = ${formatMoney(newRaw)}`,
+      amount: newRaw,
+      kind: "new_water",
+    },
+  ];
+
+  if (shortfall > 0) {
+    items.push({
+      label: `ค่าน้ำขั้นต่ำ (รวมทั้งเดือนไม่ถึง ${waterMinUnits} หน่วย)`,
+      value: `ปรับเพิ่มให้ครบขั้นต่ำเดือนละ ${formatMoney(waterMinPrice)} = ${formatMoney(shortfall)}`,
+      amount: shortfall,
+      kind: "water_min_adjustment",
+    });
+  }
+
+  return items;
 };
 
 export const calculateLateFeePreview = (

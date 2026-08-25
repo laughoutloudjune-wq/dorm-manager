@@ -59,6 +59,7 @@ import {
   buildRuleBreakdown,
   calculateProratedRentByBillingDay,
   calculateWaterBillWithMinimum,
+  buildTransferWaterBreakdown,
   calculateLateFeePreview,
   resolveElectricityUsage,
   resolveWaterUsage,
@@ -1771,9 +1772,14 @@ export function useInvoicesState() {
         : toNumber(reading?.water_usage ?? 0);
 
     const oldElecBill = oldElecUnits * electricityRate;
-    const oldWaterBill = calculateWaterBillWithMinimum(oldWaterUnits, waterRate, waterMinUnits, waterMinPrice);
     const newElecBill = newElecUnits * electricityRate;
-    const newWaterBill = calculateWaterBillWithMinimum(newWaterUnits, waterRate, waterMinUnits, waterMinPrice);
+    const waterBreakdownItems = buildTransferWaterBreakdown(
+      oldWaterUnits,
+      newWaterUnits,
+      waterRate,
+      waterMinUnits,
+      waterMinPrice
+    );
 
     // Rebuild the full transfer breakdown with per-room utility rows
     const newItems = serializeTransferBreakdownRows([
@@ -1792,18 +1798,7 @@ export function useInvoicesState() {
         editable: true,
         kind: "new_rent",
       },
-      {
-        label: `ค่าน้ำห้องเดิม (${oldWaterUnits} หน่วย)`,
-        value: `${oldWaterUnits} หน่วย × ${formatMoney(waterRate)} = ${formatMoney(oldWaterBill)}`,
-        amount: oldWaterBill,
-        kind: "old_water",
-      },
-      {
-        label: `ค่าน้ำห้องใหม่ (${newWaterUnits} หน่วย)`,
-        value: `${newWaterUnits} หน่วย × ${formatMoney(waterRate)} = ${formatMoney(newWaterBill)}`,
-        amount: newWaterBill,
-        kind: "new_water",
-      },
+      ...waterBreakdownItems,
       {
         label: `ค่าไฟห้องเดิม (${oldElecUnits} หน่วย)`,
         value: `${oldElecUnits} หน่วย × ${formatMoney(electricityRate)} = ${formatMoney(oldElecBill)}`,
@@ -2676,11 +2671,11 @@ export function useInvoicesState() {
                   : ""
               }
               ${(() => {
-                const utilityKinds = ["old_water", "new_water", "old_elec", "new_elec"];
+                const utilityKinds = ["old_water", "new_water", "old_elec", "new_elec", "water_min_adjustment"];
                 const utilityTransferItems = transferRows.filter((r) => utilityKinds.includes(r.kind ?? ""));
                 if (utilityTransferItems.length > 0) {
                   // Per-room utility breakdown for mid-month transfer
-                  const order = ["old_water", "old_elec", "new_water", "new_elec"];
+                  const order = ["old_water", "old_elec", "new_water", "new_elec", "water_min_adjustment"];
                   return order.map((kind) => {
                     const item = utilityTransferItems.find((r) => r.kind === kind);
                     if (!item || toNumber(item.amount) == null) return "";
@@ -2688,8 +2683,13 @@ export function useInvoicesState() {
                     const match = item.label.match(/\((\d+)\s*หน่วย\)/);
                     const units = match ? parseInt(match[1], 10) : 0;
                     const rate = units > 0 ? amt / units : 0;
-                    const isOld = kind.startsWith("old_");
-                    return `<tr style="background:${isOld ? '#f0f9ff' : '#f0fdf4'}">
+                    const rowColor =
+                      kind === "water_min_adjustment"
+                        ? "#fffbeb"
+                        : kind.startsWith("old_")
+                          ? "#f0f9ff"
+                          : "#f0fdf4";
+                    return `<tr style="background:${rowColor}">
                       <td>${item.label}</td>
                       <td class="text-right">${units > 0 ? units + " หน่วย" : "-"}</td>
                       <td class="text-right">${units > 0 ? formatMoney(rate) : "-"}</td>
@@ -3292,13 +3292,16 @@ export function useInvoicesState() {
       const waterMinUnits = toNumber(settings.water_min_units);
       const waterMinPrice = toNumber(settings.water_min_price);
       const oldElecBill = hasTransferToThisRoom ? oldRoomElecUnits * electricityRate : 0;
-      const oldWaterBill = hasTransferToThisRoom
-        ? calculateWaterBillWithMinimum(oldRoomWaterUnits, waterRate, waterMinUnits, waterMinPrice)
-        : 0;
       const newElecBill = hasTransferToThisRoom ? newRoomElecUnits * electricityRate : 0;
-      const newWaterBill = hasTransferToThisRoom
-        ? calculateWaterBillWithMinimum(newRoomWaterUnits, waterRate, waterMinUnits, waterMinPrice)
-        : 0;
+      const waterBreakdownItems = hasTransferToThisRoom
+        ? buildTransferWaterBreakdown(
+            oldRoomWaterUnits,
+            newRoomWaterUnits,
+            waterRate,
+            waterMinUnits,
+            waterMinPrice
+          )
+        : [];
 
       const transferBreakdownRows = hasTransferToThisRoom
         ? serializeTransferBreakdownRows([
@@ -3320,18 +3323,7 @@ export function useInvoicesState() {
               editable: true,
               kind: "new_rent",
             },
-            {
-              label: `ค่าน้ำห้องเดิม (${oldRoomWaterUnits} หน่วย)`,
-              value: `${oldRoomWaterUnits} หน่วย × ${formatMoney(waterRate)} = ${formatMoney(oldWaterBill)}`,
-              amount: oldWaterBill,
-              kind: "old_water",
-            },
-            {
-              label: `ค่าน้ำห้องใหม่ (${newRoomWaterUnits} หน่วย)`,
-              value: `${newRoomWaterUnits} หน่วย × ${formatMoney(waterRate)} = ${formatMoney(newWaterBill)}`,
-              amount: newWaterBill,
-              kind: "new_water",
-            },
+            ...waterBreakdownItems,
             {
               label: `ค่าไฟห้องเดิม (${oldRoomElecUnits} หน่วย)`,
               value: `${oldRoomElecUnits} หน่วย × ${formatMoney(electricityRate)} = ${formatMoney(oldElecBill)}`,
@@ -3561,7 +3553,7 @@ export function useInvoicesState() {
       });
     }
 
-    const transferUtilityKinds = ["old_water", "new_water", "old_elec", "new_elec"];
+    const transferUtilityKinds = ["old_water", "new_water", "old_elec", "new_elec", "water_min_adjustment"];
     const transferUtilityItems = transferBreakdownItems.filter(
       (item) => transferUtilityKinds.includes(item.kind ?? ""),
     );
@@ -3569,9 +3561,10 @@ export function useInvoicesState() {
 
     if (hasTransferUtilityBreakdown) {
       // Render per-room utility rows from the stored transfer breakdown
-      const utilityOrder = ["old_water", "old_elec", "new_water", "new_elec"];
+      const utilityOrder = ["old_water", "old_elec", "new_water", "new_elec", "water_min_adjustment"];
       const toneByKind: Record<string, string> = {
         old_water: "sky", old_elec: "sky", new_water: "sky", new_elec: "sky",
+        water_min_adjustment: "amber",
       };
       utilityOrder.forEach((kind) => {
         const item = transferUtilityItems.find((i) => i.kind === kind);
