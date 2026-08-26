@@ -2844,20 +2844,48 @@ export function useInvoicesState() {
       return;
     }
 
-    if (!occupiedRooms || occupiedRooms.length === 0) {
+    // Vacated-but-unsettled tenants: the "vacate" move-out step frees the room
+    // (rooms.status back to "available") immediately, but deliberately leaves
+    // room_id set on the tenant row until final_move_out settles them (see
+    // CLAUDE.md's move-out flow / the move-outs "pending settlement" list).
+    // They still owe rent for this period, so they must keep getting billed
+    // like any other occupied room until settlement clears room_id — otherwise
+    // this room silently falls out of every cycle's invoice run and the
+    // eventual settlement step has no regular invoice to anchor off of.
+    const { data: pendingSettlementTenants, error: pendingTenantError } =
+      await supabase
+        .from("tenants")
+        .select("id,room_id,move_in_date,rooms(room_number,price_month)")
+        .eq("status", "inactive")
+        .not("room_id", "is", null);
+
+    if (pendingTenantError) {
+      setSaving(false);
+      setConfirmGenerateOpen(false);
+      setError(pendingTenantError.message);
+      return;
+    }
+
+    if (
+      (!occupiedRooms || occupiedRooms.length === 0) &&
+      (!pendingSettlementTenants || pendingSettlementTenants.length === 0)
+    ) {
       setSaving(false);
       setConfirmGenerateOpen(false);
       setError("No occupied rooms found.");
       return;
     }
 
-    const roomIds = occupiedRooms.map((room: any) => room.id);
+    const roomIds = (occupiedRooms ?? []).map((room: any) => room.id);
 
     const { data: activeTenants, error: tenantError } = await supabase
       .from("tenants")
       .select("id,room_id,full_name,move_in_date,move_out_date")
       .eq("status", "active")
-      .in("room_id", roomIds);
+      .in(
+        "room_id",
+        roomIds.length > 0 ? roomIds : ["00000000-0000-0000-0000-000000000000"],
+      );
 
     if (tenantError) {
       setSaving(false);
@@ -2872,11 +2900,11 @@ export function useInvoicesState() {
         tenantByRoom.set(tenant.room_id, tenant);
     }
 
-    const missingTenantRooms = occupiedRooms.filter(
+    const missingTenantRooms = (occupiedRooms ?? []).filter(
       (room: any) => !tenantByRoom.has(room.id),
     );
 
-    const billingTenants = occupiedRooms
+    const billingTenants = (occupiedRooms ?? [])
       .map((room: any) => {
         const tenant = tenantByRoom.get(room.id);
         if (!tenant) return null;
@@ -2891,6 +2919,29 @@ export function useInvoicesState() {
         };
       })
       .filter(Boolean) as any[];
+
+    // Merge in the pending-settlement tenants fetched above. Skip any whose
+    // room_id has since been reassigned to a new active tenant (already
+    // covered via tenantByRoom) — their remaining charges belong solely to
+    // their own final_move_out settlement, not another recurring invoice.
+    for (const tenant of pendingSettlementTenants ?? []) {
+      const roomId = String((tenant as any).room_id ?? "");
+      if (!roomId || tenantByRoom.has(roomId)) continue;
+      const roomRel = Array.isArray((tenant as any).rooms)
+        ? (tenant as any).rooms[0]
+        : (tenant as any).rooms;
+      if (!roomRel) continue;
+      billingTenants.push({
+        id: (tenant as any).id,
+        room_id: roomId,
+        move_in_date: (tenant as any).move_in_date,
+        rooms: {
+          room_number: roomRel.room_number,
+          price_month: roomRel.price_month,
+        },
+      });
+      if (!roomIds.includes(roomId)) roomIds.push(roomId);
+    }
 
     const transferByTenant = new Map<string, any>();
     if (billingTenants.length > 0) {
@@ -3492,14 +3543,26 @@ export function useInvoicesState() {
       );
     }
 
-    const occupiedRoomIds = new Set(occupiedRooms.map((room: any) => room.id));
+    const occupiedRoomIds = new Set<string>([
+      ...(occupiedRooms ?? []).map((room: any) => String(room.id)),
+      ...billingTenants.map((tenant: any) => String(tenant.room_id)),
+    ]);
     const billedRoomIds = new Set<string>([
       ...existingRoomIds,
       ...generatedRoomIds,
     ]);
-    const roomNumberById = new Map<string, string>(
-      occupiedRooms.map((room: any) => [room.id, room.room_number]),
-    );
+    const roomNumberById = new Map<string, string>([
+      ...(occupiedRooms ?? []).map(
+        (room: any) => [String(room.id), room.room_number] as [string, string],
+      ),
+      ...billingTenants.map(
+        (tenant: any) =>
+          [String(tenant.room_id), tenant.rooms?.room_number] as [
+            string,
+            string,
+          ],
+      ),
+    ]);
     const notBilledRoomIds = [...occupiedRoomIds].filter(
       (roomId) => !billedRoomIds.has(roomId),
     );
