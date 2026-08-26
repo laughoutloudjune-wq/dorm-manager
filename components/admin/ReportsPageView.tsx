@@ -302,6 +302,32 @@ export default function ReportsPageView() {
       ]) {
         allocationById.set(String((row as any).id), row);
       }
+
+      // A handful of legacy allocation rows never got their own
+      // payment_method_snapshot even though the payment_batches row they
+      // belong to has one (it was attached after the fact via the invoice's
+      // Payments tab, which only updated the batch in some older runs). Fall
+      // back to the batch's snapshot here too, matching what the invoice
+      // detail modal already does — otherwise this report says "ไม่ระบุบัญชี"
+      // for a payment whose account the Payments tab shows correctly.
+      const batchIdsNeedingFallback = [
+        ...new Set(
+          [...allocationById.values()]
+            .filter((row: any) => !row.payment_method_snapshot && row.payment_batch_id)
+            .map((row: any) => String(row.payment_batch_id)),
+        ),
+      ];
+      let batchSnapshotById = new Map<string, any>();
+      if (batchIdsNeedingFallback.length > 0) {
+        const { data: batchRows } = await supabase
+          .from("payment_batches")
+          .select("id,payment_method_snapshot")
+          .in("id", batchIdsNeedingFallback);
+        batchSnapshotById = new Map(
+          (batchRows ?? []).map((row: any) => [String(row.id), row.payment_method_snapshot]),
+        );
+      }
+
       setAllocations(
         [...allocationById.values()].map((row: any) => {
           const invoice = relationItem(row.invoice);
@@ -328,7 +354,11 @@ export default function ReportsPageView() {
 
           const dueDate = invoice?.due_date ?? null;
           const isLate = dueDate ? new Date(row.paid_at) > new Date(`${dueDate}T23:59:59`) : false;
-          const method = paymentMethodSnapshotLabel(row.payment_method_snapshot);
+          const method = paymentMethodSnapshotLabel(
+            row.payment_method_snapshot ??
+              batchSnapshotById.get(String(row.payment_batch_id ?? "")) ??
+              null,
+          );
           const noteParts: string[] = [];
           if (isNonCashPaymentSource(row.source)) noteParts.push(paymentSourceLabel(row.source));
           if (isLate) noteParts.push("ชำระเกินกำหนด (หลังวันครบกำหนดของบิลนี้)");
