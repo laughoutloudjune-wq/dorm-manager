@@ -143,7 +143,17 @@ export async function POST(req: Request) {
           return NextResponse.json({ error: closeOldLogError.message }, { status: 500 });
         }
 
-        if (transferPayload?.transfer_date) {
+        // `no_fee` is a mid-month move with no proration at all — e.g. the move
+        // effectively lines up with the invoice cycle, so the tenant should
+        // just be billed the new room's full rate starting next cycle instead
+        // of a split old/new rent + old-room utility line. Skipping the
+        // tenant_room_transfers insert is sufficient: the monthly invoice
+        // generator only applies the old/new split when a row exists for this
+        // tenant's billing month, and falls back to the new room's plain
+        // price_month and its own normal meter_readings otherwise. The
+        // move-in log below still uses transfer_date regardless, so room
+        // occupancy history stays accurate either way.
+        if (transferPayload?.transfer_date && !transferPayload?.no_fee) {
           const roomIds = [String(previousTenant.room_id), roomId];
           const { data: roomRates, error: roomRatesError } = await auth.supabase
             .from("rooms")

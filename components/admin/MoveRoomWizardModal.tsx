@@ -35,6 +35,12 @@ export function MoveRoomWizardModal({
 }: MoveRoomWizardModalProps) {
   const [step, setStep] = useState(1);
   const [isSaving, setIsSaving] = useState(false);
+  // No proration at all: the tenant is billed the new room's full rate
+  // starting next cycle, with no split old/new rent and no old-room utility
+  // line — for a move that effectively lines up with the invoice cycle, where
+  // a mid-month split doesn't make sense. Skips the meter close-out steps
+  // entirely since nothing here will read those numbers.
+  const [noFee, setNoFee] = useState(false);
 
   const [form, setForm] = useState({
     new_room_id: "",
@@ -102,6 +108,23 @@ export function MoveRoomWizardModal({
     return () => { mounted = false; };
   }, [form.new_room_id]);
 
+  // "No fee" skips the meter close-out steps (2 and 3) — there's no
+  // proration to feed them into — and jumps straight from room selection to
+  // the final confirmation.
+  const visibleSteps = useMemo(
+    () => (noFee ? [STEPS[0], STEPS[3]] : STEPS),
+    [noFee],
+  );
+  const currentStepIndex = visibleSteps.findIndex((s) => s.id === step);
+  const goNext = () => {
+    const next = visibleSteps[currentStepIndex + 1];
+    if (next) setStep(next.id);
+  };
+  const goBack = () => {
+    const prev = visibleSteps[currentStepIndex - 1];
+    if (prev) setStep(prev.id);
+  };
+
   const roomsById = useMemo(() => {
     const map = new Map<string, RoomRow>();
     for (const r of rooms) map.set(r.id, r);
@@ -129,26 +152,40 @@ export function MoveRoomWizardModal({
       return;
     }
     setIsSaving(true);
-    
-    const payload = {
-      tenant_id: activeTenant.id,
-      from_room_id: activeTenant.room_id,
-      to_room_id: form.new_room_id,
-      transfer_date: form.transfer_date,
-      billing_month: `${form.transfer_date.slice(0, 7)}-01`,
-      old_prev_electricity: toNumber(form.old_prev_electricity),
-      old_curr_electricity: toNumber(form.old_curr_electricity),
-      old_prev_water: toNumber(form.old_prev_water),
-      old_curr_water: toNumber(form.old_curr_water),
-      new_prev_electricity: toNumber(form.new_curr_electricity),
-      new_curr_electricity: toNumber(form.new_curr_electricity),
-      new_prev_water: toNumber(form.new_curr_water),
-      new_curr_water: toNumber(form.new_curr_water),
-      old_electric_usage: transferOldElectricUsage,
-      old_water_usage: transferOldWaterUsage,
-      old_rent_amount: transferProration.oldRentAmount,
-      new_rent_amount: transferProration.newRentAmount,
-    };
+
+    // `transfer_date` is always sent so the room's move-in log gets the real
+    // transfer date rather than falling back to the tenant's original
+    // move-in date. `no_fee` tells the server to skip the tenant_room_transfers
+    // insert entirely — no split rent, no old-room utility line, next bill
+    // just charges the new room's full rate.
+    const payload = noFee
+      ? {
+          tenant_id: activeTenant.id,
+          from_room_id: activeTenant.room_id,
+          to_room_id: form.new_room_id,
+          transfer_date: form.transfer_date,
+          billing_month: `${form.transfer_date.slice(0, 7)}-01`,
+          no_fee: true,
+        }
+      : {
+          tenant_id: activeTenant.id,
+          from_room_id: activeTenant.room_id,
+          to_room_id: form.new_room_id,
+          transfer_date: form.transfer_date,
+          billing_month: `${form.transfer_date.slice(0, 7)}-01`,
+          old_prev_electricity: toNumber(form.old_prev_electricity),
+          old_curr_electricity: toNumber(form.old_curr_electricity),
+          old_prev_water: toNumber(form.old_prev_water),
+          old_curr_water: toNumber(form.old_curr_water),
+          new_prev_electricity: toNumber(form.new_curr_electricity),
+          new_curr_electricity: toNumber(form.new_curr_electricity),
+          new_prev_water: toNumber(form.new_curr_water),
+          new_curr_water: toNumber(form.new_curr_water),
+          old_electric_usage: transferOldElectricUsage,
+          old_water_usage: transferOldWaterUsage,
+          old_rent_amount: transferProration.oldRentAmount,
+          new_rent_amount: transferProration.newRentAmount,
+        };
 
     try {
       const { createClient } = await import("@/lib/supabase-client");
@@ -190,13 +227,13 @@ export function MoveRoomWizardModal({
         {/* ── Progress Rail ── */}
         <div className="w-full md:w-56 shrink-0 border-r border-slate-100 pr-6">
           <div className="flex flex-col gap-5 relative">
-            {STEPS.map((s, index) => {
+            {visibleSteps.map((s, index) => {
               const Icon = s.icon;
               const isActive = step === s.id;
               const isPast = step > s.id;
               return (
                 <div key={s.id} className="relative flex items-start gap-3">
-                  {index < STEPS.length - 1 && (
+                  {index < visibleSteps.length - 1 && (
                     <div
                       className={`absolute left-[15px] top-8 h-[calc(100%+8px)] w-0.5 -translate-x-1/2 ${
                         isPast ? "bg-primary-600" : "bg-slate-200"
@@ -266,6 +303,22 @@ export function MoveRoomWizardModal({
                   <p>ห้องเดิม: <span className="font-medium text-slate-900">{tenantRoomNumber(activeTenant, roomsById)}</span> (฿{formatMoney(oldRoomRate)})</p>
                   <p>ห้องใหม่: <span className="font-medium text-slate-900">{newRoom ? roomLabel(newRoom) : "-"}</span> (฿{formatMoney(newRoomRate)})</p>
                 </div>
+
+                <label className="flex items-start gap-3 rounded-control border border-slate-200 p-4 text-sm text-slate-700 cursor-pointer hover:border-primary-200">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={noFee}
+                    onChange={(e) => setNoFee(e.target.checked)}
+                  />
+                  <span>
+                    <span className="font-semibold text-slate-800 block">ย้ายห้องแบบไม่คิดค่าใช้จ่ายเพิ่มเติม</span>
+                    <span className="text-slate-500">
+                      ไม่ต้องปิดมิเตอร์และไม่มีการคำนวณค่าเช่า/ค่าน้ำไฟส่วนต่างของห้องเดิม
+                      บิลรอบถัดไปจะคิดค่าเช่าห้องใหม่เต็มจำนวน ({formatMoney(newRoomRate)}/เดือน) ตามปกติ
+                    </span>
+                  </span>
+                </label>
               </div>
             )}
 
@@ -335,15 +388,38 @@ export function MoveRoomWizardModal({
               </div>
             )}
 
-            {step === 4 && (
+            {step === 4 && noFee && (
+              <div className="space-y-5 animate-in fade-in slide-in-from-right-4 duration-300">
+                <h3 className="text-lg font-bold text-slate-800 border-b border-slate-100 pb-2">สรุปการย้ายห้อง</h3>
+                <div className="rounded-card border border-slate-200 overflow-hidden text-sm shadow-sm bg-white">
+                  <div className="p-4 border-b border-slate-100">
+                    <p className="font-medium text-slate-800">ย้ายจาก</p>
+                    <p className="text-slate-900">{tenantRoomNumber(activeTenant, roomsById)} → {newRoom ? roomLabel(newRoom) : "-"}</p>
+                  </div>
+                  <div className="p-4 border-b border-slate-100">
+                    <p className="font-medium text-slate-800">วันที่ย้าย</p>
+                    <p className="text-slate-900">{form.transfer_date}</p>
+                  </div>
+                  <div className="grid grid-cols-[1fr_auto] p-4 bg-primary-50/50 text-primary-900 border-t-2 border-primary-100">
+                    <div>
+                      <p className="font-bold">ค่าเช่าห้องใหม่ (บิลรอบถัดไป)</p>
+                      <p className="text-xs text-primary-800/80">ไม่มีการคำนวณค่าเช่า/ค่าน้ำไฟส่วนต่างของห้องเดิม</p>
+                    </div>
+                    <span className="font-black text-lg">฿{formatMoney(newRoomRate)}</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {step === 4 && !noFee && (
               <div className="space-y-5 animate-in fade-in slide-in-from-right-4 duration-300">
                 <h3 className="text-lg font-bold text-slate-800 border-b border-slate-100 pb-2">สรุปรายการย้ายห้องกลางเดือน</h3>
-                
+
                 <div className="rounded-card border border-slate-200 overflow-hidden text-sm shadow-sm bg-white">
                   <div className="p-4 bg-slate-50 border-b border-slate-200">
                     <p className="font-semibold text-slate-800 text-base">การคำนวณ Pro-rate (ดึงไปออกบิลสิ้นเดือน)</p>
                   </div>
-                  
+
                   <div className="grid grid-cols-[1fr_auto] p-4 border-b border-slate-100 hover:bg-slate-50/50">
                     <div>
                       <p className="font-medium text-slate-800">ค่าเช่าห้องเดิม</p>
@@ -388,14 +464,14 @@ export function MoveRoomWizardModal({
           <div className="mt-8 flex items-center justify-between border-t border-slate-100 pt-5">
             <button
               type="button"
-              onClick={() => setStep(step - 1)}
-              disabled={step === 1 || isSaving}
+              onClick={goBack}
+              disabled={currentStepIndex <= 0 || isSaving}
               className={buttonClasses({ variant: "secondary" })}
             >
               <ChevronLeft className="h-4 w-4" /> ย้อนกลับ
             </button>
-            
-            {step < STEPS.length ? (
+
+            {currentStepIndex < visibleSteps.length - 1 ? (
               <button
                 type="button"
                 onClick={() => {
@@ -403,7 +479,7 @@ export function MoveRoomWizardModal({
                     toast.error("กรุณาเลือกห้องใหม่");
                     return;
                   }
-                  setStep(step + 1);
+                  goNext();
                 }}
                 disabled={isSaving}
                 className={buttonClasses({ variant: "primary" })}
