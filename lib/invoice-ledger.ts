@@ -263,6 +263,79 @@ export const calculateLateFeeAmount = (
   return Math.max(0, rawLateFee - waived);
 };
 
+const addCalendarDays = (date: Date, days: number) => {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+};
+
+const toDateOnlyText = (date: Date) => {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+};
+
+export type LateFeeSnapshot = {
+  amount: number;
+  days: number;
+  /** The date this snapshot's day-count runs through, for display and for
+   * deriving the accrual window's start date (asOf minus days, plus one). */
+  asOf: string | null;
+};
+
+/**
+ * The ONE place that decides an invoice's late-fee snapshot for carrying it
+ * onto a new invoice — used by both the single-invoice recalculate flow and
+ * the bulk monthly generator, so the two can't drift into computing this two
+ * different ways (which is how they ended up writing two different
+ * `item_type` strings for the same kind of line item).
+ *
+ * A PAID invoice never gets a live day-count guess against `asOfDateText` —
+ * only whatever was actually frozen at payment time
+ * (`invoice.locked_late_fee_amount`). Guessing "days since late_fee_start_date
+ * until today" for an invoice settled months ago would wildly overstate a fee
+ * the tenant was never told about. If a paid invoice has no frozen amount
+ * (predates the payment-time freeze, or the freeze never fired), its
+ * snapshot is honestly nothing — amount 0 — rather than a fabricated number.
+ */
+export const computeLateFeeSnapshot = (
+  invoice: Pick<
+    InvoiceLike,
+    | "status"
+    | "late_fee_start_date"
+    | "late_fee_per_day"
+    | "waived_late_fee_amount"
+    | "locked_late_fee_amount"
+  >,
+  asOfDateText: string,
+): LateFeeSnapshot => {
+  const isPaid = String(invoice.status ?? "") === "paid";
+  const rate = Math.max(0, toNumber(invoice.late_fee_per_day));
+
+  if (isPaid) {
+    if (invoice.locked_late_fee_amount === null || invoice.locked_late_fee_amount === undefined) {
+      return { amount: 0, days: 0, asOf: null };
+    }
+    const amount = Math.max(0, toNumber(invoice.locked_late_fee_amount));
+    const days = rate > 0 ? Math.round(amount / rate) : 0;
+    const asOf =
+      days > 0 && invoice.late_fee_start_date
+        ? toDateOnlyText(addCalendarDays(toDateOnly(invoice.late_fee_start_date), days - 1))
+        : null;
+    return { amount, days, asOf };
+  }
+
+  const amount = calculateLateFeeAmount(invoice, asOfDateText);
+  let days = 0;
+  if (invoice.late_fee_start_date) {
+    const startDate = toDateOnly(invoice.late_fee_start_date);
+    const asOfDate = toDateOnly(asOfDateText);
+    if (asOfDate >= startDate) days = dayDiffInclusive(startDate, asOfDate);
+  }
+  return { amount, days, asOf: amount > 0 ? asOfDateText.slice(0, 10) : null };
+};
+
 /**
  * The date an invoice actually finished being paid — the latest entry in its
  * payment history, falling back to the slip upload date, then to `fallbackDate`.
@@ -318,6 +391,7 @@ type InvoiceRowSnapshot = {
   status: string;
   slip_url: string | null;
   slip_uploaded_at: string | null;
+  locked_late_fee_amount: number | null;
 };
 
 /**
@@ -594,11 +668,19 @@ export async function getCarryForwardCandidatesForTarget(
   const { data: invoices, error } = await supabase
     .from("invoices")
     .select(
-      "id,tenant_id,start_date,due_date,total_amount,paid_amount,status,late_fee_amount,late_fee_per_day,late_fee_start_date,waived_late_fee_amount,locked_late_fee_amount,carry_forward_amount",
+      "id,tenant_id,start_date,due_date,total_amount,paid_amount,status,late_fee_amount,late_fee_per_day,late_fee_start_date,waived_late_fee_amount,locked_late_fee_amount,carry_forward_amount,late_fee_billed_at",
     )
     .eq("tenant_id", tenantId)
     .lt("start_date", beforeStartDate)
-    .in("status", [...OPEN_INVOICE_STATUSES])
+    // Still-open invoices (there's principal and/or a late fee left to carry),
+    // OR a PAID invoice whose late fee was frozen at payment time but never
+    // made it onto a bill yet. Without that second branch, a tenant who pays
+    // a few days late — settling the invoice before the next generation cycle
+    // ever looks at it — has their correctly-calculated late fee silently
+    // dropped forever, since nothing else ever re-examines a paid invoice.
+    .or(
+      `status.in.(${OPEN_INVOICE_STATUSES.join(",")}),and(status.eq.paid,late_fee_billed_at.is.null)`,
+    )
     .order("start_date", { ascending: true });
   if (error) throw new Error(error.message);
 
@@ -618,24 +700,20 @@ export async function getCarryForwardCandidatesForTarget(
   // invoice's own portion first. We assume payments retire the invoice's own charge
   // first (min of own charge vs. current outstanding) — see room 114/1 case where a
   // partial April payment left exactly its own 244 baht outstanding.
+  //
+  // A paid invoice's own outstanding principal is always 0 (paid_amount ==
+  // total_amount), so it never contributes a carry-forward line — only its
+  // late fee, via `computeLateFeeSnapshot`, can still be candidate.
   const candidates = (invoices ?? []).map((row: any) => {
-    let snapshotDays = 0;
-    if (row.late_fee_start_date) {
-      const startDate = toDateOnly(row.late_fee_start_date);
-      const asOfDate = toDateOnly(asOfLateFee);
-      if (asOfDate >= startDate) {
-        snapshotDays = dayDiffInclusive(startDate, asOfDate);
-      }
-    }
-    const snapshotLateFee = calculateLateFeeAmount(row, asOfLateFee);
-
+    const lateFeeSnapshot = computeLateFeeSnapshot(row, asOfLateFee);
     const outstanding = getInvoiceOwnOutstanding(row);
 
     return {
       ...row,
       outstanding_amount: outstanding,
-      late_fee_snapshot_amount: snapshotLateFee,
-      late_fee_snapshot_days: snapshotDays,
+      late_fee_snapshot_amount: lateFeeSnapshot.amount,
+      late_fee_snapshot_days: lateFeeSnapshot.days,
+      late_fee_snapshot_as_of: lateFeeSnapshot.asOf,
     };
   });
 
@@ -1159,7 +1237,7 @@ export async function applyInvoicePaymentAllocation(
     const { data: sourceInvoices, error: sourceError } = await supabase
       .from("invoices")
       .select(
-        "id,tenant_id,total_amount,paid_amount,status,payment_history,slip_url,slip_uploaded_at,late_fee_amount,late_fee_per_day,late_fee_start_date,due_date,start_date",
+        "id,tenant_id,total_amount,paid_amount,status,payment_history,slip_url,slip_uploaded_at,late_fee_amount,late_fee_per_day,late_fee_start_date,due_date,start_date,waived_late_fee_amount,locked_late_fee_amount",
       )
       .in("id", sourceInvoiceIds)
       .order("start_date", { ascending: true });
@@ -1170,7 +1248,7 @@ export async function applyInvoicePaymentAllocation(
   const { data: freshTargetInvoice, error: refreshError } = await supabase
     .from("invoices")
     .select(
-      "id,tenant_id,total_amount,paid_amount,status,payment_history,slip_url,slip_uploaded_at,late_fee_amount,late_fee_per_day,late_fee_start_date,due_date,start_date",
+      "id,tenant_id,total_amount,paid_amount,status,payment_history,slip_url,slip_uploaded_at,late_fee_amount,late_fee_per_day,late_fee_start_date,due_date,start_date,waived_late_fee_amount,locked_late_fee_amount",
     )
     .eq("id", invoiceId)
     .single();
@@ -1206,6 +1284,7 @@ export async function applyInvoicePaymentAllocation(
     status: string;
     payment_history: any[];
     allocatedAmount: number;
+    lockedLateFeeAmount?: number;
   }[] = [];
   const allocationRows: any[] = [];
 
@@ -1220,6 +1299,10 @@ export async function applyInvoicePaymentAllocation(
       status: String(invoice.status ?? ""),
       slip_url: (invoice as any).slip_url ?? null,
       slip_uploaded_at: (invoice as any).slip_uploaded_at ?? null,
+      locked_late_fee_amount:
+        (invoice as any).locked_late_fee_amount === undefined
+          ? null
+          : (invoice as any).locked_late_fee_amount,
     });
   }
 
@@ -1266,12 +1349,29 @@ export async function applyInvoicePaymentAllocation(
       paidAt.slice(0, 10),
     );
 
+    // Freeze the late fee right here, at the REAL payment date, the moment
+    // this invoice becomes fully paid — not later, via some unrelated sweep.
+    // `applyInvoicePaymentAllocation` used to never touch this column at all,
+    // so a late fee only ever got frozen (and thus ever had a chance to be
+    // billed) if the invoice happened to still be open when the next month's
+    // invoice was generated. A tenant who paid a few days late — settling the
+    // invoice before that ever happened — got no late fee frozen, meaning
+    // nothing to bill, ever. Only freeze if nothing froze it already (e.g. an
+    // earlier carry-forward), so this can't overwrite an existing lock.
+    const lockedLateFeeAmount =
+      nextStatus === "paid" &&
+      (invoice.locked_late_fee_amount === null ||
+        invoice.locked_late_fee_amount === undefined)
+        ? calculateLateFeeAmount(invoice as InvoiceLike, paidAt.slice(0, 10))
+        : undefined;
+
     updates.push({
       invoiceId: String(invoice.id),
       paid_amount: nextPaidAmount,
       status: nextStatus,
       payment_history: [...paymentHistory, paymentEntry],
       allocatedAmount: allocated,
+      lockedLateFeeAmount,
     });
 
     allocationRows.push({
@@ -1321,6 +1421,10 @@ export async function applyInvoicePaymentAllocation(
         payment_history: update.payment_history,
         status: update.status,
       };
+
+      if (update.lockedLateFeeAmount !== undefined) {
+        updatePayload.locked_late_fee_amount = update.lockedLateFeeAmount;
+      }
 
       // `invoices.slip_url` means "a slip was submitted against THIS invoice".
       // It used to be stamped onto every invoice in the carry-forward chain with
@@ -1387,6 +1491,7 @@ export async function applyInvoicePaymentAllocation(
           status: snap.status,
           slip_url: snap.slip_url,
           slip_uploaded_at: snap.slip_uploaded_at,
+          locked_late_fee_amount: snap.locked_late_fee_amount,
         })
         .eq("id", id);
       if (revertError) {

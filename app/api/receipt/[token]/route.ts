@@ -126,6 +126,13 @@ const isCarryForwardBreakdownRow = (row: any) =>
 const isTransferBreakdownRow = (row: any) =>
   String(row?.item_type ?? row?.type ?? "").toLowerCase() === "transfer_detail";
 
+const isLateFeeBreakdownRow = (row: any) => {
+  const type = String(row?.item_type ?? row?.type ?? "").toLowerCase();
+  if (type === "late_fee_line" || type === "late_fee") return true;
+  const label = String(row?.detail ?? row?.label ?? "").toLowerCase();
+  return label.includes("ค่าปรับล่าช้า") || label.includes("late fee");
+};
+
 const shortInvoiceId = (value: string | null | undefined) =>
   String(value ?? "").slice(0, 8).toUpperCase() || "-";
 
@@ -179,13 +186,28 @@ export async function GET(req: Request) {
       .eq("room_id", String((data as any).room_id))
       .eq("reading_month", readingMonth)
       .maybeSingle();
-    const { data: arrearsSnapshots } = await supabase
-      .from("invoice_arrears_snapshots")
-      .select(
-        "id,source_invoice_id,snapshot_as_of,principal_amount,late_fee_amount,days_overdue,daily_rate"
-      )
-      .eq("target_invoice_id", String((data as any).id))
-      .order("created_at", { ascending: true });
+    // `invoice_arrears_snapshots` is a permanent audit log written once at
+    // generation time — it is never updated or cleared when an admin later
+    // edits or recalculates this invoice's carry-forward, so reading it
+    // unconditionally can show a late fee the invoice no longer actually
+    // bills. The invoice's OWN current breakdown is authoritative when it has
+    // an itemized late-fee row; the audit log is only a fallback for a
+    // legacy invoice that predates itemized breakdowns.
+    const ownLateFeeRowsForReceipt = (
+      Array.isArray((data as any).additional_fees_breakdown)
+        ? (data as any).additional_fees_breakdown
+        : []
+    ).filter((row: any) => isLateFeeBreakdownRow(row));
+    const { data: arrearsSnapshots } =
+      ownLateFeeRowsForReceipt.length === 0
+        ? await supabase
+            .from("invoice_arrears_snapshots")
+            .select(
+              "id,source_invoice_id,snapshot_as_of,principal_amount,late_fee_amount,days_overdue,daily_rate"
+            )
+            .eq("target_invoice_id", String((data as any).id))
+            .order("created_at", { ascending: true })
+        : { data: [] as any[] };
 
     const waterUsage = resolveWaterUsage(reading);
     const electricityUsage = resolveElectricityUsage(reading);
@@ -214,26 +236,41 @@ export async function GET(req: Request) {
       ? (data as any).additional_fees_breakdown
       : [];
     const carryForwardFees = additionalFees.filter((row: any) => isCarryForwardBreakdownRow(row));
+    // Late-fee rows render via their own dedicated section below (lateFeeRowsHtml),
+    // so they're excluded here too — otherwise a late fee sourced from the
+    // invoice's own breakdown would render twice.
     const normalAdditionalFees = additionalFees.filter(
-      (row: any) => !isCarryForwardBreakdownRow(row) && !isTransferBreakdownRow(row)
+      (row: any) =>
+        !isCarryForwardBreakdownRow(row) &&
+        !isTransferBreakdownRow(row) &&
+        !isLateFeeBreakdownRow(row)
     );
     const hasNormalAdditionalFeeBreakdown = normalAdditionalFees.length > 0;
     const arrearsSnapshotRows = Array.isArray(arrearsSnapshots) ? arrearsSnapshots : [];
     const lateFeeRowsHtml =
-      arrearsSnapshotRows.length > 0
-        ? arrearsSnapshotRows
+      ownLateFeeRowsForReceipt.length > 0
+        ? ownLateFeeRowsForReceipt
             .map(
               (row: any) =>
-                `<tr><td>ค่าปรับล่าช้า - บิล ${escapeHtml(shortInvoiceId(String(row?.source_invoice_id ?? "")))} (${escapeHtml(
-                  `${Math.round(toNumber(row?.days_overdue)).toLocaleString("th-TH")} วัน x ${formatMoney(
-                    toNumber(row?.daily_rate)
-                  )}/วัน`
-                )})</td><td>${escapeHtml(formatMoney(toNumber(row?.late_fee_amount)))}</td></tr>`
+                `<tr><td>${escapeHtml(String(row?.detail ?? row?.label ?? "ค่าปรับล่าช้า"))}</td><td>${escapeHtml(
+                  formatMoney(toNumber(row?.total_amount ?? row?.amount ?? 0))
+                )}</td></tr>`
             )
             .join("")
-        : toNumber((data as any).late_fee_amount) > 0
-          ? `<tr><td>ค่าปรับล่าช้า</td><td>${escapeHtml(formatMoney(toNumber((data as any).late_fee_amount)))}</td></tr>`
-          : "";
+        : arrearsSnapshotRows.length > 0
+          ? arrearsSnapshotRows
+              .map(
+                (row: any) =>
+                  `<tr><td>ค่าปรับล่าช้า - บิล ${escapeHtml(shortInvoiceId(String(row?.source_invoice_id ?? "")))} (${escapeHtml(
+                    `${Math.round(toNumber(row?.days_overdue)).toLocaleString("th-TH")} วัน x ${formatMoney(
+                      toNumber(row?.daily_rate)
+                    )}/วัน`
+                  )})</td><td>${escapeHtml(formatMoney(toNumber(row?.late_fee_amount)))}</td></tr>`
+              )
+              .join("")
+          : toNumber((data as any).late_fee_amount) > 0
+            ? `<tr><td>ค่าปรับล่าช้า</td><td>${escapeHtml(formatMoney(toNumber((data as any).late_fee_amount)))}</td></tr>`
+            : "";
 
     const html = `
 <!doctype html>

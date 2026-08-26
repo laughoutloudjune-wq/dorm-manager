@@ -231,7 +231,11 @@ export const isCarryForwardBreakdownRow = (row: any) => {
 
 export const isLateFeeBreakdownRow = (row: any) => {
   const type = String(row?.item_type ?? row?.type ?? "").toLowerCase();
-  if (type === "late_fee_line") return true;
+  // Two writers used different item_type strings for the same kind of row
+  // (the bulk generator's older code path wrote "late_fee", the invoice
+  // editor's recalculate path writes "late_fee_line") — both are checked
+  // directly so classification doesn't depend on the label-text fallback.
+  if (type === "late_fee_line" || type === "late_fee") return true;
   const label = String(row?.detail ?? row?.label ?? "").toLowerCase();
   return label.includes("ค่าปรับล่าช้า") || label.includes("late fee");
 };

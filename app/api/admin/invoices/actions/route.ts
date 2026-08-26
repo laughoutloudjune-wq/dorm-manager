@@ -7,6 +7,7 @@ import {
   calculateLateFeeAmount,
   resolveFullyPaidAtDate,
 } from "@/lib/invoice-ledger";
+import { isLateFeeBreakdownRow } from "@/lib/invoice-utils";
 import { syncPointsForTenant } from "@/lib/points-ledger";
 import { notifyTenantPointsEarned } from "@/lib/points-notify";
 import { declinePaymentSlip } from "@/lib/slip-review";
@@ -184,6 +185,36 @@ export async function POST(req: Request) {
             .upsert(insertRows, { onConflict: "source_invoice_id,target_invoice_id" });
           if (insertCarryError) {
             return NextResponse.json({ error: insertCarryError.message }, { status: 500 });
+          }
+        }
+
+        // Every source invoice whose late fee just became a real line item on
+        // THIS invoice is now billed — mark it so a later invoice generation
+        // (or another recalculate) can never pick the same fee up again. This
+        // is what actually gets a late fee billed for a tenant who paid a bit
+        // late and settled their invoice before the next monthly cycle ever
+        // looked at it: recalculating here (after the payment) is what first
+        // makes the now-eligible paid invoice show up as a candidate at all.
+        const lateFeeSourceIds = [
+          ...new Set(
+            rows
+              .filter(
+                (row) =>
+                  isLateFeeBreakdownRow(row) &&
+                  Number(row?.total_amount ?? row?.amount ?? 0) > 0 &&
+                  row?.source_invoice_id
+              )
+              .map((row) => String(row.source_invoice_id))
+          ),
+        ];
+        if (lateFeeSourceIds.length > 0) {
+          const { error: markBilledError } = await authEdit.supabase
+            .from("invoices")
+            .update({ late_fee_billed_at: new Date().toISOString() })
+            .in("id", lateFeeSourceIds)
+            .is("late_fee_billed_at", null);
+          if (markBilledError) {
+            return NextResponse.json({ error: markBilledError.message }, { status: 500 });
           }
         }
       }

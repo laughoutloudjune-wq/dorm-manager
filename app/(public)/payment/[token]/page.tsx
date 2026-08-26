@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { Badge } from "@/components/ui/Badge";
 import { createClient } from "@/lib/supabase-client";
+import { isLateFeeBreakdownRow } from "@/lib/invoice-utils";
 import { CheckCircle2, Download, UploadCloud } from "lucide-react";
 
 const NGROK_SKIP_QUERY = "ngrok-skip-browser-warning=true";
@@ -47,6 +48,10 @@ type InvoiceData = {
     days_overdue: number;
     daily_rate: number;
     source_start_date?: string | null;
+    /** Present only for rows sourced from the invoice's own current
+     * breakdown — already a complete, up-to-date label (including the
+     * accrual date range). Rendered as-is instead of reconstructed. */
+    detail?: string;
   }>;
 };
 
@@ -348,14 +353,37 @@ export default function PaymentTokenPage() {
       }
 
       const normalized = normalizeInvoice(data);
-      const { data: arrearsRows } = await supabase
-        .from("invoice_arrears_snapshots")
-        .select(
-          "id,source_invoice_id,snapshot_as_of,late_fee_amount,days_overdue,daily_rate,source_invoice:source_invoice_id(start_date)"
-        )
-        .eq("target_invoice_id", normalized.id)
-        .order("created_at", { ascending: true });
-      normalized.late_fee_breakdown = Array.isArray(arrearsRows)
+
+      // `invoice_arrears_snapshots` is a permanent audit log written once at
+      // generation time — it is never updated or cleared when an admin later
+      // edits or recalculates this invoice's carry-forward. Reading it
+      // unconditionally showed a tenant a late fee their invoice no longer
+      // actually bills (e.g. after an admin corrected a carried debt that had
+      // meanwhile been paid off directly). The invoice's OWN current
+      // breakdown is always checked first; the audit log is only a fallback
+      // for a legacy invoice that predates itemized late-fee line items.
+      const ownLateFeeRows = normalized.additional_fees_breakdown.filter(isLateFeeBreakdownRow);
+      const { data: arrearsRows } =
+        ownLateFeeRows.length === 0
+          ? await supabase
+              .from("invoice_arrears_snapshots")
+              .select(
+                "id,source_invoice_id,snapshot_as_of,late_fee_amount,days_overdue,daily_rate,source_invoice:source_invoice_id(start_date)"
+              )
+              .eq("target_invoice_id", normalized.id)
+              .order("created_at", { ascending: true })
+          : { data: [] as any[] };
+      normalized.late_fee_breakdown = ownLateFeeRows.length > 0
+        ? ownLateFeeRows.map((row: any, index: number) => ({
+            id: `own-${index}-${row.source_invoice_id ?? ""}`,
+            source_invoice_id: String(row.source_invoice_id ?? ""),
+            snapshot_as_of: String(row.snapshot_as_of ?? ""),
+            late_fee_amount: toNumber(row.total_amount ?? row.amount),
+            days_overdue: Math.round(toNumber(row.days_overdue ?? row.unit)),
+            daily_rate: toNumber(row.daily_rate ?? row.price_per_unit),
+            detail: String(row.detail ?? row.label ?? ""),
+          }))
+        : Array.isArray(arrearsRows)
         ? arrearsRows.map((row: any) => ({
             id: String(row.id),
             source_invoice_id: String(row.source_invoice_id),
@@ -467,8 +495,12 @@ export default function PaymentTokenPage() {
   const transferBreakdownItems = (invoice?.additional_fees_breakdown ?? []).filter((row: any) =>
     isTransferBreakdownRow(row)
   );
+  // Late-fee rows get their own dedicated section below (with the accrual
+  // date range) — excluded here so they don't also render a second time in
+  // this generic list. Carry-forward rows have no other display path on this
+  // page, so they stay.
   const chargeBreakdownItems = (invoice?.additional_fees_breakdown ?? []).filter(
-    (row: any) => !isTransferBreakdownRow(row)
+    (row: any) => !isTransferBreakdownRow(row) && !isLateFeeBreakdownRow(row)
   );
   const electricityPrevious =
     meterReading?.previous_electricity ?? meterReading?.previous_reading ?? null;
@@ -678,11 +710,17 @@ export default function PaymentTokenPage() {
                   className="flex items-center justify-between rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900"
                 >
                   <span>
-                    ค่าปรับล่าช้า - งวด {new Date(row.source_start_date ?? row.snapshot_as_of).toLocaleDateString("th-TH", { month: "long", year: "numeric" })}
-                    <span className="block text-2xs font-normal text-amber-800">
-                      {row.days_overdue.toLocaleString("th-TH")} วัน x ฿{formatBaht(row.daily_rate)}
-                      /วัน
-                    </span>
+                    {row.detail ? (
+                      row.detail
+                    ) : (
+                      <>
+                        ค่าปรับล่าช้า - งวด {new Date(row.source_start_date ?? row.snapshot_as_of).toLocaleDateString("th-TH", { month: "long", year: "numeric" })}
+                        <span className="block text-2xs font-normal text-amber-800">
+                          {row.days_overdue.toLocaleString("th-TH")} วัน x ฿{formatBaht(row.daily_rate)}
+                          /วัน
+                        </span>
+                      </>
+                    )}
                   </span>
                   <span className="font-semibold">฿{formatBaht(row.late_fee_amount)}</span>
                 </div>

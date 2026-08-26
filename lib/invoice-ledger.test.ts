@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   calculateLateFeeAmount,
+  computeLateFeeSnapshot,
   getInvoiceOutstanding,
   getInvoiceOwnOutstanding,
   planAbandonCredit,
@@ -158,6 +159,89 @@ describe("calculateLateFeeAmount", () => {
         "2026-01-03"
       )
     ).toBe(30);
+  });
+});
+
+describe("computeLateFeeSnapshot", () => {
+  it("matches calculateLateFeeAmount's live day-count for a still-open invoice", () => {
+    const snapshot = computeLateFeeSnapshot(
+      {
+        status: "overdue",
+        late_fee_start_date: "2026-01-01",
+        late_fee_per_day: 10,
+        locked_late_fee_amount: null,
+      },
+      "2026-01-03",
+    );
+    expect(snapshot.amount).toBe(30);
+    expect(snapshot.days).toBe(3);
+    expect(snapshot.asOf).toBe("2026-01-03");
+  });
+
+  it("uses the already-frozen amount for a still-open invoice, not a fresh day-count", () => {
+    const snapshot = computeLateFeeSnapshot(
+      {
+        status: "overdue",
+        late_fee_start_date: "2026-01-01",
+        late_fee_per_day: 10,
+        locked_late_fee_amount: 30,
+      },
+      "2026-06-01", // far past the freeze — must not re-derive a bigger number
+    );
+    expect(snapshot.amount).toBe(30);
+  });
+
+  // Room 217/2's real bug: a tenant paid 3 days late (should be ฿300), but an
+  // earlier, unrelated carry-forward event had already frozen the fee at
+  // ฿1,500 (15 days, based on "still open as of generation day"). Once
+  // locked, the number never re-derives — this test only guards that a PAID
+  // invoice's snapshot is read from the freeze, not recomputed against
+  // asOfDateText, which is the property the fix actually depends on.
+  it("reads a paid invoice's late fee from the freeze, never live-recomputed against asOf", () => {
+    const snapshot = computeLateFeeSnapshot(
+      {
+        status: "paid",
+        late_fee_start_date: "2026-08-11",
+        late_fee_per_day: 100,
+        locked_late_fee_amount: 300,
+      },
+      "2026-09-25", // generation date weeks later — must not inflate the fee
+    );
+    expect(snapshot.amount).toBe(300);
+    expect(snapshot.days).toBe(3);
+    expect(snapshot.asOf).toBe("2026-08-13"); // start (08-11) + 3 days - 1
+  });
+
+  it("never fabricates a fee for a paid invoice that was never frozen", () => {
+    // Historical paid invoices from before the payment-time freeze existed
+    // have no locked_late_fee_amount. A live day-count against "today" would
+    // wildly overstate a fee the tenant was never actually told about.
+    const snapshot = computeLateFeeSnapshot(
+      {
+        status: "paid",
+        late_fee_start_date: "2026-01-11",
+        late_fee_per_day: 100,
+        locked_late_fee_amount: null,
+      },
+      "2026-08-25",
+    );
+    expect(snapshot.amount).toBe(0);
+    expect(snapshot.days).toBe(0);
+    expect(snapshot.asOf).toBeNull();
+  });
+
+  it("returns zero for a paid invoice with a zero freeze, without dividing by a zero rate", () => {
+    const snapshot = computeLateFeeSnapshot(
+      {
+        status: "paid",
+        late_fee_start_date: "2026-01-11",
+        late_fee_per_day: 0,
+        locked_late_fee_amount: 0,
+      },
+      "2026-08-25",
+    );
+    expect(snapshot.amount).toBe(0);
+    expect(snapshot.days).toBe(0);
   });
 });
 

@@ -13,9 +13,7 @@ import {
 import { usePermissions } from "@/lib/use-permissions";
 import {
   getCarryForwardCandidatesForTarget,
-  calculateLateFeeAmount,
-  toDateOnly,
-  dayDiffInclusive,
+  computeLateFeeSnapshot,
 } from "@/lib/invoice-ledger";
 import {
   toNumber,
@@ -1872,15 +1870,22 @@ export function useInvoicesState() {
         if (snapshotLateFee > 0) {
           const daysOverdue = toNumber(row.late_fee_snapshot_days);
           const dailyRate = toNumber(row.late_fee_per_day);
+          // A still-open source's window genuinely runs through today's
+          // recalculation date. A PAID source's window is fixed at whatever
+          // was actually frozen — `late_fee_snapshot_as_of` (derived from the
+          // frozen amount and day count) reflects that true end date, which
+          // can be well before `valuationDate` if the recalculation happens
+          // later than the payment did.
+          const windowAsOf = row.late_fee_snapshot_as_of ?? valuationDate;
           nextLateFeeItems.push({
-            detail: buildLateFeeLineDetail(String(row.start_date ?? ""), daysOverdue, dailyRate, valuationDate),
+            detail: buildLateFeeLineDetail(String(row.start_date ?? ""), daysOverdue, dailyRate, windowAsOf),
             unit: daysOverdue,
             price_per_unit: dailyRate,
             total_amount: snapshotLateFee,
             source_invoice_id: String(row.id),
             days_overdue: daysOverdue,
             daily_rate: dailyRate,
-            snapshot_as_of: valuationDate,
+            snapshot_as_of: windowAsOf,
             original_amount: snapshotLateFee,
             waived_amount: 0,
           });
@@ -2985,11 +2990,17 @@ export function useInvoicesState() {
         ? await supabase
             .from("invoices")
             .select(
-              "id,tenant_id,start_date,due_date,total_amount,paid_amount,status,late_fee_amount,late_fee_per_day,late_fee_start_date,waived_late_fee_amount,locked_late_fee_amount,carry_forward_amount",
+              "id,tenant_id,start_date,due_date,total_amount,paid_amount,status,late_fee_amount,late_fee_per_day,late_fee_start_date,waived_late_fee_amount,locked_late_fee_amount,carry_forward_amount,late_fee_billed_at",
             )
             .in("tenant_id", tenantIdsToGenerate)
             .lt("start_date", toLocalDateString(startDate))
-            .in("status", ["pending", "partial", "overdue", "verifying"])
+            // Still-open invoices, OR a PAID invoice whose late fee was frozen
+            // at payment time but never made it onto a bill yet (see
+            // getCarryForwardCandidatesForTarget in invoice-ledger.ts for the
+            // full reasoning — this mirrors that same eligibility check).
+            .or(
+              "status.in.(pending,partial,overdue,verifying),and(status.eq.paid,late_fee_billed_at.is.null)",
+            )
             .order("start_date", { ascending: true })
         : { data: [], error: null };
 
@@ -3061,15 +3072,19 @@ export function useInvoicesState() {
       const carryAmt = toNumber(row.carry_forward_amount);
       const outstanding =
         carryAmt > 0 ? Math.max(0, rawOutstanding - carryAmt) : rawOutstanding;
-      if (outstanding <= 0) continue;
       const generationDateText = issueDateText;
       const tenantId = String(row.tenant_id ?? "");
       if (!tenantId) continue;
 
-      // Calculate the accrued late fee on this source invoice as of the generation date.
-      // If the invoice already has a locked_late_fee_amount, use that (already frozen).
-      const snapshotLateFee = calculateLateFeeAmount(
+      // The ONE place this is computed — same function the single-invoice
+      // recalculate flow uses, so the two can't drift apart. A PAID invoice
+      // never gets a live day-count guess: only whatever was actually frozen
+      // at payment time. This is also why a paid invoice with nothing left
+      // owing (outstanding 0) must NOT be skipped before this runs — it can
+      // still owe an unbilled late fee even though its principal is settled.
+      const lateFeeSnapshot = computeLateFeeSnapshot(
         {
+          status: row.status ?? null,
           late_fee_start_date: row.late_fee_start_date ?? null,
           late_fee_per_day: row.late_fee_per_day ?? 0,
           waived_late_fee_amount: row.waived_late_fee_amount ?? 0,
@@ -3078,24 +3093,16 @@ export function useInvoicesState() {
         generationDateText,
       );
 
-      // Calculate days overdue for display
-      const lateFeeStartDate = row.late_fee_start_date
-        ? toDateOnly(row.late_fee_start_date)
-        : null;
-      const generationDate = toDateOnly(generationDateText);
-      const daysOverdue =
-        lateFeeStartDate && generationDate >= lateFeeStartDate
-          ? dayDiffInclusive(lateFeeStartDate, generationDate)
-          : 0;
+      if (outstanding <= 0 && lateFeeSnapshot.amount <= 0) continue;
 
       const currentRows = carryForwardByTenant.get(tenantId) ?? [];
       currentRows.push({
         ...row,
         outstanding_amount: outstanding,
         base_outstanding_amount: outstanding,
-        snapshot_as_of: generationDateText,
-        snapshot_late_fee_amount: snapshotLateFee,
-        snapshot_days_overdue: daysOverdue,
+        snapshot_as_of: lateFeeSnapshot.asOf ?? generationDateText,
+        snapshot_late_fee_amount: lateFeeSnapshot.amount,
+        snapshot_days_overdue: lateFeeSnapshot.days,
         snapshot_daily_rate: toNumber(row.late_fee_per_day ?? 0),
       });
       carryForwardByTenant.set(tenantId, currentRows);
@@ -3444,26 +3451,38 @@ export function useInvoicesState() {
           }
         }
 
-        // Freeze the late fee on every source invoice that was carried forward.
-        // This stops them from accruing further — their late fee now lives in the new invoice.
+        // Freeze the late fee on every source invoice that was carried forward
+        // (stops a still-open source from accruing further, now that its fee
+        // lives in the new invoice), and separately mark every source that
+        // actually contributed a late-fee LINE ITEM as billed — a paid
+        // invoice reaching here was already frozen at payment time, but this
+        // is the first time its fee has ever been put on a real charge, so it
+        // still needs to be marked so it can't be billed again later.
         const allSourceRows = (insertedInvoices ?? []).flatMap((row: any) =>
           carryForwardByTenant.get(String(row.tenant_id ?? "")) ?? [],
         );
+        const nowIso = new Date().toISOString();
         for (const carryRow of allSourceRows) {
           const freezeAmount = toNumber(carryRow.snapshot_late_fee_amount);
-          // Only freeze if the late fee isn't already locked (avoid overwriting existing lock)
+          const freezeUpdate: Record<string, unknown> = {};
           if (carryRow.locked_late_fee_amount == null) {
-            const { error: freezeError } = await supabase
-              .from("invoices")
-              .update({ locked_late_fee_amount: freezeAmount })
-              .eq("id", carryRow.id);
-            if (freezeError) {
-              // An unfrozen source keeps accruing a late fee that has already
-              // been billed on the new invoice — the tenant gets charged twice.
-              bookkeepingFailures.push(
-                `ล็อกค่าปรับล่าช้าของบิลเดิมไม่สำเร็จ: ${freezeError.message}`,
-              );
-            }
+            freezeUpdate.locked_late_fee_amount = freezeAmount;
+          }
+          if (freezeAmount > 0) {
+            freezeUpdate.late_fee_billed_at = nowIso;
+          }
+          if (Object.keys(freezeUpdate).length === 0) continue;
+          const { error: freezeError } = await supabase
+            .from("invoices")
+            .update(freezeUpdate)
+            .eq("id", carryRow.id);
+          if (freezeError) {
+            // An unfrozen/unmarked source either keeps accruing a late fee
+            // that's already been billed (double charge) or stays eligible
+            // to be billed again next cycle (also a double charge).
+            bookkeepingFailures.push(
+              `ล็อก/บันทึกสถานะค่าปรับล่าช้าของบิลเดิมไม่สำเร็จ: ${freezeError.message}`,
+            );
           }
         }
       }
