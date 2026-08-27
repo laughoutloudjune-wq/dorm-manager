@@ -39,6 +39,7 @@ function NavList({
           <Link
             key={item.href}
             href={item.href}
+            prefetch={false}
             onClick={onNavigate}
             aria-current={isActive ? "page" : undefined}
             className={`group relative flex items-center gap-3 rounded-control px-3 py-2.5 text-sm font-medium transition-all duration-200 ease-float ${
