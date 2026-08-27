@@ -1831,8 +1831,11 @@ export function useInvoicesState() {
 
     const sourceInvoiceIds = [...sourceIds];
     if (sourceInvoiceIds.length === 0) {
-      setEditableCarryForwardItems([]);
-      setEditableLateFeeItems([]);
+      // Nothing tracked to look up — leave existing items alone rather than
+      // wiping them. This used to clear the arrays unconditionally, which
+      // also destroyed manually-typed items (no source_invoice_id, so they
+      // never affected `sourceIds` either way) any time no carried source
+      // happened to be tracked.
       return;
     }
 
@@ -1892,13 +1895,25 @@ export function useInvoicesState() {
         }
       }
 
-      // Preserve manual carry forward items (ones without a source_invoice_id)
-      const manualCarryItems = carry.filter((item) => !item.source_invoice_id);
-      setEditableCarryForwardItems([...nextCarryItems, ...manualCarryItems]);
+      // Preserve anything recalculate has no fresh data for: a manually-typed
+      // item (no source_invoice_id), or one whose source invoice is no
+      // longer offered as a candidate at all — which, per
+      // getCarryForwardCandidatesForTarget, is every source whose late fee
+      // is already billed elsewhere. Recalculate should only ever ADD or
+      // REFRESH a still-eligible source, never silently delete something
+      // that's already correctly on this invoice (this used to drop an
+      // already-billed carried-in late fee the instant anyone recalculated).
+      const candidateIds = new Set(filteredCandidates.map((c) => String(c.id)));
 
-      // Preserve manual late fee items
-      const manualLateFeeItems = late.filter((item) => !item.source_invoice_id);
-      setEditableLateFeeItems([...nextLateFeeItems, ...manualLateFeeItems]);
+      const preservedCarryItems = carry.filter(
+        (item) => !item.source_invoice_id || !candidateIds.has(item.source_invoice_id),
+      );
+      setEditableCarryForwardItems([...nextCarryItems, ...preservedCarryItems]);
+
+      const preservedLateFeeItems = late.filter(
+        (item) => !item.source_invoice_id || !candidateIds.has(item.source_invoice_id),
+      );
+      setEditableLateFeeItems([...nextLateFeeItems, ...preservedLateFeeItems]);
 
       setForm((prev) => {
         const nextLateFee = calculateCurrentFormLateFee(prev);

@@ -129,6 +129,19 @@ export const getInvoiceOwnOutstanding = (
   return Math.max(0, Math.min(ownAmount, currentOutstanding));
 };
 
+/**
+ * The true amount still owed across a set of invoices — e.g. every open
+ * invoice on a dashboard, or every open invoice for one tenant/room. Sums
+ * `getInvoiceOwnOutstanding` rather than raw `total_amount - paid_amount`,
+ * so a carry-forward chain's debt is counted once, not once per invoice it
+ * was bundled into. Requires `carry_forward_amount` in the caller's SELECT —
+ * without it every invoice's own-outstanding silently equals its bundled
+ * outstanding, which is the exact bug this function exists to avoid.
+ */
+export const sumOwnOutstanding = (
+  invoices: Array<Pick<InvoiceLike, "total_amount" | "paid_amount" | "carry_forward_amount">>,
+) => invoices.reduce((sum, invoice) => sum + getInvoiceOwnOutstanding(invoice), 0);
+
 export type AbandonCreditLine = {
   invoiceId: string;
   /** This invoice's own charge still unpaid — never its bundled total. */

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/admin-api-auth";
 import { toNumber, formatMoney } from "@/lib/format";
+import { sumOwnOutstanding } from "@/lib/invoice-ledger";
 
 const monthKey = (value: string) => String(value).slice(0, 7);
 const relationItem = <T,>(value: T | T[] | null | undefined): T | null =>
@@ -45,7 +46,7 @@ export async function GET(req: Request) {
         .order("created_at", { ascending: false }),
       supabase
         .from("invoices")
-        .select("id,status,total_amount,paid_amount,created_at,start_date,due_date,slip_url,room_id,tenant_id,rooms(room_number,buildings(name)),tenants(full_name)")
+        .select("id,status,total_amount,paid_amount,carry_forward_amount,created_at,start_date,due_date,slip_url,room_id,tenant_id,rooms(room_number,buildings(name)),tenants(full_name)")
         .or(`start_date.gte.${sixMonthsAgoKey},status.in.(pending,partial,overdue,verifying)`)
         .order("created_at", { ascending: false }),
       supabase
@@ -96,14 +97,11 @@ export async function GET(req: Request) {
     const overdueInvoices = invoices.filter((invoice) => String(invoice.status) === "overdue");
     const outstandingInvoices = invoices.filter((invoice) => outstandingStatuses.includes(String(invoice.status)));
 
-    const totalOutstanding = outstandingInvoices.reduce(
-      (sum, invoice) => sum + Math.max(toNumber(invoice.total_amount) - toNumber(invoice.paid_amount), 0),
-      0
-    );
-    const overdueAmount = overdueInvoices.reduce(
-      (sum, invoice) => sum + Math.max(toNumber(invoice.total_amount) - toNumber(invoice.paid_amount), 0),
-      0
-    );
+    // Own-outstanding, not raw total-paid — a tenant behind on two carried
+    // invoices otherwise gets the same debt counted once per invoice it was
+    // bundled into.
+    const totalOutstanding = sumOwnOutstanding(outstandingInvoices);
+    const overdueAmount = sumOwnOutstanding(overdueInvoices);
 
     const upcomingMoveIns = tenants.filter((tenant) => {
       const date = String(tenant.move_in_date ?? "");

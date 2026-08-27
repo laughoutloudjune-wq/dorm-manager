@@ -7,6 +7,7 @@ import {
   planAbandonCredit,
   planPaymentReplay,
   resolveInvoiceStatus,
+  sumOwnOutstanding,
 } from "./invoice-ledger";
 
 describe("getInvoiceOutstanding", () => {
@@ -51,6 +52,24 @@ describe("getInvoiceOwnOutstanding", () => {
         carry_forward_amount: 1446,
       })
     ).toBe(244);
+  });
+});
+
+describe("sumOwnOutstanding", () => {
+  it("matches the true debt for a carry-forward chain, not the double-counted bundled sum", () => {
+    const june = { total_amount: 3300, paid_amount: 0, carry_forward_amount: 0 };
+    const july = { total_amount: 7925, paid_amount: 0, carry_forward_amount: 3300 };
+    expect(sumOwnOutstanding([june, july])).toBe(7925);
+  });
+
+  it("matches a plain sum when nothing is carried", () => {
+    const a = { total_amount: 1000, paid_amount: 400, carry_forward_amount: 0 };
+    const b = { total_amount: 500, paid_amount: 0, carry_forward_amount: 0 };
+    expect(sumOwnOutstanding([a, b])).toBe(1100);
+  });
+
+  it("returns zero for an empty list", () => {
+    expect(sumOwnOutstanding([])).toBe(0);
   });
 });
 

@@ -14,6 +14,7 @@ import {
   isNonCashPaymentSource,
 } from "@/lib/invoice-utils";
 import { chargesFromInvoiceRow, computeInvoiceTotal } from "@/lib/invoice-total";
+import { getInvoiceOwnOutstanding, sumOwnOutstanding } from "@/lib/invoice-ledger";
 
 type ReportTab = "income" | "arrears" | "move_in" | "move_out" | "yearly" | "utilities" | "movement";
 
@@ -191,7 +192,7 @@ export default function ReportsPageView() {
         supabase.from("settings").select("water_rate,electricity_rate").eq("id", 1).maybeSingle(),
         supabase
           .from("invoices")
-          .select("id,tenant_id,room_id,status,total_amount,paid_amount,issue_date,due_date,start_date,end_date,rent_amount,water_bill,electricity_bill,common_fee,discount_amount,late_fee_amount,additional_fees_total,additional_fees_breakdown,payment_history,tenants(full_name,custom_payment_method),rooms(room_number,buildings(name))")
+          .select("id,tenant_id,room_id,status,total_amount,paid_amount,carry_forward_amount,issue_date,due_date,start_date,end_date,rent_amount,water_bill,electricity_bill,common_fee,discount_amount,late_fee_amount,additional_fees_total,additional_fees_breakdown,payment_history,tenants(full_name,custom_payment_method),rooms(room_number,buildings(name))")
           .gte("start_date", start)
           .lt("start_date", end)
           .order("start_date", { ascending: true }),
@@ -275,6 +276,7 @@ export default function ReportsPageView() {
             building_name: getBuildingName(room),
             total_amount: toNumber(row.total_amount),
             paid_amount: toNumber(row.paid_amount),
+            carry_forward_amount: toNumber(row.carry_forward_amount),
             rent_amount: toNumber(row.rent_amount),
             water_bill: toNumber(row.water_bill),
             electricity_bill: toNumber(row.electricity_bill),
@@ -633,9 +635,11 @@ export default function ReportsPageView() {
   const incomeSummary = useMemo(() => {
     const billed = filteredIncomeRows.reduce((sum, row) => sum + row.total_amount, 0);
     const paid = filteredIncomeRows.reduce((sum, row) => sum + row.paid_amount, 0);
-    const outstanding = filteredIncomeRows
-      .filter((row) => ["pending", "partial", "overdue", "verifying"].includes(String(row.status)))
-      .reduce((sum, row) => sum + Math.max(row.total_amount - row.paid_amount, 0), 0);
+    // Own-outstanding: a bundled total can include an earlier period's
+    // carried debt, which would otherwise inflate this month's own figure.
+    const outstanding = sumOwnOutstanding(
+      filteredIncomeRows.filter((row) => ["pending", "partial", "overdue", "verifying"].includes(String(row.status))),
+    );
     return {
       billed,
       paid,
@@ -674,9 +678,9 @@ export default function ReportsPageView() {
         const rows = incomeRows.filter((row) => row.month === month);
         const billed = rows.reduce((sum, row) => sum + row.total_amount, 0);
         const paid = rows.reduce((sum, row) => sum + row.paid_amount, 0);
-        const outstanding = rows
-          .filter((row) => ["pending", "partial", "overdue", "verifying"].includes(String(row.status)))
-          .reduce((sum, row) => sum + Math.max(row.total_amount - row.paid_amount, 0), 0);
+        const outstanding = sumOwnOutstanding(
+          rows.filter((row) => ["pending", "partial", "overdue", "verifying"].includes(String(row.status))),
+        );
         return {
           month,
           invoiceCount: rows.length,
@@ -985,6 +989,11 @@ export default function ReportsPageView() {
     const tenantDebts = new Map<string, any>();
     for (const invoice of invoices) {
       if (["pending", "partial", "overdue", "verifying"].includes(String(invoice.status))) {
+        // Bundled figure still decides whether this invoice counts as an
+        // open period at all (it's a real unpaid bill either way) — only the
+        // AMOUNT added to the tenant's running total switches to the
+        // invoice's own portion, so a tenant behind on two carried invoices
+        // doesn't have the same debt added twice.
         const outstanding = invoice.total_amount - invoice.paid_amount;
         if (outstanding > 0) {
           const tenantId = invoice.tenant_id || invoice.tenant_name || "unknown";
@@ -999,7 +1008,7 @@ export default function ReportsPageView() {
             });
           }
           const data = tenantDebts.get(tenantId)!;
-          data.outstanding += outstanding;
+          data.outstanding += getInvoiceOwnOutstanding(invoice);
           data.invoice_count += 1;
           if (invoice.due_date && (!data.oldest_due_date || new Date(invoice.due_date) < new Date(data.oldest_due_date))) {
             data.oldest_due_date = invoice.due_date;

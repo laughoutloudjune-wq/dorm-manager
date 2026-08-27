@@ -175,7 +175,17 @@ export default function MetersPage() {
       if (!tenantId || !moveInDate) continue;
       
       const invoices = invoicesByTenant.get(tenantId) ?? [];
-      const hasRegularInvoice = invoices.length > 1 || invoices.some(date => date !== moveInDate);
+      // A genuine first invoice's start_date is the calendar month's start
+      // (e.g. 2026-08-01), not the tenant's actual move-in day (2026-08-05)
+      // — proration is reflected in the amount, not the date. Comparing by
+      // exact date instead of by month treated every mid-month move-in's own
+      // first bill as proof a second invoice already existed, hiding the
+      // "just moved in" banner (and its meter-reading-source choice) the
+      // moment that first invoice was generated.
+      const moveInMonth = monthStartFromDateString(moveInDate);
+      const hasRegularInvoice =
+        invoices.length > 1 ||
+        invoices.some((date) => monthStartFromDateString(date) !== moveInMonth);
       if (hasRegularInvoice) continue;
 
       if (!moveInMap.has(item.room_id)) {

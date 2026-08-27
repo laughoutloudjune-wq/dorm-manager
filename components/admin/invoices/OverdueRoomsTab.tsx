@@ -4,6 +4,7 @@ import { useEffect, useState, useMemo, useRef } from "react";
 import { createClient } from "@/lib/supabase-client";
 import { formatMoney, toLocalDateString } from "@/lib/format";
 import { statusLabelThai, statusPillClass, invoiceDisplayOutstanding, normalizeInvoice } from "@/lib/invoice-utils";
+import { getInvoiceOwnOutstanding } from "@/lib/invoice-ledger";
 import { useInvoiceContext } from "./InvoiceContext";
 import { ChevronDown, ChevronUp, AlertCircle, Building, DoorOpen } from "lucide-react";
 
@@ -85,7 +86,11 @@ export function OverdueRoomsTab({ focusRoom }: { focusRoom?: string }) {
 
       const group = map.get(roomNumber)!;
       group.invoices.push(inv);
-      group.total_outstanding += invoiceDisplayOutstanding(inv);
+      // Own-outstanding for the room's running total — a room with two open
+      // invoices where the newer carries the older's debt otherwise counts
+      // that debt twice. Each invoice's own row still shows its real bundled
+      // balance elsewhere; only this cross-invoice sum needs unbundling.
+      group.total_outstanding += getInvoiceOwnOutstanding(inv);
     }
 
     // Convert to array and sort by total outstanding (descending)
