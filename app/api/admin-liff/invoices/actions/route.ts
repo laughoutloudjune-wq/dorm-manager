@@ -191,13 +191,14 @@ export async function POST(req: Request) {
       const updatePayload: Record<string, unknown> = {};
       if (payload?.due_date) updatePayload.due_date = String(payload.due_date);
       if (payload?.issue_date) updatePayload.issue_date = String(payload.issue_date);
-      if (payload?.total_amount != null) {
-        const amount = Number(payload.total_amount);
-        if (Number.isNaN(amount) || amount < 0) {
-          return NextResponse.json({ error: "Invalid total amount" }, { status: 400 });
-        }
-        updatePayload.total_amount = amount;
-      }
+      // A raw client-supplied total_amount used to be accepted here with no
+      // reconciliation against the invoice's own component columns
+      // (rent/water/electricity/late fee/carry-forward), via computeInvoiceTotal
+      // — the only route in the app allowed to set a total this way. Nothing
+      // in the LINE admin UI currently calls this with total_amount (it's
+      // unreachable dead capability, not a used feature), so it's removed
+      // rather than reconciled: a total edit belongs on the invoice's
+      // component fields, run through the one engine, same as everywhere else.
       if (payload?.status) {
         const nextStatus = String(payload.status);
         const allowed = ["draft", "pending", "partial", "verifying", "paid", "overdue", "cancelled"];

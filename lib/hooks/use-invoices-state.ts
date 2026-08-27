@@ -351,13 +351,26 @@ export function useInvoicesState() {
         const reading = readingMap.get(invoice.room_id) ?? {};
         const elecUnits = toNumber(reading.electricity_usage);
         const waterUnits = toNumber(reading.water_usage ?? reading.usage);
-        const discountBreakdown = buildRuleBreakdown(
+        const freshRuleItems = buildRuleBreakdown(
           discountRules,
           elecUnits,
           waterUnits,
         );
+        // Only ever replace lines this same sync generated (tagged
+        // source: "rule"). A manually-typed discount or a points-redemption
+        // line (source: "rewards_redemption") must survive this resync
+        // untouched — this used to overwrite the whole breakdown with just
+        // the rule-computed lines, silently wiping any manual discount on
+        // every invoice-list page load.
+        const existingBreakdown = Array.isArray(invoice.discount_breakdown)
+          ? (invoice.discount_breakdown as any[])
+          : [];
+        const preservedItems = existingBreakdown.filter(
+          (item) => item?.source !== "rule",
+        );
+        const discountBreakdown = [...freshRuleItems, ...preservedItems];
         const discountAmount = discountBreakdown.reduce(
-          (sum, fee) => sum + toNumber(fee.amount),
+          (sum, fee: any) => sum + toNumber(fee.amount ?? fee.total_amount),
           0,
         );
         // Unpack the stored row into non-overlapping charges, then apply the
@@ -2047,14 +2060,20 @@ export function useInvoicesState() {
       const nextDiscount = feeItemsTotal(editableDiscountItems);
       setForm((formPrev) => {
         const nextLateFee = calculateCurrentFormLateFee(formPrev);
-        const total =
-          toNumber(formPrev.rent_amount) +
-          toNumber(formPrev.water_bill) +
-          toNumber(formPrev.electricity_bill) +
-          toNumber(formPrev.common_fee) +
-          nextDiscount * -1 +
-          nextLateFee +
-          nextAdditional;
+        const total = computeInvoiceTotal({
+          rent: toNumber(formPrev.rent_amount),
+          water: toNumber(formPrev.water_bill),
+          electricity: toNumber(formPrev.electricity_bill),
+          commonFee: toNumber(formPrev.common_fee),
+          // `nextLateFee` is already own penalty + carried lines, so it's
+          // passed whole and the line component left at zero — same
+          // convention as the neighbouring recalculate flow above.
+          nativeLateFee: nextLateFee,
+          lateFeeItems: 0,
+          fees: nextAdditional,
+          carryForward: feeItemsTotal(editableCarryForwardItems),
+          discount: nextDiscount,
+        });
         return {
           ...formPrev,
           additional_fees_total: nextAdditional,
@@ -2091,14 +2110,20 @@ export function useInvoicesState() {
       const nextDiscount = feeItemsTotal(normalized);
       setForm((formPrev) => {
         const nextLateFee = calculateCurrentFormLateFee(formPrev);
-        const total =
-          toNumber(formPrev.rent_amount) +
-          toNumber(formPrev.water_bill) +
-          toNumber(formPrev.electricity_bill) +
-          toNumber(formPrev.common_fee) +
-          nextDiscount * -1 +
-          nextLateFee +
-          nextAdditional;
+        const total = computeInvoiceTotal({
+          rent: toNumber(formPrev.rent_amount),
+          water: toNumber(formPrev.water_bill),
+          electricity: toNumber(formPrev.electricity_bill),
+          commonFee: toNumber(formPrev.common_fee),
+          // `nextLateFee` is already own penalty + carried lines, so it's
+          // passed whole and the line component left at zero — same
+          // convention as the neighbouring recalculate flow above.
+          nativeLateFee: nextLateFee,
+          lateFeeItems: 0,
+          fees: nextAdditional,
+          carryForward: feeItemsTotal(editableCarryForwardItems),
+          discount: nextDiscount,
+        });
         return {
           ...formPrev,
           discount_amount: nextDiscount,
@@ -2155,6 +2180,11 @@ export function useInvoicesState() {
         total_amount: toNumber(item.total_amount),
         amount: toNumber(item.total_amount),
         label: item.detail,
+        // Preserve origin tag ("rule" / "rewards_redemption") so an
+        // unrelated edit elsewhere on this invoice doesn't erase it — the
+        // monthly rule resync and points redemption both rely on it to know
+        // which lines are theirs to touch.
+        ...(item.source ? { source: item.source } : {}),
       })),
       late_fee_amount: toNumber(form.late_fee_amount),
       late_fee_per_day: toNumber(form.late_fee_per_day),
@@ -3278,29 +3308,11 @@ export function useInvoicesState() {
         (sum, fee) => sum + toNumber(fee.amount),
         0,
       );
-      const discountBreakdown = discountRules.map((fee) => {
-        const rate = toNumber(fee.value);
-        let amount = 0;
-        if (fee.calc_type === "fixed") amount = rate;
-        if (fee.calc_type === "electricity_units") amount = elecUnits * rate;
-        if (fee.calc_type === "water_units") amount = waterUnits * rate;
-        const unit =
-          fee.calc_type === "electricity_units"
-            ? elecUnits
-            : fee.calc_type === "water_units"
-              ? waterUnits
-              : 1;
-        return {
-          label: fee.label,
-          detail: fee.label,
-          calc_type: fee.calc_type,
-          rate,
-          unit,
-          price_per_unit: rate,
-          total_amount: amount,
-          amount,
-        };
-      });
+      const discountBreakdown = buildRuleBreakdown(
+        discountRules,
+        elecUnits,
+        waterUnits,
+      );
       const discountAmount = discountBreakdown.reduce(
         (sum, fee) => sum + toNumber(fee.amount),
         0,

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/admin-api-auth";
 import { dailyRentRate } from "@/lib/invoice-utils";
+import { computeInvoiceTotal } from "@/lib/invoice-total";
 import {
   applyInvoicePaymentAllocation,
   planAbandonCredit,
@@ -555,7 +556,24 @@ export async function POST(req: Request) {
       const advanceRentRefund = toNumber(tenant?.advance_rent_amount ?? 0);
       const totalDiscount = depositRefund + advanceRentRefund;
 
-      const totalAmount = baseRent + waterBill + electricityBill + additionalFeesTotal - totalDiscount;
+      // Numerically identical to the hand-rolled sum this replaces
+      // (baseRent + waterBill + electricityBill + additionalFeesTotal -
+      // totalDiscount) — commonFee/lateFee/carryForward are explicitly zero
+      // here, matching the same zeros already hardcoded below in the insert,
+      // so a future move-out settlement that adds one of those won't have
+      // its total silently omit it the way three other hand-rolled sums in
+      // this codebase already did.
+      const totalAmount = computeInvoiceTotal({
+        rent: baseRent,
+        water: waterBill,
+        electricity: electricityBill,
+        commonFee: 0,
+        nativeLateFee: 0,
+        lateFeeItems: 0,
+        fees: additionalFeesTotal,
+        carryForward: 0,
+        discount: totalDiscount,
+      });
 
       const toYmd = (d: Date) => d.toISOString().slice(0, 10);
       const dueDateObj = new Date(moveOutDateObj.getFullYear(), moveOutDateObj.getMonth(), moveOutDateObj.getDate() + 7);

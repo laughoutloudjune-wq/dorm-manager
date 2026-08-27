@@ -153,6 +153,11 @@ export type FeeLineItem = {
   unit: number;
   price_per_unit: number;
   total_amount: number;
+  // Origin tag distinguishing who wrote this line, so an automatic resync
+  // (e.g. re-applying global discount rules) can tell its own lines apart
+  // from ones an admin typed by hand or that came from points redemption,
+  // and only ever touch its own. Absent/undefined means manually entered.
+  source?: string;
 };
 
 export type CarryForwardItem = FeeLineItem & {
@@ -268,7 +273,9 @@ export const toFeeItems = (rows: any[]): FeeLineItem[] => {
     const price_per_unit = toNumber(row.price_per_unit ?? row.rate ?? row.value ?? row.amount ?? 0);
     const total_amount =
       row.total_amount != null ? toNumber(row.total_amount) : unit * price_per_unit;
-    return { detail, unit, price_per_unit, total_amount };
+    const item: FeeLineItem = { detail, unit, price_per_unit, total_amount };
+    if (row.source) item.source = String(row.source);
+    return item;
   });
 };
 
@@ -397,6 +404,7 @@ export const buildRuleBreakdown = (
       price_per_unit: rate,
       total_amount: amount,
       amount,
+      source: "rule",
     };
   });
 

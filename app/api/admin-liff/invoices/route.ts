@@ -40,26 +40,16 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    const toNumber = (value: unknown) => {
-      const parsed = Number(value ?? 0);
-      return Number.isNaN(parsed) ? 0 : parsed;
-    };
-
-    const finalInvoices = (invoices ?? []).map((invoice: any) => {
-      let late_fee_amount = toNumber(invoice.late_fee_amount);
-      if (invoice.locked_late_fee_amount !== null && invoice.locked_late_fee_amount !== undefined) {
-        late_fee_amount = Math.max(0, toNumber(invoice.locked_late_fee_amount));
-      }
-      return {
-        ...invoice,
-        late_fee_amount,
-        late_fee_breakdown: [], // No longer used
-      };
-    });
-
+    // `late_fee_amount` is the invoice's own penalty PLUS any carried-in late-
+    // fee lines (see chargesFromInvoiceRow in lib/invoice-total.ts) — the
+    // column already reconciles with `total_amount`. This used to overwrite
+    // it with `locked_late_fee_amount`, a DIFFERENT quantity (own penalty
+    // only, not carried lines), without adjusting total_amount to match — so
+    // the LINE admin showed a fee that visibly contradicted the invoice's own
+    // total. Pass the column through unmodified, matching the web admin.
     return NextResponse.json({
       profile,
-      invoices: finalInvoices,
+      invoices: invoices ?? [],
     });
   } catch (error: any) {
     return NextResponse.json(
