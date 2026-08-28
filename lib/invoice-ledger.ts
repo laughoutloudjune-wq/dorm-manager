@@ -111,6 +111,59 @@ export const getInvoiceOutstanding = (
 ) =>
   Math.max(0, toNumber(invoice.total_amount) - toNumber(invoice.paid_amount));
 
+export type ChainAllocationInput = {
+  id: string;
+  total_amount: number | null | undefined;
+  paid_amount: number | null | undefined;
+};
+
+export type ChainAllocationResult = {
+  id: string;
+  allocated: number;
+  nextPaidAmount: number;
+};
+
+/**
+ * Splits one payment across an ordered (oldest-first) carry-forward chain,
+ * capping each invoice's own `paid_amount` increase at that invoice's own
+ * outstanding balance. This is the one place that decides how much of a
+ * payment each invoice in the chain absorbs.
+ *
+ * Pulled out of `applyInvoicePaymentAllocation` and unit-tested on its own so
+ * the rule "an invoice's paid_amount can only grow by its own share, never a
+ * different invoice's" can't silently regress. It regressed once already: a
+ * past version of `applyInvoicePaymentAllocation` accumulated the source
+ * invoice's allocated share onto the target's `paid_amount` too, so a single
+ * payment that legitimately settled an old debt AND part of a new invoice
+ * made the target look paid for money it never actually received on its own
+ * row. Several invoices in production still carry that stale, inflated
+ * `paid_amount` from before the fix (left alone deliberately — correcting
+ * them now would flip settled-looking invoices back to owing money, which is
+ * a business decision, not a code fix).
+ */
+export const allocatePaymentAcrossChain = (
+  invoices: ChainAllocationInput[],
+  amount: number,
+): ChainAllocationResult[] => {
+  let remaining = Math.max(0, toNumber(amount));
+  const results: ChainAllocationResult[] = [];
+  for (const invoice of invoices) {
+    const outstanding = Math.max(
+      0,
+      toNumber(invoice.total_amount) - toNumber(invoice.paid_amount),
+    );
+    if (outstanding <= 0 || remaining <= 0) continue;
+    const allocated = Math.min(outstanding, remaining);
+    const nextPaidAmount = Math.min(
+      toNumber(invoice.total_amount),
+      toNumber(invoice.paid_amount) + allocated,
+    );
+    results.push({ id: invoice.id, allocated, nextPaidAmount });
+    remaining -= allocated;
+  }
+  return results;
+};
+
 /**
  * How much of THIS invoice's own charge (excluding whatever it already carried in
  * from an earlier invoice) is still unpaid. Summing this across every open invoice
@@ -1290,7 +1343,6 @@ export async function applyInvoicePaymentAllocation(
 
   const amountToAllocate = Math.min(safeAmount, totalOutstanding);
   const paymentBatchId = crypto.randomUUID();
-  let remaining = amountToAllocate;
   const updates: {
     invoiceId: string;
     paid_amount: number;
@@ -1319,19 +1371,22 @@ export async function applyInvoicePaymentAllocation(
     });
   }
 
-  // Bug #4 fix: Each invoice gets exactly its own allocated share.
-  // No accumulation of source allocations onto the trigger invoice — that was
-  // causing the trigger invoice to appear over-paid.
+  // Bug #4 fix: each invoice gets exactly its own allocated share, capped at
+  // its own outstanding — never accumulating another invoice's share onto
+  // this one. See allocatePaymentAcrossChain's doc comment for how this
+  // regressed once before.
+  const chainAllocations = new Map(
+    allocatePaymentAcrossChain(
+      paymentTargets as ChainAllocationInput[],
+      amountToAllocate,
+    ).map((result) => [result.id, result]),
+  );
+
   for (const invoice of paymentTargets) {
-    const outstanding = getInvoiceOutstanding(invoice as InvoiceLike);
-    if (outstanding <= 0 || remaining <= 0) continue;
+    const chainAllocation = chainAllocations.get(String(invoice.id));
+    if (!chainAllocation) continue;
 
-    const allocated = Math.min(outstanding, remaining);
-
-    const nextPaidAmount = Math.min(
-      toNumber(invoice.total_amount),
-      toNumber(invoice.paid_amount) + allocated,
-    );
+    const { allocated, nextPaidAmount } = chainAllocation;
     const paymentHistory = Array.isArray(invoice.payment_history)
       ? invoice.payment_history
       : [];
@@ -1399,8 +1454,6 @@ export async function applyInvoicePaymentAllocation(
       payment_method_snapshot: resolvedMethod.snapshot,
       created_at: new Date().toISOString(),
     });
-
-    remaining -= allocated;
   }
 
   try {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  allocatePaymentAcrossChain,
   calculateLateFeeAmount,
   computeLateFeeSnapshot,
   getInvoiceOutstanding,
@@ -19,6 +20,72 @@ describe("getInvoiceOutstanding", () => {
   });
   it("treats nullish as zero", () => {
     expect(getInvoiceOutstanding({ total_amount: null, paid_amount: null })).toBe(0);
+  });
+});
+
+describe("allocatePaymentAcrossChain", () => {
+  it("caps a single invoice's allocation at its own outstanding", () => {
+    const result = allocatePaymentAcrossChain(
+      [{ id: "a", total_amount: 500, paid_amount: 200 }],
+      1000,
+    );
+    expect(result).toEqual([{ id: "a", allocated: 300, nextPaidAmount: 500 }]);
+  });
+
+  it("skips an already fully-paid invoice", () => {
+    const result = allocatePaymentAcrossChain(
+      [{ id: "a", total_amount: 500, paid_amount: 500 }],
+      1000,
+    );
+    expect(result).toEqual([]);
+  });
+
+  // Room 201/2, March: a single 6,925 payment legitimately settled February's
+  // 1,203 debt (carried forward) and put 5,722 toward March's own charge.
+  // A past version of applyInvoicePaymentAllocation accumulated February's
+  // share onto March's paid_amount too, so March read as having received the
+  // full 6,925 on its own row — this is the exact regression that must never
+  // come back.
+  it("never lets a later invoice in the chain absorb an earlier invoice's share", () => {
+    const result = allocatePaymentAcrossChain(
+      [
+        { id: "february", total_amount: 1203, paid_amount: 0 },
+        { id: "march", total_amount: 8128, paid_amount: 0 },
+      ],
+      6925,
+    );
+    expect(result).toEqual([
+      { id: "february", allocated: 1203, nextPaidAmount: 1203 },
+      { id: "march", allocated: 5722, nextPaidAmount: 5722 },
+    ]);
+  });
+
+  it("stops once the payment runs out, leaving later invoices untouched", () => {
+    const result = allocatePaymentAcrossChain(
+      [
+        { id: "february", total_amount: 1203, paid_amount: 0 },
+        { id: "march", total_amount: 8128, paid_amount: 0 },
+      ],
+      500,
+    );
+    expect(result).toEqual([{ id: "february", allocated: 500, nextPaidAmount: 500 }]);
+  });
+
+  it("adds to an invoice's existing paid_amount rather than replacing it", () => {
+    const result = allocatePaymentAcrossChain(
+      [{ id: "a", total_amount: 1000, paid_amount: 400 }],
+      300,
+    );
+    expect(result).toEqual([{ id: "a", allocated: 300, nextPaidAmount: 700 }]);
+  });
+
+  it("returns nothing for a zero or negative amount", () => {
+    expect(
+      allocatePaymentAcrossChain([{ id: "a", total_amount: 500, paid_amount: 0 }], 0),
+    ).toEqual([]);
+    expect(
+      allocatePaymentAcrossChain([{ id: "a", total_amount: 500, paid_amount: 0 }], -50),
+    ).toEqual([]);
   });
 });
 
