@@ -1,4 +1,12 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { computeInvoiceTotal } from "./invoice-total";
+import {
+  buildLateFeeLineDetail,
+  isCarryForwardBreakdownRow,
+  isInvoiceDetailEditable,
+  isLateFeeBreakdownRow,
+  toChargeFeeRows,
+} from "./invoice-utils";
 
 export const OPEN_INVOICE_STATUSES = [
   "pending",
@@ -802,6 +810,171 @@ export async function getCarryForwardCandidates(
 }
 
 /**
+ * After a payment changes one or more invoices' own outstanding balance,
+ * any LATER invoice that carries one of those invoices as a bundled debt
+ * needs its carry-forward/late-fee lines and total refreshed to match —
+ * otherwise it keeps showing pre-payment figures until someone happens to
+ * open it and click "recalculate" by hand.
+ *
+ * Scoped deliberately narrow: only refreshes lines whose `source_invoice_id`
+ * is one of `paidSourceInvoiceIds`, using the same candidate computation
+ * (`getCarryForwardCandidatesForTarget`) the manual recalculate button uses.
+ * Everything else already on the target — a manual fee, a transfer
+ * breakdown, a carried line from an unrelated invoice — is left exactly as
+ * stored. Targets that are paid, cancelled, or still a draft are skipped
+ * entirely; this only touches invoices still open for editing.
+ */
+export async function refreshCarryForwardTargets(
+  supabase: SupabaseClient,
+  tenantId: string,
+  paidSourceInvoiceIds: string[],
+): Promise<{ refreshedInvoiceIds: string[] }> {
+  if (paidSourceInvoiceIds.length === 0) {
+    return { refreshedInvoiceIds: [] };
+  }
+
+  const { data: carryRows, error: carryError } = await supabase
+    .from("invoice_carry_forwards")
+    .select("target_invoice_id")
+    .in("source_invoice_id", paidSourceInvoiceIds);
+  if (carryError) throw new Error(carryError.message);
+
+  const targetIds = [
+    ...new Set((carryRows ?? []).map((row: any) => String(row.target_invoice_id))),
+  ];
+  if (targetIds.length === 0) {
+    return { refreshedInvoiceIds: [] };
+  }
+
+  const { data: targets, error: targetsError } = await supabase
+    .from("invoices")
+    .select(
+      "id,tenant_id,status,start_date,issue_date,rent_amount,water_bill,electricity_bill,common_fee,late_fee_amount,late_fee_per_day,late_fee_start_date,waived_late_fee_amount,locked_late_fee_amount,additional_fees_breakdown,discount_amount,total_amount",
+    )
+    .in("id", targetIds);
+  if (targetsError) throw new Error(targetsError.message);
+
+  const refreshedInvoiceIds: string[] = [];
+
+  for (const target of (targets ?? []) as any[]) {
+    if (!isInvoiceDetailEditable(String(target.status ?? ""))) continue;
+
+    const valuationDate = target.issue_date || target.start_date;
+    const candidates = await getCarryForwardCandidatesForTarget(
+      supabase,
+      tenantId,
+      target.start_date,
+      String(target.id),
+      valuationDate,
+    );
+    const freshBySource = new Map(candidates.map((c: any) => [String(c.id), c]));
+
+    const existingBreakdown: any[] = Array.isArray(target.additional_fees_breakdown)
+      ? target.additional_fees_breakdown
+      : [];
+    const untouched = existingBreakdown.filter(
+      (row) => !isCarryForwardBreakdownRow(row) && !isLateFeeBreakdownRow(row),
+    );
+    const existingCarryItems = existingBreakdown.filter(isCarryForwardBreakdownRow);
+    const existingLateItems = existingBreakdown.filter(isLateFeeBreakdownRow);
+
+    let changed = false;
+
+    const nextCarryItems = existingCarryItems
+      .map((item: any) => {
+        const sourceId = String(item.source_invoice_id ?? "");
+        if (!sourceId || !paidSourceInvoiceIds.includes(sourceId)) return item;
+        changed = true;
+        const fresh = freshBySource.get(sourceId);
+        const outstanding = fresh ? toNumber(fresh.outstanding_amount) : 0;
+        if (outstanding <= 0) return null;
+        return {
+          ...item,
+          total_amount: outstanding,
+          amount: outstanding,
+          price_per_unit: outstanding,
+        };
+      })
+      .filter((item: any) => item !== null);
+
+    const nextLateItems = existingLateItems
+      .map((item: any) => {
+        const sourceId = String(item.source_invoice_id ?? "");
+        if (!sourceId || !paidSourceInvoiceIds.includes(sourceId)) return item;
+        changed = true;
+        const fresh = freshBySource.get(sourceId);
+        const feeAmount = fresh ? toNumber(fresh.late_fee_snapshot_amount) : 0;
+        if (feeAmount <= 0) return null;
+        const daysOverdue = toNumber(fresh?.late_fee_snapshot_days);
+        const dailyRate = toNumber(fresh?.late_fee_per_day);
+        const windowAsOf = fresh?.late_fee_snapshot_as_of ?? valuationDate;
+        const detail = buildLateFeeLineDetail(
+          String(fresh?.start_date ?? ""),
+          daysOverdue,
+          dailyRate,
+          windowAsOf,
+        );
+        return {
+          ...item,
+          detail,
+          label: detail,
+          total_amount: feeAmount,
+          amount: feeAmount,
+          days_overdue: daysOverdue,
+          daily_rate: dailyRate,
+          snapshot_as_of: windowAsOf,
+          original_amount: feeAmount,
+        };
+      })
+      .filter((item: any) => item !== null);
+
+    if (!changed) continue;
+
+    const carryForwardAmount = nextCarryItems.reduce(
+      (sum: number, item: any) => sum + toNumber(item.total_amount),
+      0,
+    );
+    const lateFeeItemsTotal = nextLateItems.reduce(
+      (sum: number, item: any) => sum + toNumber(item.total_amount),
+      0,
+    );
+    const otherFeesTotal = toChargeFeeRows(untouched).reduce(
+      (sum: number, item: any) => sum + toNumber(item.total_amount ?? item.amount),
+      0,
+    );
+    const nativeLateFee = computeLateFeeSnapshot(target, valuationDate).amount;
+
+    const totalAmount = computeInvoiceTotal({
+      rent: toNumber(target.rent_amount),
+      water: toNumber(target.water_bill),
+      electricity: toNumber(target.electricity_bill),
+      commonFee: toNumber(target.common_fee),
+      nativeLateFee,
+      lateFeeItems: lateFeeItemsTotal,
+      fees: otherFeesTotal,
+      carryForward: carryForwardAmount,
+      discount: toNumber(target.discount_amount),
+    });
+
+    const { error: updateError } = await supabase
+      .from("invoices")
+      .update({
+        carry_forward_amount: carryForwardAmount,
+        late_fee_amount: nativeLateFee + lateFeeItemsTotal,
+        additional_fees_total: otherFeesTotal + lateFeeItemsTotal,
+        additional_fees_breakdown: [...untouched, ...nextCarryItems, ...nextLateItems],
+        total_amount: totalAmount,
+      })
+      .eq("id", target.id);
+    if (updateError) throw new Error(updateError.message);
+
+    refreshedInvoiceIds.push(String(target.id));
+  }
+
+  return { refreshedInvoiceIds };
+}
+
+/**
  * Total still owed across an invoice and every invoice carried forward into it —
  * the same set `applyInvoicePaymentAllocation` would allocate against, and so
  * the amount it has left to work with.
@@ -1570,6 +1743,344 @@ export async function applyInvoicePaymentAllocation(
     }
     throw err;
   }
+
+  const updatedInvoiceIds = updates.map((item) => item.invoiceId);
+  const { data: updatedInvoices, error: updatedError } = await supabase
+    .from("invoices")
+    .select(
+      "id,paid_amount,status,payment_history,slip_url,slip_uploaded_at,total_amount",
+    )
+    .in("id", updatedInvoiceIds);
+  if (updatedError) throw new Error(updatedError.message);
+
+  const allocationBreakdown: AllocationBreakdownRow[] = updates.map((u) => ({
+    invoiceId: u.invoiceId,
+    allocatedAmount: u.allocatedAmount,
+    newPaidAmount: u.paid_amount,
+    newStatus: u.status,
+  }));
+
+  return {
+    paymentBatchId,
+    paymentMethod: resolvedMethod,
+    appliedAmount: amountToAllocate,
+    updatedInvoices: updatedInvoices ?? [],
+    allocationBreakdown,
+  };
+}
+
+export type ManualAllocationEntry = {
+  invoiceId: string;
+  amount: number;
+};
+
+export type ApplyManualPaymentOptions = {
+  tenantId: string;
+  /** The admin's own chosen split — which invoice gets how much. */
+  allocations: ManualAllocationEntry[];
+  paidAt: string;
+  slipUrl?: string | null;
+  mode?: string;
+  source?: string;
+  idempotencyKey?: string | null;
+  paymentMethod?: ResolvedPaymentMethod | null;
+  createdBy?: string | null;
+};
+
+/**
+ * Records one payment split across specific invoices by explicit admin
+ * choice, instead of `applyInvoicePaymentAllocation`'s automatic
+ * oldest-first split across one invoice's own carry-forward chain.
+ *
+ * Built for a tenant catching up on real arrears where the amount owed each
+ * month doesn't cleanly resolve oldest-first — a lump sum or an installment
+ * the admin wants to direct at specific months. Every other safety property
+ * of the automatic path is unchanged: one real batch record, idempotency
+ * (a retried request with the same key replays the original result instead
+ * of double-charging), late-fee freezing on full payment, and a full
+ * revert-on-error unwind. The only difference is who decides the split.
+ *
+ * Each entered amount is a hard cap at that invoice's own outstanding
+ * balance — never silently truncated to fit. If an amount doesn't fit, the
+ * caller finds out exactly which invoice and by how much, rather than
+ * quietly getting a different result than what was typed.
+ */
+export async function applyManualInvoicePaymentAllocation(
+  supabase: SupabaseClient,
+  options: ApplyManualPaymentOptions,
+): Promise<ApplyPaymentResult> {
+  const {
+    tenantId,
+    allocations,
+    paidAt,
+    slipUrl = null,
+    mode = "full",
+    source = "admin",
+    idempotencyKey = null,
+    paymentMethod = null,
+    createdBy = null,
+  } = options;
+
+  const cleanAllocations = allocations
+    .map((row) => ({
+      invoiceId: String(row.invoiceId ?? ""),
+      amount: Math.max(0, toNumber(row.amount)),
+    }))
+    .filter((row) => row.invoiceId && row.amount > 0);
+  if (cleanAllocations.length === 0) {
+    throw new Error("เลือกอย่างน้อยหนึ่งใบแจ้งหนี้และระบุจำนวนเงิน");
+  }
+  const seenIds = new Set<string>();
+  for (const row of cleanAllocations) {
+    if (seenIds.has(row.invoiceId)) {
+      throw new Error("เลือกใบแจ้งหนี้แต่ละใบได้เพียงครั้งเดียว");
+    }
+    seenIds.add(row.invoiceId);
+  }
+
+  const invoiceIds = cleanAllocations.map((row) => row.invoiceId);
+  const triggerInvoiceId = invoiceIds[0];
+
+  const trimmedIdem = idempotencyKey?.trim() || null;
+  if (trimmedIdem) {
+    const existing = await findIdempotentPaymentResult(
+      supabase,
+      triggerInvoiceId,
+      trimmedIdem,
+    );
+    if (existing) return existing;
+  }
+
+  await syncInvoiceLedger(supabase, { invoiceIds });
+
+  const { data: invoiceRows, error: invoiceError } = await supabase
+    .from("invoices")
+    .select(
+      "id,tenant_id,total_amount,paid_amount,status,payment_history,slip_url,slip_uploaded_at,late_fee_amount,late_fee_per_day,late_fee_start_date,due_date,waived_late_fee_amount,locked_late_fee_amount",
+    )
+    .in("id", invoiceIds);
+  if (invoiceError) throw new Error(invoiceError.message);
+  if (!invoiceRows || invoiceRows.length !== invoiceIds.length) {
+    throw new Error("ไม่พบใบแจ้งหนี้ที่เลือกบางรายการ");
+  }
+
+  const byId = new Map((invoiceRows as any[]).map((row) => [String(row.id), row]));
+
+  for (const entry of cleanAllocations) {
+    const invoice = byId.get(entry.invoiceId);
+    if (String(invoice.tenant_id) !== tenantId) {
+      throw new Error("ใบแจ้งหนี้ที่เลือกต้องเป็นของผู้เช่าคนเดียวกันทั้งหมด");
+    }
+    if (!OPEN_INVOICE_STATUSES.includes(invoice.status)) {
+      throw new Error(
+        `ใบแจ้งหนี้ที่เลือกไม่สามารถรับชำระได้ในสถานะปัจจุบัน (${invoice.status})`,
+      );
+    }
+    const outstanding = getInvoiceOutstanding(invoice);
+    if (entry.amount > outstanding + 0.005) {
+      throw new Error(
+        `ยอดที่กรอกเกินยอดค้างชำระจริง — ค้างชำระ ${outstanding.toFixed(2)} บาท แต่กรอก ${entry.amount.toFixed(2)} บาท`,
+      );
+    }
+  }
+
+  const paymentBatchId = crypto.randomUUID();
+  const resolvedMethod: ResolvedPaymentMethod =
+    paymentMethod ?? (await resolvePaymentMethodForTenant(supabase, tenantId));
+
+  const revertSnapshots = new Map<string, InvoiceRowSnapshot>();
+  for (const entry of cleanAllocations) {
+    const invoice = byId.get(entry.invoiceId);
+    revertSnapshots.set(entry.invoiceId, {
+      paid_amount: toNumber(invoice.paid_amount),
+      payment_history: Array.isArray(invoice.payment_history)
+        ? invoice.payment_history
+        : [],
+      status: String(invoice.status ?? ""),
+      slip_url: invoice.slip_url ?? null,
+      slip_uploaded_at: invoice.slip_uploaded_at ?? null,
+      locked_late_fee_amount:
+        invoice.locked_late_fee_amount === undefined
+          ? null
+          : invoice.locked_late_fee_amount,
+    });
+  }
+
+  const updates: {
+    invoiceId: string;
+    paid_amount: number;
+    status: string;
+    payment_history: any[];
+    allocatedAmount: number;
+    lockedLateFeeAmount?: number;
+  }[] = [];
+  const allocationRows: any[] = [];
+
+  for (const entry of cleanAllocations) {
+    const invoice = byId.get(entry.invoiceId);
+    const allocated = entry.amount;
+    const nextPaidAmount = Math.min(
+      toNumber(invoice.total_amount),
+      toNumber(invoice.paid_amount) + allocated,
+    );
+    const paymentHistory = Array.isArray(invoice.payment_history)
+      ? invoice.payment_history
+      : [];
+    const paymentEntry: Record<string, unknown> = {
+      amount: allocated,
+      mode,
+      paid_at: paidAt,
+      slip_url: slipUrl,
+      created_at: new Date().toISOString(),
+      source,
+      payment_batch_id: paymentBatchId,
+      trigger_invoice_id: triggerInvoiceId,
+      payment_method: resolvedMethod.snapshot,
+      payment_method_id: resolvedMethod.id,
+    };
+    if (trimmedIdem) {
+      paymentEntry.idempotency_key = trimmedIdem;
+    }
+
+    const nextStatus = resolveInvoiceStatus(
+      {
+        total_amount: invoice.total_amount,
+        paid_amount: nextPaidAmount,
+        due_date: invoice.due_date,
+      },
+      paidAt.slice(0, 10),
+    );
+
+    const lockedLateFeeAmount =
+      nextStatus === "paid" &&
+      (invoice.locked_late_fee_amount === null ||
+        invoice.locked_late_fee_amount === undefined)
+        ? calculateLateFeeAmount(invoice, paidAt.slice(0, 10))
+        : undefined;
+
+    updates.push({
+      invoiceId: entry.invoiceId,
+      paid_amount: nextPaidAmount,
+      status: nextStatus,
+      payment_history: [...paymentHistory, paymentEntry],
+      allocatedAmount: allocated,
+      lockedLateFeeAmount,
+    });
+
+    allocationRows.push({
+      payment_batch_id: paymentBatchId,
+      trigger_invoice_id: triggerInvoiceId,
+      invoice_id: entry.invoiceId,
+      amount: allocated,
+      paid_at: paidAt,
+      slip_url: slipUrl,
+      source,
+      payment_method_id: resolvedMethod.id,
+      payment_method_snapshot: resolvedMethod.snapshot,
+      created_at: new Date().toISOString(),
+    });
+  }
+
+  const amountToAllocate = cleanAllocations.reduce(
+    (sum, entry) => sum + entry.amount,
+    0,
+  );
+
+  try {
+    const { error: batchError } = await supabase.from("payment_batches").insert({
+      id: paymentBatchId,
+      tenant_id: tenantId,
+      trigger_invoice_id: triggerInvoiceId,
+      amount_received: amountToAllocate,
+      amount_allocated: amountToAllocate,
+      paid_at: paidAt,
+      mode,
+      source,
+      slip_url: slipUrl,
+      payment_method_id: resolvedMethod.id,
+      payment_method_snapshot: resolvedMethod.snapshot,
+      idempotency_key: trimmedIdem,
+      created_by: createdBy,
+    });
+    if (batchError) throw new Error(batchError.message);
+
+    for (const update of updates) {
+      const updatePayload: Record<string, unknown> = {
+        paid_amount: update.paid_amount,
+        payment_history: update.payment_history,
+        status: update.status,
+      };
+      if (update.lockedLateFeeAmount !== undefined) {
+        updatePayload.locked_late_fee_amount = update.lockedLateFeeAmount;
+      }
+      if (slipUrl && update.invoiceId === triggerInvoiceId) {
+        updatePayload.slip_url = slipUrl;
+        updatePayload.slip_uploaded_at = paidAt;
+      }
+      const { error: updateError } = await supabase
+        .from("invoices")
+        .update(updatePayload)
+        .eq("id", update.invoiceId);
+      if (updateError) throw new Error(updateError.message);
+    }
+
+    if (allocationRows.length > 0) {
+      const { error: allocationError } = await supabase
+        .from("invoice_payment_allocations")
+        .insert(allocationRows);
+      if (allocationError) throw new Error(allocationError.message);
+    }
+  } catch (err) {
+    const { error: allocCleanupError } = await supabase
+      .from("invoice_payment_allocations")
+      .delete()
+      .eq("payment_batch_id", paymentBatchId);
+    if (allocCleanupError) {
+      console.error(
+        "[invoice-ledger] Failed to clean up allocations after error:",
+        paymentBatchId,
+        allocCleanupError,
+      );
+    }
+    const { error: batchCleanupError } = await supabase
+      .from("payment_batches")
+      .delete()
+      .eq("id", paymentBatchId);
+    if (batchCleanupError) {
+      console.error(
+        "[invoice-ledger] Failed to clean up payment batch after error:",
+        paymentBatchId,
+        batchCleanupError,
+      );
+    }
+    for (const [id, snap] of revertSnapshots) {
+      const { error: revertError } = await supabase
+        .from("invoices")
+        .update({
+          paid_amount: snap.paid_amount,
+          payment_history: snap.payment_history,
+          status: snap.status,
+          slip_url: snap.slip_url,
+          slip_uploaded_at: snap.slip_uploaded_at,
+          locked_late_fee_amount: snap.locked_late_fee_amount,
+        })
+        .eq("id", id);
+      if (revertError) {
+        console.error(
+          "[invoice-ledger] Failed to revert invoice after allocation error:",
+          id,
+          revertError,
+        );
+      }
+    }
+    throw err;
+  }
+
+  // Cascade: any later invoice bundling one of the invoices just paid as a
+  // carried debt needs its own total refreshed too, or it would keep
+  // showing the pre-payment figure until someone happened to open it and
+  // click recalculate by hand.
+  await refreshCarryForwardTargets(supabase, tenantId, invoiceIds);
 
   const updatedInvoiceIds = updates.map((item) => item.invoiceId);
   const { data: updatedInvoices, error: updatedError } = await supabase

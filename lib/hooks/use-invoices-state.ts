@@ -14,6 +14,7 @@ import { usePermissions } from "@/lib/use-permissions";
 import {
   getCarryForwardCandidatesForTarget,
   computeLateFeeSnapshot,
+  OPEN_INVOICE_STATUSES,
 } from "@/lib/invoice-ledger";
 import {
   toNumber,
@@ -175,6 +176,7 @@ export function useInvoicesState() {
   const [carryOverCandidatesLoading, setCarryOverCandidatesLoading] =
     useState(false);
   const paymentIdempotencyKeyRef = useRef<string | null>(null);
+  const splitPaymentIdempotencyKeyRef = useRef<string | null>(null);
   const [allocationResultNotice, setAllocationResultNotice] = useState<{
     batchId: string;
     lines: { invoiceId: string; label: string; amount: number }[];
@@ -192,6 +194,21 @@ export function useInvoicesState() {
   const [paymentDate, setPaymentDate] = useState(toLocalDateString(new Date()));
   const [paymentSlipFile, setPaymentSlipFile] = useState<File | null>(null);
   const [paymentSubmitting, setPaymentSubmitting] = useState(false);
+  const [showSplitPaymentModal, setShowSplitPaymentModal] = useState(false);
+  const [splitPaymentInvoices, setSplitPaymentInvoices] = useState<
+    {
+      id: string;
+      start_date: string;
+      total_amount: number;
+      paid_amount: number;
+      outstanding: number;
+    }[]
+  >([]);
+  const [splitPaymentAmounts, setSplitPaymentAmounts] = useState<
+    Record<string, string>
+  >({});
+  const [splitPaymentLoading, setSplitPaymentLoading] = useState(false);
+  const [splitPaymentSubmitting, setSplitPaymentSubmitting] = useState(false);
   const [declineModalOpen, setDeclineModalOpen] = useState(false);
   const [declineReason, setDeclineReason] = useState("");
   const [declineSubmitting, setDeclineSubmitting] = useState(false);
@@ -1082,6 +1099,205 @@ export function useInvoicesState() {
       setError(paymentError?.message ?? "Failed to process payment.");
     } finally {
       setPaymentSubmitting(false);
+    }
+  };
+
+  // Opens the "choose which invoices this payment goes to" picker for the
+  // active invoice's tenant — every open invoice across every billing
+  // period, not just this one, so a lump sum or installment covering real
+  // arrears can be pointed at specific months instead of the automatic
+  // oldest-first split in `submitPayment`.
+  const openSplitPaymentModal = async () => {
+    if (!can("invoice.payment.record")) {
+      setError("You do not have permission to record payment.");
+      return;
+    }
+    if (!activeInvoice) return;
+    setShowSplitPaymentModal(true);
+    setSplitPaymentAmounts({});
+    splitPaymentIdempotencyKeyRef.current = null;
+    setSplitPaymentLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from("invoices")
+        .select("id,start_date,total_amount,paid_amount,status")
+        .eq("tenant_id", activeInvoice.tenant_id)
+        .in("status", OPEN_INVOICE_STATUSES as unknown as string[])
+        .order("start_date", { ascending: true });
+      if (error) throw new Error(error.message);
+      const rows = (data ?? [])
+        .map((row: any) => ({
+          id: String(row.id),
+          start_date: String(row.start_date ?? ""),
+          total_amount: toNumber(row.total_amount),
+          paid_amount: toNumber(row.paid_amount),
+          outstanding: Math.max(
+            0,
+            toNumber(row.total_amount) - toNumber(row.paid_amount),
+          ),
+        }))
+        .filter((row) => row.outstanding > 0);
+      setSplitPaymentInvoices(rows);
+    } catch (err: any) {
+      setError(err?.message ?? "Failed to load open invoices.");
+      setShowSplitPaymentModal(false);
+    } finally {
+      setSplitPaymentLoading(false);
+    }
+  };
+
+  const closeSplitPaymentModal = () => {
+    setShowSplitPaymentModal(false);
+    setSplitPaymentInvoices([]);
+    setSplitPaymentAmounts({});
+  };
+
+  const updateSplitPaymentAmount = (invoiceId: string, value: string) => {
+    setSplitPaymentAmounts((prev) => ({ ...prev, [invoiceId]: value }));
+  };
+
+  const submitSplitPayment = async (options: {
+    slipFile?: File | null;
+    paidAt?: string;
+  } = {}) => {
+    if (!can("invoice.payment.record")) {
+      setError("You do not have permission to record payment.");
+      return;
+    }
+    if (!activeInvoice) return;
+
+    const allocations = splitPaymentInvoices
+      .map((inv) => ({
+        invoiceId: inv.id,
+        amount: toNumber(splitPaymentAmounts[inv.id]),
+      }))
+      .filter((row) => row.amount > 0);
+
+    if (allocations.length === 0) {
+      setError("เลือกอย่างน้อยหนึ่งใบแจ้งหนี้และระบุจำนวนเงิน");
+      return;
+    }
+
+    // Mirrors the server's own cap so a mistake shows up immediately
+    // instead of round-tripping to the server first.
+    for (const row of allocations) {
+      const invoice = splitPaymentInvoices.find((inv) => inv.id === row.invoiceId);
+      if (invoice && row.amount > invoice.outstanding + 0.005) {
+        setError(
+          `ยอดที่กรอกเกินยอดค้างชำระของงวด ${formatPeriodLabel(invoice.start_date)} (ค้างชำระ ${formatMoney(invoice.outstanding)})`,
+        );
+        return;
+      }
+    }
+
+    setSplitPaymentSubmitting(true);
+    try {
+      if (!splitPaymentIdempotencyKeyRef.current) {
+        splitPaymentIdempotencyKeyRef.current =
+          typeof crypto !== "undefined" && crypto.randomUUID
+            ? crypto.randomUUID()
+            : `idem-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      }
+      const idempotencyKey = splitPaymentIdempotencyKeyRef.current;
+
+      let publicUrl: string | null = null;
+      if (options.slipFile) {
+        publicUrl = await uploadSlipFile(allocations[0].invoiceId, options.slipFile);
+      }
+      const paidAtIso = new Date(
+        `${options.paidAt ?? paymentDate}T12:00:00`,
+      ).toISOString();
+
+      const result = await callInvoiceAdminAction("record_split_payment", {
+        tenantId: activeInvoice.tenant_id,
+        allocations,
+        payment: {
+          paid_at: paidAtIso,
+          slip_url: publicUrl,
+          mode: "partial",
+          source: "admin_webapp",
+          idempotency_key: idempotencyKey,
+        },
+      });
+
+      const breakdown = Array.isArray(result?.allocationBreakdown)
+        ? result.allocationBreakdown
+        : [];
+      if (breakdown.length > 0) {
+        setAllocationResultNotice({
+          batchId: String(result?.paymentBatchId ?? ""),
+          lines: breakdown.map((row: any) => ({
+            invoiceId: String(row.invoiceId),
+            label: `งวด ${formatPeriodLabel(
+              splitPaymentInvoices.find((i) => i.id === row.invoiceId)?.start_date ?? "",
+            )}`,
+            amount: toNumber(row.allocatedAmount),
+          })),
+          idempotentReplay: !!result?.idempotentReplay,
+        });
+      }
+
+      const updatedInvoices = Array.isArray(result?.updatedInvoices)
+        ? result.updatedInvoices
+        : [];
+      updatedInvoices.forEach((invoiceUpdate: any) => {
+        patchInvoiceInState(String(invoiceUpdate.id), {
+          paid_amount: toNumber(invoiceUpdate.paid_amount),
+          payment_history: Array.isArray(invoiceUpdate.payment_history)
+            ? invoiceUpdate.payment_history
+            : undefined,
+          status: (invoiceUpdate.status as keyof typeof statusVariant) ?? undefined,
+        });
+      });
+
+      // The active invoice may not have been one of the picked invoices at
+      // all — it might only be a downstream invoice that bundles one of them
+      // as carried debt (refreshed server-side by refreshCarryForwardTargets).
+      // Re-fetch it directly rather than relying on the action's own
+      // response, so its total is correct on screen either way.
+      const { data: refreshedActive } = await supabase
+        .from("invoices")
+        .select(
+          "id,paid_amount,status,total_amount,carry_forward_amount,additional_fees_total,additional_fees_breakdown,payment_history",
+        )
+        .eq("id", activeInvoice.id)
+        .maybeSingle();
+      if (refreshedActive) {
+        patchInvoiceInState(String((refreshedActive as any).id), {
+          paid_amount: toNumber((refreshedActive as any).paid_amount),
+          status:
+            ((refreshedActive as any).status as keyof typeof statusVariant) ??
+            undefined,
+          total_amount: toNumber((refreshedActive as any).total_amount),
+          carry_forward_amount: toNumber((refreshedActive as any).carry_forward_amount),
+          additional_fees_total: toNumber((refreshedActive as any).additional_fees_total),
+          additional_fees_breakdown: Array.isArray(
+            (refreshedActive as any).additional_fees_breakdown,
+          )
+            ? (refreshedActive as any).additional_fees_breakdown
+            : undefined,
+          payment_history: Array.isArray((refreshedActive as any).payment_history)
+            ? (refreshedActive as any).payment_history
+            : undefined,
+        });
+        setForm((prev) => ({
+          ...prev,
+          paid_amount: toNumber((refreshedActive as any).paid_amount),
+          total_amount: toNumber((refreshedActive as any).total_amount),
+          status:
+            ((refreshedActive as any).status as keyof typeof statusVariant) ??
+            prev.status,
+        }));
+      }
+
+      toast.success("บันทึกการชำระเงินเรียบร้อยแล้ว");
+      closeSplitPaymentModal();
+      splitPaymentIdempotencyKeyRef.current = null;
+      setError(null);
+    } catch (err: any) {
+      setError(err?.message ?? "Failed to process payment.");
+    } finally {
+      setSplitPaymentSubmitting(false);
     }
   };
 
@@ -3990,6 +4206,15 @@ export function useInvoicesState() {
     setPaymentSlipFile,
     paymentSubmitting,
     setPaymentSubmitting,
+    showSplitPaymentModal,
+    splitPaymentInvoices,
+    splitPaymentAmounts,
+    splitPaymentLoading,
+    splitPaymentSubmitting,
+    openSplitPaymentModal,
+    closeSplitPaymentModal,
+    updateSplitPaymentAmount,
+    submitSplitPayment,
     lineSendModalOpen,
     setLineSendModalOpen,
     lineSendState,

@@ -88,6 +88,7 @@ import { InvoiceProvider } from "./invoices/InvoiceContext";
 import { SlipViewerModal } from "./invoices/SlipViewerModal";
 import { SlipDeclineModal } from "./invoices/SlipDeclineModal";
 import { LineSendModal } from "./invoices/LineSendModal";
+import { SplitPaymentModal } from "./invoices/SplitPaymentModal";
 import { InvoicePreviewModal } from "./invoices/InvoicePreviewModal";
 import { InvoiceDetailModal } from "./invoices/InvoiceDetailModal";
 import { OverdueRoomsTab } from "./invoices/OverdueRoomsTab";
@@ -633,6 +634,8 @@ export default function InvoicesPage() {
         <SlipDeclineModal />
 
         <LineSendModal />
+
+        <SplitPaymentModal />
 
       <ConfirmActionModal
         isOpen={confirmGenerateOpen}

@@ -132,6 +132,15 @@ export function InvoiceDetailModal() {
     setPaymentSlipFile,
     paymentSubmitting,
     setPaymentSubmitting,
+    showSplitPaymentModal,
+    splitPaymentInvoices,
+    splitPaymentAmounts,
+    splitPaymentLoading,
+    splitPaymentSubmitting,
+    openSplitPaymentModal,
+    closeSplitPaymentModal,
+    updateSplitPaymentAmount,
+    submitSplitPayment,
     lineSendModalOpen,
     setLineSendModalOpen,
     lineSendState,
@@ -1679,7 +1688,15 @@ export function InvoiceDetailModal() {
                       </div>
                     </div>
 
-                    <div className="flex justify-end pt-4 border-t border-slate-100">
+                    <div className="flex flex-wrap justify-end gap-3 pt-4 border-t border-slate-100">
+                      <button
+                        type="button"
+                        onClick={() => void openSplitPaymentModal()}
+                        disabled={!canRecordInvoicePayment || paymentSubmitting}
+                        className={buttonClasses({ variant: "subtle", size: "lg" })}
+                      >
+                        แบ่งชำระหลายงวด
+                      </button>
                       <button
                         onClick={() => submitPayment()}
                         disabled={!canRecordInvoicePayment || paymentSubmitting}

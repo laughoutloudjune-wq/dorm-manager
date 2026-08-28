@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/admin-api-auth";
 import {
   applyInvoicePaymentAllocation,
+  applyManualInvoicePaymentAllocation,
   syncInvoiceLedger,
   snapshotFromPaymentMethodRow,
   calculateLateFeeAmount,
@@ -258,6 +259,43 @@ export async function POST(req: Request) {
       const { error } = await auth.supabase.from("invoices").update(payload).eq("id", invoiceId);
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
       return NextResponse.json({ success: true });
+    }
+
+    if (action === "record_split_payment") {
+      // Same money-recording path as record_payment, except the admin picks
+      // exactly which invoices this payment goes to and how much for each,
+      // instead of the server auto-splitting one amount oldest-first across
+      // a single invoice's carry-forward chain. Built for a tenant catching
+      // up on real arrears in a lump sum or installments that don't
+      // necessarily resolve oldest-first.
+      const auth = await requireAdminPermission(req, "invoice.payment.record");
+      if ("error" in auth) return auth.error;
+      const tenantId = String(body?.tenantId ?? "");
+      const payment = body?.payment ?? null;
+      const allocations = Array.isArray(body?.allocations) ? body.allocations : [];
+      if (!tenantId || !payment || typeof payment !== "object" || allocations.length === 0) {
+        return NextResponse.json({ error: "Invalid split payment payload." }, { status: 400 });
+      }
+      const result = await applyManualInvoicePaymentAllocation(auth.supabase, {
+        tenantId,
+        allocations: allocations.map((row: any) => ({
+          invoiceId: String(row?.invoiceId ?? ""),
+          amount: Number(row?.amount ?? 0),
+        })),
+        paidAt: String((payment as any).paid_at ?? new Date().toISOString()),
+        slipUrl: ((payment as any).slip_url as string | null | undefined) ?? null,
+        mode: String((payment as any).mode ?? "partial"),
+        source: String((payment as any).source ?? "admin_webapp"),
+        idempotencyKey: (payment as any).idempotency_key
+          ? String((payment as any).idempotency_key)
+          : null,
+        createdBy: auth.user.id,
+      });
+      const triggerInvoiceId = result.allocationBreakdown[0]?.invoiceId;
+      if (triggerInvoiceId) {
+        await syncPointsAfterPayment(auth.supabase, triggerInvoiceId);
+      }
+      return NextResponse.json({ success: true, ...result });
     }
 
     if (action === "delete_payment_batch") {
