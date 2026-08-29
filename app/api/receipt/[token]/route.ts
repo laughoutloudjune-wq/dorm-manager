@@ -247,29 +247,50 @@ export async function GET(req: Request) {
     );
     const hasNormalAdditionalFeeBreakdown = normalAdditionalFees.length > 0;
     const arrearsSnapshotRows = Array.isArray(arrearsSnapshots) ? arrearsSnapshots : [];
+    // Whichever tier actually renders below, its total must be subtracted out
+    // of the "other fees" fallback further down — `additional_fees_total`
+    // already includes it, and printing both was doubling the late fee in
+    // the itemization whenever there was no OTHER additional fee to force a
+    // real breakdown to render.
+    let lateFeeRowsTotal = 0;
     const lateFeeRowsHtml =
       ownLateFeeRowsForReceipt.length > 0
-        ? ownLateFeeRowsForReceipt
-            .map(
-              (row: any) =>
-                `<tr><td>${escapeHtml(String(row?.detail ?? row?.label ?? "ค่าปรับล่าช้า"))}</td><td>${escapeHtml(
-                  formatMoney(toNumber(row?.total_amount ?? row?.amount ?? 0))
-                )}</td></tr>`
-            )
-            .join("")
-        : arrearsSnapshotRows.length > 0
-          ? arrearsSnapshotRows
+        ? (() => {
+            lateFeeRowsTotal = ownLateFeeRowsForReceipt.reduce(
+              (sum: number, row: any) => sum + toNumber(row?.total_amount ?? row?.amount ?? 0),
+              0,
+            );
+            return ownLateFeeRowsForReceipt
               .map(
                 (row: any) =>
-                  `<tr><td>ค่าปรับล่าช้า - บิล ${escapeHtml(shortInvoiceId(String(row?.source_invoice_id ?? "")))} (${escapeHtml(
-                    `${Math.round(toNumber(row?.days_overdue)).toLocaleString("th-TH")} วัน x ${formatMoney(
-                      toNumber(row?.daily_rate)
-                    )}/วัน`
-                  )})</td><td>${escapeHtml(formatMoney(toNumber(row?.late_fee_amount)))}</td></tr>`
+                  `<tr><td>${escapeHtml(String(row?.detail ?? row?.label ?? "ค่าปรับล่าช้า"))}</td><td>${escapeHtml(
+                    formatMoney(toNumber(row?.total_amount ?? row?.amount ?? 0))
+                  )}</td></tr>`
               )
-              .join("")
+              .join("");
+          })()
+        : arrearsSnapshotRows.length > 0
+          ? (() => {
+              lateFeeRowsTotal = arrearsSnapshotRows.reduce(
+                (sum: number, row: any) => sum + toNumber(row?.late_fee_amount),
+                0,
+              );
+              return arrearsSnapshotRows
+                .map(
+                  (row: any) =>
+                    `<tr><td>ค่าปรับล่าช้า - บิล ${escapeHtml(shortInvoiceId(String(row?.source_invoice_id ?? "")))} (${escapeHtml(
+                      `${Math.round(toNumber(row?.days_overdue)).toLocaleString("th-TH")} วัน x ${formatMoney(
+                        toNumber(row?.daily_rate)
+                      )}/วัน`
+                    )})</td><td>${escapeHtml(formatMoney(toNumber(row?.late_fee_amount)))}</td></tr>`
+                )
+                .join("");
+            })()
           : toNumber((data as any).late_fee_amount) > 0
-            ? `<tr><td>ค่าปรับล่าช้า</td><td>${escapeHtml(formatMoney(toNumber((data as any).late_fee_amount)))}</td></tr>`
+            ? (() => {
+                lateFeeRowsTotal = toNumber((data as any).late_fee_amount);
+                return `<tr><td>ค่าปรับล่าช้า</td><td>${escapeHtml(formatMoney(lateFeeRowsTotal))}</td></tr>`;
+              })()
             : "";
 
     const html = `
@@ -355,11 +376,19 @@ export async function GET(req: Request) {
           ${
             hasNormalAdditionalFeeBreakdown
               ? ""
-              : toNumber((data as any).additional_fees_total) > 0
-                ? `<tr><td>ค่าธรรมเนียมเพิ่มเติม</td><td>${escapeHtml(
-                    formatMoney(toNumber((data as any).additional_fees_total))
-                  )}</td></tr>`
-                : ""
+              : (() => {
+                  // `additional_fees_total` bundles the late-fee lines rendered
+                  // above via lateFeeRowsHtml — subtract that out so a bill with
+                  // no OTHER additional fee doesn't print the late fee a second
+                  // time under this generic label.
+                  const otherFees = Math.max(
+                    0,
+                    toNumber((data as any).additional_fees_total) - lateFeeRowsTotal,
+                  );
+                  return otherFees > 0
+                    ? `<tr><td>ค่าธรรมเนียมเพิ่มเติม</td><td>${escapeHtml(formatMoney(otherFees))}</td></tr>`
+                    : "";
+                })()
           }
           <tr><td>ส่วนลด</td><td>-${escapeHtml(formatMoney(toNumber((data as any).discount_amount)))}</td></tr>
           ${lateFeeRowsHtml}
@@ -368,9 +397,12 @@ export async function GET(req: Request) {
       <div class="total row">
         <span>ยอดที่ชำระ</span>
         <span>${escapeHtml(
-          formatMoney(
-            toNumber((data as any).paid_amount) || toNumber((data as any).total_amount)
-          )
+          // The receipt's own label is specifically "amount paid" — the real
+          // money on record, not the bill total. Showing total_amount whenever
+          // paid_amount happened to be 0 used to let a "paid" invoice with no
+          // real payment behind it (a status flipped without money moving)
+          // print as if it had been paid in full.
+          formatMoney(toNumber((data as any).paid_amount))
         )}</span>
       </div>
     </div>

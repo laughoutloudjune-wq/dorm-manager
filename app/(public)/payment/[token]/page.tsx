@@ -6,7 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { Badge } from "@/components/ui/Badge";
 import { createClient } from "@/lib/supabase-client";
-import { isLateFeeBreakdownRow } from "@/lib/invoice-utils";
+import { isLateFeeBreakdownRow, isCarryForwardBreakdownRow, toChargeFeeRows } from "@/lib/invoice-utils";
 import { CheckCircle2, Download, UploadCloud } from "lucide-react";
 
 const NGROK_SKIP_QUERY = "ngrok-skip-browser-warning=true";
@@ -33,6 +33,9 @@ type InvoiceData = {
   common_fee: number;
   additional_fees_total: number;
   additional_fees_breakdown: any[];
+  carry_forward_amount: number;
+  discount_amount: number;
+  discount_breakdown: any[];
   status: string;
   slip_url: string | null;
   tenant_name: string;
@@ -111,6 +114,9 @@ function normalizeInvoice(row: any): InvoiceData {
     additional_fees_breakdown: Array.isArray(row.additional_fees_breakdown)
       ? row.additional_fees_breakdown
       : [],
+    carry_forward_amount: Number(row.carry_forward_amount ?? 0),
+    discount_amount: Number(row.discount_amount ?? 0),
+    discount_breakdown: Array.isArray(row.discount_breakdown) ? row.discount_breakdown : [],
     status: row.status,
     slip_url: row.slip_url,
     tenant_move_in_date: tenant?.move_in_date ?? null,
@@ -342,7 +348,7 @@ export default function PaymentTokenPage() {
       const { data, error: fetchError } = await supabase
         .from("invoices")
         .select(
-          "id,room_id,start_date,total_amount,paid_amount,carry_forward_amount,late_fee_amount,payment_history,rent_amount,water_bill,electricity_bill,common_fee,additional_fees_total,additional_fees_breakdown,status,slip_url,tenants(full_name,custom_payment_method,move_in_date),rooms(room_number,price_month)"
+          "id,room_id,start_date,total_amount,paid_amount,carry_forward_amount,late_fee_amount,payment_history,rent_amount,water_bill,electricity_bill,common_fee,additional_fees_total,additional_fees_breakdown,discount_amount,discount_breakdown,status,slip_url,tenants(full_name,custom_payment_method,move_in_date),rooms(room_number,price_month)"
         )
         .eq("public_token", token)
         .single();
@@ -495,13 +501,28 @@ export default function PaymentTokenPage() {
   const transferBreakdownItems = (invoice?.additional_fees_breakdown ?? []).filter((row: any) =>
     isTransferBreakdownRow(row)
   );
-  // Late-fee rows get their own dedicated section below (with the accrual
-  // date range) — excluded here so they don't also render a second time in
-  // this generic list. Carry-forward rows have no other display path on this
-  // page, so they stay.
-  const chargeBreakdownItems = (invoice?.additional_fees_breakdown ?? []).filter(
-    (row: any) => !isTransferBreakdownRow(row) && !isLateFeeBreakdownRow(row)
+  // Late-fee and carry-forward rows each get their own dedicated, clearly
+  // labeled section below — excluded here so they don't also render a
+  // second time in this generic "other fees" list. This used to only
+  // exclude transfer/late-fee rows, so a carry-forward debt line showed up
+  // looking like an ordinary fee with no explanation of what it was.
+  const chargeBreakdownItems = toChargeFeeRows(invoice?.additional_fees_breakdown ?? []);
+  const carryForwardItems = (invoice?.additional_fees_breakdown ?? []).filter(
+    (row: any) => isCarryForwardBreakdownRow(row),
   );
+  // additional_fees_total bundles the late-fee lines rendered separately
+  // below; subtract them out so a bill with no OTHER fee doesn't show the
+  // late fee a second time under this generic total.
+  const lateFeeLineTotal = (invoice?.additional_fees_breakdown ?? [])
+    .filter((row: any) => isLateFeeBreakdownRow(row))
+    .reduce((sum: number, row: any) => sum + Number(row?.total_amount ?? row?.amount ?? 0), 0);
+  const otherFeesTotal = Math.max(0, Number(invoice?.additional_fees_total ?? 0) - lateFeeLineTotal);
+  const discountItems =
+    Array.isArray(invoice?.discount_breakdown) && invoice!.discount_breakdown.length > 0
+      ? invoice!.discount_breakdown
+      : Number(invoice?.discount_amount ?? 0) > 0
+        ? [{ detail: "ส่วนลด", total_amount: invoice!.discount_amount }]
+        : [];
   const electricityPrevious =
     meterReading?.previous_electricity ?? meterReading?.previous_reading ?? null;
   const electricityCurrent =
@@ -678,16 +699,41 @@ export default function PaymentTokenPage() {
               <span>ค่าส่วนกลาง</span>
               <span className="font-semibold text-slate-900">฿{formatBaht(invoice.common_fee)}</span>
             </div>
-            <div className="flex items-center justify-between">
-              <span>ค่าธรรมเนียมเพิ่มเติม</span>
-              <span className="font-semibold text-slate-900">
-                ฿{formatBaht(invoice.additional_fees_total)}
-              </span>
-            </div>
-            {chargeBreakdownItems.map((fee: any, idx: number) => (
-              <div key={`${fee.label ?? fee.detail}-${idx}`} className="flex items-center justify-between text-xs">
-                <span>{fee.detail ?? fee.label}</span>
-                <span>฿{formatBaht(Number(fee.total_amount ?? fee.amount ?? 0))}</span>
+            {chargeBreakdownItems.length > 0 ? (
+              chargeBreakdownItems.map((fee: any, idx: number) => (
+                <div key={`${fee.label ?? fee.detail}-${idx}`} className="flex items-center justify-between">
+                  <span>{fee.detail ?? fee.label ?? "ค่าธรรมเนียมเพิ่มเติม"}</span>
+                  <span className="font-semibold text-slate-900">
+                    ฿{formatBaht(Number(fee.total_amount ?? fee.amount ?? 0))}
+                  </span>
+                </div>
+              ))
+            ) : otherFeesTotal > 0 ? (
+              <div className="flex items-center justify-between">
+                <span>ค่าธรรมเนียมเพิ่มเติม</span>
+                <span className="font-semibold text-slate-900">฿{formatBaht(otherFeesTotal)}</span>
+              </div>
+            ) : null}
+            {carryForwardItems.length > 0 ? (
+              carryForwardItems.map((fee: any, idx: number) => (
+                <div
+                  key={`carry-${fee.label ?? fee.detail}-${idx}`}
+                  className="flex items-center justify-between rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900"
+                >
+                  <span>ยอดค้างยกมา - {fee.detail ?? fee.label ?? "-"}</span>
+                  <span className="font-semibold">฿{formatBaht(Number(fee.total_amount ?? fee.amount ?? 0))}</span>
+                </div>
+              ))
+            ) : invoice.carry_forward_amount > 0 ? (
+              <div className="flex items-center justify-between rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                <span>ยอดค้างยกมา</span>
+                <span className="font-semibold">฿{formatBaht(invoice.carry_forward_amount)}</span>
+              </div>
+            ) : null}
+            {discountItems.map((fee: any, idx: number) => (
+              <div key={`discount-${fee.label ?? fee.detail}-${idx}`} className="flex items-center justify-between text-emerald-700">
+                <span>ส่วนลด{fee.detail && fee.detail !== "ส่วนลด" ? ` - ${fee.detail}` : ""}</span>
+                <span className="font-semibold">-฿{formatBaht(Number(fee.total_amount ?? fee.amount ?? 0))}</span>
               </div>
             ))}
             {transferBreakdownItems.length > 0 && (

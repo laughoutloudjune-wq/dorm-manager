@@ -26,7 +26,6 @@ type AdminLiffInvoice = {
   discount_amount?: number | null;
   additional_fees_breakdown?: any[] | null;
   discount_breakdown?: any[] | null;
-  late_fee_breakdown?: any[] | null;
   payment_history?: any[] | null;
   slip_url?: string | null;
   tenants?:
@@ -453,7 +452,32 @@ export default function AdminLiffPage() {
                       ยอดรวม {fmtMoney(total)} | ชำระแล้ว {fmtMoney(paid)} | คงเหลือ {fmtMoney(remaining)}
                     </p>
 
-                    {breakdownOpen && (
+                    {breakdownOpen && (() => {
+                      // `additional_fees_breakdown` is the real source of carried
+                      // late-fee lines — `late_fee_breakdown` (the field this
+                      // used to check) was never actually populated by the API,
+                      // so it always fell through to the raw `late_fee_amount`
+                      // fallback while `additional_fees_total` (which already
+                      // bundles those same carried lines) rendered right above
+                      // it, double-showing the late fee on every invoice that
+                      // had one.
+                      const lateFeeRows = (
+                        Array.isArray(selectedInvoice.additional_fees_breakdown)
+                          ? selectedInvoice.additional_fees_breakdown
+                          : []
+                      ).filter((row: any) => {
+                        const type = String(row?.item_type ?? row?.type ?? "").toLowerCase();
+                        return type === "late_fee_line" || type === "late_fee";
+                      });
+                      const lateFeeLineTotal = lateFeeRows.reduce(
+                        (sum: number, row: any) => sum + Number(row?.total_amount ?? row?.amount ?? 0),
+                        0,
+                      );
+                      const otherFeesTotal = Math.max(
+                        0,
+                        Number(selectedInvoice.additional_fees_total ?? 0) - lateFeeLineTotal,
+                      );
+                      return (
                       <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
                         <div className="space-y-1">
                           <div className="flex justify-between"><span>ค่าเช่า</span><span>{fmtMoney(Number(selectedInvoice.rent_amount ?? 0))}</span></div>
@@ -463,21 +487,21 @@ export default function AdminLiffPage() {
                           {Number(selectedInvoice.carry_forward_amount ?? 0) > 0 && (
                             <div className="flex justify-between text-amber-800"><span>ยอดค้างยกมา</span><span>{fmtMoney(Number(selectedInvoice.carry_forward_amount ?? 0))}</span></div>
                           )}
-                          {Number(selectedInvoice.additional_fees_total ?? 0) > 0 && (
-                            <div className="flex justify-between"><span>ค่าธรรมเนียมเพิ่มเติม</span><span>{fmtMoney(Number(selectedInvoice.additional_fees_total ?? 0))}</span></div>
+                          {otherFeesTotal > 0 && (
+                            <div className="flex justify-between"><span>ค่าธรรมเนียมเพิ่มเติม</span><span>{fmtMoney(otherFeesTotal)}</span></div>
                           )}
-                          {Array.isArray(selectedInvoice.late_fee_breakdown) && selectedInvoice.late_fee_breakdown.length > 0 ? (
-                            selectedInvoice.late_fee_breakdown.map((row) => (
-                              <div key={row.id} className="flex flex-col text-amber-800">
+                          {lateFeeRows.length > 0 ? (
+                            lateFeeRows.map((row: any, index: number) => (
+                              <div key={row.source_invoice_id ?? index} className="flex flex-col text-amber-800">
                                 <div className="flex justify-between">
-                                  <span>
-                                    ค่าปรับล่าช้า - งวด {new Date(row.source_start_date ?? row.snapshot_as_of).toLocaleDateString("th-TH", { month: "short", year: "numeric" })}
-                                  </span>
-                                  <span>{fmtMoney(Number(row.late_fee_amount))}</span>
+                                  <span>{String(row.detail ?? row.label ?? "ค่าปรับล่าช้า")}</span>
+                                  <span>{fmtMoney(Number(row.total_amount ?? row.amount ?? 0))}</span>
                                 </div>
-                                <span className="text-2xs text-amber-700">
-                                  {row.days_overdue} วัน x ฿{row.daily_rate}/วัน
-                                </span>
+                                {(row.days_overdue || row.daily_rate) && (
+                                  <span className="text-2xs text-amber-700">
+                                    {row.days_overdue} วัน x ฿{row.daily_rate}/วัน
+                                  </span>
+                                )}
                               </div>
                             ))
                           ) : Number(selectedInvoice.late_fee_amount ?? 0) > 0 ? (
@@ -488,7 +512,8 @@ export default function AdminLiffPage() {
                           )}
                         </div>
                       </div>
-                    )}
+                      );
+                    })()}
                     {(() => {
                       const urls = selectedInvoice ? Array.from(new Set([
                         ...(selectedInvoice.slip_url ? [selectedInvoice.slip_url] : []),
