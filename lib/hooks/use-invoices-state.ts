@@ -3533,26 +3533,30 @@ export function useInvoicesState() {
         (sum, fee) => sum + toNumber(fee.amount),
         0,
       );
-      const carryForwardRows =
-        carryForwardByTenant.get(String(tenant.id)) ?? [];
-      const carryForwardAmount = carryForwardRows.reduce(
-        (sum, row) => sum + toNumber(row.base_outstanding_amount),
-        0,
-      );
-      const carryForwardBreakdown = carryForwardRows.map((row) => ({
-        item_type: "carry_forward",
-        source_invoice_id: row.id,
-        label: `ยอดค้างชำระงวด ${formatPeriodLabel(String(row.start_date ?? ""))}`,
-        detail: `ยอดค้างชำระงวด ${formatPeriodLabel(String(row.start_date ?? ""))}`,
-        unit: 1,
-        price_per_unit: toNumber(row.base_outstanding_amount),
-        total_amount: toNumber(row.base_outstanding_amount),
-        amount: toNumber(row.base_outstanding_amount),
-      }));
-
-      // Carried late fees — one line item per source invoice that has an accrued late fee
+      // Principal is never merged: an older unpaid invoice's own rent/water/
+      // electric stays on ITS OWN row, still fully payable there, untouched
+      // by this run. Only the late fee still relays forward exactly as it
+      // always has — calculated once per source invoice, at whichever
+      // generation cycle first finds it still unbilled, then billed here as
+      // its own line item and locked so it can never be billed twice or keep
+      // growing on the source. No invoice_carry_forwards link is written for
+      // this — that table means "these invoices form one payment chain,
+      // auto-split a payment across them," which would silently resurrect
+      // bundled payment behavior. The line item's own source_invoice_id is
+      // enough for display and for marking the source as billed below.
+      const carryForwardRows = carryForwardByTenant.get(String(tenant.id)) ?? [];
+      // A source invoice that's still open (unpaid principal) keeps showing
+      // up as a candidate every generation cycle for as long as it stays
+      // unpaid — so a tenant overdue across two or more cycles would have
+      // the SAME already-billed fee offered again here were it not for this
+      // check. late_fee_billed_at is the guard: once set, computeLateFeeSnapshot
+      // still reports the frozen amount (that's what keeps it capped, not
+      // growing), but it must never be turned into a second real charge.
       const lateFeeBreakdown = carryForwardRows
-        .filter((row: any) => toNumber(row.snapshot_late_fee_amount) > 0)
+        .filter(
+          (row: any) =>
+            toNumber(row.snapshot_late_fee_amount) > 0 && row.late_fee_billed_at == null,
+        )
         .map((row: any) => {
           const daysOverdue = toNumber(row.snapshot_days_overdue);
           const dailyRate = toNumber(row.snapshot_daily_rate);
@@ -3563,7 +3567,7 @@ export function useInvoicesState() {
             row.snapshot_as_of,
           );
           return {
-            item_type: "late_fee",
+            item_type: "late_fee_line",
             source_invoice_id: row.id,
             label: detail,
             detail,
@@ -3578,7 +3582,6 @@ export function useInvoicesState() {
             waived_amount: 0,
           };
         });
-
       const carriedLateFeeTotal = lateFeeBreakdown.reduce(
         (sum: number, item: any) => sum + toNumber(item.total_amount),
         0,
@@ -3591,8 +3594,7 @@ export function useInvoicesState() {
         elecBill +
         commonFee +
         additionalTotal +
-        carriedLateFeeTotal +
-        carryForwardAmount -
+        carriedLateFeeTotal -
         discountAmount;
       // Per-room utility breakdown for mid-month transfers
       const electricityRate = toNumber(settings.electricity_rate);
@@ -3660,13 +3662,16 @@ export function useInvoicesState() {
         common_fee: commonFee,
         discount_amount: discountAmount,
         discount_breakdown: discountBreakdown,
-        late_fee_amount: 0,
+        // Own native penalty is 0 (this invoice isn't overdue yet) plus
+        // whatever carried late-fee lines it's billing on behalf of an
+        // older invoice — matches the documented meaning of this column
+        // (chargesFromInvoiceRow unpacks the two apart when reading it back).
+        late_fee_amount: carriedLateFeeTotal,
         late_fee_per_day: lateFeePerDay,
         late_fee_start_date: generatedLateFeeStartDateText,
-        carry_forward_amount: carryForwardAmount,
+        carry_forward_amount: 0,
         additional_fees_total: additionalTotal + carriedLateFeeTotal,
         additional_fees_breakdown: [
-          ...carryForwardBreakdown,
           ...lateFeeBreakdown,
           ...additionalBreakdown,
           ...transferBreakdownRows,
@@ -3680,11 +3685,14 @@ export function useInvoicesState() {
     const generatedRoomIds = new Set(
       insertPayload.map((row: any) => row.room_id),
     );
-    // Bookkeeping that fails AFTER the invoices are inserted used to be reported
-    // with a bare setError, which the alerts block at the end of this function
-    // then overwrote — so a carry-forward link that never got written looked
-    // like a clean run. That is how 9 of 17 links went missing for months.
-    // These survive to the end and are raised as a toast as well.
+    // Bookkeeping that fails AFTER the invoices are inserted used to be
+    // reported with a bare setError, which the alerts block at the end of
+    // this function then overwrote — so a freeze that never got written
+    // looked like a clean run. These survive to the end and are raised as a
+    // toast as well. Principal gets none of this: an older invoice's own
+    // rent/water/electric is never touched by this run, no matter what
+    // happens below — only the late-fee freeze runs, and only for a source
+    // whose fee actually got billed onto one of the invoices just created.
     const bookkeepingFailures: string[] = [];
     if (insertPayload.length > 0) {
       const { data: insertedInvoices, error: insertError } = await supabase
@@ -3694,86 +3702,36 @@ export function useInvoicesState() {
       if (insertError) {
         setError(insertError.message);
       } else if ((insertedInvoices ?? []).length > 0) {
-        const carryForwardInsertPayload = (insertedInvoices ?? []).flatMap(
-          (row: any) => {
-            const carryRows =
-              carryForwardByTenant.get(String(row.tenant_id ?? "")) ?? [];
-            return carryRows.map((carryRow) => ({
-              source_invoice_id: carryRow.id,
-              target_invoice_id: row.id,
-              amount: toNumber(carryRow.outstanding_amount),
-            }));
-          },
-        );
-        const arrearsSnapshotPayload = (insertedInvoices ?? []).flatMap(
-          (row: any) => {
-            const carryRows =
-              carryForwardByTenant.get(String(row.tenant_id ?? "")) ?? [];
-            return carryRows.map((carryRow) => ({
-              source_invoice_id: carryRow.id,
-              target_invoice_id: row.id,
-              snapshot_as_of: carryRow.snapshot_as_of,
-              principal_amount: toNumber(carryRow.base_outstanding_amount),
-              late_fee_amount: toNumber(carryRow.snapshot_late_fee_amount),
-              days_overdue: Math.round(
-                toNumber(carryRow.snapshot_days_overdue),
-              ),
-              daily_rate: toNumber(carryRow.snapshot_daily_rate),
-            }));
-          },
-        );
-        if (carryForwardInsertPayload.length > 0) {
-          const { error: carryInsertError } = await supabase
-            .from("invoice_carry_forwards")
-            .upsert(carryForwardInsertPayload, { onConflict: "source_invoice_id,target_invoice_id" });
-          if (carryInsertError) {
-            // Without these rows the new invoice has no recorded link to the
-            // bill it carried, so a payment on it never reaches the old one.
-            bookkeepingFailures.push(
-              `บันทึกการยกยอดค้างชำระไม่สำเร็จ (${carryForwardInsertPayload.length} รายการ) - ใบแจ้งหนี้ถูกสร้างแล้วแต่ยังไม่ได้เชื่อมกับบิลเดิม: ${carryInsertError.message}`,
-            );
-          }
-        }
-        if (arrearsSnapshotPayload.length > 0) {
-          const { error: snapshotInsertError } = await supabase
-            .from("invoice_arrears_snapshots")
-            .insert(arrearsSnapshotPayload);
-          if (snapshotInsertError) {
-            bookkeepingFailures.push(
-              `บันทึกสรุปยอดค้างชำระไม่สำเร็จ: ${snapshotInsertError.message}`,
-            );
-          }
-        }
-
-        // Freeze the late fee on every source invoice that was carried forward
-        // (stops a still-open source from accruing further, now that its fee
-        // lives in the new invoice), and separately mark every source that
-        // actually contributed a late-fee LINE ITEM as billed — a paid
-        // invoice reaching here was already frozen at payment time, but this
-        // is the first time its fee has ever been put on a real charge, so it
-        // still needs to be marked so it can't be billed again later.
+        // Freeze the late fee on every source invoice whose fee was just
+        // billed (stops it from ever being recomputed higher — it's now a
+        // fixed charge sitting on the new invoice) and mark it billed (so a
+        // future generation cycle never bills the same fee a second time).
+        // Deliberately does not touch the source's own total_amount,
+        // paid_amount, or status — its principal is completely unaffected.
         const allSourceRows = (insertedInvoices ?? []).flatMap((row: any) =>
-          carryForwardByTenant.get(String(row.tenant_id ?? "")) ?? [],
+          (carryForwardByTenant.get(String(row.tenant_id ?? "")) ?? []).filter(
+            (carryRow: any) =>
+              toNumber(carryRow.snapshot_late_fee_amount) > 0 &&
+              carryRow.late_fee_billed_at == null,
+          ),
         );
         const nowIso = new Date().toISOString();
         for (const carryRow of allSourceRows) {
           const freezeAmount = toNumber(carryRow.snapshot_late_fee_amount);
-          const freezeUpdate: Record<string, unknown> = {};
+          const freezeUpdate: Record<string, unknown> = {
+            late_fee_billed_at: nowIso,
+          };
           if (carryRow.locked_late_fee_amount == null) {
             freezeUpdate.locked_late_fee_amount = freezeAmount;
           }
-          if (freezeAmount > 0) {
-            freezeUpdate.late_fee_billed_at = nowIso;
-          }
-          if (Object.keys(freezeUpdate).length === 0) continue;
           const { error: freezeError } = await supabase
             .from("invoices")
             .update(freezeUpdate)
             .eq("id", carryRow.id);
           if (freezeError) {
-            // An unfrozen/unmarked source either keeps accruing a late fee
-            // that's already been billed (double charge) or stays eligible
-            // to be billed again next cycle (also a double charge).
+            // An unfrozen/unmarked source keeps accruing a late fee that's
+            // already been billed elsewhere, or stays eligible to be billed
+            // again next cycle — either way, a double charge.
             bookkeepingFailures.push(
               `ล็อก/บันทึกสถานะค่าปรับล่าช้าของบิลเดิมไม่สำเร็จ: ${freezeError.message}`,
             );
@@ -3838,6 +3796,24 @@ export function useInvoicesState() {
     }
     if (alerts.length > 0) {
       setError(alerts.join(" | "));
+    }
+
+    // Every invoice generated this run is independent of any older unpaid
+    // one — nothing was merged. This is purely a heads-up so an old debt
+    // doesn't quietly sit off-screen: it's still open on its own invoice,
+    // still fully payable there.
+    if (carryForwardByTenant.size > 0) {
+      const pendingTotal = [...carryForwardByTenant.values()].reduce(
+        (sum, rows) =>
+          sum + rows.reduce((s: number, row: any) => s + toNumber(row.outstanding_amount), 0),
+        0,
+      );
+      if (pendingTotal > 0) {
+        toast.info(
+          `${carryForwardByTenant.size} ผู้เช่ายังมีใบแจ้งหนี้ค้างชำระจากงวดก่อนหน้า รวม ${formatMoney(pendingTotal)} บาท`,
+          { duration: 10000 },
+        );
+      }
     }
 
     setSaving(false);
