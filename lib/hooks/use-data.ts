@@ -178,7 +178,7 @@ export const useMeterReadingsRawData = (selectedMonth: string) => {
     ] = await Promise.all([
       supabase.from("rooms").select("id,room_number,buildings(name)").order("room_number", { ascending: true }),
       supabase.from("meter_readings")
-        .select("id,room_id,reading_month,created_at,previous_electricity,current_electricity,electricity_usage,previous_water,current_water,water_usage,previous_reading,current_reading,usage")
+        .select("id,room_id,reading_month,created_at,previous_electricity,current_electricity,electricity_usage,previous_water,current_water,water_usage,previous_reading,current_reading,usage,previous_source")
         .gte("reading_month", currentMonthKey).lt("reading_month", nextMonthKey)
         .order("reading_month", { ascending: false }).order("created_at", { ascending: false }),
       supabase.from("meter_readings")

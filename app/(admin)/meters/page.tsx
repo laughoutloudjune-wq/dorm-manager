@@ -68,6 +68,7 @@ type MeterReadingDb = {
   previous_reading: number | null;
   current_reading: number | null;
   usage: number | null;
+  previous_source: "move_in" | "prev_month" | null;
 };
 
 
@@ -219,7 +220,18 @@ export default function MetersPage() {
       const isFirstBillingCycle =
         !!moveInTenant &&
         monthStartFromDateString(moveInTenant.move_in_date) <= currentMonthKey;
-      const previousSource: MeterRow["previous_source"] = hasMoveInReading ? "move_in" : "prev_month";
+      // A saved row already records which basis the admin picked — trust it.
+      // Only fall back to the move-in/prev-month default when this room has
+      // never been saved for this month, otherwise a refetch after Save
+      // (e.g. the mutate() in saveAll) silently reverts an explicit
+      // "prev_month" choice back to "move_in" every time.
+      const savedSource = current?.previous_source ?? null;
+      const previousSource: MeterRow["previous_source"] =
+        savedSource === "move_in" || savedSource === "prev_month"
+          ? savedSource
+          : hasMoveInReading
+          ? "move_in"
+          : "prev_month";
       const previousElec =
         previousSource === "move_in"
           ? toNumber(moveInTenant?.initial_electricity_reading ?? previousMonthElec)
@@ -377,6 +389,7 @@ export default function MetersPage() {
         previous_reading: row.previous_water,
         current_reading: row.current_water,
         usage: row.water_usage,
+        previous_source: row.previous_source,
       }));
     try {
       await callMetersAction("save_all", { payload });

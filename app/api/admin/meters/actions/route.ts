@@ -13,6 +13,10 @@ const normalizeDate = (value: unknown) => {
   return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : null;
 };
 
+const normalizePreviousSource = (value: unknown) => {
+  return value === "move_in" || value === "prev_month" ? value : null;
+};
+
 export async function POST(req: Request) {
   try {
     const body = await req.json();
@@ -41,6 +45,7 @@ export async function POST(req: Request) {
           previous_water: toNonNegativeNumber(row?.previous_water),
           current_water: toNonNegativeNumber(row?.current_water),
           water_usage: toNonNegativeNumber(row?.water_usage),
+          previous_source: normalizePreviousSource(row?.previous_source),
         };
       })
       .filter(Boolean);
