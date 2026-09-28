@@ -1407,16 +1407,36 @@ export function useInvoicesState() {
         if (removeError) throw new Error(removeError.message);
       }
 
+      // The invoice-level column is only half the reference: every
+      // payment_history entry recorded alongside this slip embeds its own
+      // copy (`applyInvoicePaymentAllocation` stamps `slip_url` onto each
+      // invoice's history entry at payment time). Clearing only the column
+      // left that embedded copy behind, so `extractAllSlipUrls` — which
+      // unions the column with every history entry's slip_url — kept
+      // resurrecting the "deleted" slip on the next refresh.
+      const history = Array.isArray(activeInvoice.payment_history)
+        ? activeInvoice.payment_history
+        : [];
+      const clearedHistory = history.map((entry: any) =>
+        entry?.slip_url ? { ...entry, slip_url: null } : entry,
+      );
+
       await callInvoiceAdminAction("record_payment", {
         invoiceId: activeInvoice.id,
         payload: {
           slip_url: null,
           slip_uploaded_at: null,
+          payment_history: clearedHistory,
         },
       });
       setSlipPreview(null);
-      setActiveInvoice((prev) => (prev ? { ...prev, slip_url: null } : prev));
-      patchInvoiceInState(activeInvoice.id, { slip_url: null });
+      setActiveInvoice((prev) =>
+        prev ? { ...prev, slip_url: null, payment_history: clearedHistory } : prev,
+      );
+      patchInvoiceInState(activeInvoice.id, {
+        slip_url: null,
+        payment_history: clearedHistory,
+      });
       setError(null);
     } catch (error: any) {
       setError(error?.message ?? "ลบสลิปการชำระเงินไม่สำเร็จ");

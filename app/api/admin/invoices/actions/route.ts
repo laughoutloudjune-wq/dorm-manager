@@ -3,6 +3,7 @@ import { requireAdminPermission } from "@/lib/admin-api-auth";
 import {
   applyInvoicePaymentAllocation,
   applyManualInvoicePaymentAllocation,
+  autoBillUnbilledLateFees,
   syncInvoiceLedger,
   snapshotFromPaymentMethodRow,
   calculateLateFeeAmount,
@@ -65,7 +66,7 @@ export async function POST(req: Request) {
       // points earned for this invoice get revoked, not just awarded.
       const { data: beforeRow } = await auth.supabase
         .from("invoices")
-        .select("status")
+        .select("status,tenant_id")
         .eq("id", invoiceId)
         .maybeSingle();
       const wasPaid = String((beforeRow as any)?.status ?? "") === "paid";
@@ -111,6 +112,17 @@ export async function POST(req: Request) {
         .update(updatePayload)
         .eq("id", invoiceId);
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+      // A freshly-frozen, still-unbilled late fee should land on the
+      // tenant's next invoice right away, not wait for someone to notice it
+      // in a checklist. No-ops when this invoice wasn't actually the "paid"
+      // branch above, or had nothing new to bill.
+      if (status === "paid") {
+        const tenantId = String((beforeRow as any)?.tenant_id ?? "");
+        if (tenantId) {
+          await autoBillUnbilledLateFees(auth.supabase, tenantId, [invoiceId]);
+        }
+      }
 
       // Rewards points are derived entirely from invoice status
       // (syncPointsForTenant reads status='paid' to award on-time/streak

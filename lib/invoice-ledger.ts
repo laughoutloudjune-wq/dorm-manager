@@ -975,6 +975,187 @@ export async function refreshCarryForwardTargets(
 }
 
 /**
+ * Whenever an invoice becomes fully PAID and freezes a late fee nobody has
+ * billed yet, push that fee straight onto the tenant's next invoice — IF one
+ * already exists and is still open for editing — instead of waiting for an
+ * admin to notice it sitting in the "pull arrears from last month" checklist.
+ *
+ * This is the gap `refreshCarryForwardTargets` deliberately doesn't cover:
+ * that function only refreshes a late-fee line that's already been added to a
+ * target invoice, it never adds a brand-new one. Before this existed, a
+ * tenant who paid an old invoice late — AFTER the next invoice had already
+ * been generated for the new period — had their late fee sitting frozen and
+ * correctly calculated, but invisible until someone opened that next invoice
+ * and manually checked a box. The bulk monthly generator already does this
+ * automatically for invoices it is creating for the first time (see
+ * `generateInvoices` in use-invoices-state.ts); this is the equivalent for an
+ * invoice that already exists.
+ *
+ * Deliberately narrow: only lands on an invoice whose status is still
+ * `isInvoiceDetailEditable` (draft/pending/partial/overdue) — never `paid`,
+ * `cancelled`, or `verifying` (a tenant-submitted slip is mid-review there;
+ * silently changing the total out from under it would make the slip amount
+ * stop matching). If no eligible target exists yet, the fee is simply left
+ * unbilled — exactly as before — for the next generation cycle or a manual
+ * recalculate to pick up once one does.
+ */
+export async function autoBillUnbilledLateFees(
+  supabase: SupabaseClient,
+  tenantId: string,
+  paidInvoiceIds: string[],
+): Promise<{ billedSourceIds: string[]; updatedTargetIds: string[] }> {
+  const empty = { billedSourceIds: [], updatedTargetIds: [] };
+  if (!tenantId || paidInvoiceIds.length === 0) return empty;
+
+  const { data: sourceRows, error: sourceError } = await supabase
+    .from("invoices")
+    .select(
+      "id,tenant_id,status,start_date,late_fee_per_day,late_fee_start_date,waived_late_fee_amount,locked_late_fee_amount,late_fee_billed_at",
+    )
+    .in("id", paidInvoiceIds);
+  if (sourceError) throw new Error(sourceError.message);
+
+  const eligibleSources = (sourceRows ?? []).filter(
+    (row: any) =>
+      String(row.status ?? "") === "paid" &&
+      row.late_fee_billed_at == null &&
+      toNumber(row.locked_late_fee_amount) > 0,
+  );
+  if (eligibleSources.length === 0) return empty;
+
+  const { data: tenantInvoices, error: targetError } = await supabase
+    .from("invoices")
+    .select(
+      "id,tenant_id,status,start_date,issue_date,rent_amount,water_bill,electricity_bill,common_fee,late_fee_amount,late_fee_per_day,late_fee_start_date,waived_late_fee_amount,locked_late_fee_amount,additional_fees_breakdown,discount_amount,total_amount",
+    )
+    .eq("tenant_id", tenantId)
+    .order("start_date", { ascending: true });
+  if (targetError) throw new Error(targetError.message);
+
+  const editableTargets = ((tenantInvoices ?? []) as any[]).filter((row) =>
+    isInvoiceDetailEditable(String(row.status ?? "")),
+  );
+
+  const billedSourceIds: string[] = [];
+  const newItemsByTarget = new Map<string, any[]>();
+  const targetById = new Map(editableTargets.map((row) => [String(row.id), row]));
+
+  for (const source of eligibleSources) {
+    // The tenant's very next invoice chronologically, among those still open
+    // for editing — matching the same "one step forward" rule the manual
+    // checkbox and the bulk generator both use. An already-closed invoice for
+    // the immediately-following period is skipped over, not blocked on;
+    // that's consistent with `getCarryForwardCandidatesForTarget`, which
+    // likewise never restricts a candidate to only the very next period.
+    const target = editableTargets.find(
+      (row) => String(row.start_date) > String(source.start_date),
+    );
+    if (!target) continue;
+
+    const feeAmount = toNumber(source.locked_late_fee_amount);
+    if (feeAmount <= 0) continue;
+
+    const dailyRate = toNumber(source.late_fee_per_day);
+    const daysOverdue = dailyRate > 0 ? Math.round(feeAmount / dailyRate) : 0;
+    const valuationDate = target.issue_date || target.start_date;
+    const windowAsOf =
+      daysOverdue > 0 && source.late_fee_start_date
+        ? toDateOnlyText(
+            addCalendarDays(toDateOnly(source.late_fee_start_date), daysOverdue - 1),
+          )
+        : valuationDate;
+    const detail = buildLateFeeLineDetail(
+      String(source.start_date ?? ""),
+      daysOverdue,
+      dailyRate,
+      windowAsOf,
+    );
+
+    const targetId = String(target.id);
+    const items = newItemsByTarget.get(targetId) ?? [];
+    items.push({
+      item_type: "late_fee_line",
+      source_invoice_id: String(source.id),
+      label: detail,
+      detail,
+      unit: daysOverdue,
+      price_per_unit: dailyRate,
+      total_amount: feeAmount,
+      amount: feeAmount,
+      days_overdue: daysOverdue,
+      daily_rate: dailyRate,
+      snapshot_as_of: windowAsOf,
+      original_amount: feeAmount,
+      waived_amount: 0,
+    });
+    newItemsByTarget.set(targetId, items);
+    billedSourceIds.push(String(source.id));
+  }
+
+  const updatedTargetIds: string[] = [];
+  for (const [targetId, newItems] of newItemsByTarget) {
+    const target = targetById.get(targetId);
+    if (!target) continue;
+
+    const existingBreakdown: any[] = Array.isArray(target.additional_fees_breakdown)
+      ? target.additional_fees_breakdown
+      : [];
+    const nextBreakdown = [...existingBreakdown, ...newItems];
+
+    const lateFeeItemsTotal = toChargeFeeRows(
+      nextBreakdown.filter(isLateFeeBreakdownRow),
+    ).reduce((sum: number, item: any) => sum + toNumber(item.total_amount ?? item.amount), 0);
+    const carryForwardAmount = toChargeFeeRows(
+      nextBreakdown.filter(isCarryForwardBreakdownRow),
+    ).reduce((sum: number, item: any) => sum + toNumber(item.total_amount ?? item.amount), 0);
+    const otherFeesTotal = toChargeFeeRows(
+      nextBreakdown.filter(
+        (row) => !isCarryForwardBreakdownRow(row) && !isLateFeeBreakdownRow(row),
+      ),
+    ).reduce((sum: number, item: any) => sum + toNumber(item.total_amount ?? item.amount), 0);
+
+    const valuationDate = target.issue_date || target.start_date;
+    const nativeLateFee = computeLateFeeSnapshot(target, valuationDate).amount;
+
+    const totalAmount = computeInvoiceTotal({
+      rent: toNumber(target.rent_amount),
+      water: toNumber(target.water_bill),
+      electricity: toNumber(target.electricity_bill),
+      commonFee: toNumber(target.common_fee),
+      nativeLateFee,
+      lateFeeItems: lateFeeItemsTotal,
+      fees: otherFeesTotal,
+      carryForward: carryForwardAmount,
+      discount: toNumber(target.discount_amount),
+    });
+
+    const { error: updateError } = await supabase
+      .from("invoices")
+      .update({
+        additional_fees_breakdown: nextBreakdown,
+        late_fee_amount: nativeLateFee + lateFeeItemsTotal,
+        additional_fees_total: otherFeesTotal + lateFeeItemsTotal,
+        total_amount: totalAmount,
+      })
+      .eq("id", targetId);
+    if (updateError) throw new Error(updateError.message);
+
+    updatedTargetIds.push(targetId);
+  }
+
+  if (billedSourceIds.length > 0) {
+    const { error: markError } = await supabase
+      .from("invoices")
+      .update({ late_fee_billed_at: new Date().toISOString() })
+      .in("id", billedSourceIds)
+      .is("late_fee_billed_at", null);
+    if (markError) throw new Error(markError.message);
+  }
+
+  return { billedSourceIds, updatedTargetIds };
+}
+
+/**
  * Total still owed across an invoice and every invoice carried forward into it —
  * the same set `applyInvoicePaymentAllocation` would allocate against, and so
  * the amount it has left to work with.
@@ -1744,6 +1925,16 @@ export async function applyInvoicePaymentAllocation(
     throw err;
   }
 
+  // Push any newly-frozen, still-unbilled late fee among the invoices this
+  // payment just settled onto the tenant's next invoice, if one already
+  // exists and is still open. See autoBillUnbilledLateFees for why this is
+  // needed on top of the freeze itself.
+  await autoBillUnbilledLateFees(
+    supabase,
+    String((freshTargetInvoice as any).tenant_id ?? ""),
+    updates.map((item) => item.invoiceId),
+  );
+
   const updatedInvoiceIds = updates.map((item) => item.invoiceId);
   const { data: updatedInvoices, error: updatedError } = await supabase
     .from("invoices")
@@ -2081,6 +2272,10 @@ export async function applyManualInvoicePaymentAllocation(
   // showing the pre-payment figure until someone happened to open it and
   // click recalculate by hand.
   await refreshCarryForwardTargets(supabase, tenantId, invoiceIds);
+
+  // Same reasoning as applyInvoicePaymentAllocation: push any newly-frozen,
+  // still-unbilled late fee onto the tenant's next open invoice automatically.
+  await autoBillUnbilledLateFees(supabase, tenantId, invoiceIds);
 
   const updatedInvoiceIds = updates.map((item) => item.invoiceId);
   const { data: updatedInvoices, error: updatedError } = await supabase
