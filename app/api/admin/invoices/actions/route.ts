@@ -96,6 +96,14 @@ export async function POST(req: Request) {
             ),
           );
         }
+      } else if (!["verifying", "cancelled"].includes(status)) {
+        // Leaving paid must clear the freeze, same as `save_details` below —
+        // otherwise a fee frozen (even at 0) by an earlier accidental "paid"
+        // flip stays stuck forever: `applyInvoicePaymentAllocation` and this
+        // same "paid" branch both treat any non-null value as "already
+        // frozen, don't touch," so a later real payment's actual date never
+        // gets a chance to recompute it.
+        updatePayload.locked_late_fee_amount = null;
       }
 
       const { error } = await auth.supabase
