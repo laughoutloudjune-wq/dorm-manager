@@ -2,10 +2,9 @@
 
 import { toast } from "sonner";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { Badge } from "@/components/ui/Badge";
-import { createClient } from "@/lib/supabase-client";
 import { isLateFeeBreakdownRow, isCarryForwardBreakdownRow, toChargeFeeRows } from "@/lib/invoice-utils";
 import { CheckCircle2, Download, UploadCloud } from "lucide-react";
 
@@ -133,11 +132,6 @@ const toNumber = (value: string | number | null | undefined) => {
   return Number.isNaN(parsed) ? 0 : parsed;
 };
 
-const monthStartFromDate = (dateString: string) => {
-  const date = new Date(dateString);
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-01`;
-};
-
 const resolveElectricityUsage = (reading: MeterReadingRow | null | undefined) => {
   if (!reading) return null;
   if (reading.electricity_usage != null) return toNumber(reading.electricity_usage);
@@ -178,62 +172,49 @@ const calculateProratePreview = (
   return { dailyRaw, dailyRounded, occupiedDays, moveInDay, billingDay, rentAmount };
 };
 
-function uploadToSupabaseWithProgress(
+// Moved server-side (finding C1) — this used to POST straight to Supabase
+// Storage's REST endpoint with the anon key via a raw XHR (for progress
+// events), bypassing even the Supabase JS client and any auth check. See
+// app/api/payment-liff/upload-slip/route.ts.
+function uploadSlipWithProgress(
   file: File,
-  bucket: string,
-  filePath: string,
+  accessToken: string,
   onProgress: (percent: number) => void
 ) {
-  return new Promise<{ path: string }>((resolve, reject) => {
-    const baseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-    if (!baseUrl || !anonKey) {
-      reject(new Error("Supabase environment is missing."));
-      return;
-    }
-
-    const encodedPath = filePath
-      .split("/")
-      .map((segment) => encodeURIComponent(segment))
-      .join("/");
-    const url = `${baseUrl}/storage/v1/object/${bucket}/${encodedPath}`;
+  return new Promise<{ url: string }>((resolve, reject) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("accessToken", accessToken);
 
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", url, true);
-    xhr.setRequestHeader("apikey", anonKey);
-    xhr.setRequestHeader("Authorization", `Bearer ${anonKey}`);
-    xhr.setRequestHeader("x-upsert", "true");
-    xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+    xhr.open("POST", "/api/payment-liff/upload-slip", true);
 
     xhr.upload.onprogress = (event) => {
       if (!event.lengthComputable) return;
-      const percent = Math.round((event.loaded / event.total) * 100);
-      onProgress(percent);
+      onProgress(Math.round((event.loaded / event.total) * 100));
     };
 
     xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        resolve({ path: filePath });
-        return;
-      }
       try {
         const parsed = JSON.parse(xhr.responseText);
-        reject(new Error(parsed?.message || "Upload failed."));
+        if (xhr.status >= 200 && xhr.status < 300 && parsed?.url) {
+          resolve({ url: parsed.url });
+          return;
+        }
+        reject(new Error(parsed?.error || "Upload failed."));
       } catch {
         reject(new Error(`Upload failed with status ${xhr.status}.`));
       }
     };
 
     xhr.onerror = () => reject(new Error("Network error during upload."));
-    xhr.send(file);
+    xhr.send(formData);
   });
 }
 
 export default function PaymentTokenPage() {
   const params = useParams();
   const token = params?.token as string;
-  const supabase = useMemo(() => createClient(), []);
 
   const [invoice, setInvoice] = useState<InvoiceData | null>(null);
   const [defaultMethod, setDefaultMethod] = useState<PaymentMethod | null>(null);
@@ -309,51 +290,42 @@ export default function PaymentTokenPage() {
         return;
       }
 
-      if (!hasAuthorizedInvoiceRef.current) {
-        const authRes = await fetch("/api/invoice-view", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ token, accessToken }),
-        }).catch(() => null);
+      if (hasAuthorizedInvoiceRef.current) return;
 
-        if (!authRes || !authRes.ok) {
-          const data = await authRes?.json().catch(() => ({} as any));
-          toast.error(data?.error ?? "ไม่สามารถเปิดใบแจ้งหนี้ได้");
-          return;
-        }
+      // One authorized call: verifies the LINE token against this invoice's
+      // own tenant (or the admin allowlist), tracks the view, and returns
+      // everything the page needs — payment method, settings, the invoice
+      // itself, its meter reading, and its late-fee history. This used to be
+      // one auth check followed by 5 separate direct-anon-key reads with no
+      // ownership check of their own (finding C1,
+      // docs/audit/2026-09-29-system-audit-detailed.md).
+      const authRes = await fetch("/api/invoice-view", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token, accessToken }),
+      }).catch(() => null);
 
-        hasAuthorizedInvoiceRef.current = true;
+      const authData = await authRes?.json().catch(() => ({} as any));
+
+      if (!authRes || !authRes.ok) {
+        toast.error(authData?.error ?? "ไม่สามารถเปิดใบแจ้งหนี้ได้");
+        return;
       }
 
-      const { data: methodData } = await supabase
-        .from("payment_methods")
-        .select("label,bank_name,account_name,account_number,qr_url")
-        .order("created_at", { ascending: true })
-        .limit(1)
-        .maybeSingle();
+      hasAuthorizedInvoiceRef.current = true;
 
+      const methodData = authData.defaultMethod;
       if (methodData) setDefaultMethod(methodData as PaymentMethod);
 
-      const { data: settingsData } = await supabase
-        .from("settings")
-        .select("billing_day,water_rate,electricity_rate")
-        .eq("id", 1)
-        .maybeSingle();
+      const settingsData = authData.settingsRow;
       setBillingDay((settingsData as any)?.billing_day ?? null);
       const nextWaterRate = toNumber((settingsData as any)?.water_rate);
       const nextElectricityRate = toNumber((settingsData as any)?.electricity_rate);
       setWaterRate(nextWaterRate);
       setElectricityRate(nextElectricityRate);
 
-      const { data, error: fetchError } = await supabase
-        .from("invoices")
-        .select(
-          "id,room_id,start_date,total_amount,paid_amount,carry_forward_amount,late_fee_amount,payment_history,rent_amount,water_bill,electricity_bill,common_fee,additional_fees_total,additional_fees_breakdown,discount_amount,discount_breakdown,status,slip_url,tenants(full_name,custom_payment_method,move_in_date),rooms(room_number,price_month)"
-        )
-        .eq("public_token", token)
-        .single();
-
-      if (fetchError || !data) {
+      const data = authData.invoiceRow;
+      if (!data) {
         toast.error("ไม่พบใบแจ้งหนี้");
         return;
       }
@@ -369,16 +341,7 @@ export default function PaymentTokenPage() {
       // breakdown is always checked first; the audit log is only a fallback
       // for a legacy invoice that predates itemized late-fee line items.
       const ownLateFeeRows = normalized.additional_fees_breakdown.filter(isLateFeeBreakdownRow);
-      const { data: arrearsRows } =
-        ownLateFeeRows.length === 0
-          ? await supabase
-              .from("invoice_arrears_snapshots")
-              .select(
-                "id,source_invoice_id,snapshot_as_of,late_fee_amount,days_overdue,daily_rate,source_invoice:source_invoice_id(start_date)"
-              )
-              .eq("target_invoice_id", normalized.id)
-              .order("created_at", { ascending: true })
-          : { data: [] as any[] };
+      const arrearsRows = Array.isArray(authData.arrearsRows) ? authData.arrearsRows : [];
       normalized.late_fee_breakdown = ownLateFeeRows.length > 0
         ? ownLateFeeRows.map((row: any, index: number) => ({
             id: `own-${index}-${row.source_invoice_id ?? ""}`,
@@ -389,8 +352,7 @@ export default function PaymentTokenPage() {
             daily_rate: toNumber(row.daily_rate ?? row.price_per_unit),
             detail: String(row.detail ?? row.label ?? ""),
           }))
-        : Array.isArray(arrearsRows)
-        ? arrearsRows.map((row: any) => ({
+        : arrearsRows.map((row: any) => ({
             id: String(row.id),
             source_invoice_id: String(row.source_invoice_id),
             snapshot_as_of: String(row.snapshot_as_of),
@@ -398,22 +360,11 @@ export default function PaymentTokenPage() {
             days_overdue: Math.round(toNumber(row.days_overdue)),
             daily_rate: toNumber(row.daily_rate),
             source_start_date: typeof row.source_invoice === 'object' && row.source_invoice ? String((row.source_invoice as any).start_date) : null,
-          }))
-        : [];
+          }));
       setInvoice(normalized);
       setPreview(normalized.slip_url ?? null);
 
-      const readingMonth = monthStartFromDate(normalized.start_date);
-      const { data: readingData } = await supabase
-        .from("meter_readings")
-        .select(
-          "electricity_usage,water_usage,usage,previous_electricity,current_electricity,previous_water,current_water,previous_reading,current_reading"
-        )
-        .eq("room_id", normalized.room_id)
-        .eq("reading_month", readingMonth)
-        .maybeSingle();
-
-      const reading = (readingData as MeterReadingRow | null) ?? null;
+      const reading = (authData.meterReading as MeterReadingRow | null) ?? null;
       setMeterReading(reading);
       let nextWaterUnits = resolveWaterUsage(reading);
       let nextElectricityUnits = resolveElectricityUsage(reading);
@@ -430,7 +381,7 @@ export default function PaymentTokenPage() {
     };
 
     if (token && liffReady) void load();
-  }, [token, supabase, accessToken, liffReady]);
+  }, [token, accessToken, liffReady]);
 
   useEffect(() => {
     const loadPoints = async () => {
@@ -544,35 +495,33 @@ export default function PaymentTokenPage() {
     setUploading(true);
     setUploadProgress(0);
     try {
-      const bucket = "payment_slips";
-      const filePath = `${invoice.id}/${Date.now()}-${file.name}`;
+      const { url: publicUrl } = await uploadSlipWithProgress(file, accessToken, setUploadProgress);
 
-      await uploadToSupabaseWithProgress(file, bucket, filePath, setUploadProgress);
+      // Moved server-side (finding C1) — this used to write straight to
+      // `invoices` from the browser with no ownership or status check at
+      // all. /api/payment-liff/submit verifies the LINE token against this
+      // invoice's own tenant, blocks submitting for an invoice already
+      // carried into a newer one, writes the slip, and notifies the admin
+      // itself (so no separate notify-slip-upload call is needed here).
+      // allowResubmitWhileVerifying: true because this page has always let
+      // a tenant replace a slip that's still under review.
+      const response = await fetch("/api/payment-liff/submit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          accessToken,
+          invoiceIds: [invoice.id],
+          slipUrl: publicUrl,
+          allowResubmitWhileVerifying: true,
+        }),
+      });
+      const result = await response.json().catch(() => ({} as any));
 
-      const { data } = supabase.storage.from(bucket).getPublicUrl(filePath);
-      const publicUrl = data.publicUrl;
-
-      const { error: updateError } = await supabase
-        .from("invoices")
-        .update({
-          slip_url: publicUrl,
-          slip_uploaded_at: new Date().toISOString(),
-          status: "verifying",
-        })
-        .eq("id", invoice.id);
-
-      if (updateError) {
-        toast.error(updateError.message);
+      if (!response.ok) {
+        toast.error(result?.error ?? "อัปโหลดสลิปไม่สำเร็จ");
         setUploading(false);
         return;
       }
-
-      // Fire-and-forget admin notification when tenant uploads a slip.
-      void fetch("/api/notify-slip-upload", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ invoiceId: invoice.id, slipUrl: publicUrl, accessToken }),
-      });
 
       setInvoice((prev) =>
         prev

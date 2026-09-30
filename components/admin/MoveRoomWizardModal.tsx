@@ -9,6 +9,26 @@ import { RoomRow, SettingsRates, TenantRow } from "@/types";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase-client";
 
+// Moved server-side (finding C1) — see get_latest_reading in
+// app/api/admin/meters/actions/route.ts. Shared by both the old-room and
+// new-room meter lookups below.
+const fetchLatestMeterReading = async (
+  roomId: string
+): Promise<{ current_electricity: number | null; current_water: number | null } | null> => {
+  const supabase = createClient();
+  const { data: sessionData } = await supabase.auth.getSession();
+  const token = sessionData.session?.access_token;
+  if (!token) return null;
+  const response = await fetch("/api/admin/meters/actions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ action: "get_latest_reading", roomId }),
+  });
+  if (!response.ok) return null;
+  const result = await response.json().catch(() => ({}));
+  return result?.reading ?? null;
+};
+
 type MoveRoomWizardModalProps = {
   isOpen: boolean;
   onClose: () => void;
@@ -57,15 +77,10 @@ export function MoveRoomWizardModal({
     if (!isOpen || !activeTenant.room_id) return;
     let mounted = true;
     const fetchOldMeter = async () => {
-      const supabase = createClient();
-      const { data } = await supabase
-        .from("meter_readings")
-        .select("current_electricity,current_water")
-        .eq("room_id", activeTenant.room_id)
-        .order("reading_month", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      
+      // Moved server-side (finding C1) — see get_latest_reading in
+      // app/api/admin/meters/actions/route.ts.
+      const data = await fetchLatestMeterReading(activeTenant.room_id);
+
       if (!mounted) return;
       const prevElec = data?.current_electricity ?? activeTenant.initial_electricity_reading ?? 0;
       const prevWater = data?.current_water ?? activeTenant.initial_water_reading ?? 0;
@@ -85,15 +100,10 @@ export function MoveRoomWizardModal({
     if (!form.new_room_id) return;
     let mounted = true;
     const fetchNewMeter = async () => {
-      const supabase = createClient();
-      const { data } = await supabase
-        .from("meter_readings")
-        .select("current_electricity,current_water")
-        .eq("room_id", form.new_room_id)
-        .order("reading_month", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      
+      // Moved server-side (finding C1) — see get_latest_reading in
+      // app/api/admin/meters/actions/route.ts.
+      const data = await fetchLatestMeterReading(form.new_room_id);
+
       if (!mounted) return;
       // For new room, if it has a tenant history it might have readings, otherwise we don't have initial tenant readings yet
       const prevElec = data?.current_electricity ?? 0;

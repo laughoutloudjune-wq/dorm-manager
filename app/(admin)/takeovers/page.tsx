@@ -59,23 +59,26 @@ export default function TakeoversAdminPage() {
   const load = useCallback(async () => {
     if (!canView) return;
     setLoading(true);
-    const { data, error: fetchError } = await supabase
-      .from("room_takeover_requests")
-      .select(
-        "id,room_id,requester_full_name,requester_phone,status,created_at,rooms(room_number,buildings(name))"
-      )
-      .eq("status", "requested")
-      .order("created_at", { ascending: false });
-
-    if (fetchError) {
-      toast.error(fetchError.message);
+    try {
+      // Moved server-side (finding C1) — see the "list" action in
+      // app/api/admin/takeovers/actions/route.ts.
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (!token) throw new Error("เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่");
+      const response = await fetch("/api/admin/takeovers/actions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ action: "list" }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result?.error ?? "โหลดคำขอย้ายเข้าไม่สำเร็จ");
+      setRequests((result.requests ?? []) as unknown as TakeoverRow[]);
+    } catch (error: any) {
+      toast.error(error?.message ?? "โหลดคำขอย้ายเข้าไม่สำเร็จ");
       setRequests([]);
+    } finally {
       setLoading(false);
-      return;
     }
-
-    setRequests((data ?? []) as unknown as TakeoverRow[]);
-    setLoading(false);
   }, [canView, supabase]);
 
   useEffect(() => {

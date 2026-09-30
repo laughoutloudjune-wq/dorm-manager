@@ -165,98 +165,43 @@ export default function ReportsPageView() {
       setError(null);
       const start = yearStart(selectedYear);
       const end = yearEnd(selectedYear);
-      // Two allocation queries, because the two bases need different slices and
-      // a payment can sit in a different year from the invoice it settles:
-      //   - byPaidAt: everything RECEIVED this year (cash basis).
-      //   - byPeriod: everything applied to an invoice BILLED this year, whenever
-      //     it was received (so a Jan invoice paid next March still shows the
-      //     account it was paid into on the billing table).
-      // They overlap heavily; merged by allocation id below.
-      // The FK hint is required: invoice_payment_allocations has TWO foreign keys
-      // to invoices (invoice_id and trigger_invoice_id), so an unqualified
-      // `invoices(...)` embed is ambiguous and PostgREST rejects it. Aliased to
-      // `invoice` so the filter path below reads unambiguously too.
-      // Money columns on the embedded invoice are pulled in so each allocation
-      // can be prorated into rent/utilities/late-fee shares via chargesFromInvoiceRow
-      // — payments aren't itemized by line item in the ledger, so this is an
-      // apportionment of the received amount by the invoice's own charge mix,
-      // not a record of which line item a specific baht paid off.
-      const ALLOCATION_SELECT =
-        "id,payment_batch_id,invoice_id,amount,paid_at,source,payment_method_id,payment_method_snapshot," +
-        "invoice:invoices!invoice_payment_allocations_invoice_id_fkey!inner(" +
-        "id,start_date,due_date,tenant_id,room_id,rent_amount,water_bill,electricity_bill,common_fee," +
-        "late_fee_amount,additional_fees_total,additional_fees_breakdown,carry_forward_amount,discount_amount," +
-        "tenants(full_name),rooms(room_number,buildings(name)))";
-
-      const [settingsRes, invoicesRes, tenantsRes, metersRes, logsRes, transfersRes, settlementInvoicesRes, allocationsByPaidAtRes, allocationsByPeriodRes] = await Promise.all([
-        supabase.from("settings").select("water_rate,electricity_rate").eq("id", 1).maybeSingle(),
-        supabase
-          .from("invoices")
-          .select("id,tenant_id,room_id,status,total_amount,paid_amount,carry_forward_amount,issue_date,due_date,start_date,end_date,rent_amount,water_bill,electricity_bill,common_fee,discount_amount,late_fee_amount,additional_fees_total,additional_fees_breakdown,payment_history,tenants(full_name,custom_payment_method),rooms(room_number,buildings(name))")
-          .gte("start_date", start)
-          .lt("start_date", end)
-          .order("start_date", { ascending: true }),
-        supabase
-          .from("tenants")
-          .select("id,room_id,full_name,move_in_date,move_out_date,advance_rent_amount,security_deposit_amount,rooms(room_number,buildings(name))")
-          .order("move_in_date", { ascending: false }),
-        supabase
-          .from("meter_readings")
-          .select("room_id,reading_month,electricity_usage,water_usage,rooms(room_number,buildings(name))")
-          .gte("reading_month", start)
-          .lt("reading_month", end)
-          .order("reading_month", { ascending: true }),
-        supabase
-          .from("room_tenant_logs")
-          .select("id,room_id,tenant_id,tenant_name,move_in_date,move_out_date,rooms(room_number,buildings(name))")
-          .order("move_in_date", { ascending: false }),
-        supabase
-          .from("tenant_room_transfers")
-          .select("id,tenant_id,from_room_id,to_room_id,transfer_date,old_electric_usage,old_water_usage,old_rent_amount,new_rent_amount")
-          .gte("transfer_date", start)
-          .lt("transfer_date", end)
-          .order("transfer_date", { ascending: false }),
-        // Final move-out settlement invoices (created by final_move_out) hold the
-        // REAL deposit/advance credit applied (discount_amount) and the real net
-        // amount (total_amount, negative when the tenant is owed a refund) — not
-        // restricted to the selected year since a move-out invoice's billing
-        // period can start in the prior year.
-        supabase
-          .from("invoices")
-          .select("id,tenant_id,room_id,total_amount,discount_amount,notes,issue_date,rooms(room_number,buildings(name))")
-          .ilike("notes", "ย้ายออก%")
-          .order("issue_date", { ascending: false }),
-        supabase
-          .from("invoice_payment_allocations")
-          .select(ALLOCATION_SELECT)
-          .gte("paid_at", start)
-          .lt("paid_at", end)
-          .order("paid_at", { ascending: false }),
-        supabase
-          .from("invoice_payment_allocations")
-          .select(ALLOCATION_SELECT)
-          .gte("invoice.start_date", start)
-          .lt("invoice.start_date", end)
-          .order("paid_at", { ascending: false }),
-      ]);
-
-      if (!mounted) return;
-      const firstError =
-        settingsRes.error ||
-        invoicesRes.error ||
-        tenantsRes.error ||
-        metersRes.error ||
-        logsRes.error ||
-        transfersRes.error ||
-        settlementInvoicesRes.error ||
-        allocationsByPaidAtRes.error ||
-        allocationsByPeriodRes.error;
-
-      if (firstError) {
-        setError(firstError.message);
+      // Moved server-side (finding C1) — this used to be 9 parallel
+      // direct-anon-key reads from the browser. Every query/filter is
+      // unchanged, just relocated; see app/api/admin/reports/data/route.ts.
+      // (Two allocation queries because the two report bases need different
+      // slices — byPaidAt: received this year; byPeriod: applied to an
+      // invoice billed this year, whenever received — they overlap heavily
+      // and are merged by allocation id further below.)
+      let reportData: any = null;
+      try {
+        const { data: sessionData } = await supabase.auth.getSession();
+        const token = sessionData.session?.access_token;
+        if (!token) throw new Error("เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่");
+        const response = await fetch("/api/admin/reports/data", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ year: selectedYear }),
+        });
+        reportData = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(reportData?.error ?? "โหลดข้อมูลรายงานไม่สำเร็จ");
+      } catch (fetchErr: any) {
+        if (!mounted) return;
+        setError(fetchErr?.message ?? "โหลดข้อมูลรายงานไม่สำเร็จ");
         setLoading(false);
         return;
       }
+
+      const settingsRes = { data: reportData.settings, error: null as any };
+      const invoicesRes = { data: reportData.invoices, error: null as any };
+      const tenantsRes = { data: reportData.tenants, error: null as any };
+      const metersRes = { data: reportData.meters, error: null as any };
+      const logsRes = { data: reportData.logs, error: null as any };
+      const transfersRes = { data: reportData.transfers, error: null as any };
+      const settlementInvoicesRes = { data: reportData.settlementInvoices, error: null as any };
+      const allocationsByPaidAtRes = { data: reportData.allocationsByPaidAt, error: null as any };
+      const allocationsByPeriodRes = { data: reportData.allocationsByPeriod, error: null as any };
+
+      if (!mounted) return;
 
       setSettings({
         water_rate: toNumber((settingsRes.data as any)?.water_rate),
@@ -305,31 +250,9 @@ export default function ReportsPageView() {
         allocationById.set(String((row as any).id), row);
       }
 
-      // A handful of legacy allocation rows never got their own
-      // payment_method_snapshot even though the payment_batches row they
-      // belong to has one (it was attached after the fact via the invoice's
-      // Payments tab, which only updated the batch in some older runs). Fall
-      // back to the batch's snapshot here too, matching what the invoice
-      // detail modal already does — otherwise this report says "ไม่ระบุบัญชี"
-      // for a payment whose account the Payments tab shows correctly.
-      const batchIdsNeedingFallback = [
-        ...new Set(
-          [...allocationById.values()]
-            .filter((row: any) => !row.payment_method_snapshot && row.payment_batch_id)
-            .map((row: any) => String(row.payment_batch_id)),
-        ),
-      ];
-      let batchSnapshotById = new Map<string, any>();
-      if (batchIdsNeedingFallback.length > 0) {
-        const { data: batchRows } = await supabase
-          .from("payment_batches")
-          .select("id,payment_method_snapshot")
-          .in("id", batchIdsNeedingFallback);
-        batchSnapshotById = new Map(
-          (batchRows ?? []).map((row: any) => [String(row.id), row.payment_method_snapshot]),
-        );
-      }
-
+      // payment_method_snapshot on legacy allocation rows is already
+      // back-filled from their payment_batches row server-side (see
+      // app/api/admin/reports/data/route.ts) — finding C1.
       setAllocations(
         [...allocationById.values()].map((row: any) => {
           const invoice = relationItem(row.invoice);
@@ -356,11 +279,7 @@ export default function ReportsPageView() {
 
           const dueDate = invoice?.due_date ?? null;
           const isLate = dueDate ? new Date(row.paid_at) > new Date(`${dueDate}T23:59:59`) : false;
-          const method = paymentMethodSnapshotLabel(
-            row.payment_method_snapshot ??
-              batchSnapshotById.get(String(row.payment_batch_id ?? "")) ??
-              null,
-          );
+          const method = paymentMethodSnapshotLabel(row.payment_method_snapshot ?? null);
           const noteParts: string[] = [];
           if (isNonCashPaymentSource(row.source)) noteParts.push(paymentSourceLabel(row.source));
           if (isLate) noteParts.push("ชำระเกินกำหนด (หลังวันครบกำหนดของบิลนี้)");

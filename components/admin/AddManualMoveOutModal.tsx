@@ -52,18 +52,24 @@ export function AddManualMoveOutModal({ isOpen, onClose, onSuccess }: Props) {
   }, []);
 
   const loadTenants = async () => {
-    const supabase = createClient();
-    const { data, error } = await supabase
-      .from("tenants")
-      .select("id, full_name, rooms(room_number)")
-      .eq("status", "active")
-      .is("move_out_date", null)
-      .order("full_name");
+    try {
+      // Moved server-side (finding C1) — see get_movable_tenants in
+      // app/api/admin/tenants/actions/route.ts.
+      const supabase = createClient();
+      const { data: authData } = await supabase.auth.getSession();
+      const token = authData.session?.access_token;
+      if (!token) throw new Error("เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่");
 
-    if (error) {
-      toast.error("ดึงข้อมูลผู้เช่าไม่สำเร็จ: " + error.message);
-    } else {
-      setTenants(data || []);
+      const res = await fetch("/api/admin/tenants/actions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ action: "get_movable_tenants" }),
+      });
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(result?.error ?? "ดึงข้อมูลผู้เช่าไม่สำเร็จ");
+      setTenants(result.tenants || []);
+    } catch (error: any) {
+      toast.error("ดึงข้อมูลผู้เช่าไม่สำเร็จ: " + (error?.message ?? ""));
     }
   };
 

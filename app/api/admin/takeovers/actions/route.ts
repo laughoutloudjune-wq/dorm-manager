@@ -5,6 +5,25 @@ export async function POST(req: Request) {
   try {
     const body = await req.json();
     const action = String(body?.action ?? "");
+
+    if (action === "list") {
+      // Powers app/(admin)/takeovers/page.tsx — the pending takeover-request
+      // list used to be read directly from the browser with the anon key
+      // (finding C1). Gated on "tenant.view" alone, matching the page's own
+      // client-side `can("tenant.view") || can("tenant.edit")` check
+      // (tenant.edit implies tenant.view is also worth having, but isn't
+      // required by default role setup, so this is at least as permissive).
+      const authView = await requireAdminPermission(req, "tenant.view");
+      if ("error" in authView) return authView.error;
+      const { data, error } = await authView.supabase
+        .from("room_takeover_requests")
+        .select("id,room_id,requester_full_name,requester_phone,status,created_at,rooms(room_number,buildings(name))")
+        .eq("status", "requested")
+        .order("created_at", { ascending: false });
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ requests: data ?? [] });
+    }
+
     const requestId = String(body?.requestId ?? "");
     const adminNote = body?.adminNote != null ? String(body.adminNote) : null;
 

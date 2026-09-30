@@ -1,13 +1,11 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
 import { Building, Search } from "lucide-react";
-import { createClient } from "@/lib/supabase-client";
 
 export default function SearchInvoicesPage() {
-  const supabase = useMemo(() => createClient(), []);
   const [roomNumber, setRoomNumber] = useState("");
   const [invoices, setInvoices] = useState<any[]>([]);
 
@@ -15,30 +13,33 @@ export default function SearchInvoicesPage() {
     event.preventDefault();
     setInvoices([]);
 
-    const { data: room } = await supabase
-      .from("rooms")
-      .select("id")
-      .eq("room_number", roomNumber)
-      .single();
+    try {
+      const response = await fetch("/api/payment-search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ roomNumber }),
+      });
+      const result = await response.json().catch(() => ({}));
 
-    if (!room) {
-      toast.error("Room number not found. Please check and try again.");
-      return;
+      if (!response.ok) {
+        toast.error(
+          response.status === 404
+            ? "Room number not found. Please check and try again."
+            : result?.error ?? "Something went wrong. Please try again."
+        );
+        return;
+      }
+
+      const data = result?.invoices ?? [];
+      if (data.length === 0) {
+        toast.error("No unpaid invoices found. You're all caught up!");
+        return;
+      }
+
+      setInvoices(data);
+    } catch {
+      toast.error("Something went wrong. Please try again.");
     }
-
-    const { data } = await supabase
-      .from("invoices")
-      .select("id,public_token,issue_date,total_amount,paid_amount,status")
-      .eq("room_id", room.id)
-      .in("status", ["pending", "partial", "overdue", "verifying"])
-      .order("issue_date", { ascending: false });
-
-    if (!data || data.length === 0) {
-      toast.error("No unpaid invoices found. You're all caught up!");
-      return;
-    }
-
-    setInvoices(data);
   };
 
   return (

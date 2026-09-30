@@ -35,16 +35,19 @@ export function OverdueRoomsTab({ focusRoom }: { focusRoom?: string }) {
     setLoading(true);
     setError(null);
     try {
-      const { data, error: fetchError } = await supabase
-        .from("invoices")
-        .select(
-          "id,tenant_id,room_id,status,total_amount,paid_amount,payment_history,issue_date,due_date,start_date,end_date,rent_amount,water_bill,electricity_bill,common_fee,discount_amount,discount_breakdown,late_fee_amount,late_fee_per_day,late_fee_start_date,carry_forward_amount,additional_fees_total,additional_fees_breakdown,notes,public_token,slip_url,opened_count,first_opened_at,last_opened_at,tenants(full_name,phone_number,line_user_id,custom_payment_method,move_in_date,move_out_date,status),rooms(room_number,price_month,buildings(name))"
-        )
-        .in("status", ["pending", "partial", "overdue", "verifying"])
-        .order("start_date", { ascending: true });
-
-      if (fetchError) throw fetchError;
-      setInvoices(data ?? []);
+      // Moved server-side (finding C1) — see get_overdue_invoices in
+      // app/api/admin/invoices/actions/route.ts.
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (!token) throw new Error("เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่");
+      const response = await fetch("/api/admin/invoices/actions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ action: "get_overdue_invoices" }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result?.error ?? "Failed to load overdue invoices.");
+      setInvoices(result.invoices ?? []);
     } catch (err: any) {
       setError(err.message || "Failed to load overdue invoices.");
     } finally {

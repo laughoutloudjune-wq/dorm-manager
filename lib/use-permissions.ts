@@ -19,29 +19,25 @@ export function usePermissions() {
     let mounted = true;
     const load = async () => {
       try {
-        const [
-          { data: userData },
-          { data: settingsData },
-        ] = await Promise.all([
-          supabase.auth.getUser(),
-          supabase.from("settings").select("role_permissions").eq("id", 1).maybeSingle(),
-        ]);
+        // Moved server-side (finding C1) — this used to read
+        // settings.role_permissions and user_roles directly from the
+        // browser with the anon key. See app/api/admin/permissions/route.ts.
+        const { data: sessionData } = await supabase.auth.getSession();
+        const token = sessionData.session?.access_token;
+        if (!token) return;
 
-        const userId = userData?.user?.id;
-        if (userId) {
-          const { data: roleData } = await supabase
-            .from("user_roles")
-            .select("role")
-            .eq("user_id", userId)
-            .maybeSingle();
-          const nextRole = (roleData as any)?.role;
-          if (nextRole === "owner" || nextRole === "admin" || nextRole === "staff" || nextRole === "viewer") {
-            if (mounted) setRole(nextRole);
-          }
-        }
+        const response = await fetch("/api/admin/permissions", {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!response.ok) return;
+        const result = await response.json();
 
         if (mounted) {
-          setMatrix(normalizeRolePermissions((settingsData as any)?.role_permissions));
+          const nextRole = result?.role;
+          if (nextRole === "owner" || nextRole === "admin" || nextRole === "staff" || nextRole === "viewer") {
+            setRole(nextRole);
+          }
+          setMatrix(normalizeRolePermissions(result?.matrix ?? undefined));
         }
       } finally {
         if (mounted) setLoading(false);

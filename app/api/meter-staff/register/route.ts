@@ -37,7 +37,12 @@ export async function POST(req: Request) {
       source_channel: "meter_staff_liff",
       registered_via: "liff_register",
       staff_note: staffNote,
-      status: "active",
+      // Never self-activate: a brand-new sign-up starts "pending" until an
+      // admin approves it from the Meter Staff page. Re-registering (a
+      // profile edit) must not resurrect a status an admin deliberately
+      // switched to "inactive" — so an existing row keeps whatever status it
+      // already has.
+      status: existing?.status ?? "pending",
       last_event_type: "staff_register",
       last_seen_at: nowIso,
       updated_at: nowIso,
@@ -58,7 +63,7 @@ export async function POST(req: Request) {
       staff: saved,
       message: existing?.id
         ? "อัปเดตข้อมูลพนักงานมิเตอร์แล้ว"
-        : "ลงทะเบียนพนักงานมิเตอร์สำเร็จ — สามารถเปิดหน้าบันทึกมิเตอร์ได้ทันที",
+        : "ลงทะเบียนสำเร็จ — กรุณารอผู้ดูแลหอพักอนุมัติก่อนจึงจะบันทึกมิเตอร์ได้",
     });
   } catch (error: any) {
     return NextResponse.json(

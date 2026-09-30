@@ -10,6 +10,11 @@ export async function POST(req: Request) {
       ? (body.invoiceIds as string[]).map(String).filter(Boolean)
       : [];
     const slipUrl = body?.slipUrl ? String(body.slipUrl) : null;
+    // Opt-in only: app/(public)/payment/[token]/page.tsx has always let a
+    // tenant replace a slip that's still under review; the LIFF invoices
+    // list (the other caller of this route) has not, and keeps its stricter
+    // default unless it explicitly asks for this too.
+    const allowResubmitWhileVerifying = Boolean(body?.allowResubmitWhileVerifying);
 
     if (!accessToken || invoiceIds.length === 0 || !slipUrl) {
       return NextResponse.json({ error: "Missing required fields." }, { status: 400 });
@@ -42,12 +47,15 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Tenant not found for this LINE account." }, { status: 404 });
     }
 
+    const allowedStatuses = allowResubmitWhileVerifying
+      ? ["pending", "partial", "overdue", "verifying"]
+      : ["pending", "partial", "overdue"];
     const { data: invoices, error: invoiceError } = await supabase
       .from("invoices")
       .select("id,status,tenant_id")
       .eq("tenant_id", tenant.id)
       .in("id", invoiceIds)
-      .in("status", ["pending", "partial", "overdue"]);
+      .in("status", allowedStatuses);
     if (invoiceError) {
       return NextResponse.json({ error: invoiceError.message }, { status: 500 });
     }

@@ -63,41 +63,13 @@ export function MoveOutProcessingModal({
   const fetcher = async () => {
     if (!tenantId) return null;
 
-    const [tenantRes, invoicesRes, ratesRes, requestsRes, invoiceHistoryRes] = await Promise.all([
-      supabase
-        .from("tenants")
-        .select("*, rooms(room_number, price_month, buildings(name))")
-        .eq("id", tenantId)
-        .single(),
-      supabase
-        .from("invoices")
-        .select("*")
-        .eq("tenant_id", tenantId)
-        .in("status", ["pending", "overdue", "partial", "verifying", "draft"]),
-      supabase.from("settings").select("*").single(),
-      supabase
-        .from("move_out_requests")
-        .select("*")
-        .eq("tenant_id", tenantId)
-        .order("created_at", { ascending: false }),
-      supabase
-        .from("invoices")
-        .select("*")
-        .eq("tenant_id", tenantId)
-        .order("start_date", { ascending: false }),
-    ]);
-
-    if (tenantRes.error) throw new Error(tenantRes.error.message);
-
-    const tenant = tenantRes.data;
-
-    const { data: meterData } = await supabase
-      .from("meter_readings")
-      .select("current_electricity,current_water")
-      .eq("room_id", tenant.room_id)
-      .order("reading_month", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    // Moved server-side (finding C1) — this used to be 5 parallel
+    // direct-anon-key reads plus a follow-up meter_readings read, straight
+    // from the browser. See get_move_out_data in
+    // app/api/admin/tenants/actions/route.ts.
+    const result = await callTenantsAction("get_move_out_data", { tenantId });
+    const tenant = result.tenant;
+    const meterData = result.meterReading;
 
     const prevElec =
       meterData?.current_electricity ??
@@ -131,11 +103,11 @@ export function MoveOutProcessingModal({
     };
 
     return {
-      tenant: tenantRes.data,
-      unpaidInvoices: invoicesRes.data || [],
-      rates: ratesRes.data || { electricity_rate: 0, water_rate: 0 },
-      moveOutRequests: requestsRes.data || [],
-      invoiceHistory: invoiceHistoryRes.data || [],
+      tenant,
+      unpaidInvoices: result.unpaidInvoices || [],
+      rates: result.rates || { electricity_rate: 0, water_rate: 0 },
+      moveOutRequests: result.moveOutRequests || [],
+      invoiceHistory: result.invoiceHistory || [],
       prevElec,
       prevWater,
     };

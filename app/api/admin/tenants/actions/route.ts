@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/admin-api-auth";
 import { dailyRentRate } from "@/lib/invoice-utils";
 import { computeInvoiceTotal } from "@/lib/invoice-total";
+import { pickFields } from "@/lib/pick-fields";
 import {
   applyInvoicePaymentAllocation,
   planAbandonCredit,
@@ -61,10 +62,36 @@ export async function POST(req: Request) {
     if (action === "save_tenant") {
       const auth = await requireAdminPermission(req, "tenant.edit");
       if ("error" in auth) return auth.error;
-      const payload = { ...(body?.payload ?? {}) } as any;
+      const rawPayload = body?.payload ?? {};
+      // Whitelisted to exactly what the tenant editor modal sends. In
+      // particular this excludes `line_user_id` — that has its own dedicated
+      // "tenant.line.manage" permission and its own action (`unlink_line`)
+      // below; spreading the raw payload here let a tenant.edit-only caller
+      // change it too, bypassing that boundary. See
+      // docs/audit/2026-09-29-system-audit-detailed.md finding H12.
+      const payload = pickFields(rawPayload, [
+        "full_name",
+        "address",
+        "phone_number",
+        "room_id",
+        "move_in_date",
+        "move_out_date",
+        "status",
+        "lease_months",
+        "initial_electricity_reading",
+        "initial_water_reading",
+        "advance_rent_amount",
+        "security_deposit_amount",
+        "deposit_slip_url",
+        "final_electricity_reading",
+        "final_water_reading",
+        "forfeit_security_deposit",
+        "custom_payment_method",
+        "custom_receipt_profile",
+      ]) as any;
+      payload.id = rawPayload?.id ? String(rawPayload.id) : crypto.randomUUID();
       const transferPayload = (body?.transferPayload ?? null) as any;
       const roomId = body?.roomId ? String(body.roomId) : "";
-      if (!payload.id) payload.id = crypto.randomUUID();
       const tenantId = String(payload.id);
 
       let previousTenant: any = null;
@@ -299,6 +326,184 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: true });
     }
 
+    if (action === "get_move_outs_page_data") {
+      // Powers app/(admin)/move-outs/page.tsx — 3 parallel reads (move-out
+      // requests, tenants with a move-out date set, and the "pending
+      // settlement" list per CLAUDE.md's move-out flow: status='inactive'
+      // AND room_id IS NOT NULL) used to run directly from the browser with
+      // the anon key (finding C1).
+      const auth = await requireAdminPermission(req, "tenant.view");
+      if ("error" in auth) return auth.error;
+      const [reqRes, tenRes, settlementRes] = await Promise.all([
+        auth.supabase
+          .from("move_out_requests")
+          .select(
+            "id,tenant_id,notice_date,requested_move_out_date,approved_move_out_date,status,request_note,created_at,tenants(full_name,room_id,rooms(room_number,buildings(name)))"
+          )
+          .order("created_at", { ascending: false }),
+        auth.supabase
+          .from("tenants")
+          .select("id,full_name,move_out_date,room_id,rooms(room_number,buildings(name))")
+          .not("move_out_date", "is", null)
+          .eq("status", "active")
+          .order("move_out_date", { ascending: true }),
+        auth.supabase
+          .from("tenants")
+          .select("id,full_name,move_out_date,room_id,rooms(room_number,buildings(name))")
+          .not("move_out_date", "is", null)
+          .not("room_id", "is", null)
+          .eq("status", "inactive")
+          .order("move_out_date", { ascending: true }),
+      ]);
+      if (reqRes.error) return NextResponse.json({ error: reqRes.error.message }, { status: 500 });
+      if (tenRes.error) return NextResponse.json({ error: tenRes.error.message }, { status: 500 });
+      if (settlementRes.error) return NextResponse.json({ error: settlementRes.error.message }, { status: 500 });
+      return NextResponse.json({
+        requests: reqRes.data ?? [],
+        tenantsWithDate: tenRes.data ?? [],
+        pendingSettlementTenants: settlementRes.data ?? [],
+      });
+    }
+
+    if (action === "get_movable_tenants") {
+      // Powers AddManualMoveOutModal.tsx's tenant picker — active tenants
+      // who haven't given move-out notice yet, used to be read directly
+      // from the browser with the anon key (finding C1).
+      const auth = await requireAdminPermission(req, "tenant.view");
+      if ("error" in auth) return auth.error;
+      const { data, error } = await auth.supabase
+        .from("tenants")
+        .select("id, full_name, rooms(room_number)")
+        .eq("status", "active")
+        .is("move_out_date", null)
+        .order("full_name");
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ tenants: data ?? [] });
+    }
+
+    if (action === "get_move_out_requests") {
+      // Powers useMoveOutRequests in lib/hooks/use-data.ts (finding C1) —
+      // the pending/approved move-out request list used to be read
+      // directly from the browser with the anon key.
+      const auth = await requireAdminPermission(req, "tenant.view");
+      if ("error" in auth) return auth.error;
+      const { data, error } = await auth.supabase
+        .from("move_out_requests")
+        .select(
+          "id,tenant_id,notice_date,requested_move_out_date,approved_move_out_date,actual_move_out_date,status,request_note,admin_note,created_at"
+        )
+        .in("status", ["requested", "approved"])
+        .order("created_at", { ascending: false });
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ requests: data ?? [] });
+    }
+
+    if (action === "get_tenants") {
+      // Powers tenant-editor-modal.tsx's loadTenants — the full tenant list
+      // used to be read directly from the browser with the anon key
+      // (finding C1). Same "tenant.view" gate as this file's other
+      // read-only actions.
+      const auth = await requireAdminPermission(req, "tenant.view");
+      if ("error" in auth) return auth.error;
+      const { data, error } = await auth.supabase
+        .from("tenants")
+        .select(
+          "id,full_name,address,phone_number,line_user_id,move_in_date,move_out_date,status,room_id,lease_months,initial_electricity_reading,initial_water_reading,advance_rent_amount,security_deposit_amount,deposit_slip_url,final_electricity_reading,final_water_reading,forfeit_security_deposit,custom_payment_method,custom_receipt_profile,rooms(room_number,price_month,buildings(name))"
+        )
+        .order("move_in_date", { ascending: false });
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ tenants: data ?? [] });
+    }
+
+    if (action === "get_tenant") {
+      // Single-tenant fetch by id — powers openModalById and the
+      // post-save refresh in tenant-editor-modal.tsx (same finding as
+      // get_tenants above).
+      const auth = await requireAdminPermission(req, "tenant.view");
+      if ("error" in auth) return auth.error;
+      const tenantId = String(body?.tenantId ?? "");
+      if (!tenantId) {
+        return NextResponse.json({ error: "Missing tenantId." }, { status: 400 });
+      }
+      const { data, error } = await auth.supabase
+        .from("tenants")
+        .select(
+          "id,full_name,address,phone_number,line_user_id,move_in_date,move_out_date,status,room_id,lease_months,initial_electricity_reading,initial_water_reading,advance_rent_amount,security_deposit_amount,deposit_slip_url,final_electricity_reading,final_water_reading,forfeit_security_deposit,custom_payment_method,custom_receipt_profile,rooms(room_number,price_month,buildings(name))"
+        )
+        .eq("id", tenantId)
+        .maybeSingle();
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      if (!data) return NextResponse.json({ error: "Tenant not found" }, { status: 404 });
+      return NextResponse.json({ tenant: data });
+    }
+
+    if (action === "get_tenant_invoice_history") {
+      // Powers tenant-editor-modal.tsx's "payments" tab — used to read
+      // directly from the browser with the anon key (finding C1). Same
+      // "tenant.view" gate as get_tenant above.
+      const auth = await requireAdminPermission(req, "tenant.view");
+      if ("error" in auth) return auth.error;
+      const tenantId = String(body?.tenantId ?? "");
+      if (!tenantId) {
+        return NextResponse.json({ error: "Missing tenantId." }, { status: 400 });
+      }
+      const { data, error } = await auth.supabase
+        .from("invoices")
+        .select(
+          "id,start_date,end_date,total_amount,paid_amount,carry_forward_amount,status,slip_url,slip_uploaded_at,payment_history,created_at"
+        )
+        .eq("tenant_id", tenantId)
+        .order("start_date", { ascending: false });
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ invoices: data ?? [] });
+    }
+
+    if (action === "get_move_out_data") {
+      // Powers MoveOutProcessingModal.tsx, which used to run 5 parallel
+      // direct-anon-key reads (plus a follow-up meter_readings read) from
+      // the browser (finding C1). Same "tenant.view" gate as the other
+      // read-only actions this session added, since every admin role needs
+      // to view this to process a move-out.
+      const auth = await requireAdminPermission(req, "tenant.view");
+      if ("error" in auth) return auth.error;
+      const tenantId = String(body?.tenantId ?? "");
+      if (!tenantId) {
+        return NextResponse.json({ error: "Missing tenantId." }, { status: 400 });
+      }
+
+      const [tenantRes, invoicesRes, ratesRes, requestsRes, invoiceHistoryRes] = await Promise.all([
+        auth.supabase.from("tenants").select("*, rooms(room_number, price_month, buildings(name))").eq("id", tenantId).single(),
+        auth.supabase
+          .from("invoices")
+          .select("*")
+          .eq("tenant_id", tenantId)
+          .in("status", ["pending", "overdue", "partial", "verifying", "draft"]),
+        auth.supabase.from("settings").select("*").single(),
+        auth.supabase.from("move_out_requests").select("*").eq("tenant_id", tenantId).order("created_at", { ascending: false }),
+        auth.supabase.from("invoices").select("*").eq("tenant_id", tenantId).order("start_date", { ascending: false }),
+      ]);
+
+      if (tenantRes.error) return NextResponse.json({ error: tenantRes.error.message }, { status: 500 });
+      const tenant = tenantRes.data as any;
+
+      const { data: meterData } = await auth.supabase
+        .from("meter_readings")
+        .select("current_electricity,current_water")
+        .eq("room_id", tenant.room_id)
+        .order("reading_month", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      return NextResponse.json({
+        tenant,
+        unpaidInvoices: invoicesRes.data || [],
+        rates: ratesRes.data || { electricity_rate: 0, water_rate: 0 },
+        moveOutRequests: requestsRes.data || [],
+        invoiceHistory: invoiceHistoryRes.data || [],
+        meterReading: meterData || null,
+      });
+    }
+
     if (action === "unlink_line") {
       const auth = await requireAdminPermission(req, "tenant.line.manage");
       if ("error" in auth) return auth.error;
@@ -314,12 +519,14 @@ export async function POST(req: Request) {
 
       const tenantId = String(body?.tenantId ?? "");
       const roomId = String(body?.roomId ?? "");
-      const payload = body?.payload ?? {};
-      const moveOutDate = payload?.move_out_date
-        ? String(payload.move_out_date)
+      const rawPayload = body?.payload ?? {};
+      const moveOutDate = rawPayload?.move_out_date
+        ? String(rawPayload.move_out_date)
         : new Date().toISOString().slice(0, 10);
+      // Vacate is deliberately just a status + date flip (see CLAUDE.md's
+      // move-out flow) — it must not become a side channel for changing any
+      // other tenant column, which spreading the raw payload used to allow.
       const updateTenantPayload = {
-        ...payload,
         status: "inactive",
         move_out_date: moveOutDate,
       };

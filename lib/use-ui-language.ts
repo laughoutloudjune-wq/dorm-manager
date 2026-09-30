@@ -11,9 +11,20 @@ export function useUiLanguage(defaultLocale: AppLocale = "th") {
   useEffect(() => {
     let mounted = true;
     const load = async () => {
-      const { data } = await supabase.from("settings").select("ui_language").eq("id", 1).maybeSingle();
-      if (!mounted) return;
-      const next = (data as any)?.ui_language;
+      // Moved server-side (finding C1) — this used to read settings
+      // directly from the browser with the anon key. Reuses the existing
+      // /api/admin/settings GET route rather than a new endpoint, since it
+      // already returns the full settings row.
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (!token) return;
+
+      const response = await fetch("/api/admin/settings", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!mounted || !response.ok) return;
+      const result = await response.json().catch(() => ({}));
+      const next = result?.settings?.ui_language;
       if (next === "en" || next === "th") setLocale(next);
     };
     void load();

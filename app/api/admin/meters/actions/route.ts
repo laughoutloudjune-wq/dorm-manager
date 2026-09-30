@@ -21,6 +21,27 @@ export async function POST(req: Request) {
   try {
     const body = await req.json();
     const action = String(body?.action ?? "");
+
+    if (action === "get_latest_reading") {
+      // Powers MoveRoomWizardModal.tsx's old-room/new-room meter lookups,
+      // which used to read directly from the browser with the anon key
+      // (finding C1). Gated on "tenant.view" — viewing a reading isn't the
+      // sensitive part, saving one is (still gated on meter.edit below).
+      const authView = await requireAdminPermission(req, "tenant.view");
+      if ("error" in authView) return authView.error;
+      const roomId = String(body?.roomId ?? "");
+      if (!roomId) return NextResponse.json({ error: "Missing roomId." }, { status: 400 });
+      const { data, error } = await authView.supabase
+        .from("meter_readings")
+        .select("current_electricity,current_water")
+        .eq("room_id", roomId)
+        .order("reading_month", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ reading: data ?? null });
+    }
+
     if (action !== "save_all") {
       return NextResponse.json({ error: "Unknown action." }, { status: 400 });
     }

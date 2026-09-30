@@ -271,16 +271,19 @@ export function InvoiceDetailModal() {
     if (!detailOpen) return;
     let cancelled = false;
     void (async () => {
-      const { data } = await supabase
-        .from("payment_methods")
-        .select("id,label,bank_name,account_name,account_number")
-        .order("label", { ascending: true });
-      if (!cancelled) setAssignableMethods((data ?? []) as any[]);
+      // Moved server-side (finding C1) — see get_assignable_payment_methods
+      // in app/api/admin/invoices/actions/route.ts.
+      try {
+        const result = await callInvoiceAdminAction("get_assignable_payment_methods", {});
+        if (!cancelled) setAssignableMethods((result?.methods ?? []) as any[]);
+      } catch {
+        if (!cancelled) setAssignableMethods([]);
+      }
     })();
     return () => {
       cancelled = true;
     };
-  }, [detailOpen, supabase]);
+  }, [detailOpen, callInvoiceAdminAction]);
 
   const assignPaymentBatchMethod = async (paymentBatchId: string) => {
     const methodId = assignSelection[paymentBatchId];
@@ -348,50 +351,33 @@ export function InvoiceDetailModal() {
 
     const loadChains = async () => {
       setChainsLoading(true);
-      // Which payments touched this invoice…
-      const { data: mine } = await supabase
-        .from("invoice_payment_allocations")
-        .select("payment_batch_id")
-        .eq("invoice_id", activeInvoiceId);
-      const batchIds = [
-        ...new Set(
-          (mine ?? [])
-            .map((row: any) => String(row.payment_batch_id ?? ""))
-            .filter(Boolean),
-        ),
-      ];
+      // Moved server-side (finding C1) — see get_payment_chains in
+      // app/api/admin/invoices/actions/route.ts. Everything below this
+      // (grouping allocations/batches into chains) is unchanged.
+      let allocations: any[] = [];
+      let batches: any[] = [];
+      try {
+        const result = await callInvoiceAdminAction("get_payment_chains", { invoiceId: activeInvoiceId });
+        allocations = result?.allocations ?? [];
+        batches = result?.batches ?? [];
+      } catch {
+        if (!cancelled) {
+          setPaymentChains([]);
+          setChainsLoading(false);
+        }
+        return;
+      }
       if (cancelled) return;
-      if (batchIds.length === 0) {
+      if (allocations.length === 0 && batches.length === 0) {
         setPaymentChains([]);
         setChainsLoading(false);
         return;
       }
 
-      // …and everything else those same payments were split across. The FK hint
-      // is required — invoice_payment_allocations has two foreign keys to
-      // invoices (invoice_id and trigger_invoice_id), so a bare embed is
-      // ambiguous.
-      const [allocationsRes, batchesRes] = await Promise.all([
-        supabase
-          .from("invoice_payment_allocations")
-          .select(
-            "id,payment_batch_id,invoice_id,amount,paid_at,slip_url,payment_method_snapshot," +
-              "invoice:invoices!invoice_payment_allocations_invoice_id_fkey(id,start_date,rooms(room_number))",
-          )
-          .in("payment_batch_id", batchIds),
-        supabase
-          .from("payment_batches")
-          .select("id,amount_received,paid_at,slip_url,source,trigger_invoice_id,payment_method_snapshot")
-          .in("id", batchIds),
-      ]);
-      if (cancelled) return;
-
-      const batchById = new Map(
-        (batchesRes.data ?? []).map((row: any) => [String(row.id), row]),
-      );
+      const batchById = new Map(batches.map((row: any) => [String(row.id), row]));
       const grouped = new Map<string, PaymentChain>();
 
-      for (const row of allocationsRes.data ?? []) {
+      for (const row of allocations) {
         const batchId = String((row as any).payment_batch_id ?? "");
         if (!batchId) continue;
         const batch = batchById.get(batchId) as any;
@@ -465,7 +451,7 @@ export function InvoiceDetailModal() {
   }, [
     activeInvoiceId,
     activeTab,
-    supabase,
+    callInvoiceAdminAction,
     activeInvoice?.payment_history,
     chainReloadToken,
   ]);

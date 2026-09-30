@@ -37,48 +37,22 @@ const statusLabel = (status?: string) => {
   return status ?? "-";
 };
 
-const sanitizeStorageFileName = (fileName: string) => {
-  const extensionIndex = fileName.lastIndexOf(".");
-  const rawBase = extensionIndex >= 0 ? fileName.slice(0, extensionIndex) : fileName;
-  const rawExtension = extensionIndex >= 0 ? fileName.slice(extensionIndex).toLowerCase() : "";
-  const safeBase = rawBase
-    .normalize("NFKD")
-    .replace(/[^\x00-\x7F]/g, "")
-    .replace(/[^a-zA-Z0-9-_]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "")
-    .toLowerCase();
-  const safeExtension = rawExtension.replace(/[^.a-z0-9]/g, "");
-  return `${safeBase || "upload"}${safeExtension}`;
-};
-
-function uploadToSupabaseWithProgress(
+// Moved server-side (finding C1) — this used to POST straight to Supabase
+// Storage's REST endpoint with the anon key via a raw XHR (for progress
+// events), bypassing even the Supabase JS client and any auth check. See
+// app/api/payment-liff/upload-slip/route.ts.
+function uploadSlipWithProgress(
   file: File,
-  bucket: string,
-  filePath: string,
+  accessToken: string,
   onProgress: (percent: number) => void
 ) {
-  return new Promise<{ path: string }>((resolve, reject) => {
-    const baseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-    if (!baseUrl || !anonKey) {
-      reject(new Error("Supabase environment is missing."));
-      return;
-    }
-
-    const encodedPath = filePath
-      .split("/")
-      .map((segment) => encodeURIComponent(segment))
-      .join("/");
-    const url = `${baseUrl}/storage/v1/object/${bucket}/${encodedPath}`;
+  return new Promise<{ url: string }>((resolve, reject) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("accessToken", accessToken);
 
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", url, true);
-    xhr.setRequestHeader("apikey", anonKey);
-    xhr.setRequestHeader("Authorization", `Bearer ${anonKey}`);
-    xhr.setRequestHeader("x-upsert", "true");
-    xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+    xhr.open("POST", "/api/payment-liff/upload-slip", true);
 
     xhr.upload.onprogress = (event) => {
       if (!event.lengthComputable) return;
@@ -86,20 +60,20 @@ function uploadToSupabaseWithProgress(
     };
 
     xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        resolve({ path: filePath });
-        return;
-      }
       try {
         const parsed = JSON.parse(xhr.responseText);
-        reject(new Error(parsed?.message || "Upload failed."));
+        if (xhr.status >= 200 && xhr.status < 300 && parsed?.url) {
+          resolve({ url: parsed.url });
+          return;
+        }
+        reject(new Error(parsed?.error || "Upload failed."));
       } catch {
         reject(new Error(`Upload failed with status ${xhr.status}.`));
       }
     };
 
     xhr.onerror = () => reject(new Error("Network error during upload."));
-    xhr.send(file);
+    xhr.send(formData);
   });
 }
 
@@ -230,16 +204,7 @@ export default function PaymentLiffCurrentInvoicesPage() {
     setUploadProgress(0);
 
     try {
-      const safeName = sanitizeStorageFileName(slipFile.name);
-      const filePath = `payment-liff/${tenant.id}/${Date.now()}-${safeName}`;
-      await uploadToSupabaseWithProgress(slipFile, "payment_slips", filePath, setUploadProgress);
-
-      const baseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-      if (!baseUrl) throw new Error("Supabase URL is missing.");
-      const slipUrl = `${baseUrl}/storage/v1/object/public/payment_slips/${filePath
-        .split("/")
-        .map((segment) => encodeURIComponent(segment))
-        .join("/")}`;
+      const { url: slipUrl } = await uploadSlipWithProgress(slipFile, accessToken, setUploadProgress);
 
       const response = await fetch("/api/payment-liff/submit", {
         method: "POST",

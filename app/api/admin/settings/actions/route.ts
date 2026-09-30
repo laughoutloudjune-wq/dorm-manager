@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/admin-api-auth";
+import { pickFields } from "@/lib/pick-fields";
 
 export async function POST(req: Request) {
   try {
@@ -9,7 +10,15 @@ export async function POST(req: Request) {
     if (action === "save_general") {
       const auth = await requireAdminPermission(req, "settings.general");
       if ("error" in auth) return auth.error;
-      const payload = body?.payload ?? {};
+      // Whitelisted to what the General tab actually sends. Without this, a
+      // caller with only settings.general could smuggle role_permissions or
+      // rewards_config into the same request — they live on this identical
+      // settings row (id=1). See docs/audit/2026-09-29-system-audit-detailed.md
+      // finding H12.
+      const payload = {
+        ...pickFields(body?.payload, ["dorm_name", "dorm_address", "dorm_phone", "ui_language"]),
+        updated_at: new Date().toISOString(),
+      };
       const { error } = await auth.supabase.from("settings").update(payload).eq("id", 1);
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
       return NextResponse.json({ success: true });
@@ -18,7 +27,17 @@ export async function POST(req: Request) {
     if (action === "save_utilities") {
       const auth = await requireAdminPermission(req, "settings.utilities");
       if ("error" in auth) return auth.error;
-      const { error } = await auth.supabase.from("settings").update(body?.payload ?? {}).eq("id", 1);
+      const payload = {
+        ...pickFields(body?.payload, [
+          "water_rate",
+          "electricity_rate",
+          "common_fee",
+          "water_min_units",
+          "water_min_price",
+        ]),
+        updated_at: new Date().toISOString(),
+      };
+      const { error } = await auth.supabase.from("settings").update(payload).eq("id", 1);
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
       return NextResponse.json({ success: true });
     }
@@ -26,7 +45,19 @@ export async function POST(req: Request) {
     if (action === "save_invoice_config") {
       const auth = await requireAdminPermission(req, "settings.invoice_config");
       if ("error" in auth) return auth.error;
-      const { error } = await auth.supabase.from("settings").update(body?.payload ?? {}).eq("id", 1);
+      const payload = {
+        ...pickFields(body?.payload, [
+          "common_fee",
+          "billing_day",
+          "due_day",
+          "late_fee_start_day",
+          "late_fee_per_day",
+          "additional_fees",
+          "additional_discounts",
+        ]),
+        updated_at: new Date().toISOString(),
+      };
+      const { error } = await auth.supabase.from("settings").update(payload).eq("id", 1);
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
       return NextResponse.json({ success: true });
     }
@@ -92,7 +123,7 @@ export async function POST(req: Request) {
     if (action === "add_building") {
       const auth = await requireAdminPermission(req, "settings.rooms");
       if ("error" in auth) return auth.error;
-      const payload = body?.payload ?? {};
+      const payload = pickFields(body?.payload, ["name", "address"]);
       const { data, error } = await auth.supabase.from("buildings").insert(payload).select("id,name").single();
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
       return NextResponse.json({ success: true, data });
@@ -101,7 +132,14 @@ export async function POST(req: Request) {
     if (action === "add_room") {
       const auth = await requireAdminPermission(req, "settings.rooms");
       if ("error" in auth) return auth.error;
-      const { error } = await auth.supabase.from("rooms").insert(body?.payload ?? {});
+      const payload = pickFields(body?.payload, [
+        "building_id",
+        "room_number",
+        "room_type",
+        "price_month",
+        "status",
+      ]);
+      const { error } = await auth.supabase.from("rooms").insert(payload);
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
       return NextResponse.json({ success: true });
     }
@@ -111,7 +149,8 @@ export async function POST(req: Request) {
       if ("error" in auth) return auth.error;
       const rooms = Array.isArray(body?.rooms) ? body.rooms : [];
       for (const room of rooms) {
-        const { id, ...payload } = room;
+        const id = room?.id;
+        const payload = pickFields(room, ["room_number", "room_type", "price_month", "status"]);
         const { error } = await auth.supabase.from("rooms").update(payload).eq("id", id);
         if (error) return NextResponse.json({ error: error.message }, { status: 500 });
       }

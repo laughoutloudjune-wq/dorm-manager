@@ -12,11 +12,6 @@ import {
 } from "@/lib/invoice-total";
 import { usePermissions } from "@/lib/use-permissions";
 import {
-  getCarryForwardCandidatesForTarget,
-  computeLateFeeSnapshot,
-  OPEN_INVOICE_STATUSES,
-} from "@/lib/invoice-ledger";
-import {
   toNumber,
   roundTo2,
   formatMoney,
@@ -250,26 +245,25 @@ export function useInvoicesState() {
 
   useEffect(() => {
     let mounted = true;
+    // Moved server-side (finding C1) — see get_latest_invoice_month in
+    // app/api/admin/invoices/actions/route.ts.
     const initLatestInvoiceMonth = async () => {
-      const { data } = await supabase
-        .from("invoices")
-        .select("start_date")
-        .order("start_date", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (!mounted) return;
-      const latestMonth = (data as any)?.start_date
-        ? String((data as any).start_date).slice(0, 7)
-        : null;
-      if (latestMonth) {
-        setSelectedMonth(latestMonth);
+      try {
+        const result = await callInvoiceAdminAction("get_latest_invoice_month", {});
+        if (!mounted) return;
+        const latestMonth = result?.startDate ? String(result.startDate).slice(0, 7) : null;
+        if (latestMonth) {
+          setSelectedMonth(latestMonth);
+        }
+      } catch {
+        // Non-blocking: falls back to the default selected month.
       }
     };
     void initLatestInvoiceMonth();
     return () => {
       mounted = false;
     };
-  }, [supabase]);
+  }, []);
 
   useEffect(() => {
     if (!openActionMenuId) return;
@@ -282,162 +276,54 @@ export function useInvoicesState() {
     return () => document.removeEventListener("mousedown", onDocPointerDown);
   }, [openActionMenuId]);
 
+  // Both status transitions below (and syncMonthInvoicesWithSettings further
+  // down) now happen through a single server action each
+  // (app/api/admin/invoices/actions/route.ts, "sync_period_statuses" /
+  // "sync_period_discounts") instead of writing to `invoices` directly from
+  // the browser with the anon key — finding C1,
+  // docs/audit/2026-09-29-system-audit-detailed.md. Kept as separate
+  // functions with unchanged signatures/names so nothing else that calls
+  // them (loadInvoices, and the wider invoices context type/exports) has to
+  // change. Gated server-side on "tenant.view" rather than an edit
+  // permission, since this ran unconditionally for every viewer who opened
+  // the list before — a narrower gate would be a real regression, not just
+  // a relocation.
   const applyPendingToOverdue = async (
     periodStart: string,
     periodEnd: string,
   ) => {
-    const today = toLocalDateString(new Date());
-    const { error: overdueError } = await supabase
-      .from("invoices")
-      .update({ status: "overdue" })
-      .eq("status", "pending")
-      .eq("start_date", periodStart)
-      .eq("end_date", periodEnd)
-      .is("slip_url", null)
-      .lt("due_date", today);
-    if (overdueError) {
-      setError(overdueError.message);
+    try {
+      await callInvoiceAdminAction("sync_period_statuses", { periodStart, periodEnd });
+    } catch (err: any) {
+      setError(err?.message ?? "Failed to sync invoice statuses.");
     }
   };
 
+  // No-op: sync_period_statuses (triggered by applyPendingToOverdue, called
+  // right before this in loadInvoices) already covers this transition too
+  // in the same server call. Left in place, unchanged signature, rather than
+  // removed, so loadInvoices' call sequence doesn't need to change.
   const applySlipToVerifying = async (
-    periodStart: string,
-    periodEnd: string,
-  ) => {
-    const { error: verifyingError } = await supabase
-      .from("invoices")
-      .update({ status: "verifying" })
-      .in("status", ["pending", "overdue"])
-      .eq("start_date", periodStart)
-      .eq("end_date", periodEnd)
-      .eq("paid_amount", 0)
-      .not("slip_url", "is", null);
-    if (verifyingError) {
-      setError(verifyingError.message);
-    }
-  };
+    _periodStart: string,
+    _periodEnd: string,
+  ) => {};
 
   const syncMonthInvoicesWithSettings = async (year: number, month: number) => {
-    const periodStart = toLocalDateString(new Date(year, month - 1, 1));
-    const periodEnd = toLocalDateString(new Date(year, month, 0));
-    const monthKey = toLocalDateString(new Date(year, month - 1, 1));
-
-    const { data: settings } = await supabase
-      .from("settings")
-      .select("additional_discounts")
-      .eq("id", 1)
-      .maybeSingle();
-
-    const discountRules = Array.isArray((settings as any)?.additional_discounts)
-      ? (((settings as any).additional_discounts ?? []) as AdditionalFee[])
-      : [];
-
-    const { data: invoicesInMonth, error: invoiceError } = await supabase
-      .from("invoices")
-      .select(
-        "id,room_id,status,rent_amount,water_bill,electricity_bill,common_fee,late_fee_amount,carry_forward_amount,additional_fees_total,additional_fees_breakdown,discount_amount,discount_breakdown,total_amount",
-      )
-      .eq("start_date", periodStart)
-      .eq("end_date", periodEnd);
-
-    if (invoiceError || !invoicesInMonth || invoicesInMonth.length === 0)
-      return;
-
-    const roomIds = [
-      ...new Set(
-        invoicesInMonth.map((row: any) => row.room_id).filter(Boolean),
-      ),
-    ];
-    const { data: readings } = await supabase
-      .from("meter_readings")
-      .select("room_id,electricity_usage,water_usage,usage")
-      .eq("reading_month", monthKey)
-      .in(
-        "room_id",
-        roomIds.length > 0 ? roomIds : ["00000000-0000-0000-0000-000000000000"],
-      );
-    const readingMap = new Map(
-      (readings ?? []).map((row: any) => [row.room_id, row]),
-    );
-
-    const updates = (invoicesInMonth as any[])
-      .map((invoice) => {
-        if (!isInvoiceDetailEditable(String(invoice.status ?? ""))) {
-          return null;
-        }
-        const reading = readingMap.get(invoice.room_id) ?? {};
-        const elecUnits = toNumber(reading.electricity_usage);
-        const waterUnits = toNumber(reading.water_usage ?? reading.usage);
-        const freshRuleItems = buildRuleBreakdown(
-          discountRules,
-          elecUnits,
-          waterUnits,
-        );
-        // Only ever replace lines this same sync generated (tagged
-        // source: "rule"). A manually-typed discount or a points-redemption
-        // line (source: "rewards_redemption") must survive this resync
-        // untouched — this used to overwrite the whole breakdown with just
-        // the rule-computed lines, silently wiping any manual discount on
-        // every invoice-list page load.
-        const existingBreakdown = Array.isArray(invoice.discount_breakdown)
-          ? (invoice.discount_breakdown as any[])
-          : [];
-        const preservedItems = existingBreakdown.filter(
-          (item) => item?.source !== "rule",
-        );
-        const discountBreakdown = [...freshRuleItems, ...preservedItems];
-        const discountAmount = discountBreakdown.reduce(
-          (sum, fee: any) => sum + toNumber(fee.amount ?? fee.total_amount),
-          0,
-        );
-        // Unpack the stored row into non-overlapping charges, then apply the
-        // freshly-computed discount. `chargesFromInvoiceRow` is the one place
-        // the late_fee_amount / additional_fees_total overlap is resolved, so
-        // this can no longer double-charge the late fee the way it used to on
-        // every invoice-list load.
-        const totalAmount = computeInvoiceTotal({
-          ...chargesFromInvoiceRow(invoice as any),
-          discount: discountAmount,
-        });
-
-        const currentDiscount = toNumber(invoice.discount_amount);
-        const currentTotal = toNumber(invoice.total_amount);
-        if (
-          Math.abs(currentDiscount - discountAmount) < 0.0001 &&
-          Math.abs(currentTotal - totalAmount) < 0.0001
-        ) {
-          return null;
-        }
-
-        return {
-          id: invoice.id as string,
-          discount_amount: discountAmount,
-          discount_breakdown: discountBreakdown,
-          total_amount: totalAmount,
-        };
-      })
-      .filter(Boolean) as {
-      id: string;
-      discount_amount: number;
-      discount_breakdown: any[];
-      total_amount: number;
-    }[];
-
-    if (updates.length === 0) return;
-    for (const update of updates) {
-      await supabase
-        .from("invoices")
-        .update({
-          discount_amount: update.discount_amount,
-          discount_breakdown: update.discount_breakdown,
-          total_amount: update.total_amount,
-        })
-        .eq("id", update.id);
+    try {
+      await callInvoiceAdminAction("sync_period_discounts", { year, month });
+    } catch (err: any) {
+      setError(err?.message ?? "Failed to sync invoice discounts.");
     }
   };
 
-  const loadInvoices = async () => {
-    setLoading(true);
+  // silent=true is used by the background poll that replaced the old
+  // "invoice-settings-realtime" Realtime subscription (finding C1 — that
+  // subscription connected straight to the database with the browser's own
+  // session) — it re-runs the exact same load/sync but skips the loading
+  // spinner so it doesn't flicker the page every poll while an admin is
+  // actively looking at it.
+  const loadInvoices = async (silent = false) => {
+    if (!silent) setLoading(true);
     setError(null);
 
     const [year, month] = selectedMonth.split("-").map(Number);
@@ -457,98 +343,70 @@ export function useInvoicesState() {
 
     await syncMonthInvoicesWithSettings(year, month);
 
-    const { data, error: fetchError } = await supabase
-      .from("invoices")
-      .select(
-        "id,tenant_id,room_id,status,total_amount,paid_amount,payment_history,issue_date,due_date,start_date,end_date,rent_amount,water_bill,electricity_bill,common_fee,discount_amount,discount_breakdown,late_fee_amount,late_fee_per_day,late_fee_start_date,carry_forward_amount,additional_fees_total,additional_fees_breakdown,notes,public_token,slip_url,slip_rejections,opened_count,first_opened_at,last_opened_at,tenants(full_name,phone_number,line_user_id,custom_payment_method,move_in_date,move_out_date,status),rooms(room_number,price_month,buildings(name))",
-      )
-      .eq("start_date", periodStart)
-      .eq("end_date", periodEnd)
-      .order("issue_date", { ascending: false });
+    // Moved server-side (finding C1) — see get_invoices_for_period in
+    // app/api/admin/invoices/actions/route.ts. That action also runs the
+    // "does this tenant have an earlier invoice" check and the slip-
+    // recovery storage lookup that used to happen here; only the client-
+    // side hydration/sort below is left client-side.
+    const result = await callInvoiceAdminAction("get_invoices_for_period", {
+      periodStart,
+      periodEnd,
+    }).catch((err: any) => {
+      setError(err?.message ?? "Failed to load invoices.");
+      return null;
+    });
 
-    if (fetchError) {
-      setError(fetchError.message);
+    if (!result) {
       setInvoices([]);
     } else {
-      const normalized = (data ?? []).map(normalizeInvoice);
+      const normalized = (result.invoices ?? []).map(normalizeInvoice);
+      const recoveredSlipUrls = (result.recoveredSlipUrls ?? {}) as Record<string, string>;
 
       // Fetch all invoices for active tenants to accurately determine "new tenant" status
-      const tenantIds = [...new Set(normalized.map((inv) => inv.tenant_id))];
-      const { data: allTenantInvoices } =
-        tenantIds.length > 0
-          ? await supabase
-              .from("invoices")
-              .select("tenant_id,start_date")
-              .in("tenant_id", tenantIds)
-              .neq("status", "cancelled")
-          : { data: [] };
-
       const invoicesByTenant = new Map<string, string[]>();
-      for (const item of allTenantInvoices ?? []) {
+      for (const item of result.tenantInvoicesForNewCheck ?? []) {
         if (!item?.tenant_id) continue;
         const id = String(item.tenant_id);
         if (!invoicesByTenant.has(id)) invoicesByTenant.set(id, []);
         invoicesByTenant.get(id)!.push(String(item.start_date));
       }
 
-      const hydrated = await Promise.all(
-        normalized.map(async (invoice) => {
-          const tenantInvoices = invoicesByTenant.get(invoice.tenant_id) ?? [];
-          let earliestMonth: string | null = null;
-          if (tenantInvoices.length > 0) {
-            const earliestDate = [...tenantInvoices].sort(
-              (a, b) => new Date(a).getTime() - new Date(b).getTime(),
-            )[0];
-            earliestMonth = earliestDate
-              ? String(earliestDate).slice(0, 7)
-              : null;
-          }
-
-          const invoiceMonth = invoice.start_date
-            ? String(invoice.start_date).slice(0, 7)
+      const hydrated = normalized.map((invoice: any) => {
+        const tenantInvoices = invoicesByTenant.get(invoice.tenant_id) ?? [];
+        let earliestMonth: string | null = null;
+        if (tenantInvoices.length > 0) {
+          const earliestDate = [...tenantInvoices].sort(
+            (a, b) => new Date(a).getTime() - new Date(b).getTime(),
+          )[0];
+          earliestMonth = earliestDate
+            ? String(earliestDate).slice(0, 7)
             : null;
+        }
 
-          // The "new tenant" badge marks the tenant's actual first invoice
-          // only — not a second month afterward. It used to also flag any
-          // invoice exactly one calendar month after move-in, which kept the
-          // badge showing on a completely normal second invoice (and, for a
-          // tenant who moved in on the 1st with no proration at all, made
-          // both their first AND second invoice look "new").
-          const isFirstInvoice = Boolean(invoiceMonth && invoiceMonth === earliestMonth);
+        const invoiceMonth = invoice.start_date
+          ? String(invoice.start_date).slice(0, 7)
+          : null;
 
-          const isWaitingMoveOut = Boolean(
-            invoice.tenant_move_out_date && invoice.tenant_status === "active",
-          );
+        // The "new tenant" badge marks the tenant's actual first invoice
+        // only — not a second month afterward. It used to also flag any
+        // invoice exactly one calendar month after move-in, which kept the
+        // badge showing on a completely normal second invoice (and, for a
+        // tenant who moved in on the 1st with no proration at all, made
+        // both their first AND second invoice look "new").
+        const isFirstInvoice = Boolean(invoiceMonth && invoiceMonth === earliestMonth);
 
-          // We pass a new flag down to be used for the indicator
-          const hydratedInvoice = {
-            ...invoice,
-            _is_first_regular_invoice: isFirstInvoice,
-            _is_waiting_for_move_out: isWaitingMoveOut,
-          };
+        const isWaitingMoveOut = Boolean(
+          invoice.tenant_move_out_date && invoice.tenant_status === "active",
+        );
 
-          if (hydratedInvoice.slip_url) return hydratedInvoice;
-
-          const { data: files, error: fileError } = await supabase.storage
-            .from("payment_slips")
-            .list(invoice.id, {
-              limit: 1,
-              sortBy: { column: "name", order: "desc" },
-            });
-
-          if (fileError || !files || files.length === 0) return hydratedInvoice;
-
-          const latest = files[0];
-          const { data: publicData } = supabase.storage
-            .from("payment_slips")
-            .getPublicUrl(`${invoice.id}/${latest.name}`);
-
-          return {
-            ...hydratedInvoice,
-            slip_url: publicData.publicUrl,
-          };
-        }),
-      );
+        // We pass a new flag down to be used for the indicator
+        return {
+          ...invoice,
+          _is_first_regular_invoice: isFirstInvoice,
+          _is_waiting_for_move_out: isWaitingMoveOut,
+          slip_url: invoice.slip_url || recoveredSlipUrls[String(invoice.id)] || null,
+        };
+      });
 
       const sortedHydrated = [...hydrated]
         .filter((inv) => !inv._is_waiting_for_move_out)
@@ -571,7 +429,7 @@ export function useInvoicesState() {
       setInvoices(sortedHydrated);
     }
 
-    setLoading(false);
+    if (!silent) setLoading(false);
   };
 
   useEffect(() => {
@@ -592,66 +450,20 @@ export function useInvoicesState() {
     );
   };
 
+  // Replaced the "invoice-settings-realtime" Realtime subscription with
+  // plain polling (finding C1 — Realtime meant the browser held a direct,
+  // permanent connection to the database with the admin's own session,
+  // separate from every other read in this app, which all now go through
+  // an authenticated server route instead). Neither a settings change nor
+  // an invoice update from elsewhere needs to appear within the second —
+  // a periodic silent reload keeps the list close enough to live without
+  // that direct connection.
   useEffect(() => {
-    const channel = supabase
-      .channel("invoice-settings-realtime")
-      .on(
-        "postgres_changes",
-        {
-          event: "UPDATE",
-          schema: "public",
-          table: "settings",
-          filter: "id=eq.1",
-        },
-        () => {
-          void loadInvoices();
-        },
-      )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "invoices" },
-        (payload: any) => {
-          if (payload?.eventType === "UPDATE" && payload?.new?.id) {
-            const invoiceId = String(payload.new.id);
-            patchInvoiceInState(invoiceId, {
-              status:
-                (payload.new.status as keyof typeof statusVariant) ?? undefined,
-              paid_amount: toNumber(payload.new.paid_amount),
-              total_amount: toNumber(payload.new.total_amount),
-              slip_url: payload.new.slip_url ?? null,
-              opened_count: toNumber(payload.new.opened_count),
-              first_opened_at: payload.new.first_opened_at ?? null,
-              last_opened_at: payload.new.last_opened_at ?? null,
-              payment_history: Array.isArray(payload.new.payment_history)
-                ? payload.new.payment_history
-                : undefined,
-            });
-            setForm((prev) => {
-              if (activeInvoice?.id !== invoiceId) return prev;
-              return {
-                ...prev,
-                status:
-                  (payload.new.status as keyof typeof statusVariant) ??
-                  prev.status,
-                paid_amount: toNumber(
-                  payload.new.paid_amount ?? prev.paid_amount,
-                ),
-                total_amount: toNumber(
-                  payload.new.total_amount ?? prev.total_amount,
-                ),
-              };
-            });
-            return;
-          }
-          void loadInvoices();
-        },
-      )
-      .subscribe();
-
-    return () => {
-      void supabase.removeChannel(channel);
-    };
-  }, [supabase, selectedMonth]);
+    const interval = setInterval(() => {
+      void loadInvoices(true);
+    }, 20000);
+    return () => clearInterval(interval);
+  }, [selectedMonth]);
 
   useEffect(() => {
     void loadPrintConfig();
@@ -659,6 +471,8 @@ export function useInvoicesState() {
 
   useEffect(() => {
     let mounted = true;
+    // Moved server-side (finding C1) — see get_move_out_warnings in
+    // app/api/admin/invoices/actions/route.ts.
     const loadMoveOutWarnings = async () => {
       const monthStart = `${selectedMonth}-01`;
       const monthEnd = toLocalDateString(
@@ -668,100 +482,60 @@ export function useInvoicesState() {
           0,
         ),
       );
-      const { data, error: requestError } = await supabase
-        .from("move_out_requests")
-        .select(
-          "id,tenant_id,requested_move_out_date,status,tenants(full_name,rooms(room_number))",
-        )
-        .in("status", ["requested", "approved"])
-        .gte("requested_move_out_date", monthStart)
-        .lte("requested_move_out_date", monthEnd)
-        .order("requested_move_out_date", { ascending: true });
-      if (!mounted) return;
-      if (requestError) {
-        setMoveOutWarnings([]);
-        return;
+      try {
+        const result = await callInvoiceAdminAction("get_move_out_warnings", {
+          monthStart,
+          monthEnd,
+        });
+        if (!mounted) return;
+        setMoveOutWarnings(result?.warnings ?? []);
+      } catch {
+        if (mounted) setMoveOutWarnings([]);
       }
-      setMoveOutWarnings(data ?? []);
     };
     void loadMoveOutWarnings();
     return () => {
       mounted = false;
     };
-  }, [selectedMonth, supabase]);
+  }, [selectedMonth]);
 
   useEffect(() => {
     let mounted = true;
     /** Pending move-out work: open tenant request, or active tenant with move_out_date set (manual tab). Deduped by tenant. */
+    // Moved server-side (finding C1) — see get_pending_move_out_count in
+    // app/api/admin/invoices/actions/route.ts. Previously kept live via a
+    // Realtime subscription (a direct, permanent database connection from
+    // the browser's own session); replaced with polling, same as the
+    // invoice list's background refresh above.
     const loadPendingMoveOutCount = async () => {
-      const [requestsRes, tenantsRes] = await Promise.all([
-        supabase
-          .from("move_out_requests")
-          .select("tenant_id")
-          .eq("status", "requested"),
-        supabase
-          .from("tenants")
-          .select("id")
-          .not("move_out_date", "is", null)
-          .eq("status", "active"),
-      ]);
-      if (!mounted) return;
-      if (requestsRes.error || tenantsRes.error) {
-        setPendingMoveOutCount(0);
-        return;
+      try {
+        const result = await callInvoiceAdminAction("get_pending_move_out_count", {});
+        if (!mounted) return;
+        setPendingMoveOutCount(Number(result?.count ?? 0));
+      } catch {
+        if (mounted) setPendingMoveOutCount(0);
       }
-      const ids = new Set<string>();
-      for (const row of requestsRes.data ?? []) {
-        const id = String((row as { tenant_id?: string }).tenant_id ?? "");
-        if (id) ids.add(id);
-      }
-      for (const row of tenantsRes.data ?? []) {
-        const id = String((row as { id?: string }).id ?? "");
-        if (id) ids.add(id);
-      }
-      setPendingMoveOutCount(ids.size);
     };
     void loadPendingMoveOutCount();
-    const channel = supabase
-      .channel("invoices-pending-move-out-badge")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "move_out_requests" },
-        () => {
-          void loadPendingMoveOutCount();
-        },
-      )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "tenants" },
-        () => {
-          void loadPendingMoveOutCount();
-        },
-      )
-      .subscribe();
+    const interval = setInterval(() => {
+      void loadPendingMoveOutCount();
+    }, 20000);
     return () => {
       mounted = false;
-      void supabase.removeChannel(channel);
+      clearInterval(interval);
     };
-  }, [supabase]);
+  }, []);
 
+  // Moved server-side (finding C1) — see get_print_config in
+  // app/api/admin/invoices/actions/route.ts.
   const loadPrintConfig = async () => {
-    const { data: settingData } = await supabase
-      .from("settings")
-      .select(
-        "dorm_name,dorm_address,water_rate,electricity_rate,water_min_units,water_min_price,billing_day,due_day,late_fee_start_day,additional_discounts",
-      )
-      .eq("id", 1)
-      .maybeSingle();
-    setPrintSettings((settingData as PrintSettings) ?? null);
-
-    const { data: paymentData } = await supabase
-      .from("payment_methods")
-      .select("label,bank_name,account_name,account_number,qr_url")
-      .order("created_at", { ascending: true })
-      .limit(1)
-      .maybeSingle();
-    setDefaultPaymentMethod((paymentData as PaymentMethodRow) ?? null);
+    try {
+      const result = await callInvoiceAdminAction("get_print_config", {});
+      setPrintSettings((result?.settings as PrintSettings) ?? null);
+      setDefaultPaymentMethod((result?.defaultPaymentMethod as PaymentMethodRow) ?? null);
+    } catch {
+      // Non-blocking: print preview can still open with blank settings.
+    }
   };
 
   const filteredInvoices = useMemo(() => {
@@ -928,16 +702,26 @@ export function useInvoicesState() {
     }
   };
 
+  // Moved server-side (finding C1) — this used to upload straight into the
+  // payment_slips storage bucket from the browser with the anon key. See
+  // app/api/admin/invoices/upload-slip/route.ts.
   const uploadSlipFile = async (invoiceId: string, file: File) => {
-    const bucket = "payment_slips";
-    const filePath = `${invoiceId}/${Date.now()}-${file.name}`;
-    const { error: uploadError } = await supabase.storage
-      .from(bucket)
-      .upload(filePath, file, { upsert: true });
-    if (uploadError) throw new Error(uploadError.message);
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
+    if (!token) throw new Error("Session expired. Please log in again.");
 
-    const { data } = supabase.storage.from(bucket).getPublicUrl(filePath);
-    return data.publicUrl;
+    const body = new FormData();
+    body.append("file", file);
+    body.append("invoiceId", invoiceId);
+
+    const response = await fetch("/api/admin/invoices/upload-slip", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body,
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result?.error ?? "Failed to upload slip.");
+    return result.url as string;
   };
 
   const submitPayment = async () => {
@@ -1118,14 +902,12 @@ export function useInvoicesState() {
     splitPaymentIdempotencyKeyRef.current = null;
     setSplitPaymentLoading(true);
     try {
-      const { data, error } = await supabase
-        .from("invoices")
-        .select("id,start_date,total_amount,paid_amount,status")
-        .eq("tenant_id", activeInvoice.tenant_id)
-        .in("status", OPEN_INVOICE_STATUSES as unknown as string[])
-        .order("start_date", { ascending: true });
-      if (error) throw new Error(error.message);
-      const rows = (data ?? [])
+      // Moved server-side (finding C1) — see get_open_invoices_for_tenant
+      // in app/api/admin/invoices/actions/route.ts.
+      const result = await callInvoiceAdminAction("get_open_invoices_for_tenant", {
+        tenantId: activeInvoice.tenant_id,
+      });
+      const rows = (result?.invoices ?? [])
         .map((row: any) => ({
           id: String(row.id),
           start_date: String(row.start_date ?? ""),
@@ -1136,7 +918,7 @@ export function useInvoicesState() {
             toNumber(row.total_amount) - toNumber(row.paid_amount),
           ),
         }))
-        .filter((row) => row.outstanding > 0);
+        .filter((row: any) => row.outstanding > 0);
       setSplitPaymentInvoices(rows);
     } catch (err: any) {
       setError(err?.message ?? "Failed to load open invoices.");
@@ -1254,14 +1036,13 @@ export function useInvoicesState() {
       // all — it might only be a downstream invoice that bundles one of them
       // as carried debt (refreshed server-side by refreshCarryForwardTargets).
       // Re-fetch it directly rather than relying on the action's own
-      // response, so its total is correct on screen either way.
-      const { data: refreshedActive } = await supabase
-        .from("invoices")
-        .select(
-          "id,paid_amount,status,total_amount,carry_forward_amount,additional_fees_total,additional_fees_breakdown,payment_history",
-        )
-        .eq("id", activeInvoice.id)
-        .maybeSingle();
+      // response, so its total is correct on screen either way. Moved
+      // server-side (finding C1) — see get_invoice_snapshot in
+      // app/api/admin/invoices/actions/route.ts.
+      const snapshotResult = await callInvoiceAdminAction("get_invoice_snapshot", {
+        invoiceId: activeInvoice.id,
+      }).catch(() => null);
+      const refreshedActive = snapshotResult?.invoice ?? null;
       if (refreshedActive) {
         patchInvoiceInState(String((refreshedActive as any).id), {
           paid_amount: toNumber((refreshedActive as any).paid_amount),
@@ -1393,19 +1174,11 @@ export function useInvoicesState() {
     }
     if (!activeInvoice) return;
     try {
-      const { data: files, error: listError } = await supabase.storage
-        .from("payment_slips")
-        .list(activeInvoice.id, { limit: 1000 });
-      if (listError) throw new Error(listError.message);
-      const paths = (files ?? []).map(
-        (file) => `${activeInvoice.id}/${file.name}`,
-      );
-      if (paths.length > 0) {
-        const { error: removeError } = await supabase.storage
-          .from("payment_slips")
-          .remove(paths);
-        if (removeError) throw new Error(removeError.message);
-      }
+      // Moved server-side (finding C1) — see delete_payment_slip_files in
+      // app/api/admin/invoices/actions/route.ts.
+      await callInvoiceAdminAction("delete_payment_slip_files", {
+        invoiceId: activeInvoice.id,
+      });
 
       // The invoice-level column is only half the reference: every
       // payment_history entry recorded alongside this slip embeds its own
@@ -1613,29 +1386,34 @@ export function useInvoicesState() {
     setActiveReading(null);
     if (isInvoiceDetailEditable(String(invoice.status ?? "")) && invoice.tenant_id) {
       setCarryOverCandidatesLoading(true);
-      void getCarryForwardCandidatesForTarget(
-        supabase,
-        invoice.tenant_id,
-        invoice.start_date,
-        invoice.id,
-        invoice.issue_date || invoice.start_date,
-      )
-        .then((rows) => setCarryOverCandidates(rows))
+      // Moved server-side (finding C1) — see get_carry_forward_candidates
+      // in app/api/admin/invoices/actions/route.ts.
+      void callInvoiceAdminAction("get_carry_forward_candidates", {
+        tenantId: invoice.tenant_id,
+        beforeStartDate: invoice.start_date,
+        targetInvoiceId: invoice.id,
+        valuationDate: invoice.issue_date || invoice.start_date,
+      })
+        .then((result: any) => setCarryOverCandidates(result?.candidates ?? []))
         .catch(() => setCarryOverCandidates([]))
         .finally(() => setCarryOverCandidatesLoading(false));
     }
 
     // Replace inferred units with real meter usage for the invoice month.
     // This is important when water billing uses a minimum charge, where
-    // water_bill / water_rate does not equal actual usage.
+    // water_bill / water_rate does not equal actual usage. Moved
+    // server-side (finding C1) — see get_invoice_reading_and_arrears in
+    // app/api/admin/invoices/actions/route.ts.
     try {
-      const { data: snapshotRows } = await supabase
-        .from("invoice_arrears_snapshots")
-        .select(
-          "id,source_invoice_id,snapshot_as_of,principal_amount,late_fee_amount,days_overdue,daily_rate",
-        )
-        .eq("target_invoice_id", invoice.id)
-        .order("created_at", { ascending: true });
+      const readingMonth = monthStartFromDate(
+        invoice.start_date || invoice.issue_date,
+      );
+      const result = await callInvoiceAdminAction("get_invoice_reading_and_arrears", {
+        invoiceId: invoice.id,
+        roomId: invoice.room_id,
+        readingMonth,
+      });
+      const snapshotRows = result?.arrearsSnapshots ?? [];
       setArrearsSnapshots(
         ((snapshotRows ?? []) as any[]).map((row) => ({
           id: String(row.id),
@@ -1648,19 +1426,7 @@ export function useInvoicesState() {
         })),
       );
 
-      const readingMonth = monthStartFromDate(
-        invoice.start_date || invoice.issue_date,
-      );
-      const { data } = await supabase
-        .from("meter_readings")
-        .select(
-          "electricity_usage,water_usage,usage,previous_electricity,current_electricity,previous_water,current_water,previous_reading,current_reading",
-        )
-        .eq("room_id", invoice.room_id)
-        .eq("reading_month", readingMonth)
-        .maybeSingle();
-
-      const reading = (data as MeterReadingRow | null) ?? null;
+      const reading = (result?.reading as MeterReadingRow | null) ?? null;
       if (!reading) return;
 
       setActiveReading(reading);
@@ -1912,23 +1678,19 @@ export function useInvoicesState() {
     const billingMonth = monthStartFromDate(
       activeInvoice.start_date || activeInvoice.issue_date,
     );
-    const { data: transferRows, error: transferError } = await supabase
-      .from("tenant_room_transfers")
-      .select(
-        "from_room_id,to_room_id,transfer_date,billing_month,old_electric_usage,old_water_usage,new_prev_electricity,new_prev_water",
-      )
-      .eq("to_room_id", activeInvoice.room_id)
-      .eq("billing_month", billingMonth)
-      .eq("transfer_date", transferDate)
-      .order("transfer_date", { ascending: false })
-      .limit(1);
+    // Moved server-side (finding C1) — see get_transfer_recalc_data in
+    // app/api/admin/invoices/actions/route.ts.
+    const recalcResult = await callInvoiceAdminAction("get_transfer_recalc_data", {
+      roomId: activeInvoice.room_id,
+      billingMonth,
+      transferDate,
+    }).catch((err: any) => {
+      setError(err?.message ?? "Failed to load transfer data.");
+      return null;
+    });
+    if (!recalcResult) return;
 
-    if (transferError) {
-      setError(transferError.message);
-      return;
-    }
-
-    const transferRow = (transferRows ?? [])[0] as
+    const transferRow = recalcResult.transferRow as
       | {
           from_room_id: string;
           to_room_id: string;
@@ -1938,23 +1700,13 @@ export function useInvoicesState() {
           new_prev_electricity?: number;
           new_prev_water?: number;
         }
-      | undefined;
+      | null;
     if (!transferRow) {
       setError("ไม่พบข้อมูลย้ายห้องของงวดนี้สำหรับคำนวณใหม่");
       return;
     }
 
-    const roomIds = [transferRow.from_room_id, transferRow.to_room_id];
-    const { data: roomRows, error: roomError } = await supabase
-      .from("rooms")
-      .select("id,price_month")
-      .in("id", roomIds);
-
-    if (roomError) {
-      setError(roomError.message);
-      return;
-    }
-
+    const roomRows = recalcResult.roomRows ?? [];
     const oldRoomRate = toNumber(
       roomRows?.find(
         (room: any) => String(room.id) === String(transferRow.from_room_id),
@@ -1981,14 +1733,9 @@ export function useInvoicesState() {
       newRoomRate,
     );
 
-    // Fetch current meter reading for new room to compute new room units
-    const { data: readingRows } = await supabase
-      .from("meter_readings")
-      .select("current_electricity,current_water,electricity_usage,water_usage")
-      .eq("room_id", activeInvoice.room_id)
-      .eq("billing_month", billingMonth)
-      .limit(1);
-    const reading = (readingRows ?? [])[0] as any;
+    // Current meter reading for the new room, to compute new-room units —
+    // fetched server-side above, as part of get_transfer_recalc_data.
+    const reading = (recalcResult.reading ?? null) as any;
 
     const electricityRate = toNumber(printSettings?.electricity_rate);
     const waterRate = toNumber(printSettings?.water_rate);
@@ -2091,15 +1838,17 @@ export function useInvoicesState() {
     setSaving(true);
     try {
       const valuationDate = activeInvoice.issue_date || activeInvoice.start_date;
-      const candidates = await getCarryForwardCandidatesForTarget(
-        supabase,
-        activeInvoice.tenant_id,
-        activeInvoice.start_date,
-        activeInvoice.id,
+      // Moved server-side (finding C1) — see get_carry_forward_candidates
+      // in app/api/admin/invoices/actions/route.ts.
+      const carryForwardResult = await callInvoiceAdminAction("get_carry_forward_candidates", {
+        tenantId: activeInvoice.tenant_id,
+        beforeStartDate: activeInvoice.start_date,
+        targetInvoiceId: activeInvoice.id,
         valuationDate,
-      );
+      });
+      const candidates = carryForwardResult?.candidates ?? [];
 
-      const filteredCandidates = candidates.filter((c) =>
+      const filteredCandidates = candidates.filter((c: any) =>
         sourceInvoiceIds.includes(String(c.id)),
       );
 
@@ -2152,7 +1901,7 @@ export function useInvoicesState() {
       // REFRESH a still-eligible source, never silently delete something
       // that's already correctly on this invoice (this used to drop an
       // already-billed carried-in late fee the instant anyone recalculated).
-      const candidateIds = new Set(filteredCandidates.map((c) => String(c.id)));
+      const candidateIds = new Set(filteredCandidates.map((c: any) => String(c.id)));
 
       const preservedCarryItems = carry.filter(
         (item) => !item.source_invoice_id || !candidateIds.has(item.source_invoice_id),
@@ -2694,25 +2443,19 @@ export function useInvoicesState() {
     setPreviewLoading(true);
     setPreviewDocType(docType);
     setPreviewInvoice(invoice);
+    // Moved server-side (finding C1) — see get_invoice_reading_and_arrears
+    // in app/api/admin/invoices/actions/route.ts (same action the
+    // detail-modal hydration above uses).
     const readingMonth = monthStartFromDate(
       invoice.start_date || invoice.issue_date,
     );
-    const { data } = await supabase
-      .from("meter_readings")
-      .select(
-        "electricity_usage,water_usage,usage,previous_electricity,current_electricity,previous_water,current_water,previous_reading,current_reading",
-      )
-      .eq("room_id", invoice.room_id)
-      .eq("reading_month", readingMonth)
-      .maybeSingle();
-    const { data: snapshotRows } = await supabase
-      .from("invoice_arrears_snapshots")
-      .select(
-        "id,source_invoice_id,snapshot_as_of,principal_amount,late_fee_amount,days_overdue,daily_rate",
-      )
-      .eq("target_invoice_id", invoice.id)
-      .order("created_at", { ascending: true });
-    setPreviewReading((data as MeterReadingRow) ?? null);
+    const result = await callInvoiceAdminAction("get_invoice_reading_and_arrears", {
+      invoiceId: invoice.id,
+      roomId: invoice.room_id,
+      readingMonth,
+    }).catch(() => null);
+    const snapshotRows = result?.arrearsSnapshots ?? [];
+    setPreviewReading((result?.reading as MeterReadingRow) ?? null);
     setPreviewArrearsSnapshots(
       ((snapshotRows ?? []) as any[]).map((row) => ({
         id: String(row.id),
@@ -3079,766 +2822,42 @@ export function useInvoicesState() {
     setError(null);
 
     const [year, month] = selectedMonth.split("-").map(Number);
-    const startDate = new Date(year, month - 1, 1);
-    const endDate = new Date(year, month, 0);
-    const monthKey = toLocalDateString(new Date(year, month - 1, 1));
 
-    const { data: settings, error: settingsError } = await supabase
-      .from("settings")
-      .select(
-        "water_rate,electricity_rate,common_fee,water_min_units,water_min_price,additional_fees,additional_discounts,billing_day,due_day,late_fee_start_day,late_fee_per_day",
-      )
-      .eq("id", 1)
-      .single();
-
-    if (settingsError || !settings) {
-      setSaving(false);
-      setConfirmGenerateOpen(false);
-      setError(settingsError?.message ?? "Settings not found");
-      return;
-    }
-
-    const billingDay = clampDay((settings as any).billing_day ?? 1);
-    const dueDay = clampDay((settings as any).due_day ?? 5);
-    const lateFeeStartDay = clampDay((settings as any).late_fee_start_day ?? 6);
-    const lateFeePerDay = toNumber((settings as any).late_fee_per_day ?? 0);
-    const issueDateText = toLocalDateString(
-      new Date(year, month - 1, billingDay),
-    );
-    // Invoice period is the selected month, but due date / late fee start belong to the next month.
-    const generatedDueDateText = toLocalDateString(
-      new Date(year, month, dueDay),
-    );
-    const generatedLateFeeStartDateText = toLocalDateString(
-      new Date(year, month, lateFeeStartDay),
-    );
-
-    const { data: occupiedRooms, error: roomError } = await supabase
-      .from("rooms")
-      .select("id,room_number,price_month")
-      .eq("status", "occupied");
-
-    if (roomError) {
-      setSaving(false);
-      setConfirmGenerateOpen(false);
-      setError(roomError.message);
-      return;
-    }
-
-    // Vacated-but-unsettled tenants: the "vacate" move-out step frees the room
-    // (rooms.status back to "available") immediately, but deliberately leaves
-    // room_id set on the tenant row until final_move_out settles them (see
-    // CLAUDE.md's move-out flow / the move-outs "pending settlement" list).
-    // They still owe rent for this period, so they must keep getting billed
-    // like any other occupied room until settlement clears room_id — otherwise
-    // this room silently falls out of every cycle's invoice run and the
-    // eventual settlement step has no regular invoice to anchor off of.
-    const { data: pendingSettlementTenants, error: pendingTenantError } =
-      await supabase
-        .from("tenants")
-        .select("id,room_id,move_in_date,rooms(room_number,price_month)")
-        .eq("status", "inactive")
-        .not("room_id", "is", null);
-
-    if (pendingTenantError) {
-      setSaving(false);
-      setConfirmGenerateOpen(false);
-      setError(pendingTenantError.message);
-      return;
-    }
-
-    if (
-      (!occupiedRooms || occupiedRooms.length === 0) &&
-      (!pendingSettlementTenants || pendingSettlementTenants.length === 0)
-    ) {
-      setSaving(false);
-      setConfirmGenerateOpen(false);
-      setError("No occupied rooms found.");
-      return;
-    }
-
-    const roomIds = (occupiedRooms ?? []).map((room: any) => room.id);
-
-    const { data: activeTenants, error: tenantError } = await supabase
-      .from("tenants")
-      .select("id,room_id,full_name,move_in_date,move_out_date")
-      .eq("status", "active")
-      .in(
-        "room_id",
-        roomIds.length > 0 ? roomIds : ["00000000-0000-0000-0000-000000000000"],
-      );
-
-    if (tenantError) {
-      setSaving(false);
-      setConfirmGenerateOpen(false);
-      setError(tenantError.message);
-      return;
-    }
-
-    const tenantByRoom = new Map<string, any>();
-    for (const tenant of activeTenants ?? []) {
-      if (!tenantByRoom.has(tenant.room_id))
-        tenantByRoom.set(tenant.room_id, tenant);
-    }
-
-    const missingTenantRooms = (occupiedRooms ?? []).filter(
-      (room: any) => !tenantByRoom.has(room.id),
-    );
-
-    const billingTenants = (occupiedRooms ?? [])
-      .map((room: any) => {
-        const tenant = tenantByRoom.get(room.id);
-        if (!tenant) return null;
-        return {
-          id: tenant.id,
-          room_id: room.id,
-          move_in_date: tenant.move_in_date,
-          rooms: {
-            room_number: room.room_number,
-            price_month: room.price_month,
-          },
-        };
-      })
-      .filter(Boolean) as any[];
-
-    // Merge in the pending-settlement tenants fetched above. Skip any whose
-    // room_id has since been reassigned to a new active tenant (already
-    // covered via tenantByRoom) — their remaining charges belong solely to
-    // their own final_move_out settlement, not another recurring invoice.
-    for (const tenant of pendingSettlementTenants ?? []) {
-      const roomId = String((tenant as any).room_id ?? "");
-      if (!roomId || tenantByRoom.has(roomId)) continue;
-      const roomRel = Array.isArray((tenant as any).rooms)
-        ? (tenant as any).rooms[0]
-        : (tenant as any).rooms;
-      if (!roomRel) continue;
-      billingTenants.push({
-        id: (tenant as any).id,
-        room_id: roomId,
-        move_in_date: (tenant as any).move_in_date,
-        rooms: {
-          room_number: roomRel.room_number,
-          price_month: roomRel.price_month,
-        },
-      });
-      if (!roomIds.includes(roomId)) roomIds.push(roomId);
-    }
-
-    const transferByTenant = new Map<string, any>();
-    if (billingTenants.length > 0) {
-      const tenantIds = billingTenants.map((tenant: any) => String(tenant.id));
-      const { data: transfers } = await supabase
-        .from("tenant_room_transfers")
-        .select(
-          "tenant_id,from_room_id,to_room_id,transfer_date,billing_month,old_electric_usage,old_water_usage,old_rent_amount,new_rent_amount,new_prev_electricity,new_prev_water",
-        )
-        .eq("billing_month", toLocalDateString(startDate))
-        .in("tenant_id", tenantIds);
-      for (const row of transfers ?? []) {
-        const key = String((row as any).tenant_id);
-        const previous = transferByTenant.get(key);
-        if (!previous) {
-          transferByTenant.set(key, row);
-          continue;
-        }
-        const prevDate = String((previous as any).transfer_date ?? "");
-        const currDate = String((row as any).transfer_date ?? "");
-        if (currDate > prevDate) transferByTenant.set(key, row);
-      }
-    }
-
-    const transferRoomRateMap = new Map<string, number>();
-    for (const room of occupiedRooms ?? []) {
-      transferRoomRateMap.set(
-        String((room as any).id),
-        toNumber((room as any).price_month),
-      );
-    }
-    const missingTransferRoomIds = Array.from(
-      new Set(
-        Array.from(transferByTenant.values()).flatMap((row: any) => [
-          String(row?.from_room_id ?? ""),
-          String(row?.to_room_id ?? ""),
-        ]),
-      ),
-    ).filter((roomId) => roomId && !transferRoomRateMap.has(roomId));
-    if (missingTransferRoomIds.length > 0) {
-      const { data: extraTransferRooms, error: extraTransferRoomsError } =
-        await supabase
-          .from("rooms")
-          .select("id,price_month")
-          .in("id", missingTransferRoomIds);
-      if (extraTransferRoomsError) {
-        setSaving(false);
-        setConfirmGenerateOpen(false);
-        setError(extraTransferRoomsError.message);
-        return;
-      }
-      for (const room of extraTransferRooms ?? []) {
-        transferRoomRateMap.set(
-          String((room as any).id),
-          toNumber((room as any).price_month),
-        );
-      }
-    }
-
-    const { data: existingInvoices, error: existingError } = await supabase
-      .from("invoices")
-      .select("room_id")
-      .eq("start_date", toLocalDateString(startDate))
-      .eq("end_date", toLocalDateString(endDate))
-      .in("room_id", roomIds);
-
-    if (existingError) {
-      setSaving(false);
-      setConfirmGenerateOpen(false);
-      setError(existingError.message);
-      return;
-    }
-
-    const existingRoomIds = new Set(
-      (existingInvoices ?? []).map((row: any) => row.room_id),
-    );
-    const tenantsToGenerate = billingTenants.filter(
-      (tenant: any) => !existingRoomIds.has(tenant.room_id),
-    );
-
+    // Moved server-side (finding C1) — this used to run entirely in the
+    // browser with the anon key: reading rooms/tenants/settings/meter
+    // readings, computing every invoice's proration/late-fee/discount, and
+    // inserting the result, all with no permission check tied to the writes
+    // themselves. Every computation is unchanged, just relocated — see
+    // generate_invoices in app/api/admin/invoices/actions/route.ts.
     try {
-      await callInvoiceAdminAction("sync_overdue", {
-        beforeStartDate: toLocalDateString(startDate),
-      });
-    } catch (syncError: any) {
-      setError(syncError?.message ?? "Sync overdue invoices failed.");
-      setSaving(false);
-      setConfirmGenerateOpen(false);
-      return;
-    }
+      const result = await callInvoiceAdminAction("generate_invoices", { year, month });
 
-    const tenantIdsToGenerate = tenantsToGenerate.map((tenant: any) =>
-      String(tenant.id),
-    );
-    const { data: previousUnpaidInvoices, error: previousUnpaidError } =
-      tenantIdsToGenerate.length > 0
-        ? await supabase
-            .from("invoices")
-            .select(
-              "id,tenant_id,start_date,due_date,total_amount,paid_amount,status,late_fee_amount,late_fee_per_day,late_fee_start_date,waived_late_fee_amount,locked_late_fee_amount,carry_forward_amount,late_fee_billed_at",
-            )
-            .in("tenant_id", tenantIdsToGenerate)
-            .lt("start_date", toLocalDateString(startDate))
-            // Still-open invoices, OR a PAID invoice whose late fee was frozen
-            // at payment time but never made it onto a bill yet (see
-            // getCarryForwardCandidatesForTarget in invoice-ledger.ts for the
-            // full reasoning — this mirrors that same eligibility check).
-            .or(
-              "status.in.(pending,partial,overdue,verifying),and(status.eq.paid,late_fee_billed_at.is.null)",
-            )
-            .order("start_date", { ascending: true })
-        : { data: [], error: null };
-
-    if (previousUnpaidError) {
-      setSaving(false);
-      setConfirmGenerateOpen(false);
-      setError(previousUnpaidError.message);
-      return;
-    }
-
-    const sourceInvoiceIds = ((previousUnpaidInvoices ?? []) as any[]).map(
-      (row) => String(row.id),
-    );
-    const { data: priorLateFeeSnapshots, error: priorSnapshotError } =
-      sourceInvoiceIds.length > 0
-        ? await supabase
-            .from("invoice_arrears_snapshots")
-            .select("source_invoice_id,snapshot_as_of")
-            .in("source_invoice_id", sourceInvoiceIds)
-            .order("snapshot_as_of", { ascending: false })
-        : { data: [], error: null };
-
-    if (priorSnapshotError) {
-      setSaving(false);
-      setConfirmGenerateOpen(false);
-      setError(priorSnapshotError.message);
-      return;
-    }
-
-    const lastSnapshotBySource = new Map<string, string>();
-    for (const row of (priorLateFeeSnapshots ?? []) as any[]) {
-      const sourceId = String(row.source_invoice_id ?? "");
-      const snapshotAsOf = String(row.snapshot_as_of ?? "");
-      if (!sourceId || !snapshotAsOf || lastSnapshotBySource.has(sourceId))
-        continue;
-      lastSnapshotBySource.set(sourceId, snapshotAsOf);
-    }
-
-    const { data: existingCarryForwards, error: carryError } =
-      sourceInvoiceIds.length > 0
-        ? await supabase
-            .from("invoice_carry_forwards")
-            .select("source_invoice_id")
-            .in("source_invoice_id", sourceInvoiceIds)
-        : { data: [], error: null };
-
-    if (carryError) {
-      setSaving(false);
-      setConfirmGenerateOpen(false);
-      setError(carryError.message);
-      return;
-    }
-
-    const carriedInvoiceIds = new Set(
-      ((existingCarryForwards ?? []) as any[]).map((row) =>
-        String(row.source_invoice_id),
-      ),
-    );
-    const carryForwardByTenant = new Map<string, any[]>();
-    for (const row of (previousUnpaidInvoices ?? []) as any[]) {
-      // Do not skip carried invoices so they all appear in the checklist
-      const rawOutstanding = Math.max(
-        0,
-        toNumber(row.total_amount) - toNumber(row.paid_amount),
-      );
-      // Each invoice's total_amount may already bundle an earlier month's carry-forward
-      // (see lib/invoice-ledger.ts's getCarryForwardCandidatesForTarget). Unbundle it here
-      // too, or summing every open invoice in the chain double/triple-counts the same debt.
-      const carryAmt = toNumber(row.carry_forward_amount);
-      const outstanding =
-        carryAmt > 0 ? Math.max(0, rawOutstanding - carryAmt) : rawOutstanding;
-      const generationDateText = issueDateText;
-      const tenantId = String(row.tenant_id ?? "");
-      if (!tenantId) continue;
-
-      // The ONE place this is computed — same function the single-invoice
-      // recalculate flow uses, so the two can't drift apart. A PAID invoice
-      // never gets a live day-count guess: only whatever was actually frozen
-      // at payment time. This is also why a paid invoice with nothing left
-      // owing (outstanding 0) must NOT be skipped before this runs — it can
-      // still owe an unbilled late fee even though its principal is settled.
-      const lateFeeSnapshot = computeLateFeeSnapshot(
-        {
-          status: row.status ?? null,
-          late_fee_start_date: row.late_fee_start_date ?? null,
-          late_fee_per_day: row.late_fee_per_day ?? 0,
-          waived_late_fee_amount: row.waived_late_fee_amount ?? 0,
-          locked_late_fee_amount: row.locked_late_fee_amount ?? null,
-        },
-        generationDateText,
-      );
-
-      if (outstanding <= 0 && lateFeeSnapshot.amount <= 0) continue;
-
-      const currentRows = carryForwardByTenant.get(tenantId) ?? [];
-      currentRows.push({
-        ...row,
-        outstanding_amount: outstanding,
-        base_outstanding_amount: outstanding,
-        snapshot_as_of: lateFeeSnapshot.asOf ?? generationDateText,
-        snapshot_late_fee_amount: lateFeeSnapshot.amount,
-        snapshot_days_overdue: lateFeeSnapshot.days,
-        snapshot_daily_rate: toNumber(row.late_fee_per_day ?? 0),
-      });
-      carryForwardByTenant.set(tenantId, currentRows);
-    }
-
-    const { data: readings } = await supabase
-      .from("meter_readings")
-      .select("room_id,electricity_usage,water_usage,usage,current_electricity,current_water")
-      .eq("reading_month", monthKey)
-      .in(
-        "room_id",
-        roomIds.length ? roomIds : ["00000000-0000-0000-0000-000000000000"],
-      );
-
-    const readingMap = new Map(
-      (readings ?? []).map((row: any) => [row.room_id, row]),
-    );
-
-    const additionalFees = Array.isArray(settings.additional_fees)
-      ? (settings.additional_fees as AdditionalFee[])
-      : [];
-    const discountRules = Array.isArray((settings as any).additional_discounts)
-      ? ((settings as any).additional_discounts as AdditionalFee[])
-      : [];
-
-    const insertPayload = tenantsToGenerate.map((tenant: any) => {
-      const roomRel = Array.isArray(tenant.rooms)
-        ? tenant.rooms[0]
-        : tenant.rooms;
-      const reading = readingMap.get(tenant.room_id) ?? {};
-      const transfer = transferByTenant.get(String(tenant.id));
-      const hasTransferToThisRoom =
-        !!transfer &&
-        String((transfer as any).to_room_id ?? "") === String(tenant.room_id);
-
-      const newRoomElecUnits = hasTransferToThisRoom && toNumber((transfer as any).new_prev_electricity) > 0
-        ? Math.max(0, toNumber(reading.current_electricity) - toNumber((transfer as any).new_prev_electricity))
-        : toNumber(reading.electricity_usage);
-      const newRoomWaterUnits = hasTransferToThisRoom && toNumber((transfer as any).new_prev_water) > 0
-        ? Math.max(0, toNumber(reading.current_water) - toNumber((transfer as any).new_prev_water))
-        : toNumber(reading.water_usage ?? reading.usage);
-      const oldRoomElecUnits = hasTransferToThisRoom
-        ? toNumber((transfer as any).old_electric_usage)
-        : 0;
-      const oldRoomWaterUnits = hasTransferToThisRoom
-        ? toNumber((transfer as any).old_water_usage)
-        : 0;
-      const elecUnits = oldRoomElecUnits + newRoomElecUnits;
-      const waterUnits = oldRoomWaterUnits + newRoomWaterUnits;
-
-      const transferRentBreakdown = hasTransferToThisRoom
-        ? calculateInvoiceTransferRentProration(
-            toLocalDateString(startDate),
-            toLocalDateString(endDate),
-            String((transfer as any).transfer_date ?? issueDateText),
-            tenant.move_in_date,
-            toNumber(
-              transferRoomRateMap.get(
-                String((transfer as any).from_room_id ?? ""),
-              ),
-            ),
-            toNumber(
-              transferRoomRateMap.get(
-                String((transfer as any).to_room_id ?? ""),
-              ),
-            ),
-          )
-        : null;
-      const rentAmount = transferRentBreakdown
-        ? transferRentBreakdown.oldRentAmount +
-          transferRentBreakdown.newRentAmount
-        : toNumber(roomRel?.price_month);
-
-      const elecBill = elecUnits * toNumber(settings.electricity_rate);
-      const waterBill = calculateWaterBillWithMinimum(
-        waterUnits,
-        toNumber(settings.water_rate),
-        toNumber(settings.water_min_units),
-        toNumber(settings.water_min_price),
-      );
-
-      const additionalBreakdown = additionalFees.map((fee) => {
-        const rate = toNumber(fee.value);
-        let amount = 0;
-        if (fee.calc_type === "fixed") amount = rate;
-        if (fee.calc_type === "electricity_units") amount = elecUnits * rate;
-        if (fee.calc_type === "water_units") amount = waterUnits * rate;
-        const unit =
-          fee.calc_type === "electricity_units"
-            ? elecUnits
-            : fee.calc_type === "water_units"
-              ? waterUnits
-              : 1;
-        return {
-          label: fee.label,
-          detail: fee.label,
-          calc_type: fee.calc_type,
-          rate,
-          unit,
-          price_per_unit: rate,
-          total_amount: amount,
-          amount,
-        };
-      });
-
-      const additionalTotal = additionalBreakdown.reduce(
-        (sum, fee) => sum + toNumber(fee.amount),
-        0,
-      );
-      const discountBreakdown = buildRuleBreakdown(
-        discountRules,
-        elecUnits,
-        waterUnits,
-      );
-      const discountAmount = discountBreakdown.reduce(
-        (sum, fee) => sum + toNumber(fee.amount),
-        0,
-      );
-      // Principal is never merged: an older unpaid invoice's own rent/water/
-      // electric stays on ITS OWN row, still fully payable there, untouched
-      // by this run. Only the late fee still relays forward exactly as it
-      // always has — calculated once per source invoice, at whichever
-      // generation cycle first finds it still unbilled, then billed here as
-      // its own line item and locked so it can never be billed twice or keep
-      // growing on the source. No invoice_carry_forwards link is written for
-      // this — that table means "these invoices form one payment chain,
-      // auto-split a payment across them," which would silently resurrect
-      // bundled payment behavior. The line item's own source_invoice_id is
-      // enough for display and for marking the source as billed below.
-      const carryForwardRows = carryForwardByTenant.get(String(tenant.id)) ?? [];
-      // A source invoice that's still open (unpaid principal) keeps showing
-      // up as a candidate every generation cycle for as long as it stays
-      // unpaid — so a tenant overdue across two or more cycles would have
-      // the SAME already-billed fee offered again here were it not for this
-      // check. late_fee_billed_at is the guard: once set, computeLateFeeSnapshot
-      // still reports the frozen amount (that's what keeps it capped, not
-      // growing), but it must never be turned into a second real charge.
-      const lateFeeBreakdown = carryForwardRows
-        .filter(
-          (row: any) =>
-            toNumber(row.snapshot_late_fee_amount) > 0 && row.late_fee_billed_at == null,
-        )
-        .map((row: any) => {
-          const daysOverdue = toNumber(row.snapshot_days_overdue);
-          const dailyRate = toNumber(row.snapshot_daily_rate);
-          const detail = buildLateFeeLineDetail(
-            String(row.start_date ?? ""),
-            daysOverdue,
-            dailyRate,
-            row.snapshot_as_of,
-          );
-          return {
-            item_type: "late_fee_line",
-            source_invoice_id: row.id,
-            label: detail,
-            detail,
-            unit: daysOverdue,
-            price_per_unit: dailyRate,
-            total_amount: toNumber(row.snapshot_late_fee_amount),
-            amount: toNumber(row.snapshot_late_fee_amount),
-            days_overdue: daysOverdue,
-            daily_rate: dailyRate,
-            snapshot_as_of: row.snapshot_as_of,
-            original_amount: toNumber(row.snapshot_late_fee_amount),
-            waived_amount: 0,
-          };
-        });
-      const carriedLateFeeTotal = lateFeeBreakdown.reduce(
-        (sum: number, item: any) => sum + toNumber(item.total_amount),
-        0,
-      );
-
-      const commonFee = toNumber(settings.common_fee);
-      const totalAmount =
-        rentAmount +
-        waterBill +
-        elecBill +
-        commonFee +
-        additionalTotal +
-        carriedLateFeeTotal -
-        discountAmount;
-      // Per-room utility breakdown for mid-month transfers
-      const electricityRate = toNumber(settings.electricity_rate);
-      const waterRate = toNumber(settings.water_rate);
-      const waterMinUnits = toNumber(settings.water_min_units);
-      const waterMinPrice = toNumber(settings.water_min_price);
-      const oldElecBill = hasTransferToThisRoom ? oldRoomElecUnits * electricityRate : 0;
-      const newElecBill = hasTransferToThisRoom ? newRoomElecUnits * electricityRate : 0;
-      const waterBreakdownItems = hasTransferToThisRoom
-        ? buildTransferWaterBreakdown(
-            oldRoomWaterUnits,
-            newRoomWaterUnits,
-            waterRate,
-            waterMinUnits,
-            waterMinPrice
-          )
+      const alerts: string[] = Array.isArray(result?.alerts) ? result.alerts : [];
+      const bookkeepingFailures: string[] = Array.isArray(result?.bookkeepingFailures)
+        ? result.bookkeepingFailures
         : [];
 
-      const transferBreakdownRows = hasTransferToThisRoom
-        ? serializeTransferBreakdownRows([
-            {
-              label: "วันที่ย้ายห้อง",
-              value: String((transfer as any).transfer_date ?? "-"),
-            },
-            {
-              label: "ค่าเช่าห้องเดิม",
-              value: formatMoney(toNumber(transferRentBreakdown?.oldRentAmount)),
-              amount: toNumber(transferRentBreakdown?.oldRentAmount),
-              editable: true,
-              kind: "old_rent",
-            },
-            {
-              label: "ค่าเช่าห้องใหม่",
-              value: formatMoney(toNumber(transferRentBreakdown?.newRentAmount)),
-              amount: toNumber(transferRentBreakdown?.newRentAmount),
-              editable: true,
-              kind: "new_rent",
-            },
-            ...waterBreakdownItems,
-            {
-              label: `ค่าไฟห้องเดิม (${oldRoomElecUnits} หน่วย)`,
-              value: `${oldRoomElecUnits} หน่วย × ${formatMoney(electricityRate)} = ${formatMoney(oldElecBill)}`,
-              amount: oldElecBill,
-              kind: "old_elec",
-            },
-            {
-              label: `ค่าไฟห้องใหม่ (${newRoomElecUnits} หน่วย)`,
-              value: `${newRoomElecUnits} หน่วย × ${formatMoney(electricityRate)} = ${formatMoney(newElecBill)}`,
-              amount: newElecBill,
-              kind: "new_elec",
-            },
-          ])
-        : [];
-
-      return {
-        tenant_id: tenant.id,
-        room_id: tenant.room_id,
-        issue_date: issueDateText,
-        due_date: generatedDueDateText,
-        start_date: toLocalDateString(startDate),
-        end_date: toLocalDateString(endDate),
-        rent_amount: rentAmount,
-        water_bill: waterBill,
-        electricity_bill: elecBill,
-        common_fee: commonFee,
-        discount_amount: discountAmount,
-        discount_breakdown: discountBreakdown,
-        // Own native penalty is 0 (this invoice isn't overdue yet) plus
-        // whatever carried late-fee lines it's billing on behalf of an
-        // older invoice — matches the documented meaning of this column
-        // (chargesFromInvoiceRow unpacks the two apart when reading it back).
-        late_fee_amount: carriedLateFeeTotal,
-        late_fee_per_day: lateFeePerDay,
-        late_fee_start_date: generatedLateFeeStartDateText,
-        carry_forward_amount: 0,
-        additional_fees_total: additionalTotal + carriedLateFeeTotal,
-        additional_fees_breakdown: [
-          ...lateFeeBreakdown,
-          ...additionalBreakdown,
-          ...transferBreakdownRows,
-        ],
-        total_amount: totalAmount,
-        notes: null,
-        status: "draft",
-      };
-    }) as any[];
-
-    const generatedRoomIds = new Set(
-      insertPayload.map((row: any) => row.room_id),
-    );
-    // Bookkeeping that fails AFTER the invoices are inserted used to be
-    // reported with a bare setError, which the alerts block at the end of
-    // this function then overwrote — so a freeze that never got written
-    // looked like a clean run. These survive to the end and are raised as a
-    // toast as well. Principal gets none of this: an older invoice's own
-    // rent/water/electric is never touched by this run, no matter what
-    // happens below — only the late-fee freeze runs, and only for a source
-    // whose fee actually got billed onto one of the invoices just created.
-    const bookkeepingFailures: string[] = [];
-    if (insertPayload.length > 0) {
-      const { data: insertedInvoices, error: insertError } = await supabase
-        .from("invoices")
-        .insert(insertPayload)
-        .select("id,tenant_id");
-      if (insertError) {
-        setError(insertError.message);
-      } else if ((insertedInvoices ?? []).length > 0) {
-        // Freeze the late fee on every source invoice whose fee was just
-        // billed (stops it from ever being recomputed higher — it's now a
-        // fixed charge sitting on the new invoice) and mark it billed (so a
-        // future generation cycle never bills the same fee a second time).
-        // Deliberately does not touch the source's own total_amount,
-        // paid_amount, or status — its principal is completely unaffected.
-        const allSourceRows = (insertedInvoices ?? []).flatMap((row: any) =>
-          (carryForwardByTenant.get(String(row.tenant_id ?? "")) ?? []).filter(
-            (carryRow: any) =>
-              toNumber(carryRow.snapshot_late_fee_amount) > 0 &&
-              carryRow.late_fee_billed_at == null,
-          ),
-        );
-        const nowIso = new Date().toISOString();
-        for (const carryRow of allSourceRows) {
-          const freezeAmount = toNumber(carryRow.snapshot_late_fee_amount);
-          const freezeUpdate: Record<string, unknown> = {
-            late_fee_billed_at: nowIso,
-          };
-          if (carryRow.locked_late_fee_amount == null) {
-            freezeUpdate.locked_late_fee_amount = freezeAmount;
-          }
-          const { error: freezeError } = await supabase
-            .from("invoices")
-            .update(freezeUpdate)
-            .eq("id", carryRow.id);
-          if (freezeError) {
-            // An unfrozen/unmarked source keeps accruing a late fee that's
-            // already been billed elsewhere, or stays eligible to be billed
-            // again next cycle — either way, a double charge.
-            bookkeepingFailures.push(
-              `ล็อก/บันทึกสถานะค่าปรับล่าช้าของบิลเดิมไม่สำเร็จ: ${freezeError.message}`,
-            );
-          }
-        }
+      if (bookkeepingFailures.length > 0) {
+        toast.error(bookkeepingFailures.join(" | "), { duration: 15000 });
       }
-    } else {
-      setError(
-        "No new invoices generated. All rooms already have invoices for this period.",
-      );
-    }
-
-    const occupiedRoomIds = new Set<string>([
-      ...(occupiedRooms ?? []).map((room: any) => String(room.id)),
-      ...billingTenants.map((tenant: any) => String(tenant.room_id)),
-    ]);
-    const billedRoomIds = new Set<string>([
-      ...existingRoomIds,
-      ...generatedRoomIds,
-    ]);
-    const roomNumberById = new Map<string, string>([
-      ...(occupiedRooms ?? []).map(
-        (room: any) => [String(room.id), room.room_number] as [string, string],
-      ),
-      ...billingTenants.map(
-        (tenant: any) =>
-          [String(tenant.room_id), tenant.rooms?.room_number] as [
-            string,
-            string,
-          ],
-      ),
-    ]);
-    const notBilledRoomIds = [...occupiedRoomIds].filter(
-      (roomId) => !billedRoomIds.has(roomId),
-    );
-
-    const alerts: string[] = [];
-    if (existingRoomIds.size > 0 && insertPayload.length > 0) {
-      alerts.push(
-        `สร้างใบแจ้งหนี้ ${insertPayload.length} รายการแล้ว และข้าม ${existingRoomIds.size} ห้องที่มีใบแจ้งหนี้ในงวดนี้อยู่แล้ว`,
-      );
-    }
-    if (missingTenantRooms.length > 0) {
-      const rooms = missingTenantRooms
-        .map((room: any) => room.room_number)
-        .join(", ");
-      alerts.push(`Occupied room(s) missing active tenant: ${rooms}`);
-    }
-    if (notBilledRoomIds.length > 0) {
-      const rooms = notBilledRoomIds
-        .map((roomId) => roomNumberById.get(roomId) ?? roomId)
-        .join(", ");
-      alerts.push(
-        `Billing audit failed. Occupied room(s) without invoice: ${rooms}`,
-      );
-    }
-    if (bookkeepingFailures.length > 0) {
-      // Ahead of the audit alerts: these mean the ledger is inconsistent, not
-      // merely that a room was skipped.
-      alerts.unshift(...bookkeepingFailures);
-      toast.error(bookkeepingFailures.join(" | "), { duration: 15000 });
-    }
-    if (alerts.length > 0) {
-      setError(alerts.join(" | "));
-    }
-
-    // Every invoice generated this run is independent of any older unpaid
-    // one — nothing was merged. This is purely a heads-up so an old debt
-    // doesn't quietly sit off-screen: it's still open on its own invoice,
-    // still fully payable there.
-    if (carryForwardByTenant.size > 0) {
-      const pendingTotal = [...carryForwardByTenant.values()].reduce(
-        (sum, rows) =>
-          sum + rows.reduce((s: number, row: any) => s + toNumber(row.outstanding_amount), 0),
-        0,
-      );
-      if (pendingTotal > 0) {
+      if (result?.errorMessage) {
+        setError(String(result.errorMessage));
+      }
+      if (result?.carryForwardNotice) {
         toast.info(
-          `${carryForwardByTenant.size} ผู้เช่ายังมีใบแจ้งหนี้ค้างชำระจากงวดก่อนหน้า รวม ${formatMoney(pendingTotal)} บาท`,
+          `${result.carryForwardNotice.tenantCount} ผู้เช่ายังมีใบแจ้งหนี้ค้างชำระจากงวดก่อนหน้า รวม ${formatMoney(
+            result.carryForwardNotice.pendingTotal,
+          )} บาท`,
           { duration: 10000 },
         );
       }
+    } catch (err: any) {
+      setError(err?.message ?? "Failed to generate invoices.");
+    } finally {
+      setSaving(false);
+      setConfirmGenerateOpen(false);
+      await loadInvoices();
     }
-
-    setSaving(false);
-    setConfirmGenerateOpen(false);
-    await loadInvoices();
   };
 
   const modalProrateSummary =

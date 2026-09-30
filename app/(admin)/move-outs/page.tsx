@@ -107,49 +107,35 @@ export default function MoveOutsPage() {
   const load = useCallback(async () => {
     if (!canView) return;
     setLoading(true);
-    const [reqRes, tenRes, settlementRes] = await Promise.all([
-      supabase
-        .from("move_out_requests")
-        .select(
-          "id,tenant_id,notice_date,requested_move_out_date,approved_move_out_date,status,request_note,created_at,tenants(full_name,room_id,rooms(room_number,buildings(name)))"
-        )
-        .order("created_at", { ascending: false }),
-      supabase
-        .from("tenants")
-        .select("id,full_name,move_out_date,room_id,rooms(room_number,buildings(name))")
-        .not("move_out_date", "is", null)
-        .eq("status", "active")
-        .order("move_out_date", { ascending: true }),
-      // Tenants freed via the quick "ปลดล็อกห้องทันที" action: already inactive, but
-      // room_id is only cleared by the full settlement (final_move_out/abandon_room),
-      // so a non-null room_id here means the settlement invoice hasn't been made yet.
-      supabase
-        .from("tenants")
-        .select("id,full_name,move_out_date,room_id,rooms(room_number,buildings(name))")
-        .not("move_out_date", "is", null)
-        .not("room_id", "is", null)
-        .eq("status", "inactive")
-        .order("move_out_date", { ascending: true }),
-    ]);
-    if (reqRes.error) {
-      toast.error(reqRes.error.message);
+    try {
+      // Moved server-side (finding C1) — see get_move_outs_page_data in
+      // app/api/admin/tenants/actions/route.ts.
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (!token) throw new Error("เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่");
+      const response = await fetch("/api/admin/tenants/actions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ action: "get_move_outs_page_data" }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result?.error ?? "โหลดข้อมูลย้ายออกไม่สำเร็จ");
+
+      setRequests((result.requests ?? []) as unknown as RequestRow[]);
+      setTenantsWithDate((result.tenantsWithDate ?? []) as TenantWithMoveOut[]);
+      // Tenants freed via the quick "ปลดล็อกห้องทันที" action: already
+      // inactive, but room_id is only cleared by the full settlement
+      // (final_move_out/abandon_room), so a non-null room_id here means the
+      // settlement invoice hasn't been made yet.
+      setPendingSettlementTenants((result.pendingSettlementTenants ?? []) as TenantWithMoveOut[]);
+    } catch (error: any) {
+      toast.error(error?.message ?? "โหลดข้อมูลย้ายออกไม่สำเร็จ");
       setRequests([]);
-    } else {
-      setRequests((reqRes.data ?? []) as unknown as RequestRow[]);
-    }
-    if (tenRes.error) {
-      toast.error(tenRes.error.message);
       setTenantsWithDate([]);
-    } else {
-      setTenantsWithDate((tenRes.data ?? []) as TenantWithMoveOut[]);
-    }
-    if (settlementRes.error) {
-      toast.error(settlementRes.error.message);
       setPendingSettlementTenants([]);
-    } else {
-      setPendingSettlementTenants((settlementRes.data ?? []) as TenantWithMoveOut[]);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }, [canView, supabase]);
 
   useEffect(() => {

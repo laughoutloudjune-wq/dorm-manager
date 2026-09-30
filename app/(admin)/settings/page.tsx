@@ -244,83 +244,66 @@ export default function SettingsPage() {
   };
 
   const loadSettings = async () => {
-    const { data, error } = await supabase.from("settings").select("*").eq("id", 1).maybeSingle();
-
-    if (error) {
-      setStatusMessage(error.message);
-      return;
-    }
-
-    if (!data) {
-      const { data: inserted } = await supabase
-        .from("settings")
-        .insert({ id: 1 })
-        .select("*")
-        .single();
-      if (inserted) {
-        setSettings(inserted as SettingsRow);
-        setRolePermissions(normalizeRolePermissions((inserted as any).role_permissions));
-        setFees(Array.isArray(inserted.additional_fees) ? inserted.additional_fees : []);
-        setDiscounts(
-          Array.isArray((inserted as any).additional_discounts) ? (inserted as any).additional_discounts : []
-        );
+    try {
+      const response = await fetch("/api/admin/settings", { headers: await getAuthHeaders() });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setStatusMessage(result?.error ?? "โหลดตั้งค่าไม่สำเร็จ");
+        return;
       }
-      return;
+      const data = result.settings;
+      setSettings(data as SettingsRow);
+      setRolePermissions(normalizeRolePermissions((data as any).role_permissions));
+      setFees(Array.isArray(data.additional_fees) ? data.additional_fees : []);
+      setDiscounts(Array.isArray((data as any).additional_discounts) ? (data as any).additional_discounts : []);
+    } catch (error: any) {
+      setStatusMessage(error?.message ?? "โหลดตั้งค่าไม่สำเร็จ");
     }
-
-    setSettings(data as SettingsRow);
-    setRolePermissions(normalizeRolePermissions((data as any).role_permissions));
-    setFees(Array.isArray(data.additional_fees) ? data.additional_fees : []);
-    setDiscounts(Array.isArray((data as any).additional_discounts) ? (data as any).additional_discounts : []);
   };
 
   const loadPaymentMethods = async () => {
-    const { data, error } = await supabase
-      .from("payment_methods")
-      .select("id,label,bank_name,account_name,account_number,qr_url")
-      .order("label", { ascending: true });
+    try {
+      const response = await fetch("/api/admin/settings/payment-methods", { headers: await getAuthHeaders() });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result?.error ?? "โหลดวิธีชำระเงินไม่สำเร็จ");
 
-    if (error) {
-      setStatusMessage(error.message);
+      const rows = (result.methods as PaymentMethod[]) ?? [];
+      setMethods(rows);
+      setInitialMethodIds(rows.map((row) => row.id!).filter(Boolean));
+    } catch (error: any) {
+      setStatusMessage(error?.message ?? "โหลดวิธีชำระเงินไม่สำเร็จ");
       setMethods([]);
-      return;
     }
-
-    const rows = (data as PaymentMethod[]) ?? [];
-    setMethods(rows);
-    setInitialMethodIds(rows.map((row) => row.id!).filter(Boolean));
   };
 
   const loadReceiptProfiles = async () => {
-    const { data, error } = await supabase
-      .from("receipt_profiles")
-      .select("id,label,company_name,tax_id,branch,address")
-      .order("label", { ascending: true });
+    try {
+      const response = await fetch("/api/admin/settings/receipt-profiles", { headers: await getAuthHeaders() });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result?.error ?? "โหลดโปรไฟล์ใบเสร็จไม่สำเร็จ");
 
-    if (error) {
-      setStatusMessage(error.message);
+      const rows = (result.profiles as ReceiptProfile[]) ?? [];
+      setReceiptProfiles(rows);
+      setInitialReceiptProfileIds(rows.map((row) => row.id!).filter(Boolean));
+    } catch (error: any) {
+      setStatusMessage(error?.message ?? "โหลดโปรไฟล์ใบเสร็จไม่สำเร็จ");
       setReceiptProfiles([]);
-      return;
     }
-
-    const rows = (data as ReceiptProfile[]) ?? [];
-    setReceiptProfiles(rows);
-    setInitialReceiptProfileIds(rows.map((row) => row.id!).filter(Boolean));
   };
 
   const loadBuildings = async () => {
-    const { data, error } = await supabase
-      .from("buildings")
-      .select("id,name")
-      .order("name", { ascending: true });
-    if (error) {
-      setStatusMessage(error.message);
-      return;
-    }
-    const rows = (data ?? []) as Building[];
-    setBuildings(rows);
-    if (!selectedBuilding && rows.length > 0) {
-      setSelectedBuilding(rows[0].id);
+    try {
+      const response = await fetch("/api/admin/buildings", { headers: await getAuthHeaders() });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result?.error ?? "โหลดข้อมูลอาคารไม่สำเร็จ");
+
+      const rows = (result.buildings as Building[]) ?? [];
+      setBuildings(rows);
+      if (!selectedBuilding && rows.length > 0) {
+        setSelectedBuilding(rows[0].id);
+      }
+    } catch (error: any) {
+      setStatusMessage(error?.message ?? "โหลดข้อมูลอาคารไม่สำเร็จ");
     }
   };
 
@@ -332,6 +315,15 @@ export default function SettingsPage() {
       "Content-Type": "application/json",
       Authorization: `Bearer ${token}`,
     } as const;
+  };
+
+  // For multipart/FormData uploads — must NOT set Content-Type ourselves,
+  // the browser needs to add its own boundary.
+  const getAuthHeadersNoContentType = async () => {
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
+    if (!token) throw new Error("เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่");
+    return { Authorization: `Bearer ${token}` } as const;
   };
 
   const callSettingsAction = async (action: string, payload: Record<string, unknown>) => {
@@ -373,16 +365,15 @@ export default function SettingsPage() {
       setRooms([]);
       return;
     }
-    const { data, error } = await supabase
-      .from("rooms")
-      .select("id,room_number,room_type,price_month,status")
-      .eq("building_id", buildingId)
-      .order("room_number", { ascending: true });
-    if (error) {
-      setStatusMessage(error.message);
+    const response = await fetch(`/api/admin/rooms?buildingId=${encodeURIComponent(buildingId)}`, {
+      headers: await getAuthHeaders(),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setStatusMessage(result?.error ?? "โหลดข้อมูลห้องไม่สำเร็จ");
       return;
     }
-    const sorted = ((data ?? []) as Room[]).sort((a, b) =>
+    const sorted = ((result.rooms ?? []) as Room[]).sort((a, b) =>
       roomNumberCompare(a.room_number, b.room_number)
     );
     setRooms(sorted);
@@ -533,21 +524,26 @@ export default function SettingsPage() {
       );
     }
 
-    const path = `payment-methods/${methodId}/${Date.now()}-${file.name}`;
-    const { error: uploadError } = await supabase.storage
-      .from("payment-methods")
-      .upload(path, file, { upsert: true });
+    // Moved server-side (finding C1) — see app/api/admin/settings/upload-qr/route.ts.
+    try {
+      const body = new FormData();
+      body.append("file", file);
+      body.append("methodId", methodId);
+      const response = await fetch("/api/admin/settings/upload-qr", {
+        method: "POST",
+        headers: await getAuthHeadersNoContentType(),
+        body,
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result?.error ?? "อัปโหลด QR ไม่สำเร็จ");
 
-    if (uploadError) {
-      setStatusMessage(uploadError.message);
-      return;
+      setMethods((prev) =>
+        prev.map((item, idx) => (idx === index ? { ...item, qr_url: result.url, id: methodId } : item))
+      );
+      setStatusMessage("อัปโหลด QR แล้ว กรุณากดบันทึกช่องทางชำระเงิน");
+    } catch (error: any) {
+      setStatusMessage(error?.message ?? "อัปโหลด QR ไม่สำเร็จ");
     }
-
-    const { data } = supabase.storage.from("payment-methods").getPublicUrl(path);
-    setMethods((prev) =>
-      prev.map((item, idx) => (idx === index ? { ...item, qr_url: data.publicUrl, id: methodId } : item))
-    );
-    setStatusMessage("อัปโหลด QR แล้ว กรุณากดบันทึกช่องทางชำระเงิน");
   };
 
   const removeMethod = (index: number) => {

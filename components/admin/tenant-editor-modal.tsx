@@ -17,7 +17,7 @@ import { Loader2, Plus, Save, Search, Trash2, Upload } from "lucide-react";
 import { TenantRow, RoomRow, PaymentMethod, ReceiptProfile, MoveOutRequestRow, SettingsRates, TenantInvoiceHistoryRow } from "@/types";
 import { TransferCalcForm } from "@/lib/hooks/use-tenant-editor";
 import { toNumber, roundTo2, formatMoney } from "@/lib/format";
-import { parseDepositSlipUrls, serializeDepositSlipUrls, roomNumberCompare, roomLabel, tenantRoomNumber, tenantBuildingName, leaseEndDateText, calculateTransferRentProration, tenantStatusLabel, sanitizeStorageFileName, tenantPaymentMethodLabel, findExistingActiveTenantInRoom } from "@/lib/tenant-utils";
+import { parseDepositSlipUrls, serializeDepositSlipUrls, roomNumberCompare, roomLabel, tenantRoomNumber, tenantBuildingName, leaseEndDateText, calculateTransferRentProration, tenantStatusLabel, tenantPaymentMethodLabel, findExistingActiveTenantInRoom } from "@/lib/tenant-utils";
 
 export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "info", onRefresh }: {
   isOpen: boolean;
@@ -96,6 +96,23 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
     return dataJson;
   };
 
+  const callMetersAction = async (action: string, payload: Record<string, unknown>) => {
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
+    if (!token) throw new Error("เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่");
+    const response = await fetch("/api/admin/meters/actions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ action, ...payload }),
+    });
+    const dataJson = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(dataJson?.error ?? "โหลดค่ามิเตอร์ไม่สำเร็จ");
+    return dataJson;
+  };
+
   const [form, setForm] = useState({
     full_name: "",
     address: "",
@@ -115,27 +132,25 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
     final_move_out_date: "",
   });
 
+  // Moved server-side (finding C1) — see get_tenants in
+  // app/api/admin/tenants/actions/route.ts.
   const loadTenants = async () => {
-    const { data, error } = await supabase
-      .from("tenants")
-      .select(
-        "id,full_name,address,phone_number,line_user_id,move_in_date,move_out_date,status,room_id,lease_months,initial_electricity_reading,initial_water_reading,advance_rent_amount,security_deposit_amount,deposit_slip_url,final_electricity_reading,final_water_reading,forfeit_security_deposit,custom_payment_method,custom_receipt_profile,rooms(room_number,price_month,buildings(name))"
-      )
-      .order("move_in_date", { ascending: false });
-
-    if (error) {
-      setStatus(error.message);
-      return;
+    try {
+      const result = await callTenantsAction("get_tenants", {});
+      setTenants((result.tenants ?? []) as TenantRow[]);
+    } catch (error: any) {
+      setStatus(error?.message ?? "โหลดข้อมูลผู้เช่าไม่สำเร็จ");
     }
-
-    setTenants((data ?? []) as TenantRow[]);
   };
 
+  // Moved server-side (finding C1) — see app/api/admin/rooms/route.ts.
   const loadRooms = async () => {
-    const { data } = await supabase
-      .from("rooms")
-      .select("id,room_number,price_month,buildings(name)")
-      .order("room_number");
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData.session?.access_token;
+    if (!token) return;
+    const response = await fetch("/api/admin/rooms", { headers: { Authorization: `Bearer ${token}` } });
+    const result = await response.json().catch(() => ({}));
+    const data = response.ok ? result.rooms : [];
     const sorted = ((data ?? []) as RoomRow[]).sort((a, b) => {
       const aBuilding = Array.isArray(a.buildings) ? a.buildings[0]?.name ?? "" : a.buildings?.name ?? "";
       const bBuilding = Array.isArray(b.buildings) ? b.buildings[0]?.name ?? "" : b.buildings?.name ?? "";
@@ -149,51 +164,56 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
     setRooms(sorted);
   };
 
+  // Moved server-side (finding C1) — see app/api/admin/settings/payment-methods/route.ts.
   const loadMethods = async () => {
-    const { data } = await supabase
-      .from("payment_methods")
-      .select("id,label,bank_name,account_name,account_number,qr_url")
-      .order("label", { ascending: true });
-    setMethods((data ?? []) as PaymentMethod[]);
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData.session?.access_token;
+    if (!token) return;
+    const response = await fetch("/api/admin/settings/payment-methods", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const result = await response.json().catch(() => ({}));
+    setMethods(response.ok ? ((result.methods ?? []) as PaymentMethod[]) : []);
   };
 
+  // Moved server-side (finding C1) — see app/api/admin/settings/receipt-profiles/route.ts.
   const loadReceiptProfiles = async () => {
-    const { data } = await supabase
-      .from("receipt_profiles")
-      .select("id,label,company_name,tax_id,branch,address")
-      .order("label", { ascending: true });
-    setReceiptProfiles((data ?? []) as ReceiptProfile[]);
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData.session?.access_token;
+    if (!token) return;
+    const response = await fetch("/api/admin/settings/receipt-profiles", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const result = await response.json().catch(() => ({}));
+    setReceiptProfiles(response.ok ? ((result.profiles ?? []) as ReceiptProfile[]) : []);
   };
 
+  // Moved server-side (finding C1) — see app/api/admin/settings/route.ts.
   const loadRates = async () => {
-    const { data } = await supabase
-      .from("settings")
-      .select("water_rate,electricity_rate")
-      .eq("id", 1)
-      .maybeSingle();
-    if (data) {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData.session?.access_token;
+    if (!token) return;
+    const response = await fetch("/api/admin/settings", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const result = await response.json().catch(() => ({}));
+    if (response.ok && result.settings) {
       setRates({
-        water_rate: toNumber((data as any).water_rate),
-        electricity_rate: toNumber((data as any).electricity_rate),
+        water_rate: toNumber(result.settings.water_rate),
+        electricity_rate: toNumber(result.settings.electricity_rate),
       });
     }
   };
 
+  // Moved server-side (finding C1) — see get_move_out_requests in
+  // app/api/admin/tenants/actions/route.ts.
   const loadMoveOutRequests = async () => {
-    const { data, error } = await supabase
-      .from("move_out_requests")
-      .select(
-        "id,tenant_id,notice_date,requested_move_out_date,approved_move_out_date,actual_move_out_date,status,request_note,admin_note,created_at"
-      )
-      .in("status", ["requested", "approved"])
-      .order("created_at", { ascending: false });
-
-    if (error) {
-      setStatus(error.message);
-      return;
+    try {
+      const result = await callTenantsAction("get_move_out_requests", {});
+      setMoveOutRequests((result.requests ?? []) as MoveOutRequestRow[]);
+    } catch (error: any) {
+      setStatus(error?.message ?? "โหลดคำขอย้ายออกไม่สำเร็จ");
     }
-
-    setMoveOutRequests((data ?? []) as MoveOutRequestRow[]);
   };
 
   useEffect(() => {
@@ -223,13 +243,8 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
       return;
     }
 
-    const { data } = await supabase
-      .from("meter_readings")
-      .select("current_electricity,current_water")
-      .eq("room_id", roomId)
-      .order("reading_month", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    const result = await callMetersAction("get_latest_reading", { roomId }).catch(() => null);
+    const data = result?.reading;
 
     const prevElec = toNumber((data as any)?.current_electricity ?? fallbackElectric);
     const prevWater = toNumber((data as any)?.current_water ?? fallbackWater);
@@ -244,31 +259,22 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
     }));
   };
 
+  // Moved server-side (finding C1) — see get_tenant_invoice_history in
+  // app/api/admin/tenants/actions/route.ts.
   const loadTenantInvoiceHistory = async (tenantId: string) => {
-    const { data, error } = await supabase
-      .from("invoices")
-      .select("id,start_date,end_date,total_amount,paid_amount,carry_forward_amount,status,slip_url,slip_uploaded_at,payment_history,created_at")
-      .eq("tenant_id", tenantId)
-      .order("start_date", { ascending: false });
-
-    if (error) {
-      setStatus(error.message);
+    try {
+      const result = await callTenantsAction("get_tenant_invoice_history", { tenantId });
+      setTenantInvoiceHistory((result.invoices ?? []) as TenantInvoiceHistoryRow[]);
+    } catch (error: any) {
+      setStatus(error?.message ?? "โหลดประวัติการชำระไม่สำเร็จ");
       setTenantInvoiceHistory([]);
-      return;
     }
-
-    setTenantInvoiceHistory((data ?? []) as TenantInvoiceHistoryRow[]);
   };
 
   const loadLatestRoomReadings = async (roomId: string) => {
     if (!roomId) return { electricity: 0, water: 0 };
-    const { data } = await supabase
-      .from("meter_readings")
-      .select("current_electricity,current_water")
-      .eq("room_id", roomId)
-      .order("reading_month", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    const result = await callMetersAction("get_latest_reading", { roomId }).catch(() => null);
+    const data = result?.reading;
     return {
       electricity: toNumber((data as any)?.current_electricity ?? 0),
       water: toNumber((data as any)?.current_water ?? 0),
@@ -299,15 +305,10 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
 
     const openModalById = async (id: string, tab: typeof initialTab) => {
     try {
-      const { data, error } = await supabase
-        .from("tenants")
-        .select("id,full_name,address,phone_number,line_user_id,move_in_date,move_out_date,status,room_id,lease_months,initial_electricity_reading,initial_water_reading,advance_rent_amount,security_deposit_amount,deposit_slip_url,final_electricity_reading,final_water_reading,forfeit_security_deposit,custom_payment_method,custom_receipt_profile,rooms(room_number,price_month,buildings(name))")
-        .eq("id", id)
-        .single();
-      if (error || !data) {
-        throw new Error("Tenant not found");
-      }
-      const tenantRow = data as unknown as TenantRow;
+      // Moved server-side (finding C1) — see get_tenant in
+      // app/api/admin/tenants/actions/route.ts.
+      const result = await callTenantsAction("get_tenant", { tenantId: id });
+      const tenantRow = result.tenant as unknown as TenantRow;
       openModal(tenantRow, tab);
     } catch (e) {
       console.error(e);
@@ -455,39 +456,38 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
   const uploadDepositSlip = async (file?: File | null) => {
     if (!file) return;
     setIsUploadingDepositSlip(true);
-    const tenantId = activeTenant?.id ?? crypto.randomUUID();
-    const safeFileName = sanitizeStorageFileName(file.name);
-    const path = `tenant-docs/${tenantId}/${Date.now()}-${safeFileName}`;
+    try {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+      if (!token) throw new Error("เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่");
 
-    const { error } = await supabase.storage.from("tenant-docs").upload(path, file, { upsert: true });
-    if (error) {
-      setStatus(error.message);
+      const tenantId = activeTenant?.id ?? crypto.randomUUID();
+      const body = new FormData();
+      body.append("file", file);
+      body.append("tenantId", tenantId);
+
+      const response = await fetch("/api/admin/tenants/upload-doc", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body,
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result?.error ?? "อัปโหลดสลิปมัดจำไม่สำเร็จ");
+
+      setDepositSlipUrls((prev) => {
+        if (prev.includes(result.url)) return prev;
+        return [...prev, result.url];
+      });
+      setStatus("อัปโหลดสลิปมัดจำเรียบร้อย");
+    } catch (error: any) {
+      setStatus(error?.message ?? "อัปโหลดสลิปมัดจำไม่สำเร็จ");
+    } finally {
       setIsUploadingDepositSlip(false);
-      return;
     }
-
-    const { data } = supabase.storage.from("tenant-docs").getPublicUrl(path);
-    setDepositSlipUrls((prev) => {
-      if (prev.includes(data.publicUrl)) return prev;
-      return [...prev, data.publicUrl];
-    });
-    setStatus("อัปโหลดสลิปมัดจำเรียบร้อย");
-    setIsUploadingDepositSlip(false);
   };
 
   const removeDepositSlip = (url: string) => {
     setDepositSlipUrls((prev) => prev.filter((item) => item !== url));
-  };
-
-  const logRoomEvent = async (roomId: string, eventType: "move_in" | "move_out") => {
-    const { error } = await supabase.from("room_logs").insert({
-      room_id: roomId,
-      event_type: eventType,
-      created_at: new Date().toISOString(),
-    });
-    if (error) {
-      setStatus(`บันทึกผู้เช่าแล้ว แต่บันทึกประวัติห้องไม่สำเร็จ: ${error.message}`);
-    }
   };
 
   const saveTenant = async () => {
@@ -585,15 +585,13 @@ export function TenantEditorModal({ isOpen, onClose, tenantId, initialTab = "inf
     await loadTenants();
     setStatus("บันทึกข้อมูลผู้เช่าเรียบร้อย");
     if (activeTenant?.id) {
-      const { data: refreshed } = await supabase
-        .from("tenants")
-        .select(
-          "id,full_name,address,phone_number,line_user_id,move_in_date,move_out_date,status,room_id,lease_months,initial_electricity_reading,initial_water_reading,advance_rent_amount,security_deposit_amount,deposit_slip_url,final_electricity_reading,final_water_reading,forfeit_security_deposit,custom_payment_method,custom_receipt_profile,rooms(room_number,price_month,buildings(name))"
-        )
-        .eq("id", activeTenant.id)
-        .maybeSingle();
-      if (refreshed) {
-        setActiveTenant(refreshed as TenantRow);
+      // Moved server-side (finding C1) — see get_tenant in
+      // app/api/admin/tenants/actions/route.ts.
+      try {
+        const result = await callTenantsAction("get_tenant", { tenantId: activeTenant.id });
+        if (result.tenant) setActiveTenant(result.tenant as TenantRow);
+      } catch {
+        // Best-effort refresh — the save itself already succeeded above.
       }
     }
     setIsSavingTenant(false);

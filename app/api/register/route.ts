@@ -2,6 +2,8 @@
 import { createAdminClient } from "@/lib/supabase-admin";
 import { verifyLineAccessToken } from "@/lib/line-admin-auth";
 
+const normalizePhone = (value: unknown) => String(value ?? "").replace(/\D/g, "");
+
 export async function POST(req: Request) {
   try {
     const body = await req.json();
@@ -12,8 +14,8 @@ export async function POST(req: Request) {
       phoneNumber,
       userId,
       accessToken,
-      securityDepositAmount,
-      advanceRentAmount,
+      // securityDepositAmount / advanceRentAmount intentionally not read:
+      // this endpoint must never set money fields on a tenant — see below.
       depositSlipUrl,
       advanceRentSlipUrl,
       isNewTenant,
@@ -119,7 +121,7 @@ export async function POST(req: Request) {
 
     const { data: tenant } = await supabase
       .from("tenants")
-      .select("id,line_user_id,move_out_date")
+      .select("id,line_user_id,move_out_date,phone_number")
       .eq("room_id", room.id)
       .eq("status", "active")
       .maybeSingle();
@@ -189,30 +191,51 @@ export async function POST(req: Request) {
       );
     }
 
-    const depositAmount = Number.isFinite(Number(securityDepositAmount))
-      ? Number(securityDepositAmount)
-      : 0;
-    const advanceAmount = Number.isFinite(Number(advanceRentAmount))
-      ? Number(advanceRentAmount)
-      : 0;
-
+    // Deposit and advance rent are never written from this endpoint — the
+    // registration page doesn't even collect them, so writing a computed 0
+    // here used to silently wipe whatever the owner had actually entered in
+    // the tenant profile modal. Those amounts are the owner's to enter, full
+    // stop (see CLAUDE.md's "Deposit/advance amounts are entered by the
+    // owner" rule and docs/audit/2026-09-29-system-audit-detailed.md finding
+    // C4).
     let registeredTenantId: string | null = null;
 
     if (tenant) {
       if (tenant.line_user_id && tenant.line_user_id !== userId) {
         return NextResponse.json({ error: "This room is already linked to another LINE account." }, { status: 400 });
       }
+      // An unlinked tenant record (created by an admin who hasn't sent them a
+      // LINE registration link yet) may only be claimed by whoever the admin
+      // actually entered — otherwise anyone who knows or guesses a room
+      // number could link themselves to that tenant and see their bills. If
+      // the admin never recorded a phone number for this tenant, there's
+      // nothing to verify against, so the link is allowed (matches prior
+      // behaviour for that edge case only).
+      if (!tenant.line_user_id) {
+        const onFile = normalizePhone(tenant.phone_number);
+        const submitted = normalizePhone(phoneNumber);
+        if (onFile && onFile.slice(-9) !== submitted.slice(-9)) {
+          return NextResponse.json(
+            {
+              error:
+                "หมายเลขโทรศัพท์ไม่ตรงกับข้อมูลที่ผู้ดูแลหอพักบันทึกไว้ กรุณาติดต่อผู้ดูแลหอพักเพื่อยืนยันตัวตน",
+            },
+            { status: 403 }
+          );
+        }
+      }
+      // Money fields and move-in date are never touched here — an existing
+      // tenant record may already carry owner-entered values, and this
+      // endpoint has no way to tell "left blank" apart from "trying to erase
+      // it". Only the tenant profile modal (admin-side) may change those.
       const { error: updateError } = await supabase
         .from("tenants")
         .update({
           line_user_id: tenant.line_user_id ?? userId,
           full_name: fullName,
           phone_number: phoneNumber,
-          security_deposit_amount: depositAmount,
-          advance_rent_amount: advanceAmount,
           deposit_slip_url: shouldMarkAsNewTenant ? depositSlipUrl ?? null : null,
           advance_rent_slip_url: shouldMarkAsNewTenant ? advanceRentSlipUrl ?? null : null,
-          move_in_date: normalizedMoveInDate,
           policy_accepted: normalizedPolicyAccepted,
           policy_accepted_at: normalizedPolicyAcceptedAt,
           policy_version: normalizedPolicyVersion,
@@ -224,6 +247,9 @@ export async function POST(req: Request) {
       }
       registeredTenantId = tenant.id;
     } else {
+      // Brand-new tenant, no admin-created row to protect — move-in date is
+      // safe to set here since there's no pre-existing value it could
+      // clobber. Deposit/advance still never get written (see above).
       const { data: insertedTenant, error: insertError } = await supabase
         .from("tenants")
         .insert({
@@ -233,8 +259,6 @@ export async function POST(req: Request) {
           line_user_id: userId,
           move_in_date: normalizedMoveInDate,
           status: "active",
-          security_deposit_amount: depositAmount,
-          advance_rent_amount: advanceAmount,
           deposit_slip_url: shouldMarkAsNewTenant ? depositSlipUrl ?? null : null,
           advance_rent_slip_url: shouldMarkAsNewTenant ? advanceRentSlipUrl ?? null : null,
           policy_accepted: normalizedPolicyAccepted,

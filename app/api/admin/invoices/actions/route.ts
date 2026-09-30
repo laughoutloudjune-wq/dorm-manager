@@ -5,11 +5,16 @@ import {
   applyManualInvoicePaymentAllocation,
   autoBillUnbilledLateFees,
   syncInvoiceLedger,
+  getCarryForwardCandidatesForTarget,
   snapshotFromPaymentMethodRow,
   calculateLateFeeAmount,
   resolveFullyPaidAtDate,
+  OPEN_INVOICE_STATUSES,
 } from "@/lib/invoice-ledger";
-import { isLateFeeBreakdownRow } from "@/lib/invoice-utils";
+import { isLateFeeBreakdownRow, isInvoiceDetailEditable, buildRuleBreakdown } from "@/lib/invoice-utils";
+import { chargesFromInvoiceRow, computeInvoiceTotal } from "@/lib/invoice-total";
+import { toLocalDateString, toNumber } from "@/lib/format";
+import { generateInvoicesForPeriod } from "@/lib/invoice-generation";
 import { syncPointsForTenant } from "@/lib/points-ledger";
 import { notifyTenantPointsEarned } from "@/lib/points-notify";
 import { declinePaymentSlip } from "@/lib/slip-review";
@@ -455,6 +460,602 @@ export async function POST(req: Request) {
           { error: err?.message ?? "Failed to decline the payment slip." },
           { status: 400 },
         );
+      }
+    }
+
+    if (action === "sync_period_statuses") {
+      // Same two transitions the invoice list used to write directly from the
+      // browser with the anon key (docs/audit/2026-09-29-system-audit-detailed.md
+      // finding C1, sites use-invoices-state.ts:292/309). Gated on
+      // "tenant.view" — the lowest permission every role has by default —
+      // because this ran unconditionally for every viewer who opened the
+      // list; a narrower gate here would silently stop viewers from ever
+      // seeing these transitions, which is a regression, not a relocation.
+      const auth = await requireAdminPermission(req, "tenant.view");
+      if ("error" in auth) return auth.error;
+      const periodStart = String(body?.periodStart ?? "");
+      const periodEnd = String(body?.periodEnd ?? "");
+      if (!periodStart || !periodEnd) {
+        return NextResponse.json({ error: "Missing periodStart or periodEnd." }, { status: 400 });
+      }
+      // Same toLocalDateString(new Date()) call this replaces used in the
+      // browser, where it read the admin's own clock. Here it reads the
+      // server's — the same not-yet-fixed UTC-vs-Bangkok gap CLAUDE.md
+      // documents in ~38 other places already (finding M10), not introduced
+      // by this move.
+      const today = toLocalDateString(new Date());
+
+      const { error: overdueError } = await auth.supabase
+        .from("invoices")
+        .update({ status: "overdue" })
+        .eq("status", "pending")
+        .eq("start_date", periodStart)
+        .eq("end_date", periodEnd)
+        .is("slip_url", null)
+        .lt("due_date", today);
+      if (overdueError) return NextResponse.json({ error: overdueError.message }, { status: 500 });
+
+      const { error: verifyingError } = await auth.supabase
+        .from("invoices")
+        .update({ status: "verifying" })
+        .in("status", ["pending", "overdue"])
+        .eq("start_date", periodStart)
+        .eq("end_date", periodEnd)
+        .eq("paid_amount", 0)
+        .not("slip_url", "is", null);
+      if (verifyingError) return NextResponse.json({ error: verifyingError.message }, { status: 500 });
+
+      return NextResponse.json({ success: true });
+    }
+
+    if (action === "sync_period_discounts") {
+      // Recalculates each invoice's discount/total against the current
+      // discount rules — moved server-side from
+      // lib/hooks/use-invoices-state.ts's syncMonthInvoicesWithSettings
+      // (finding C1, site use-invoices-state.ts:430). Same "tenant.view"
+      // gate as sync_period_statuses, same reason: ran for every viewer
+      // unconditionally before.
+      const auth = await requireAdminPermission(req, "tenant.view");
+      if ("error" in auth) return auth.error;
+      const year = Number(body?.year);
+      const month = Number(body?.month);
+      if (!year || !month) {
+        return NextResponse.json({ error: "Missing year or month." }, { status: 400 });
+      }
+
+      const periodStart = toLocalDateString(new Date(year, month - 1, 1));
+      const periodEnd = toLocalDateString(new Date(year, month, 0));
+      const monthKey = toLocalDateString(new Date(year, month - 1, 1));
+
+      const { data: settingsRow } = await auth.supabase
+        .from("settings")
+        .select("additional_discounts")
+        .eq("id", 1)
+        .maybeSingle();
+      const discountRules = Array.isArray((settingsRow as any)?.additional_discounts)
+        ? ((settingsRow as any).additional_discounts as any[])
+        : [];
+
+      const { data: invoicesInMonth, error: invoiceError } = await auth.supabase
+        .from("invoices")
+        .select(
+          "id,room_id,status,rent_amount,water_bill,electricity_bill,common_fee,late_fee_amount,carry_forward_amount,additional_fees_total,additional_fees_breakdown,discount_amount,discount_breakdown,total_amount"
+        )
+        .eq("start_date", periodStart)
+        .eq("end_date", periodEnd);
+
+      if (invoiceError) return NextResponse.json({ error: invoiceError.message }, { status: 500 });
+      if (!invoicesInMonth || invoicesInMonth.length === 0) {
+        return NextResponse.json({ success: true, updated: 0 });
+      }
+
+      const roomIds = [...new Set(invoicesInMonth.map((row: any) => row.room_id).filter(Boolean))];
+      const { data: readings } = await auth.supabase
+        .from("meter_readings")
+        .select("room_id,electricity_usage,water_usage,usage")
+        .eq("reading_month", monthKey)
+        .in("room_id", roomIds.length > 0 ? roomIds : ["00000000-0000-0000-0000-000000000000"]);
+      const readingMap = new Map((readings ?? []).map((row: any) => [row.room_id, row]));
+
+      const updates = (invoicesInMonth as any[])
+        .map((invoice) => {
+          if (!isInvoiceDetailEditable(String(invoice.status ?? ""))) return null;
+          const reading = readingMap.get(invoice.room_id) ?? {};
+          const elecUnits = toNumber(reading.electricity_usage);
+          const waterUnits = toNumber(reading.water_usage ?? reading.usage);
+          const freshRuleItems = buildRuleBreakdown(discountRules, elecUnits, waterUnits);
+          const existingBreakdown = Array.isArray(invoice.discount_breakdown)
+            ? (invoice.discount_breakdown as any[])
+            : [];
+          const preservedItems = existingBreakdown.filter((item: any) => item?.source !== "rule");
+          const discountBreakdown = [...freshRuleItems, ...preservedItems];
+          const discountAmount = discountBreakdown.reduce(
+            (sum, fee: any) => sum + toNumber(fee.amount ?? fee.total_amount),
+            0
+          );
+          const totalAmount = computeInvoiceTotal({
+            ...chargesFromInvoiceRow(invoice as any),
+            discount: discountAmount,
+          });
+
+          const currentDiscount = toNumber(invoice.discount_amount);
+          const currentTotal = toNumber(invoice.total_amount);
+          if (
+            Math.abs(currentDiscount - discountAmount) < 0.0001 &&
+            Math.abs(currentTotal - totalAmount) < 0.0001
+          ) {
+            return null;
+          }
+
+          return {
+            id: invoice.id as string,
+            discount_amount: discountAmount,
+            discount_breakdown: discountBreakdown,
+            total_amount: totalAmount,
+          };
+        })
+        .filter(Boolean) as { id: string; discount_amount: number; discount_breakdown: any[]; total_amount: number }[];
+
+      for (const update of updates) {
+        const { error: updateError } = await auth.supabase
+          .from("invoices")
+          .update({
+            discount_amount: update.discount_amount,
+            discount_breakdown: update.discount_breakdown,
+            total_amount: update.total_amount,
+          })
+          .eq("id", update.id);
+        if (updateError) return NextResponse.json({ error: updateError.message }, { status: 500 });
+      }
+
+      return NextResponse.json({ success: true, updated: updates.length });
+    }
+
+    if (action === "get_assignable_payment_methods") {
+      // Powers InvoiceDetailModal.tsx's "attach an account to an old
+      // payment" picker, which used to read payment_methods directly from
+      // the browser with the anon key (finding C1).
+      const auth = await requireAdminPermission(req, "tenant.view");
+      if ("error" in auth) return auth.error;
+      const { data, error } = await auth.supabase
+        .from("payment_methods")
+        .select("id,label,bank_name,account_name,account_number")
+        .order("label", { ascending: true });
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ methods: data ?? [] });
+    }
+
+    if (action === "get_payment_chains") {
+      // Powers InvoiceDetailModal.tsx's Payments tab, which used to read
+      // invoice_payment_allocations and payment_batches directly from the
+      // browser with the anon key (finding C1). The FK hint is required —
+      // invoice_payment_allocations has two foreign keys to invoices
+      // (invoice_id and trigger_invoice_id), so a bare embed is ambiguous.
+      // Returns the same raw shape the client used to fetch directly; the
+      // grouping-into-chains logic stays client-side, unchanged.
+      const auth = await requireAdminPermission(req, "tenant.view");
+      if ("error" in auth) return auth.error;
+      const invoiceId = String(body?.invoiceId ?? "");
+      if (!invoiceId) return NextResponse.json({ error: "Missing invoiceId." }, { status: 400 });
+
+      const { data: mine, error: mineError } = await auth.supabase
+        .from("invoice_payment_allocations")
+        .select("payment_batch_id")
+        .eq("invoice_id", invoiceId);
+      if (mineError) return NextResponse.json({ error: mineError.message }, { status: 500 });
+
+      const batchIds = [...new Set((mine ?? []).map((row: any) => String(row.payment_batch_id ?? "")).filter(Boolean))];
+      if (batchIds.length === 0) {
+        return NextResponse.json({ allocations: [], batches: [] });
+      }
+
+      const [allocationsRes, batchesRes] = await Promise.all([
+        auth.supabase
+          .from("invoice_payment_allocations")
+          .select(
+            "id,payment_batch_id,invoice_id,amount,paid_at,slip_url,payment_method_snapshot," +
+              "invoice:invoices!invoice_payment_allocations_invoice_id_fkey(id,start_date,rooms(room_number))"
+          )
+          .in("payment_batch_id", batchIds),
+        auth.supabase
+          .from("payment_batches")
+          .select("id,amount_received,paid_at,slip_url,source,trigger_invoice_id,payment_method_snapshot")
+          .in("id", batchIds),
+      ]);
+      if (allocationsRes.error) return NextResponse.json({ error: allocationsRes.error.message }, { status: 500 });
+      if (batchesRes.error) return NextResponse.json({ error: batchesRes.error.message }, { status: 500 });
+
+      return NextResponse.json({ allocations: allocationsRes.data ?? [], batches: batchesRes.data ?? [] });
+    }
+
+    if (action === "get_overdue_invoices") {
+      // Powers OverdueRoomsTab.tsx, which used to read every open invoice
+      // directly from the browser with the anon key (finding C1).
+      const auth = await requireAdminPermission(req, "tenant.view");
+      if ("error" in auth) return auth.error;
+      const { data, error } = await auth.supabase
+        .from("invoices")
+        .select(
+          "id,tenant_id,room_id,status,total_amount,paid_amount,payment_history,issue_date,due_date,start_date,end_date,rent_amount,water_bill,electricity_bill,common_fee,discount_amount,discount_breakdown,late_fee_amount,late_fee_per_day,late_fee_start_date,carry_forward_amount,additional_fees_total,additional_fees_breakdown,notes,public_token,slip_url,opened_count,first_opened_at,last_opened_at,tenants(full_name,phone_number,line_user_id,custom_payment_method,move_in_date,move_out_date,status),rooms(room_number,price_month,buildings(name))"
+        )
+        .in("status", ["pending", "partial", "overdue", "verifying"])
+        .order("start_date", { ascending: true });
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ invoices: data ?? [] });
+    }
+
+    if (action === "get_invoice_activity_snapshot") {
+      // Powers useRealtimeInvoices (lib/hooks/use-realtime-invoices.ts,
+      // mounted app-wide from AdminShell.tsx) — a lightweight snapshot
+      // polled on an interval to detect "slip just uploaded" / "just
+      // entered verifying" and pop a toast, replacing a Realtime
+      // subscription that connected straight to the database with the
+      // admin's own browser session (finding C1). Same status list as
+      // get_overdue_invoices above — those are the only statuses either
+      // transition is possible from.
+      const auth = await requireAdminPermission(req, "tenant.view");
+      if ("error" in auth) return auth.error;
+      const { data, error } = await auth.supabase
+        .from("invoices")
+        .select("id,room_id,slip_url,status")
+        .in("status", ["pending", "partial", "overdue", "verifying"]);
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ invoices: data ?? [] });
+    }
+
+    if (action === "get_carry_forward_candidates") {
+      // Powers the "older unpaid bills" list shown when opening an invoice's
+      // detail, and when recalculating its carry-forward lines. Moved
+      // server-side because getCarryForwardCandidatesForTarget has a write
+      // side effect (it calls syncInvoiceLedger internally) that used to run
+      // against `invoices` with the browser's anon-key client (finding C1,
+      // use-invoices-state.ts:1502/1980). Same "tenant.view" gate as the two
+      // sync actions above, for the same reason.
+      const auth = await requireAdminPermission(req, "tenant.view");
+      if ("error" in auth) return auth.error;
+      const tenantId = String(body?.tenantId ?? "");
+      const beforeStartDate = String(body?.beforeStartDate ?? "");
+      const targetInvoiceId = body?.targetInvoiceId ? String(body.targetInvoiceId) : null;
+      const valuationDate = body?.valuationDate ? String(body.valuationDate) : null;
+      if (!tenantId || !beforeStartDate) {
+        return NextResponse.json({ error: "Missing tenantId or beforeStartDate." }, { status: 400 });
+      }
+      try {
+        const candidates = await getCarryForwardCandidatesForTarget(
+          auth.supabase,
+          tenantId,
+          beforeStartDate,
+          targetInvoiceId,
+          valuationDate
+        );
+        return NextResponse.json({ candidates });
+      } catch (error: any) {
+        return NextResponse.json({ error: error?.message ?? "Unexpected server error." }, { status: 500 });
+      }
+    }
+
+    if (action === "get_latest_invoice_month") {
+      // Powers use-invoices-state.ts's initial month selection, which used
+      // to read directly from the browser with the anon key (finding C1).
+      const auth = await requireAdminPermission(req, "tenant.view");
+      if ("error" in auth) return auth.error;
+      const { data, error } = await auth.supabase
+        .from("invoices")
+        .select("start_date")
+        .order("start_date", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ startDate: (data as any)?.start_date ?? null });
+    }
+
+    if (action === "get_invoices_for_period") {
+      // Powers loadInvoices in use-invoices-state.ts — the main invoice
+      // list query, the "does this tenant have an earlier invoice" check
+      // used for the "new tenant" badge, and the slip-recovery fallback
+      // (list the storage folder when slip_url is empty) all used to run
+      // directly from the browser with the anon key (finding C1). Every
+      // query/filter is copied verbatim; the client's own normalize/sort/
+      // badge logic is unchanged.
+      const auth = await requireAdminPermission(req, "tenant.view");
+      if ("error" in auth) return auth.error;
+      const periodStart = String(body?.periodStart ?? "");
+      const periodEnd = String(body?.periodEnd ?? "");
+      if (!periodStart || !periodEnd) {
+        return NextResponse.json({ error: "Missing periodStart or periodEnd." }, { status: 400 });
+      }
+
+      const { data, error: fetchError } = await auth.supabase
+        .from("invoices")
+        .select(
+          "id,tenant_id,room_id,status,total_amount,paid_amount,payment_history,issue_date,due_date,start_date,end_date,rent_amount,water_bill,electricity_bill,common_fee,discount_amount,discount_breakdown,late_fee_amount,late_fee_per_day,late_fee_start_date,carry_forward_amount,additional_fees_total,additional_fees_breakdown,notes,public_token,slip_url,slip_rejections,opened_count,first_opened_at,last_opened_at,tenants(full_name,phone_number,line_user_id,custom_payment_method,move_in_date,move_out_date,status),rooms(room_number,price_month,buildings(name))"
+        )
+        .eq("start_date", periodStart)
+        .eq("end_date", periodEnd)
+        .order("issue_date", { ascending: false });
+      if (fetchError) return NextResponse.json({ error: fetchError.message }, { status: 500 });
+
+      const invoices = data ?? [];
+      const tenantIds = [...new Set(invoices.map((row: any) => String(row.tenant_id)))];
+      const { data: allTenantInvoices, error: tenantInvoicesError } =
+        tenantIds.length > 0
+          ? await auth.supabase
+              .from("invoices")
+              .select("tenant_id,start_date")
+              .in("tenant_id", tenantIds)
+              .neq("status", "cancelled")
+          : { data: [] as any[], error: null as any };
+      if (tenantInvoicesError) {
+        return NextResponse.json({ error: tenantInvoicesError.message }, { status: 500 });
+      }
+
+      const recoveredSlipUrlById: Record<string, string> = {};
+      await Promise.all(
+        invoices
+          .filter((row: any) => !row.slip_url)
+          .map(async (row: any) => {
+            const { data: files } = await auth.supabase.storage
+              .from("payment_slips")
+              .list(String(row.id), { limit: 1, sortBy: { column: "name", order: "desc" } });
+            if (!files || files.length === 0) return;
+            const latest = files[0];
+            const { data: publicData } = auth.supabase.storage
+              .from("payment_slips")
+              .getPublicUrl(`${row.id}/${latest.name}`);
+            recoveredSlipUrlById[String(row.id)] = publicData.publicUrl;
+          })
+      );
+
+      return NextResponse.json({
+        invoices,
+        tenantInvoicesForNewCheck: allTenantInvoices ?? [],
+        recoveredSlipUrls: recoveredSlipUrlById,
+      });
+    }
+
+    if (action === "get_print_config") {
+      // Powers loadPrintConfig in use-invoices-state.ts, which used to read
+      // settings and payment_methods directly from the browser with the
+      // anon key (finding C1).
+      const auth = await requireAdminPermission(req, "tenant.view");
+      if ("error" in auth) return auth.error;
+      const [settingsRes, paymentRes] = await Promise.all([
+        auth.supabase
+          .from("settings")
+          .select(
+            "dorm_name,dorm_address,water_rate,electricity_rate,water_min_units,water_min_price,billing_day,due_day,late_fee_start_day,additional_discounts"
+          )
+          .eq("id", 1)
+          .maybeSingle(),
+        auth.supabase
+          .from("payment_methods")
+          .select("label,bank_name,account_name,account_number,qr_url")
+          .order("created_at", { ascending: true })
+          .limit(1)
+          .maybeSingle(),
+      ]);
+      if (settingsRes.error) return NextResponse.json({ error: settingsRes.error.message }, { status: 500 });
+      if (paymentRes.error) return NextResponse.json({ error: paymentRes.error.message }, { status: 500 });
+      return NextResponse.json({
+        settings: settingsRes.data ?? null,
+        defaultPaymentMethod: paymentRes.data ?? null,
+      });
+    }
+
+    if (action === "get_move_out_warnings") {
+      // Powers loadMoveOutWarnings in use-invoices-state.ts, which used to
+      // read move_out_requests directly from the browser with the anon key
+      // (finding C1).
+      const auth = await requireAdminPermission(req, "tenant.view");
+      if ("error" in auth) return auth.error;
+      const monthStart = String(body?.monthStart ?? "");
+      const monthEnd = String(body?.monthEnd ?? "");
+      if (!monthStart || !monthEnd) {
+        return NextResponse.json({ error: "Missing monthStart or monthEnd." }, { status: 400 });
+      }
+      const { data, error } = await auth.supabase
+        .from("move_out_requests")
+        .select("id,tenant_id,requested_move_out_date,status,tenants(full_name,rooms(room_number))")
+        .in("status", ["requested", "approved"])
+        .gte("requested_move_out_date", monthStart)
+        .lte("requested_move_out_date", monthEnd)
+        .order("requested_move_out_date", { ascending: true });
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ warnings: data ?? [] });
+    }
+
+    if (action === "get_pending_move_out_count") {
+      // Powers the pending-move-out badge in use-invoices-state.ts, which
+      // used to read move_out_requests and tenants directly from the
+      // browser with the anon key (finding C1) — and, until now, kept
+      // doing so live via a Supabase Realtime subscription; this is polled
+      // instead now.
+      const auth = await requireAdminPermission(req, "tenant.view");
+      if ("error" in auth) return auth.error;
+      const [requestsRes, tenantsRes] = await Promise.all([
+        auth.supabase.from("move_out_requests").select("tenant_id").eq("status", "requested"),
+        auth.supabase.from("tenants").select("id").not("move_out_date", "is", null).eq("status", "active"),
+      ]);
+      if (requestsRes.error) return NextResponse.json({ error: requestsRes.error.message }, { status: 500 });
+      if (tenantsRes.error) return NextResponse.json({ error: tenantsRes.error.message }, { status: 500 });
+      const ids = new Set<string>();
+      for (const row of requestsRes.data ?? []) {
+        const id = String((row as any).tenant_id ?? "");
+        if (id) ids.add(id);
+      }
+      for (const row of tenantsRes.data ?? []) {
+        const id = String((row as any).id ?? "");
+        if (id) ids.add(id);
+      }
+      return NextResponse.json({ count: ids.size });
+    }
+
+    if (action === "get_open_invoices_for_tenant") {
+      // Powers openSplitPaymentModal in use-invoices-state.ts, which used
+      // to read directly from the browser with the anon key (finding C1).
+      const auth = await requireAdminPermission(req, "tenant.view");
+      if ("error" in auth) return auth.error;
+      const tenantId = String(body?.tenantId ?? "");
+      if (!tenantId) return NextResponse.json({ error: "Missing tenantId." }, { status: 400 });
+      const { data, error } = await auth.supabase
+        .from("invoices")
+        .select("id,start_date,total_amount,paid_amount,status")
+        .eq("tenant_id", tenantId)
+        .in("status", OPEN_INVOICE_STATUSES as unknown as string[])
+        .order("start_date", { ascending: true });
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ invoices: data ?? [] });
+    }
+
+    if (action === "get_invoice_snapshot") {
+      // Powers submitSplitPayment's post-payment refresh of the active
+      // invoice in use-invoices-state.ts, which used to read directly from
+      // the browser with the anon key (finding C1).
+      const auth = await requireAdminPermission(req, "tenant.view");
+      if ("error" in auth) return auth.error;
+      const invoiceId = String(body?.invoiceId ?? "");
+      if (!invoiceId) return NextResponse.json({ error: "Missing invoiceId." }, { status: 400 });
+      const { data, error } = await auth.supabase
+        .from("invoices")
+        .select(
+          "id,paid_amount,status,total_amount,carry_forward_amount,additional_fees_total,additional_fees_breakdown,payment_history"
+        )
+        .eq("id", invoiceId)
+        .maybeSingle();
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ invoice: data ?? null });
+    }
+
+    if (action === "get_invoice_reading_and_arrears") {
+      // Powers both the invoice-detail modal's meter/arrears hydration and
+      // getInvoicePrintDetail in use-invoices-state.ts — two identical
+      // reads that used to run directly from the browser with the anon key
+      // (finding C1).
+      const auth = await requireAdminPermission(req, "tenant.view");
+      if ("error" in auth) return auth.error;
+      const invoiceId = String(body?.invoiceId ?? "");
+      const roomId = String(body?.roomId ?? "");
+      const readingMonth = String(body?.readingMonth ?? "");
+      if (!invoiceId || !roomId || !readingMonth) {
+        return NextResponse.json({ error: "Missing invoiceId, roomId, or readingMonth." }, { status: 400 });
+      }
+      const [readingRes, snapshotRes] = await Promise.all([
+        auth.supabase
+          .from("meter_readings")
+          .select(
+            "electricity_usage,water_usage,usage,previous_electricity,current_electricity,previous_water,current_water,previous_reading,current_reading"
+          )
+          .eq("room_id", roomId)
+          .eq("reading_month", readingMonth)
+          .maybeSingle(),
+        auth.supabase
+          .from("invoice_arrears_snapshots")
+          .select("id,source_invoice_id,snapshot_as_of,principal_amount,late_fee_amount,days_overdue,daily_rate")
+          .eq("target_invoice_id", invoiceId)
+          .order("created_at", { ascending: true }),
+      ]);
+      if (readingRes.error) return NextResponse.json({ error: readingRes.error.message }, { status: 500 });
+      if (snapshotRes.error) return NextResponse.json({ error: snapshotRes.error.message }, { status: 500 });
+      return NextResponse.json({
+        reading: readingRes.data ?? null,
+        arrearsSnapshots: snapshotRes.data ?? [],
+      });
+    }
+
+    if (action === "get_transfer_recalc_data") {
+      // Powers recalculateTransferBreakdown in use-invoices-state.ts, which
+      // used to run 3 sequential reads directly from the browser with the
+      // anon key (finding C1).
+      const auth = await requireAdminPermission(req, "tenant.view");
+      if ("error" in auth) return auth.error;
+      const roomId = String(body?.roomId ?? "");
+      const billingMonth = String(body?.billingMonth ?? "");
+      const transferDate = String(body?.transferDate ?? "");
+      if (!roomId || !billingMonth || !transferDate) {
+        return NextResponse.json(
+          { error: "Missing roomId, billingMonth, or transferDate." },
+          { status: 400 }
+        );
+      }
+      const { data: transferRows, error: transferError } = await auth.supabase
+        .from("tenant_room_transfers")
+        .select(
+          "from_room_id,to_room_id,transfer_date,billing_month,old_electric_usage,old_water_usage,new_prev_electricity,new_prev_water"
+        )
+        .eq("to_room_id", roomId)
+        .eq("billing_month", billingMonth)
+        .eq("transfer_date", transferDate)
+        .order("transfer_date", { ascending: false })
+        .limit(1);
+      if (transferError) return NextResponse.json({ error: transferError.message }, { status: 500 });
+
+      const transferRow = (transferRows ?? [])[0] ?? null;
+      if (!transferRow) {
+        return NextResponse.json({ transferRow: null, roomRows: [], reading: null });
+      }
+
+      const roomIds = [(transferRow as any).from_room_id, (transferRow as any).to_room_id];
+      const [roomsRes, readingRes] = await Promise.all([
+        auth.supabase.from("rooms").select("id,price_month").in("id", roomIds),
+        auth.supabase
+          .from("meter_readings")
+          .select("current_electricity,current_water,electricity_usage,water_usage")
+          .eq("room_id", roomId)
+          .eq("billing_month", billingMonth)
+          .limit(1),
+      ]);
+      if (roomsRes.error) return NextResponse.json({ error: roomsRes.error.message }, { status: 500 });
+
+      return NextResponse.json({
+        transferRow,
+        roomRows: roomsRes.data ?? [],
+        reading: (readingRes.data ?? [])[0] ?? null,
+      });
+    }
+
+    if (action === "delete_payment_slip_files") {
+      // Powers deletePaymentSlip in use-invoices-state.ts, which used to
+      // list and remove storage objects directly from the browser with the
+      // anon key (finding C1).
+      const auth = await requireAdminPermission(req, "invoice.payment.record");
+      if ("error" in auth) return auth.error;
+      const invoiceId = String(body?.invoiceId ?? "");
+      if (!invoiceId) return NextResponse.json({ error: "Missing invoiceId." }, { status: 400 });
+      const { data: files, error: listError } = await auth.supabase.storage
+        .from("payment_slips")
+        .list(invoiceId, { limit: 1000 });
+      if (listError) return NextResponse.json({ error: listError.message }, { status: 500 });
+      const paths = (files ?? []).map((file) => `${invoiceId}/${file.name}`);
+      if (paths.length > 0) {
+        const { error: removeError } = await auth.supabase.storage.from("payment_slips").remove(paths);
+        if (removeError) return NextResponse.json({ error: removeError.message }, { status: 500 });
+      }
+      return NextResponse.json({ success: true, removedCount: paths.length });
+    }
+
+    if (action === "generate_invoices") {
+      // The full implementation lives in lib/invoice-generation.ts,
+      // specifically so it can also be called directly (service-role
+      // client, dryRun: true) from a verification script without needing a
+      // real admin session — see that file's own header comment. This is
+      // the last remaining C1 item
+      // (docs/audit/2026-09-29-system-audit-detailed.md): monthly invoice
+      // generation had no server-side version at all before this.
+      const auth = await requireAdminPermission(req, "invoice.create");
+      if ("error" in auth) return auth.error;
+
+      const year = Number(body?.year);
+      const month = Number(body?.month);
+      try {
+        const result = await generateInvoicesForPeriod(auth.supabase, {
+          year,
+          month,
+          dryRun: Boolean(body?.dryRun),
+          dryRunIncludeExisting: Boolean(body?.dryRunIncludeExisting),
+        });
+        return NextResponse.json(result);
+      } catch (error: any) {
+        return NextResponse.json({ error: error?.message ?? "Unexpected server error." }, { status: 500 });
       }
     }
 

@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { createClient } from "@/lib/supabase-client";
 import { Tabs } from "@/components/ui/Page";
 
 type LiffProfile = {
@@ -81,23 +80,7 @@ const APARTMENT_POLICY = [
 const roomNumberCompare = (a: string, b: string) =>
   a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
 
-const sanitizeStorageFileName = (fileName: string) => {
-  const extensionIndex = fileName.lastIndexOf(".");
-  const rawBase = extensionIndex >= 0 ? fileName.slice(0, extensionIndex) : fileName;
-  const rawExtension = extensionIndex >= 0 ? fileName.slice(extensionIndex).toLowerCase() : "";
-  const safeBase = rawBase
-    .normalize("NFKD")
-    .replace(/[^\x00-\x7F]/g, "")
-    .replace(/[^a-zA-Z0-9-_]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "")
-    .toLowerCase();
-  const safeExtension = rawExtension.replace(/[^.a-z0-9]/g, "");
-  return `${safeBase || "upload"}${safeExtension}`;
-};
-
 export default function RegisterPage() {
-  const supabase = useMemo(() => createClient(), []);
   const [profile, setProfile] = useState<LiffProfile | null>(null);
   const [roomNumber, setRoomNumber] = useState("");
   const [pickedRoomId, setPickedRoomId] = useState<string | null>(null);
@@ -245,26 +228,39 @@ export default function RegisterPage() {
 
   const uploadSlip = async (file: File | null | undefined) => {
     if (!file) return;
-    const safeRoom = roomNumber.trim() || "unknown-room";
-    const safeFileName = sanitizeStorageFileName(file.name);
-    const filename = `${Date.now()}-${safeFileName}`;
-    const path = `tenant-docs/register/${safeRoom}/new-tenant-${filename}`;
+    if (!profile?.userId) {
+      toast.error("กรุณาเข้าสู่ระบบ LINE ก่อนอัปโหลดสลิป");
+      return;
+    }
 
     setUploadingNewTenantSlip(true);
 
     try {
-      const { error: uploadError } = await supabase.storage
-        .from("tenant-docs")
-        .upload(path, file, { upsert: true });
-
-      if (uploadError) {
-        toast.error(uploadError.message);
+      // Moved server-side (finding C1/C2) — this used to write straight into
+      // the tenant-docs bucket from the browser with the anon key.
+      const { default: liff } = await import("@line/liff");
+      const accessToken = liff.getAccessToken();
+      if (!accessToken) {
+        toast.error("Session หมดอายุ กรุณาเข้าใหม่อีกครั้ง");
         return;
       }
 
-      const { data } = supabase.storage.from("tenant-docs").getPublicUrl(path);
-      setNewTenantSlipUrl(data.publicUrl);
+      const body = new FormData();
+      body.append("file", file);
+      body.append("accessToken", accessToken);
+      body.append("roomNumber", roomNumber.trim() || "unknown-room");
+
+      const response = await fetch("/api/register/upload-doc", { method: "POST", body });
+      const result = await response.json().catch(() => ({} as any));
+      if (!response.ok) {
+        toast.error(result?.error ?? "อัปโหลดสลิปไม่สำเร็จ");
+        return;
+      }
+
+      setNewTenantSlipUrl(result.url);
       toast.success("อัปโหลดสลิปสำเร็จ");
+    } catch (error: any) {
+      toast.error(error?.message ?? "อัปโหลดสลิปไม่สำเร็จ");
     } finally {
       setUploadingNewTenantSlip(false);
     }

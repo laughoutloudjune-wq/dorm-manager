@@ -237,13 +237,14 @@ export default function RoomsPage() {
   };
 
   const loadRooms = async () => {
-    const { data, error: fetchError } = await supabase
-      .from("rooms")
-      .select("id,room_number,status,buildings(name),tenants(full_name,line_user_id)")
-      .order("room_number");
-
-    if (fetchError) {
-      toast.error(fetchError.message);
+    // Moved server-side (finding C1) — see get_rooms in
+    // app/api/admin/rooms/actions/route.ts.
+    let data: any[] = [];
+    try {
+      const result = await callRoomsAction("get_rooms", {});
+      data = result.rooms ?? [];
+    } catch (error: any) {
+      toast.error(error?.message ?? "โหลดข้อมูลห้องไม่สำเร็จ");
       return;
     }
 
@@ -283,13 +284,16 @@ export default function RoomsPage() {
       return;
     }
 
-    const { data: latestInvoice } = await supabase
-      .from("invoices")
-      .select("public_token,total_amount,issue_date")
-      .eq("room_id", room.id)
-      .order("issue_date", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    // Moved server-side (finding C1) — see get_latest_invoice_for_room in
+    // app/api/admin/rooms/actions/route.ts.
+    let latestInvoice: any = null;
+    try {
+      const result = await callRoomsAction("get_latest_invoice_for_room", { roomId: room.id });
+      latestInvoice = result.invoice;
+    } catch (error: any) {
+      toast.error(error?.message ?? "โหลดใบแจ้งหนี้ไม่สำเร็จ");
+      return;
+    }
 
     if (!latestInvoice) {
       toast.error("ไม่พบใบแจ้งหนี้ของห้องนี้");
@@ -337,21 +341,17 @@ export default function RoomsPage() {
 
   const loadMovementLogs = async (roomId: string) => {
     setMovementLoading(true);
-    const { data, error } = await supabase
-      .from("room_tenant_logs")
-      .select("id,tenant_id,tenant_name,move_in_date,move_out_date")
-      .eq("room_id", roomId)
-      .order("move_in_date", { ascending: false });
-
-    if (error) {
-      toast.error(error.message);
+    try {
+      // Moved server-side (finding C1) — see get_room_movement_logs in
+      // app/api/admin/rooms/actions/route.ts.
+      const result = await callRoomsAction("get_room_movement_logs", { roomId });
+      setMovementLogs((result.logs ?? []) as TenantMovementRow[]);
+    } catch (error: any) {
+      toast.error(error?.message ?? "โหลดประวัติผู้เช่าไม่สำเร็จ");
       setMovementLogs([]);
+    } finally {
       setMovementLoading(false);
-      return;
     }
-
-    setMovementLogs((data ?? []) as TenantMovementRow[]);
-    setMovementLoading(false);
   };
 
   useEffect(() => {
@@ -371,46 +371,18 @@ export default function RoomsPage() {
     if (!log.tenant_id) return;
 
     setTenantLoading(true);
-    const [
-      { data: tenant, error: tenantError },
-      { data: invoices, error: invoiceError },
-      { data: requests, error: requestError },
-    ] = await Promise.all([
-      supabase
-        .from("tenants")
-        .select(
-          "id,room_id,full_name,phone_number,email,address,line_user_id,status,move_in_date,move_out_date,lease_months,security_deposit_amount,advance_rent_amount,forfeit_security_deposit,initial_electricity_reading,initial_water_reading,final_electricity_reading,final_water_reading"
-        )
-        .eq("id", log.tenant_id)
-        .maybeSingle(),
-      supabase
-        .from("invoices")
-        .select("id,issue_date,start_date,total_amount,paid_amount,status,public_token,notes")
-        .eq("tenant_id", log.tenant_id)
-        .order("issue_date", { ascending: false }),
-      supabase
-        .from("move_out_requests")
-        .select(
-          "id,requested_move_out_date,approved_move_out_date,actual_move_out_date,status,request_note,admin_note,created_at"
-        )
-        .eq("tenant_id", log.tenant_id)
-        .order("created_at", { ascending: false })
-        .limit(1),
-    ]);
-
-    if (tenantError || invoiceError || requestError) {
-      toast.error(
-        tenantError?.message ??
-          invoiceError?.message ??
-          requestError?.message ??
-          "โหลดข้อมูลผู้เช่าไม่สำเร็จ"
-      );
+    // Moved server-side (finding C1) — see get_room_tenant_detail in
+    // app/api/admin/rooms/actions/route.ts.
+    try {
+      const result = await callRoomsAction("get_room_tenant_detail", { tenantId: log.tenant_id });
+      setTenantDetail((result.tenant as TenantDetail | null) ?? null);
+      setTenantInvoices((result.invoices ?? []) as TenantInvoiceRow[]);
+      setMoveOutRequest((result.moveOutRequest as MoveOutRequestRow | null) ?? null);
+    } catch (error: any) {
+      toast.error(error?.message ?? "โหลดข้อมูลผู้เช่าไม่สำเร็จ");
+    } finally {
+      setTenantLoading(false);
     }
-
-    setTenantDetail((tenant as TenantDetail | null) ?? null);
-    setTenantInvoices((invoices ?? []) as TenantInvoiceRow[]);
-    setMoveOutRequest(((requests ?? [])[0] as MoveOutRequestRow | undefined) ?? null);
-    setTenantLoading(false);
   };
 
   const closeRoomModal = () => {
