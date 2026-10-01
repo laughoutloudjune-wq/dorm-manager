@@ -408,8 +408,13 @@ export function useInvoicesState() {
         };
       });
 
+      // Bills for tenants who have given notice (_is_waiting_for_move_out) are
+      // deliberately NOT filtered out: they still owe rent until settlement and,
+      // like every monthly bill, must be reviewed and sent by the owner. Hiding
+      // them made a generated draft invisible, and regenerating then skipped
+      // the room because a bill for the period already existed. The list shows
+      // a "moving out" badge on them instead.
       const sortedHydrated = [...hydrated]
-        .filter((inv) => !inv._is_waiting_for_move_out)
         .sort((a, b) => {
         const byBuilding = a.building_name.localeCompare(
           b.building_name,

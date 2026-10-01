@@ -457,15 +457,46 @@ export function InvoiceDetailModal() {
   ]);
 
   const deletePaymentBatch = async (batchId: string) => {
-    const confirmed = window.confirm(
-      "ยืนยันการลบรายการชำระเงินนี้?\n\nการลบนี้จะลบรายการออกจากทุกใบแจ้งหนี้ที่เงินก้อนนี้ถูกแบ่งไปชำระ และไม่สามารถย้อนกลับได้ผ่านหน้านี้",
+    // The server now voids instead of deleting, and a void requires a reason
+    // (void_payment). Cancel on the prompt = don't void.
+    const reasonInput = window.prompt(
+      "ยืนยันการยกเลิกรายการชำระเงินนี้?\n\nรายการจะถูกยกเลิกจากทุกใบแจ้งหนี้ที่เงินก้อนนี้ถูกแบ่งไปชำระ (ระบบยังเก็บประวัติไว้)\n\nกรุณาระบุเหตุผล:",
     );
-    if (!confirmed) return;
+    if (reasonInput === null) return;
+    const reason = reasonInput.trim();
+    if (!reason) {
+      setError("กรุณาระบุเหตุผลในการยกเลิกรายการชำระเงิน");
+      return;
+    }
     setDeletingBatchId(batchId);
     try {
       const result = await callInvoiceAdminAction("delete_payment_batch", {
         paymentBatchId: batchId,
+        reason,
       });
+      // A void (unlike the old delete) changes paid_amount, status and
+      // payment_history on every bill the batch touched. Re-read them so the
+      // screen never shows — or lets someone act on — the voided money.
+      const touchedIds: string[] = Array.isArray(result?.touchedInvoiceIds)
+        ? result.touchedInvoiceIds.map(String)
+        : [];
+      for (const touchedId of touchedIds) {
+        const snapshot = await callInvoiceAdminAction("get_invoice_snapshot", {
+          invoiceId: touchedId,
+        }).catch(() => null);
+        const fresh = snapshot?.invoice as any;
+        if (!fresh) continue;
+        const patch = {
+          paid_amount: toNumber(fresh.paid_amount),
+          status: fresh.status,
+          payment_history: Array.isArray(fresh.payment_history) ? fresh.payment_history : [],
+        };
+        patchInvoiceInState(touchedId, patch);
+        if (touchedId === activeInvoiceId) {
+          setActiveInvoice((prev) => (prev ? { ...prev, ...patch } : prev));
+          setForm((prev) => ({ ...prev, paid_amount: patch.paid_amount, status: patch.status }));
+        }
+      }
       const mismatches = Array.isArray(result?.mismatches) ? result.mismatches : [];
       if (mismatches.length > 0) {
         const isSelf = mismatches.some(

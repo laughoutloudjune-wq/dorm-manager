@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/admin-api-auth";
 import {
-  applyInvoicePaymentAllocation,
-  applyManualInvoicePaymentAllocation,
+  resolvePaymentMethodForTenant,
   autoBillUnbilledLateFees,
   syncInvoiceLedger,
   getCarryForwardCandidatesForTarget,
@@ -11,9 +10,23 @@ import {
   resolveFullyPaidAtDate,
   OPEN_INVOICE_STATUSES,
 } from "@/lib/invoice-ledger";
-import { isLateFeeBreakdownRow, isInvoiceDetailEditable, buildRuleBreakdown } from "@/lib/invoice-utils";
+import {
+  isLateFeeBreakdownRow,
+  isInvoiceDetailEditable,
+  buildRuleBreakdown,
+  isNonCashPaymentSource,
+} from "@/lib/invoice-utils";
 import { chargesFromInvoiceRow, computeInvoiceTotal } from "@/lib/invoice-total";
-import { toLocalDateString, toNumber } from "@/lib/format";
+import { roundTo2, toLocalDateString, toNumber } from "@/lib/format";
+import {
+  getInvoiceBalance,
+  type BalanceAllocation,
+  type BalanceInvoice,
+  type BalanceTenant,
+  type BalanceWaiver,
+  type ManualInvoiceStatus,
+} from "@/lib/invoice-balance";
+import { bangkokYmd } from "@/lib/move-out-notice";
 import { generateInvoicesForPeriod } from "@/lib/invoice-generation";
 import { syncPointsForTenant } from "@/lib/points-ledger";
 import { notifyTenantPointsEarned } from "@/lib/points-notify";
@@ -38,6 +51,405 @@ async function syncPointsAfterPayment(supabase: SupabaseClient, invoiceId: strin
   } catch (err) {
     console.error("[rewards] Failed to sync points after payment for invoice:", invoiceId, err);
   }
+}
+
+// ─── Money RPCs (record_payment / void_payment) ──────────────────────────────
+//
+// Recording and voiding money goes through the Postgres functions
+// `record_payment` and `void_payment` (docs/audit/2026-09-29-late-fee-and-overdue-design.md
+// B3): one transaction, tenant row locked, compare-and-swap on the facts each
+// split line's balance was computed from. This route only (a) computes each
+// bill's amount due with the pure engine (lib/invoice-balance.ts, B2), (b)
+// freezes the receiving account, and (c) hands both to the function. It never
+// writes a money column itself.
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Every column `getInvoiceBalance` needs for either fee model, plus the owner. */
+const BALANCE_INVOICE_COLUMNS =
+  "id,tenant_id,status,fee_model,kind,total_amount,carry_forward_amount,paid_amount,due_date," +
+  "late_fee_start_date,late_fee_per_day,late_fee_paused_from,locked_late_fee_amount,late_fee_billed_at";
+
+/** The shape the client already reads back (`updatedInvoices`) after a payment. */
+const UPDATED_INVOICE_COLUMNS =
+  "id,paid_amount,status,payment_history,slip_url,slip_uploaded_at,total_amount";
+
+/**
+ * Codes raised as `[code] message` by the money functions that mean "the
+ * request, or the data it was based on, is wrong" rather than a server fault.
+ */
+const RPC_CLIENT_ERROR_CODES = new Set([
+  "bad_request",
+  "stale_balance",
+  "over_allocation",
+  "split_mismatch",
+  "amount_due_implausible",
+  "not_payable",
+  "idempotency_key_conflict",
+  "idempotency_key_voided",
+  "settlement_batch",
+]);
+
+/** A request error the money actions report with a specific HTTP status. */
+class MoneyRouteError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+    readonly code: string | null = null,
+  ) {
+    super(message);
+  }
+}
+
+const moneyErrorResponse = (err: MoneyRouteError) =>
+  NextResponse.json({ error: err.message, code: err.code }, { status: err.status });
+
+/** Map a `raise exception '[code] message'` from an RPC to an HTTP response. */
+function rpcErrorResponse(error: { message?: string | null } | null) {
+  const raw = String(error?.message ?? "Database error.");
+  const match = /^\[([a-z_]+)\]\s*([\s\S]*)$/.exec(raw);
+  const code = match ? match[1] : null;
+  const message = match && match[2] ? match[2] : raw;
+  const status =
+    code === "not_found" ? 404 : code && RPC_CLIENT_ERROR_CODES.has(code) ? 400 : 500;
+  return NextResponse.json({ error: message, code }, { status });
+}
+
+const MANUAL_STATUSES: ReadonlySet<string> = new Set(["draft", "cancelled", "closed_unpaid"]);
+
+/** A live `invoices` row (BALANCE_INVOICE_COLUMNS) + its tenant → the engine's input. */
+function toBalanceInvoice(row: any, tenant: BalanceTenant): BalanceInvoice {
+  const status = String(row.status ?? "");
+  const common = {
+    id: String(row.id),
+    manual_status: MANUAL_STATUSES.has(status) ? (status as ManualInvoiceStatus) : null,
+    is_verifying: status === "verifying",
+    tenant,
+  };
+  const nullableNumber = (value: unknown) => (value == null ? null : toNumber(value as any));
+  if (row.fee_model === "v2") {
+    if (row.kind !== "monthly" && row.kind !== "move_out") {
+      throw new MoneyRouteError(500, `Invoice ${row.id} has an unknown kind: ${row.kind}`);
+    }
+    return {
+      ...common,
+      fee_model: "v2",
+      kind: row.kind,
+      total_amount: toNumber(row.total_amount),
+      due_date: String(row.due_date),
+      late_fee_start_date: row.late_fee_start_date ?? null,
+      late_fee_per_day: nullableNumber(row.late_fee_per_day),
+      late_fee_paused_from: row.late_fee_paused_from ?? null,
+    };
+  }
+  if (row.fee_model === "legacy") {
+    return {
+      ...common,
+      fee_model: "legacy",
+      total_amount: nullableNumber(row.total_amount),
+      carry_forward_amount: nullableNumber(row.carry_forward_amount),
+      due_date: row.due_date ?? null,
+      locked_late_fee_amount: nullableNumber(row.locked_late_fee_amount),
+      late_fee_billed_at: row.late_fee_billed_at ?? null,
+    };
+  }
+  throw new MoneyRouteError(500, `Invoice ${row.id} has an unknown fee_model: ${row.fee_model}`);
+}
+
+type SplitRequestLine = { invoiceId: string; amount: number };
+
+/** One `p_split` element, exactly as `record_payment` reads it. */
+type RpcSplitLine = {
+  invoice_id: string;
+  amount: number;
+  expected_amount_due: number;
+  expected_paid_sum: number;
+  expected_waived_sum: number;
+};
+
+/**
+ * Build `p_split` for `record_payment`: each line's amount as the admin
+ * entered it, plus the engine's amount due for that bill as of the transfer
+ * date and the two compare-and-swap stamps (Σ non-voided allocations, Σ
+ * non-voided waivers) that figure was computed from.
+ *
+ * Validates only the request's SHAPE. Whether an amount fits is the database
+ * function's decision (`[over_allocation]`), and it must stay that way: a
+ * retried request replays its original result inside the function before any
+ * balance check, so rejecting "nothing owed" here would break the retry.
+ */
+async function buildRecordPaymentSplit(
+  supabase: SupabaseClient,
+  tenantId: string,
+  lines: SplitRequestLine[],
+  paidAtIso: string,
+): Promise<RpcSplitLine[]> {
+  const ids = lines.map((line) => line.invoiceId);
+
+  const { data: invoiceRows, error: invoiceError } = await supabase
+    .from("invoices")
+    .select(BALANCE_INVOICE_COLUMNS)
+    .in("id", ids);
+  if (invoiceError) throw new MoneyRouteError(500, invoiceError.message);
+  const invoiceById = new Map(((invoiceRows ?? []) as any[]).map((row) => [String(row.id), row]));
+  for (const id of ids) {
+    const row = invoiceById.get(id);
+    if (!row) throw new MoneyRouteError(404, `Invoice ${id} not found.`, "not_found");
+    if (String(row.tenant_id) !== tenantId) {
+      throw new MoneyRouteError(
+        400,
+        "ใบแจ้งหนี้ที่เลือกต้องเป็นของผู้เช่าคนเดียวกันทั้งหมด",
+        "bad_request",
+      );
+    }
+  }
+
+  const { data: tenantRow, error: tenantError } = await supabase
+    .from("tenants")
+    .select("id,status,handover_date,tenancy_end_date")
+    .eq("id", tenantId)
+    .maybeSingle();
+  if (tenantError) throw new MoneyRouteError(500, tenantError.message);
+  if (!tenantRow) throw new MoneyRouteError(404, `Tenant ${tenantId} not found.`, "not_found");
+  const tenant: BalanceTenant = {
+    status: (tenantRow as any).status ?? null,
+    handover_date: (tenantRow as any).handover_date ?? null,
+    tenancy_end_date: (tenantRow as any).tenancy_end_date ?? null,
+  };
+
+  // Allocations carry their batch's paid_at / voided_at — the same join
+  // `_dm_paid_sum` uses, so the stamps below match what the function re-reads.
+  const { data: allocRows, error: allocError } = await supabase
+    .from("invoice_payment_allocations")
+    .select("invoice_id,amount,payment_batch_id")
+    .in("invoice_id", ids);
+  if (allocError) throw new MoneyRouteError(500, allocError.message);
+  const batchIds = [
+    ...new Set(((allocRows ?? []) as any[]).map((row) => String(row.payment_batch_id))),
+  ];
+  const batchById = new Map<string, { paid_at: string; voided_at: string | null }>();
+  if (batchIds.length > 0) {
+    const { data: batchRows, error: batchError } = await supabase
+      .from("payment_batches")
+      .select("id,paid_at,voided_at")
+      .in("id", batchIds);
+    if (batchError) throw new MoneyRouteError(500, batchError.message);
+    for (const row of (batchRows ?? []) as any[]) {
+      batchById.set(String(row.id), {
+        paid_at: String(row.paid_at),
+        voided_at: row.voided_at ?? null,
+      });
+    }
+  }
+  const allocationsById = new Map<string, BalanceAllocation[]>(ids.map((id) => [id, []]));
+  for (const row of (allocRows ?? []) as any[]) {
+    const batch = batchById.get(String(row.payment_batch_id));
+    if (!batch) continue; // `_dm_paid_sum` inner-joins the batch; so do we.
+    allocationsById.get(String(row.invoice_id))?.push({
+      invoice_id: String(row.invoice_id),
+      amount: toNumber(row.amount),
+      paid_at: batch.paid_at,
+      voided_at: batch.voided_at,
+    });
+  }
+
+  const { data: waiverRows, error: waiverError } = await supabase
+    .from("late_fee_waivers")
+    .select("invoice_id,amount,voided_at")
+    .in("invoice_id", ids);
+  if (waiverError) throw new MoneyRouteError(500, waiverError.message);
+  const waiversById = new Map<string, BalanceWaiver[]>(ids.map((id) => [id, []]));
+  for (const row of (waiverRows ?? []) as any[]) {
+    waiversById.get(String(row.invoice_id))?.push({
+      invoice_id: String(row.invoice_id),
+      amount: toNumber(row.amount),
+      voided_at: row.voided_at ?? null,
+    });
+  }
+
+  // B3: a line may not exceed the bill's amount due AS OF THE TRANSFER DATE
+  // (Bangkok), the same day `record_payment` derives from p_paid_at.
+  const asOf = bangkokYmd(new Date(paidAtIso));
+
+  return lines.map((line) => {
+    const row = invoiceById.get(line.invoiceId);
+    const invoice = toBalanceInvoice(row, tenant);
+    const allocations = allocationsById.get(line.invoiceId) ?? [];
+    const waivers = waiversById.get(line.invoiceId) ?? [];
+
+    const atTransfer = getInvoiceBalance(invoice, allocations, waivers, asOf);
+
+    // `getInvoiceBalance` ignores money transferred after `asOf`, which is
+    // right for the fee but not for the cap: a backdated payment must not be
+    // allowed to pay for charges a LATER-dated payment already covered. Count
+    // those later payments as if they landed on `asOf` — the fee (which only
+    // looks at when charges were covered, up to asOf) is unchanged, and the
+    // money already received is subtracted in full. Identical to `atTransfer`
+    // whenever nothing is dated after the transfer (the normal case).
+    const countingLater = getInvoiceBalance(
+      invoice,
+      allocations.map((a) =>
+        a.voided_at == null && bangkokYmd(new Date(a.paid_at)) > asOf
+          ? { ...a, paid_at: asOf }
+          : a,
+      ),
+      waivers,
+      asOf,
+    );
+    let expectedAmountDue = Math.min(atTransfer.amountDue, countingLater.amountDue);
+
+    // Legacy only: 22 legacy rows have `paid_amount` ≠ Σ allocations, mostly
+    // money recorded before the allocation table existed (e.g. 109/2 Feb:
+    // paid_amount 2,521, no allocations). The engine counts allocations only,
+    // so it would call that bill fully unpaid and let the same money be
+    // recorded twice. Never allow more than the stored running balance says
+    // is left either. v2 rows keep paid_amount = Σ allocations, so this is a
+    // no-op there and is skipped.
+    if (invoice.fee_model === "legacy") {
+      const storedOutstanding = Math.max(
+        0,
+        roundTo2(
+          toNumber(row.total_amount) +
+            countingLater.feeAccrued -
+            countingLater.feeWaived -
+            toNumber(row.paid_amount),
+        ),
+      );
+      expectedAmountDue = Math.min(expectedAmountDue, storedOutstanding);
+    }
+
+    const paidSum = roundTo2(
+      allocations
+        .filter((a) => a.voided_at == null)
+        .reduce((sum, a) => sum + toNumber(a.amount), 0),
+    );
+    const waivedSum = roundTo2(
+      waivers
+        .filter((w) => w.voided_at == null)
+        .reduce((sum, w) => sum + Math.max(0, toNumber(w.amount)), 0),
+    );
+
+    return {
+      invoice_id: line.invoiceId,
+      amount: line.amount,
+      expected_amount_due: roundTo2(expectedAmountDue),
+      expected_paid_sum: paidSum,
+      expected_waived_sum: waivedSum,
+    };
+  });
+}
+
+/**
+ * Validate the shared payment fields, build p_split, freeze the receiving
+ * account and call `record_payment`. Returns the function's jsonb result.
+ */
+async function callRecordPaymentRpc(
+  supabase: SupabaseClient,
+  params: {
+    tenantId: string;
+    lines: SplitRequestLine[];
+    payment: any;
+    createdBy: string;
+  },
+): Promise<{ data: any } | { response: NextResponse }> {
+  const { tenantId, lines, payment, createdBy } = params;
+
+  for (const line of lines) {
+    if (!UUID_RE.test(line.invoiceId)) {
+      throw new MoneyRouteError(400, `Invalid invoice id: ${line.invoiceId}`, "bad_request");
+    }
+    if (!Number.isFinite(line.amount) || line.amount <= 0) {
+      throw new MoneyRouteError(400, "จำนวนเงินต้องมากกว่า 0", "bad_request");
+    }
+  }
+
+  const paidAtIso = String(payment?.paid_at ?? "");
+  if (!paidAtIso || Number.isNaN(new Date(paidAtIso).getTime())) {
+    throw new MoneyRouteError(400, "Missing or invalid payment date (paid_at).", "bad_request");
+  }
+  const source = String(payment?.source ?? "admin_webapp");
+  const slipUrl = payment?.slip_url ? String(payment.slip_url) : null;
+  const idempotencyKey = payment?.idempotency_key ? String(payment.idempotency_key) : null;
+
+  const split = await buildRecordPaymentSplit(supabase, tenantId, lines, paidAtIso);
+
+  // Frozen now, never re-resolved (CLAUDE.md). Non-cash credit has no account.
+  const snapshot = isNonCashPaymentSource(source)
+    ? null
+    : (await resolvePaymentMethodForTenant(supabase, tenantId)).snapshot;
+
+  const { data, error } = await supabase.rpc("record_payment", {
+    p_tenant_id: tenantId,
+    // Each line is validated to 2 decimals by the function; rounding the SUM
+    // only removes float noise from adding them up here.
+    p_amount_received: roundTo2(lines.reduce((sum, line) => sum + line.amount, 0)),
+    p_paid_at: paidAtIso,
+    p_slip_url: slipUrl,
+    p_source: source,
+    p_split: split,
+    p_payment_method_snapshot: snapshot,
+    p_idempotency_key: idempotencyKey,
+    p_created_by: createdBy,
+  });
+  if (error) return { response: rpcErrorResponse(error) };
+  return { data };
+}
+
+/**
+ * Shape `record_payment`'s jsonb result into what `use-invoices-state.ts`
+ * already reads: `paymentBatchId`, `idempotentReplay`, `allocationBreakdown`
+ * and `updatedInvoices` (with `payment_history`, which the function's result
+ * does not carry — re-read after commit, as the old ledger code did).
+ */
+async function paymentResponseFromRpc(supabase: SupabaseClient, rpc: any) {
+  const states: any[] = Array.isArray(rpc?.invoices) ? rpc.invoices : [];
+  const stateById = new Map(states.map((s) => [String(s.id), s]));
+  const allocations: any[] = Array.isArray(rpc?.allocations) ? rpc.allocations : [];
+
+  let updatedInvoices: any[] = states.map((s) => ({
+    id: String(s.id),
+    paid_amount: s.paid_amount,
+    status: s.status,
+    total_amount: s.total_amount,
+  }));
+  if (states.length > 0) {
+    const { data: rows, error } = await supabase
+      .from("invoices")
+      .select(UPDATED_INVOICE_COLUMNS)
+      .in(
+        "id",
+        states.map((s) => String(s.id)),
+      );
+    if (error) {
+      // The money is already recorded; a failed re-read must not turn a
+      // successful payment into an error the admin would retry.
+      console.error("[record_payment] Recorded, but re-reading invoices failed:", error);
+    } else {
+      updatedInvoices = rows ?? [];
+    }
+  }
+
+  return {
+    success: true,
+    result: rpc?.result ?? null,
+    paymentBatchId: rpc?.batch_id ? String(rpc.batch_id) : null,
+    idempotentReplay: rpc?.replay === true,
+    appliedAmount: toNumber(rpc?.amount_allocated),
+    paymentMethod: {
+      id: rpc?.payment_method_id ? String(rpc.payment_method_id) : null,
+      snapshot: rpc?.payment_method_snapshot ?? null,
+    },
+    updatedInvoices,
+    allocationBreakdown: allocations.map((a) => {
+      const state = stateById.get(String(a.invoice_id));
+      return {
+        invoiceId: String(a.invoice_id),
+        allocatedAmount: toNumber(a.amount),
+        newPaidAmount: toNumber(state?.paid_amount),
+        newStatus: String(state?.status ?? ""),
+      };
+    }),
+  };
 }
 
 export async function POST(req: Request) {
@@ -266,20 +678,39 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: "Invalid payment payload." }, { status: 400 });
       }
       if (payment && typeof payment === "object") {
-        const result = await applyInvoicePaymentAllocation(auth.supabase, {
-          invoiceId,
-          amount: Number((payment as any).amount ?? 0),
-          paidAt: String((payment as any).paid_at ?? new Date().toISOString()),
-          slipUrl: ((payment as any).slip_url as string | null | undefined) ?? null,
-          mode: String((payment as any).mode ?? "full"),
-          source: String((payment as any).source ?? "admin_webapp"),
-          idempotencyKey: (payment as any).idempotency_key
-            ? String((payment as any).idempotency_key)
-            : null,
-          createdBy: auth.user.id,
-        });
-        await syncPointsAfterPayment(auth.supabase, invoiceId);
-        return NextResponse.json({ success: true, ...result });
+        // One bill, one split line, recorded by the `record_payment` database
+        // function (B3). The money goes to THIS bill only, capped at what the
+        // engine says it owes on the transfer date — no carry-forward chain,
+        // no server-side oldest-first split. To spread one transfer over
+        // several bills, use record_split_payment. `payment.mode` is ignored:
+        // the function derives full/partial from the amounts.
+        try {
+          if (!UUID_RE.test(invoiceId)) {
+            throw new MoneyRouteError(400, "Invalid invoiceId.", "bad_request");
+          }
+          const { data: owner, error: ownerError } = await auth.supabase
+            .from("invoices")
+            .select("tenant_id")
+            .eq("id", invoiceId)
+            .maybeSingle();
+          if (ownerError) throw new MoneyRouteError(500, ownerError.message);
+          if (!owner) throw new MoneyRouteError(404, "Invoice not found.", "not_found");
+
+          const outcome = await callRecordPaymentRpc(auth.supabase, {
+            tenantId: String((owner as any).tenant_id),
+            lines: [{ invoiceId, amount: Number((payment as any).amount) }],
+            payment,
+            createdBy: auth.user.id,
+          });
+          if ("response" in outcome) return outcome.response;
+
+          const responseBody = await paymentResponseFromRpc(auth.supabase, outcome.data);
+          await syncPointsAfterPayment(auth.supabase, invoiceId);
+          return NextResponse.json(responseBody);
+        } catch (err) {
+          if (err instanceof MoneyRouteError) return moneyErrorResponse(err);
+          throw err;
+        }
       }
       const { error } = await auth.supabase.from("invoices").update(payload).eq("id", invoiceId);
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
@@ -287,12 +718,10 @@ export async function POST(req: Request) {
     }
 
     if (action === "record_split_payment") {
-      // Same money-recording path as record_payment, except the admin picks
-      // exactly which invoices this payment goes to and how much for each,
-      // instead of the server auto-splitting one amount oldest-first across
-      // a single invoice's carry-forward chain. Built for a tenant catching
-      // up on real arrears in a lump sum or installments that don't
-      // necessarily resolve oldest-first.
+      // Same money-recording path as record_payment, except one transfer is
+      // split across several of the tenant's bills, with the admin choosing
+      // exactly how much goes to each. Built for a tenant catching up on
+      // real arrears in a lump sum or installments.
       const auth = await requireAdminPermission(req, "invoice.payment.record");
       if ("error" in auth) return auth.error;
       const tenantId = String(body?.tenantId ?? "");
@@ -301,135 +730,100 @@ export async function POST(req: Request) {
       if (!tenantId || !payment || typeof payment !== "object" || allocations.length === 0) {
         return NextResponse.json({ error: "Invalid split payment payload." }, { status: 400 });
       }
-      const result = await applyManualInvoicePaymentAllocation(auth.supabase, {
-        tenantId,
-        allocations: allocations.map((row: any) => ({
-          invoiceId: String(row?.invoiceId ?? ""),
-          amount: Number(row?.amount ?? 0),
-        })),
-        paidAt: String((payment as any).paid_at ?? new Date().toISOString()),
-        slipUrl: ((payment as any).slip_url as string | null | undefined) ?? null,
-        mode: String((payment as any).mode ?? "partial"),
-        source: String((payment as any).source ?? "admin_webapp"),
-        idempotencyKey: (payment as any).idempotency_key
-          ? String((payment as any).idempotency_key)
-          : null,
-        createdBy: auth.user.id,
-      });
-      const triggerInvoiceId = result.allocationBreakdown[0]?.invoiceId;
-      if (triggerInvoiceId) {
-        await syncPointsAfterPayment(auth.supabase, triggerInvoiceId);
+      // One transfer, one `record_payment` call, one split line per bill with
+      // that bill's own freshly computed amount due (B3). The admin's split is
+      // final: the function refuses a split that doesn't add up, a line over
+      // a bill's amount due, or a bill that changed since it was read.
+      if (!UUID_RE.test(tenantId)) {
+        return NextResponse.json({ error: "Invalid tenantId.", code: "bad_request" }, { status: 400 });
       }
-      return NextResponse.json({ success: true, ...result });
+      try {
+        const outcome = await callRecordPaymentRpc(auth.supabase, {
+          tenantId,
+          lines: allocations.map((row: any) => ({
+            invoiceId: String(row?.invoiceId ?? ""),
+            amount: Number(row?.amount),
+          })),
+          payment,
+          createdBy: auth.user.id,
+        });
+        if ("response" in outcome) return outcome.response;
+
+        const responseBody = await paymentResponseFromRpc(auth.supabase, outcome.data);
+        const triggerInvoiceId = responseBody.allocationBreakdown[0]?.invoiceId;
+        if (triggerInvoiceId) {
+          await syncPointsAfterPayment(auth.supabase, triggerInvoiceId);
+        }
+        return NextResponse.json(responseBody);
+      } catch (err) {
+        if (err instanceof MoneyRouteError) return moneyErrorResponse(err);
+        throw err;
+      }
     }
 
     if (action === "delete_payment_batch") {
-      // Lets an admin remove a payment_batches row directly from the invoice's
-      // Payments tab — the manual-review counterpart to everything this
-      // session's cleanup did by hand in SQL. Same permission as recording a
-      // payment: deleting a bad record needs the same authority as creating a
-      // good one.
+      // "Delete" on a payment in the invoice's Payments tab. Nothing is
+      // deleted any more: the `void_payment` database function (B3) stamps
+      // the batch voided (with who and why), strips its payment_history
+      // display entries, and refreshes paid_amount/status on every bill the
+      // batch was split across — in one transaction. The batch and its
+      // allocation rows stay as the record; everything that counts money
+      // must skip `payment_batches.voided_at IS NOT NULL`.
       //
-      // Deliberately does NOT touch invoices.paid_amount/status/payment_history
-      // beyond stripping the matching payment_history entries (a display cache
-      // — leaving a stale entry there is what made 101/2 briefly look
-      // inconsistent even after its batch was gone). Recomputing paid_amount
-      // from what remains is NOT done here: for a carry-forward invoice,
-      // total_amount already bundles an earlier invoice's debt, so naively
-      // resetting paid_amount to "whatever allocations remain" double-counts
-      // exactly the way `reallocatePaymentsForInvoice` was found to (see the
-      // comment on the withdrawn auto-replay above). If the invoice's own
-      // paid_amount no longer matches its remaining allocations after this
-      // delete, that mismatch is reported back so the admin can adjust the
-      // invoice amount directly, the same way 101/2 was fixed.
+      // Same permission as recording a payment: voiding a bad record needs
+      // the same authority as creating a good one. A reason is required.
       const auth = await requireAdminPermission(req, "invoice.payment.record");
       if ("error" in auth) return auth.error;
       const paymentBatchId = String(body?.paymentBatchId ?? "");
-      if (!paymentBatchId) {
-        return NextResponse.json({ error: "Missing paymentBatchId." }, { status: 400 });
-      }
-
-      const { data: allocRows, error: allocFetchError } = await auth.supabase
-        .from("invoice_payment_allocations")
-        .select("invoice_id")
-        .eq("payment_batch_id", paymentBatchId);
-      if (allocFetchError) {
-        return NextResponse.json({ error: allocFetchError.message }, { status: 500 });
-      }
-      const touchedInvoiceIds = [
-        ...new Set((allocRows ?? []).map((row: any) => String(row.invoice_id))),
-      ];
-      if (touchedInvoiceIds.length === 0) {
+      const reason = String(body?.reason ?? "").trim();
+      if (!paymentBatchId || !UUID_RE.test(paymentBatchId)) {
         return NextResponse.json(
-          { error: "ไม่พบรายการชำระเงินนี้ในระบบแล้ว (อาจถูกลบไปก่อนหน้านี้)" },
-          { status: 404 },
+          { error: "Missing or invalid paymentBatchId.", code: "bad_request" },
+          { status: 400 },
+        );
+      }
+      if (!reason) {
+        return NextResponse.json(
+          { error: "กรุณาระบุเหตุผลในการยกเลิกรายการชำระเงิน", code: "bad_request" },
+          { status: 400 },
         );
       }
 
-      const { error: deleteAllocError } = await auth.supabase
-        .from("invoice_payment_allocations")
-        .delete()
-        .eq("payment_batch_id", paymentBatchId);
-      if (deleteAllocError) {
-        return NextResponse.json({ error: deleteAllocError.message }, { status: 500 });
-      }
+      const { data: rpc, error: voidError } = await auth.supabase.rpc("void_payment", {
+        p_batch_id: paymentBatchId,
+        p_reason: reason,
+        p_voided_by: auth.user.id,
+      });
+      if (voidError) return rpcErrorResponse(voidError);
 
-      const { error: deleteBatchError } = await auth.supabase
-        .from("payment_batches")
-        .delete()
-        .eq("id", paymentBatchId);
-      if (deleteBatchError) {
-        return NextResponse.json({ error: deleteBatchError.message }, { status: 500 });
-      }
+      // `invoices` in the result is the post-void state of every bill the
+      // batch touched. `allocation_paid_sum` already excludes voided batches,
+      // so this is the same "paid_amount no longer matches the remaining
+      // allocations" warning the client has always shown — for legacy bills
+      // whose paid_amount was never Σ allocations to begin with.
+      const states: any[] = Array.isArray((rpc as any)?.invoices) ? (rpc as any).invoices : [];
+      const touchedInvoiceIds = states.map((s) => String(s.id));
+      const mismatches = states
+        .map((s) => ({
+          invoiceId: String(s.id),
+          paidAmount: toNumber(s.paid_amount),
+          allocationSum: toNumber(s.allocation_paid_sum),
+        }))
+        .filter((m) => Math.abs(m.paidAmount - m.allocationSum) > 0.005);
 
-      // Strip the matching payment_history entries and collect mismatch
-      // warnings, per touched invoice.
-      const mismatches: { invoiceId: string; paidAmount: number; allocationSum: number }[] = [];
-      for (const invoiceId of touchedInvoiceIds) {
-        const [{ data: invRow }, { data: remainingAllocs }] = await Promise.all([
-          auth.supabase
-            .from("invoices")
-            .select("paid_amount,payment_history")
-            .eq("id", invoiceId)
-            .maybeSingle(),
-          auth.supabase
-            .from("invoice_payment_allocations")
-            .select("amount")
-            .eq("invoice_id", invoiceId),
-        ]);
-
-        const history = Array.isArray((invRow as any)?.payment_history)
-          ? (invRow as any).payment_history
-          : [];
-        const filteredHistory = history.filter(
-          (entry: any) => String(entry?.payment_batch_id ?? "") !== paymentBatchId,
-        );
-        if (filteredHistory.length !== history.length) {
-          const { error: historyError } = await auth.supabase
-            .from("invoices")
-            .update({ payment_history: filteredHistory })
-            .eq("id", invoiceId);
-          if (historyError) {
-            console.error(
-              "[delete_payment_batch] Failed to strip payment_history entry:",
-              invoiceId,
-              historyError,
-            );
-          }
-        }
-
-        const paidAmount = Number((invRow as any)?.paid_amount ?? 0);
-        const allocationSum = (remainingAllocs ?? []).reduce(
-          (sum: number, row: any) => sum + Number(row.amount ?? 0),
-          0,
-        );
-        if (Math.abs(paidAmount - allocationSum) > 0.005) {
-          mismatches.push({ invoiceId, paidAmount, allocationSum });
-        }
+      const result = String((rpc as any)?.result ?? "");
+      // A void can take a bill out of "paid"; rewards points follow status in
+      // both directions (see update_status), so re-sync. Per tenant, so one
+      // touched invoice is enough.
+      if (result === "voided" && touchedInvoiceIds[0]) {
+        await syncPointsAfterPayment(auth.supabase, touchedInvoiceIds[0]);
       }
 
       return NextResponse.json({
         success: true,
+        result,
+        alreadyVoided: result === "already_voided",
+        paymentBatchId,
         touchedInvoiceIds,
         mismatches,
       });
@@ -659,13 +1053,27 @@ export async function POST(req: Request) {
           .in("payment_batch_id", batchIds),
         auth.supabase
           .from("payment_batches")
-          .select("id,amount_received,paid_at,slip_url,source,trigger_invoice_id,payment_method_snapshot")
+          .select("id,amount_received,paid_at,slip_url,source,trigger_invoice_id,payment_method_snapshot,voided_at")
           .in("id", batchIds),
       ]);
       if (allocationsRes.error) return NextResponse.json({ error: allocationsRes.error.message }, { status: 500 });
       if (batchesRes.error) return NextResponse.json({ error: batchesRes.error.message }, { status: 500 });
 
-      return NextResponse.json({ allocations: allocationsRes.data ?? [], batches: batchesRes.data ?? [] });
+      // A voided payment (delete_payment_batch → void_payment) is no longer
+      // money received; keep it off the Payments tab, as a deleted one was.
+      const voidedBatchIds = new Set(
+        ((batchesRes.data ?? []) as any[])
+          .filter((row) => row.voided_at != null)
+          .map((row) => String(row.id)),
+      );
+      return NextResponse.json({
+        allocations: ((allocationsRes.data ?? []) as any[]).filter(
+          (row) => !voidedBatchIds.has(String(row.payment_batch_id)),
+        ),
+        batches: ((batchesRes.data ?? []) as any[]).filter(
+          (row) => !voidedBatchIds.has(String(row.id)),
+        ),
+      });
     }
 
     if (action === "get_overdue_invoices") {

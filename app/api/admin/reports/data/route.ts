@@ -8,8 +8,14 @@ import { requireAdminPermission } from "@/lib/admin-api-auth";
 // on the embedded invoice are pulled in so each allocation can be prorated
 // into rent/utilities/late-fee shares via chargesFromInvoiceRow (client-side,
 // unchanged) — payments aren't itemized by line item in the ledger.
+// payment_batch is !inner so the voided_at filter below actually excludes
+// rows rather than just nulling the embed (a void never deletes the
+// allocation row — see record_payment/void_payment, finding H2's fix — so a
+// report built straight from invoice_payment_allocations must filter it out
+// itself).
 const ALLOCATION_SELECT =
   "id,payment_batch_id,invoice_id,amount,paid_at,source,payment_method_id,payment_method_snapshot," +
+  "payment_batch:payment_batches!inner(voided_at)," +
   "invoice:invoices!invoice_payment_allocations_invoice_id_fkey!inner(" +
   "id,start_date,due_date,tenant_id,room_id,rent_amount,water_bill,electricity_bill,common_fee," +
   "late_fee_amount,additional_fees_total,additional_fees_breakdown,carry_forward_amount,discount_amount," +
@@ -75,12 +81,19 @@ export async function POST(req: Request) {
           .select("id,tenant_id,room_id,total_amount,discount_amount,notes,issue_date,rooms(room_number,buildings(name))")
           .ilike("notes", "ย้ายออก%")
           .order("issue_date", { ascending: false }),
-        supabase.from("invoice_payment_allocations").select(ALLOCATION_SELECT).gte("paid_at", start).lt("paid_at", end).order("paid_at", { ascending: false }),
+        supabase
+          .from("invoice_payment_allocations")
+          .select(ALLOCATION_SELECT)
+          .gte("paid_at", start)
+          .lt("paid_at", end)
+          .is("payment_batch.voided_at", null)
+          .order("paid_at", { ascending: false }),
         supabase
           .from("invoice_payment_allocations")
           .select(ALLOCATION_SELECT)
           .gte("invoice.start_date", start)
           .lt("invoice.start_date", end)
+          .is("payment_batch.voided_at", null)
           .order("paid_at", { ascending: false }),
       ]);
 

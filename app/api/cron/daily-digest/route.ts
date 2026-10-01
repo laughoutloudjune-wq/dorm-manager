@@ -133,9 +133,12 @@ async function handle(req: Request) {
       await Promise.all([
         supabase
           .from("invoice_payment_allocations")
-          .select("amount")
+          // payment_batch is !inner so the voided_at filter actually excludes
+          // rows — a void never deletes the allocation row (finding H2's fix).
+          .select("amount,payment_batch:payment_batches!inner(voided_at)")
           .gte("paid_at", yesterdayStart.toISOString())
-          .lt("paid_at", todayStart.toISOString()),
+          .lt("paid_at", todayStart.toISOString())
+          .is("payment_batch.voided_at", null),
         supabase
           .from("invoices")
           .select("id,status,total_amount,paid_amount,carry_forward_amount")

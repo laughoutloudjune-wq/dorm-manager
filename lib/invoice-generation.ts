@@ -108,16 +108,24 @@ export async function generateInvoicesForPeriod(
     .eq("status", "occupied");
   if (roomError) throw new Error(roomError.message);
 
-  // Vacated-but-unsettled tenants: the "vacate" move-out step frees the room
-  // immediately but deliberately leaves room_id set on the tenant row until
-  // final_move_out settles them (CLAUDE.md's move-out flow). They still owe
-  // rent for this period, so they must keep getting billed like any other
+  // Vacated-but-unsettled tenants: the OLD "vacate" move-out step frees the
+  // room immediately but deliberately leaves room_id set on the tenant row
+  // until final_move_out settles them (CLAUDE.md's move-out flow). They still
+  // owe rent for this period, so they must keep getting billed like any other
   // occupied room until settlement clears room_id.
+  //
+  // The NEW unlock_room function (design B5/A5) produces the same
+  // inactive + room_id-still-set shape, but sets handover_date — and under
+  // the new rules billing stops the moment a tenant is unlocked, not at
+  // settlement. Excluding handover_date IS NOT NULL here is what makes that
+  // true; without it, an unlocked tenant kept getting billed exactly like an
+  // old-style vacated one.
   const { data: pendingSettlementTenants, error: pendingTenantError } = await supabase
     .from("tenants")
     .select("id,room_id,move_in_date,rooms(room_number,price_month)")
     .eq("status", "inactive")
-    .not("room_id", "is", null);
+    .not("room_id", "is", null)
+    .is("handover_date", null);
   if (pendingTenantError) throw new Error(pendingTenantError.message);
 
   if ((!occupiedRooms || occupiedRooms.length === 0) && (!pendingSettlementTenants || pendingSettlementTenants.length === 0)) {
