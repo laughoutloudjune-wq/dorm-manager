@@ -19,6 +19,9 @@ type InvoiceRow = {
   paid_amount?: number;
   status?: string;
   late_fee_amount?: number;
+  /** v2 bills only: the balance engine's amount due (charges + fee − waived − paid). */
+  amount_due?: number;
+  late_fee_days?: number;
 };
 
 const NGROK_SKIP_QUERY = "ngrok-skip-browser-warning=true";
@@ -27,7 +30,9 @@ const formatMoney = (value: number) =>
   Number(value || 0).toLocaleString("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 const outstandingAmount = (invoice: InvoiceRow) =>
-  Math.max(0, Number(invoice.total_amount ?? 0) - Number(invoice.paid_amount ?? 0));
+  invoice.amount_due != null
+    ? Math.max(0, Number(invoice.amount_due))
+    : Math.max(0, Number(invoice.total_amount ?? 0) - Number(invoice.paid_amount ?? 0));
 
 const statusLabel = (status?: string) => {
   if (status === "pending") return "รอชำระ";
@@ -313,6 +318,9 @@ export default function PaymentLiffCurrentInvoicesPage() {
                                 <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
                                   <p className="text-2xs font-semibold text-amber-900">
                                     รวมค่าปรับล่าช้า: ฿{formatMoney(invoice.late_fee_amount ?? 0)}
+                                    {invoice.amount_due != null && (invoice.late_fee_days ?? 0) > 0
+                                      ? ` (${invoice.late_fee_days} วัน)`
+                                      : ""}
                                   </p>
                                 </div>
                               )}

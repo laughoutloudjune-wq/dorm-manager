@@ -4,16 +4,12 @@ import { useEffect, useRef, useState } from "react";
 import useSWR from "swr";
 import { toast } from "sonner";
 import { Modal } from "@/components/ui/Modal";
-import { buttonClasses } from "@/components/ui/Button";
-import { ConfirmActionModal } from "@/components/ui/ConfirmActionModal";
-import { LogOut } from "lucide-react";
-import { createClient } from "@/lib/supabase-client";
+import { Notice } from "@/components/ui/Page";
 import { MoveOutWizard } from "./MoveOutWizard";
 import type { MoveOutWizardForm } from "./MoveOutWizard";
-import type { MoveOutFeeLine } from "@/types";
-import { toNumber } from "@/lib/format";
-import { dailyRentRate } from "@/lib/invoice-utils";
 import { getInvoiceOwnOutstanding } from "@/lib/invoice-ledger";
+import { callTenantsAction } from "@/lib/tenants-action-client";
+import { usePermissions } from "@/lib/use-permissions";
 
 type MoveOutProcessingModalProps = {
   isOpen: boolean;
@@ -22,90 +18,70 @@ type MoveOutProcessingModalProps = {
   onSuccess?: () => void;
 };
 
+/**
+ * The move-out dialog. Runs the two-step flow (CLAUDE.md "Move-out flow",
+ * design doc A5/B5): unlock_room when the key comes back, then — any time
+ * later — prepare_move_out_bill and settle_move_out. The old move_out /
+ * final_move_out actions are no longer called from here.
+ */
 export function MoveOutProcessingModal({
   isOpen,
   onClose,
   tenantId,
   onSuccess,
 }: MoveOutProcessingModalProps) {
-  const supabase = createClient();
+  const { can, loading: permLoading } = usePermissions();
   const [form, setForm] = useState<MoveOutWizardForm>({
     full_name: "",
-    advance_rent_amount: 0,
-    security_deposit_amount: 0,
     final_electricity_reading: 0,
     final_water_reading: 0,
-    final_move_out_date: new Date().toISOString().slice(0, 10),
   });
-
   const [forfeitDeposit, setForfeitDeposit] = useState(false);
-  const [useProrate, setUseProrate] = useState(true);
-  const [moveOutFeeLines, setMoveOutFeeLines] = useState<MoveOutFeeLine[]>([]);
-  const [isMovingOut, setIsMovingOut] = useState(false);
   const [isCancellingMoveOut, setIsCancellingMoveOut] = useState(false);
-  const [isQuickVacating, setIsQuickVacating] = useState(false);
-  const [quickVacateConfirmOpen, setQuickVacateConfirmOpen] = useState(false);
   const [autosaveStatus, setAutosaveStatus] = useState<"idle" | "saving" | "saved">("idle");
-  // Snapshot of the last known-persisted draft values, so the autosave effect
-  // can tell "the admin changed something" apart from "the fetcher just
-  // hydrated the form with what's already in the database" and skip a
-  // pointless save on open.
+  // Last known-persisted draft values, so the autosave effect can tell "the
+  // admin changed something" apart from "the fetch just hydrated the form".
   const draftHydratedRef = useRef<{
     final_electricity_reading: number;
     final_water_reading: number;
-    advance_rent_amount: number;
-    security_deposit_amount: number;
     forfeit_security_deposit: boolean;
   } | null>(null);
+  const hydratedTenantRef = useRef<string | null>(null);
 
   // ── Data fetching ──────────────────────────────────────────────────────────
 
   const fetcher = async () => {
     if (!tenantId) return null;
-
-    // Moved server-side (finding C1) — this used to be 5 parallel
-    // direct-anon-key reads plus a follow-up meter_readings read, straight
-    // from the browser. See get_move_out_data in
-    // app/api/admin/tenants/actions/route.ts.
+    // See get_move_out_data in app/api/admin/tenants/actions/route.ts.
     const result = await callTenantsAction("get_move_out_data", { tenantId });
     const tenant = result.tenant;
     const meterData = result.meterReading;
 
-    const prevElec =
-      meterData?.current_electricity ??
-      tenant.initial_electricity_reading ??
-      0;
-    const prevWater =
-      meterData?.current_water ??
-      tenant.initial_water_reading ??
-      0;
+    // The latest meter_readings row for the room is the "previous reading"
+    // shown next to the inputs (CLAUDE.md: never reconstruct it from invoice
+    // history). prepare_move_out_bill picks its own baseline server-side and
+    // reports it back in the breakdown.
+    const prevElec = meterData?.current_electricity ?? tenant.initial_electricity_reading ?? 0;
+    const prevWater = meterData?.current_water ?? tenant.initial_water_reading ?? 0;
 
-    // A previously autosaved draft (tenant.final_electricity_reading/final_water_reading)
-    // takes priority over the previous meter reading, so reopening the wizard
-    // picks up where the admin left off instead of resetting usage to 0.
-    setForm((prev) => ({
-      ...prev,
-      full_name: tenant.full_name,
-      advance_rent_amount: tenant.advance_rent_amount || 0,
-      security_deposit_amount: tenant.security_deposit_amount || 0,
-      final_electricity_reading:
-        tenant.final_electricity_reading ?? (prev.final_electricity_reading || prevElec),
-      final_water_reading: tenant.final_water_reading ?? (prev.final_water_reading || prevWater),
-    }));
-    setForfeitDeposit(tenant.forfeit_security_deposit || false);
-    draftHydratedRef.current = {
-      final_electricity_reading:
-        tenant.final_electricity_reading ?? (prevElec || 0),
-      final_water_reading: tenant.final_water_reading ?? (prevWater || 0),
-      advance_rent_amount: tenant.advance_rent_amount || 0,
-      security_deposit_amount: tenant.security_deposit_amount || 0,
-      forfeit_security_deposit: tenant.forfeit_security_deposit || false,
-    };
+    // Hydrate the form once per tenant; refetches after an action must not
+    // overwrite readings the admin is typing.
+    if (hydratedTenantRef.current !== tenant.id) {
+      hydratedTenantRef.current = tenant.id;
+      const elec = tenant.final_electricity_reading ?? prevElec ?? 0;
+      const water = tenant.final_water_reading ?? prevWater ?? 0;
+      setForm({ full_name: tenant.full_name, final_electricity_reading: elec, final_water_reading: water });
+      setForfeitDeposit(Boolean(tenant.forfeit_security_deposit));
+      draftHydratedRef.current = {
+        final_electricity_reading: elec,
+        final_water_reading: water,
+        forfeit_security_deposit: Boolean(tenant.forfeit_security_deposit),
+      };
+    }
 
     return {
       tenant,
       unpaidInvoices: result.unpaidInvoices || [],
-      rates: result.rates || { electricity_rate: 0, water_rate: 0 },
       moveOutRequests: result.moveOutRequests || [],
       invoiceHistory: result.invoiceHistory || [],
       prevElec,
@@ -119,55 +95,27 @@ export function MoveOutProcessingModal({
     { revalidateOnFocus: false }
   );
 
-  // ── API helpers ───────────────────────────────────────────────────────────
-
-  const callTenantsAction = async (action: string, body: any = {}) => {
-    const { data } = await supabase.auth.getSession();
-    const token = data.session?.access_token;
-    if (!token) throw new Error("เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่");
-
-    const res = await fetch("/api/admin/tenants/actions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ action, ...body }),
-    });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data?.error ?? `Action ${action} failed`);
-    }
-    return res.json();
-  };
-
-  // ── Autosave ──────────────────────────────────────────────────────────────
-  // Resets the "known persisted" snapshot whenever the modal opens/switches
-  // tenant, so the debounce effect below doesn't compare against a previous
-  // tenant's values while this tenant's data is still loading.
+  // ── Autosave (key-return readings + forfeit choice) ─────────────────────────
   useEffect(() => {
     draftHydratedRef.current = null;
+    hydratedTenantRef.current = null;
     setAutosaveStatus("idle");
   }, [isOpen, tenantId]);
 
   useEffect(() => {
     if (!isOpen || !tenantId) return;
     const lastSaved = draftHydratedRef.current;
-    if (!lastSaved) return; // still hydrating from the initial fetch
-    if (isMovingOut || isQuickVacating || isCancellingMoveOut) return; // an explicit action owns the save right now
+    if (!lastSaved) return; // still hydrating
+    if (isCancellingMoveOut) return;
 
     const current = {
       final_electricity_reading: form.final_electricity_reading,
       final_water_reading: form.final_water_reading,
-      advance_rent_amount: form.advance_rent_amount,
-      security_deposit_amount: form.security_deposit_amount,
       forfeit_security_deposit: forfeitDeposit,
     };
     const changed =
       current.final_electricity_reading !== lastSaved.final_electricity_reading ||
       current.final_water_reading !== lastSaved.final_water_reading ||
-      current.advance_rent_amount !== lastSaved.advance_rent_amount ||
-      current.security_deposit_amount !== lastSaved.security_deposit_amount ||
       current.forfeit_security_deposit !== lastSaved.forfeit_security_deposit;
     if (!changed) return;
 
@@ -186,15 +134,16 @@ export function MoveOutProcessingModal({
     tenantId,
     form.final_electricity_reading,
     form.final_water_reading,
-    form.advance_rent_amount,
-    form.security_deposit_amount,
     forfeitDeposit,
-    isMovingOut,
-    isQuickVacating,
     isCancellingMoveOut,
   ]);
 
   // ── Actions ───────────────────────────────────────────────────────────────
+
+  const refresh = async () => {
+    await mutate();
+    onSuccess?.();
+  };
 
   const manageMoveOutRequest = async (requestStatus: "approved" | "rejected") => {
     if (!data?.moveOutRequests?.[0]) return;
@@ -204,13 +153,8 @@ export function MoveOutProcessingModal({
         requestStatus,
         adminNote: data.moveOutRequests[0].admin_note ?? null,
       });
-      toast.success(
-        requestStatus === "approved"
-          ? "อนุมัติคำขอย้ายออกเรียบร้อย"
-          : "ปฏิเสธคำขอย้ายออกเรียบร้อย"
-      );
-      mutate();
-      if (onSuccess) onSuccess();
+      toast.success(requestStatus === "approved" ? "อนุมัติคำขอย้ายออกเรียบร้อย" : "ปฏิเสธคำขอย้ายออกเรียบร้อย");
+      await refresh();
     } catch (error: any) {
       toast.error(error?.message ?? "จัดการคำขอย้ายออกไม่สำเร็จ");
     }
@@ -221,85 +165,12 @@ export function MoveOutProcessingModal({
     try {
       await callTenantsAction("cancel_move_out_process", { tenantId });
       toast.success("ยกเลิกกระบวนการย้ายออกแล้ว");
-      mutate();
-      if (onSuccess) onSuccess();
+      await refresh();
       onClose();
     } catch (error: any) {
       toast.error(error?.message ?? "ยกเลิกกระบวนการย้ายออกไม่สำเร็จ");
     } finally {
       setIsCancellingMoveOut(false);
-    }
-  };
-
-  /**
-   * Frees the room immediately without running the settlement wizard — for when the
-   * tenant has already physically left but the final invoice isn't ready yet. The
-   * settlement invoice can still be completed later via "confirmMoveOut" below, since
-   * that action now resolves its room from this modal's tenantId/roomId rather than
-   * the tenant's (by-then-cleared) room_id.
-   */
-  const quickVacate = async () => {
-    if (!data?.tenant?.room_id) return;
-    setIsQuickVacating(true);
-    const moveOutDate = form.final_move_out_date || new Date().toISOString().slice(0, 10);
-    try {
-      await callTenantsAction("move_out", {
-        tenantId,
-        roomId: data.tenant.room_id,
-        payload: { move_out_date: moveOutDate },
-      });
-      toast.success("ปลดล็อกห้องเรียบร้อย — ผู้เช่าใหม่สามารถลงทะเบียนได้ทันที");
-      if (onSuccess) onSuccess();
-      onClose();
-    } catch (error: any) {
-      toast.error(error?.message ?? "ปลดล็อกห้องไม่สำเร็จ");
-    } finally {
-      setIsQuickVacating(false);
-      setQuickVacateConfirmOpen(false);
-    }
-  };
-
-  const confirmMoveOut = async () => {
-    setIsMovingOut(true);
-    const moveOutDate =
-      form.final_move_out_date || new Date().toISOString().slice(0, 10);
-    try {
-      // Previous meter readings: MUST match data.prevElec/prevWater exactly —
-      // those are the same values shown on screen as "ก่อนหน้า X" (sourced from
-      // the latest meter_readings row for this room, the authoritative record).
-      // This used to recompute a SEPARATE value here from invoiceHistory, which
-      // is almost always empty for this purpose (regular monthly invoices never
-      // populate electricity_reading_end/water_reading_end — only a prior
-      // final_move_out invoice would), so it silently fell back to the tenant's
-      // original move-in reading — stale for anyone who'd lived there more than
-      // one billing cycle, producing a wildly inflated "usage" on the final bill.
-      const prevElec = data?.prevElec ?? 0;
-      const prevWater = data?.prevWater ?? 0;
-
-      // ── FIX: nest meterData inside `payload` so the API handler can read it ──
-      await callTenantsAction("final_move_out", {
-        tenantId,
-        roomId: data?.tenant?.room_id,
-        payload: {
-          forfeitDeposit,
-          useProrate,
-          move_out_date: moveOutDate,
-          meterData: {
-            initial_electricity: prevElec,
-            initial_water: prevWater,
-            final_electricity: form.final_electricity_reading,
-            final_water: form.final_water_reading,
-          },
-          moveOutFeeLines,
-        },
-      });
-      toast.success("บันทึกการย้ายออกเรียบร้อย");
-      if (onSuccess) onSuccess();
-      onClose();
-    } catch (error: any) {
-      toast.error(error?.message ?? "ยืนยันการย้ายออกไม่สำเร็จ");
-    } finally {
-      setIsMovingOut(false);
     }
   };
 
@@ -315,15 +186,10 @@ export function MoveOutProcessingModal({
       const parts = [
         `ตัดชำระ ฿${baht(summary.creditApplied)}`,
         Number(summary.writtenOff ?? 0) > 0 ? `ตัดหนี้สูญ ฿${baht(summary.writtenOff)}` : "",
-        Number(summary.refundableCredit ?? 0) > 0
-          ? `เหลือเครดิตคืนผู้เช่า ฿${baht(summary.refundableCredit)}`
-          : "",
+        Number(summary.refundableCredit ?? 0) > 0 ? `เหลือเครดิตคืนผู้เช่า ฿${baht(summary.refundableCredit)}` : "",
       ].filter(Boolean);
-      toast.success(
-        `ดำเนินการผู้เช่าทิ้งห้องเรียบร้อยแล้ว - ${parts.join(" · ")}`,
-        { duration: 10000 }
-      );
-      if (onSuccess) onSuccess();
+      toast.success(`ดำเนินการผู้เช่าทิ้งห้องเรียบร้อยแล้ว - ${parts.join(" · ")}`, { duration: 10000 });
+      onSuccess?.();
       onClose();
     } catch (error: any) {
       toast.error(error?.message ?? "ดำเนินการทิ้งห้องไม่สำเร็จ");
@@ -332,88 +198,8 @@ export function MoveOutProcessingModal({
 
   if (!isOpen) return null;
 
-  const prevElec = data?.prevElec ?? 0;
-  const prevWater = data?.prevWater ?? 0;
-
-  const billingDay = Math.max(
-    1,
-    Math.min(28, Number(data?.rates?.billing_day) || 25)
-  );
-
-  const tailDaysAfterBilledPeriod = (() => {
-    const moveOutDateObj = form.final_move_out_date
-      ? new Date(form.final_move_out_date)
-      : new Date();
-    const lastNormal = data?.invoiceHistory?.[0];
-    const masterStartDateObj = lastNormal?.end_date
-      ? new Date(lastNormal.end_date)
-      : new Date(
-          moveOutDateObj.getFullYear(),
-          moveOutDateObj.getMonth() - 1,
-          billingDay
-        );
-
-    let currentEnd = new Date(masterStartDateObj);
-    currentEnd.setMonth(currentEnd.getMonth() + 1);
-    let tempStart = new Date(masterStartDateObj);
-    while (currentEnd <= moveOutDateObj) {
-      tempStart = new Date(currentEnd);
-      currentEnd.setMonth(currentEnd.getMonth() + 1);
-    }
-    const msPerDay = 86400000;
-    const tempStartUtc = Date.UTC(
-      tempStart.getFullYear(),
-      tempStart.getMonth(),
-      tempStart.getDate()
-    );
-    const moveOutUtc = Date.UTC(
-      moveOutDateObj.getFullYear(),
-      moveOutDateObj.getMonth(),
-      moveOutDateObj.getDate()
-    );
-    return Math.floor((moveOutUtc - tempStartUtc) / msPerDay);
-  })();
-
-  const appliedMoveOutRentBase = (() => {
-    const moveOutDateObj = form.final_move_out_date
-      ? new Date(form.final_move_out_date)
-      : new Date();
-    const lastNormal = data?.invoiceHistory?.[0];
-    const masterStartDateObj = lastNormal?.end_date
-      ? new Date(lastNormal.end_date)
-      : new Date(
-          moveOutDateObj.getFullYear(),
-          moveOutDateObj.getMonth() - 1,
-          billingDay
-        );
-
-    let currentEnd = new Date(masterStartDateObj);
-    currentEnd.setMonth(currentEnd.getMonth() + 1);
-    let fullMonths = 0;
-    while (currentEnd <= moveOutDateObj) {
-      fullMonths++;
-      currentEnd.setMonth(currentEnd.getMonth() + 1);
-    }
-    const roomPrice = Array.isArray(data?.tenant?.rooms)
-      ? toNumber(data?.tenant?.rooms[0]?.price_month)
-      : toNumber(data?.tenant?.rooms?.price_month);
-    
-    let base = roomPrice * fullMonths;
-    if (useProrate && tailDaysAfterBilledPeriod > 0) {
-      base += dailyRentRate(roomPrice) * tailDaysAfterBilledPeriod;
-    }
-    return base;
-  })();
-
-  const latestBilledEndYmd = (() => {
-    const lastNormal = data?.invoiceHistory?.[0];
-    return lastNormal?.end_date
-      ? String(lastNormal.end_date).slice(0, 10)
-      : null;
-  })();
-
   const roomNumber = Array.isArray(data?.tenant?.rooms)
-    ? data?.tenant?.rooms[0]?.room_number
+    ? data?.tenant?.rooms[0]?.room_number ?? ""
     : data?.tenant?.rooms?.room_number || "";
 
   return (
@@ -421,93 +207,49 @@ export function MoveOutProcessingModal({
       isOpen={isOpen}
       onClose={onClose}
       title="ดำเนินการย้ายออก"
+      description={data?.tenant ? `${data.tenant.full_name}${roomNumber ? ` · ห้อง ${roomNumber}` : ""}` : undefined}
       size="2xl"
     >
-      <div className="p-4 md:p-6">
-        {isLoading && (
-          <div className="flex flex-col gap-4 animate-pulse">
-            <div className="h-6 w-48 rounded-lg bg-slate-200" />
-            <div className="h-32 w-full rounded-card bg-slate-100" />
-            <div className="h-48 w-full rounded-card bg-slate-100" />
-          </div>
-        )}
-        {error && (
-          <div className="rounded-card bg-danger-50 border border-danger-200 p-4 text-danger-600 text-sm">
-            เกิดข้อผิดพลาด: {error.message}
-          </div>
-        )}
-        {data && autosaveStatus !== "idle" && (
-          <p className="mb-3 text-right text-2xs text-slate-400">
-            {autosaveStatus === "saving" ? "กำลังบันทึกอัตโนมัติ..." : "บันทึกอัตโนมัติแล้ว"}
-          </p>
-        )}
-        {data && data.tenant?.status === "active" && (
-          <div className="mb-4 flex items-start justify-between gap-3 rounded-card border border-slate-200 bg-slate-50 p-4">
-            <div className="text-xs text-slate-600">
-              <p className="font-semibold text-slate-800">ผู้เช่าย้ายออกไปแล้วแต่ยังไม่พร้อมสรุปยอด?</p>
-              <p className="mt-0.5">
-                ปลดล็อกห้องได้ทันทีโดยไม่ต้องรอทำใบแจ้งหนี้สรุปยอด — กลับมาทำสรุปยอดภายหลังได้จากหน้านี้อีกครั้ง
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => setQuickVacateConfirmOpen(true)}
-              disabled={isQuickVacating}
-              className={buttonClasses({ variant: "secondary" })}
-            >
-              <LogOut size={14} />
-              ปลดล็อกห้องทันที
-            </button>
-          </div>
-        )}
-        {data && (
-          <MoveOutWizard
-            activeTenant={data.tenant}
-            activeMoveOutRequest={data.moveOutRequests?.[0] || null}
-            rates={data.rates}
-            form={form}
-            setForm={setForm}
-            forfeitDeposit={forfeitDeposit}
-            setForfeitDeposit={setForfeitDeposit}
-            useProrate={useProrate}
-            setUseProrate={setUseProrate}
-            moveOutFeeLines={moveOutFeeLines}
-            setMoveOutFeeLines={setMoveOutFeeLines}
-            latestPrevElectricity={prevElec}
-            latestPrevWater={prevWater}
-            tenantInvoiceHistory={data.invoiceHistory}
-            outstandingMoveOutInvoices={data.unpaidInvoices}
-            unpaidInvoicesSubtotal={
-              data.unpaidInvoices?.reduce(
-                (sum: number, inv: any) => sum + getInvoiceOwnOutstanding(inv),
-                0
-              ) || 0
-            }
-            latestBilledEndYmd={latestBilledEndYmd}
-            tailDaysAfterBilledPeriod={tailDaysAfterBilledPeriod}
-            appliedMoveOutRentBase={appliedMoveOutRentBase}
-            roomNumber={roomNumber}
-            canEditTenant={true}
-            isMovingOut={isMovingOut}
-            isCancellingMoveOut={isCancellingMoveOut}
-            onApprove={() => manageMoveOutRequest("approved")}
-            onDecline={() => manageMoveOutRequest("rejected")}
-            onCancelMoveOut={cancelMoveOutProcess}
-            onConfirmMoveOut={confirmMoveOut}
-            onAbandonRoom={abandonRoom}
-          />
-        )}
-      </div>
-
-      <ConfirmActionModal
-        isOpen={quickVacateConfirmOpen}
-        onCancel={() => setQuickVacateConfirmOpen(false)}
-        onConfirm={quickVacate}
-        title="ปลดล็อกห้องทันที"
-        message={`ยืนยันว่า ${data?.tenant?.full_name ?? "ผู้เช่า"} ย้ายออกจากห้อง ${roomNumber} แล้ว? สถานะผู้เช่าจะเปลี่ยนเป็น "ย้ายออกแล้ว" และห้องจะว่างทันทีสำหรับผู้เช่าใหม่ ยอดค่าใช้จ่ายสรุปย้ายออกยังไม่ถูกสร้าง — กลับมาทำสรุปยอดให้ผู้เช่ารายนี้ภายหลังได้จากหน้าย้ายออก`}
-        confirmLabel="ยืนยันปลดล็อกห้อง"
-        loading={isQuickVacating}
-      />
+      {isLoading && (
+        <div className="flex animate-pulse flex-col gap-4">
+          <div className="h-6 w-48 rounded-control bg-slate-200" />
+          <div className="h-32 w-full rounded-card bg-slate-100" />
+          <div className="h-48 w-full rounded-card bg-slate-100" />
+        </div>
+      )}
+      {error && <Notice tone="danger">เกิดข้อผิดพลาด: {error.message}</Notice>}
+      {data && autosaveStatus !== "idle" && (
+        <p className="mb-3 text-right text-2xs text-slate-400">
+          {autosaveStatus === "saving" ? "กำลังบันทึกอัตโนมัติ..." : "บันทึกอัตโนมัติแล้ว"}
+        </p>
+      )}
+      {data && (
+        <MoveOutWizard
+          key={data.tenant.id}
+          activeTenant={data.tenant}
+          activeMoveOutRequest={data.moveOutRequests?.[0] || null}
+          form={form}
+          setForm={setForm}
+          forfeitDeposit={forfeitDeposit}
+          setForfeitDeposit={setForfeitDeposit}
+          latestPrevElectricity={data.prevElec}
+          latestPrevWater={data.prevWater}
+          tenantInvoiceHistory={data.invoiceHistory}
+          outstandingMoveOutInvoices={data.unpaidInvoices}
+          unpaidInvoicesSubtotal={
+            data.unpaidInvoices?.reduce((sum: number, inv: any) => sum + getInvoiceOwnOutstanding(inv), 0) || 0
+          }
+          roomNumber={roomNumber}
+          canEditTenant={!permLoading && can("tenant.edit")}
+          isCancellingMoveOut={isCancellingMoveOut}
+          onApprove={() => manageMoveOutRequest("approved")}
+          onDecline={() => manageMoveOutRequest("rejected")}
+          onCancelMoveOut={cancelMoveOutProcess}
+          onAbandonRoom={abandonRoom}
+          onChanged={refresh}
+          onDone={onClose}
+        />
+      )}
     </Modal>
   );
 }

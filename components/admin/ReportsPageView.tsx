@@ -15,8 +15,10 @@ import {
 } from "@/lib/invoice-utils";
 import { chargesFromInvoiceRow, computeInvoiceTotal } from "@/lib/invoice-total";
 import { getInvoiceOwnOutstanding, sumOwnOutstanding } from "@/lib/invoice-ledger";
+import { refundMethodLabel, summarizeRefunds, toRefundView, type RefundView } from "@/lib/refunds";
+import { bangkokYmd } from "@/lib/move-out-notice";
 
-type ReportTab = "income" | "arrears" | "move_in" | "move_out" | "yearly" | "utilities" | "movement";
+type ReportTab = "income" | "arrears" | "move_in" | "move_out" | "refunds" | "yearly" | "utilities" | "movement";
 
 const toNumber = (value: any) => {
   const parsed = typeof value === "number" ? value : Number(value ?? 0);
@@ -150,6 +152,8 @@ export default function ReportsPageView() {
   const [transfers, setTransfers] = useState<any[]>([]);
   const [settlementInvoices, setSettlementInvoices] = useState<any[]>([]);
   const [allocations, setAllocations] = useState<any[]>([]);
+  // Money OUT (paid move-out refunds). Kept apart from every income figure.
+  const [paidRefunds, setPaidRefunds] = useState<RefundView[]>([]);
 
   const canViewReports = can("tenant.view") || can("room.view") || can("invoice.create");
 
@@ -241,6 +245,7 @@ export default function ReportsPageView() {
       setLogs(logsRes.data ?? []);
       setTransfers(transfersRes.data ?? []);
       setSettlementInvoices(settlementInvoicesRes.data ?? []);
+      setPaidRefunds(((reportData.paidRefunds ?? []) as any[]).map(toRefundView));
 
       const allocationById = new Map<string, any>();
       for (const row of [
@@ -680,6 +685,26 @@ export default function ReportsPageView() {
       .map((row) => {
         const settlement = settlementInvoiceByTenantId.get(String(row.id));
 
+        // New-flow move-out bill (settle_move_out): the deposit/advance is
+        // applied as a payment, not netted into the bill, so its own
+        // total/discount say nothing about the refund. The refund is the
+        // tenant's paid `refunds` rows (this year), shown in the เงินคืน tab.
+        if (settlement && settlement.kind === "move_out" && settlement.fee_model === "v2") {
+          const settlementRoom = relationItem(settlement.rooms);
+          const refunded = paidRefunds
+            .filter((refund) => refund.tenantId === String(row.id))
+            .reduce((sum, refund) => sum + refund.amount, 0);
+          return {
+            date: row.move_out_date,
+            room: settlementRoom?.room_number ?? roomByTenantId.get(String(row.id))?.room_number ?? "-",
+            tenant: row.full_name,
+            building: settlementRoom ? getBuildingName(settlementRoom) : (roomByTenantId.get(String(row.id))?.building ?? "-"),
+            prepaid: toNumber(row.security_deposit_amount) + toNumber(row.advance_rent_amount),
+            refunded,
+            note: `บิลย้ายออก ${formatMoney(toNumber(settlement.total_amount))} — ยอดคืนนับเฉพาะที่จ่ายคืนแล้ว (ดูแท็บเงินคืน)`,
+          };
+        }
+
         if (settlement) {
           // Real figures from the final settlement invoice: discount_amount is the
           // deposit/advance credit actually applied (already zero if forfeited),
@@ -760,7 +785,7 @@ export default function ReportsPageView() {
       if (dateA !== dateB) return dateB - dateA;
       return byBuildingAndRoom(a, b);
     });
-  }, [logs, roomNumberById, roomByTenantId, settlementInvoiceByTenantId, selectedMonth, tenants]);
+  }, [logs, paidRefunds, roomNumberById, roomByTenantId, settlementInvoiceByTenantId, selectedMonth, tenants]);
 
   const moveOutSummary = useMemo(
     () => ({
@@ -1041,6 +1066,25 @@ export default function ReportsPageView() {
       moveOutRows.map((row) => [row.date ?? "-", row.room, row.tenant, row.building, row.prepaid, row.refunded, row.note])
     );
 
+  const paidRefundSummary = summarizeRefunds(paidRefunds, "paid");
+  const refundPaidYmd = (iso: string | null) => (iso ? bangkokYmd(new Date(iso)) : "-");
+
+  const exportRefunds = () =>
+    downloadCsv(
+      `refunds-money-out-${selectedYear}.csv`,
+      ["วันที่จ่ายคืน", "อาคาร", "เลขห้อง", "ชื่อผู้เช่า", "ยอดคืน", "ช่องทาง", "บัญชีที่โอนออก", "หมายเหตุ"],
+      paidRefunds.map((row) => [
+        refundPaidYmd(row.paidAt),
+        row.building,
+        row.room,
+        row.tenantName,
+        row.amount,
+        refundMethodLabel(row.method),
+        row.accountLabel ?? "-",
+        row.note ?? "",
+      ])
+    );
+
   const exportYearly = () =>
     downloadCsv(
       `year-summary-${selectedYear}.csv`,
@@ -1085,6 +1129,7 @@ export default function ReportsPageView() {
     setTimeout(exportYearly, 360);
     setTimeout(exportUtilities, 480);
     setTimeout(exportMovement, 600);
+    setTimeout(exportRefunds, 720);
   };
 
   if (permissionLoading || loading) {
@@ -1141,6 +1186,7 @@ export default function ReportsPageView() {
             <TabButton active={activeTab === "arrears"} onClick={() => setActiveTab("arrears")} label="ยอดค้างชำระ (ลูกหนี้)" />
             <TabButton active={activeTab === "move_in"} onClick={() => setActiveTab("move_in")} label="ย้ายเข้า" />
             <TabButton active={activeTab === "move_out"} onClick={() => setActiveTab("move_out")} label="ย้ายออก" />
+            <TabButton active={activeTab === "refunds"} onClick={() => setActiveTab("refunds")} label="เงินคืน (เงินออก)" />
             <TabButton active={activeTab === "yearly"} onClick={() => setActiveTab("yearly")} label="สรุปทั้งปี" />
             <TabButton active={activeTab === "utilities"} onClick={() => setActiveTab("utilities")} label="ค่าน้ำค่าไฟ" />
             <TabButton active={activeTab === "movement"} onClick={() => setActiveTab("movement")} label="การเคลื่อนไหวห้อง" />
@@ -1642,6 +1688,45 @@ export default function ReportsPageView() {
                   row.note,
                 ])}
                 emptyText={`ไม่มีข้อมูลย้ายออกในเดือน ${selectedMonth}`}
+                embedded
+              />
+            </CardContent>
+          </Card>
+        </>
+      )}
+
+      {activeTab === "refunds" && (
+        <>
+          <SummaryCards
+            items={[
+              { label: `จำนวนรายการคืนเงิน ปี ${selectedYear}`, value: paidRefundSummary.count.toLocaleString("th-TH") },
+              { label: "ยอดเงินคืนรวม (เงินออก)", value: formatMoney(paidRefundSummary.total) },
+            ]}
+          />
+          <Card>
+            <CardContent className="space-y-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-lg font-semibold text-slate-900">เงินคืน (เงินออก)</h3>
+                  <p className="text-sm text-slate-500">
+                    เงินประกัน/ค่าเช่าล่วงหน้าที่คืนผู้เช่าหลังสรุปยอดย้ายออก นับตามวันที่จ่ายคืนจริงในปีที่เลือก —
+                    แสดงแยกจากรายรับ ไม่ได้หักออกจากยอดรายได้ในแท็บอื่น
+                  </p>
+                </div>
+                <ExportButton onClick={exportRefunds} />
+              </div>
+              <ReportTable
+                headers={["วันที่จ่ายคืน", "อาคาร", "เลขห้อง", "ชื่อผู้เช่า", "ยอดคืน", "ช่องทาง", "บัญชีที่โอนออก"]}
+                rows={paidRefunds.map((row) => [
+                  refundPaidYmd(row.paidAt),
+                  row.building,
+                  row.room,
+                  row.tenantName,
+                  formatMoney(row.amount),
+                  refundMethodLabel(row.method),
+                  row.accountLabel ?? "-",
+                ])}
+                emptyText={`ไม่มีการคืนเงินในปี ${selectedYear}`}
                 embedded
               />
             </CardContent>

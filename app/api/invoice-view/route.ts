@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase-admin";
 import { verifyLineAccessToken } from "@/lib/line-admin-auth";
 import { isLateFeeBreakdownRow } from "@/lib/invoice-utils";
+import { loadV2LateFeeStates } from "@/lib/fee-model-v2";
 
 export async function POST(req: Request) {
   try {
@@ -28,7 +29,7 @@ export async function POST(req: Request) {
     const { data: invoice, error: fetchError } = await supabase
       .from("invoices")
       .select(
-        "id,room_id,start_date,total_amount,paid_amount,carry_forward_amount,late_fee_amount,payment_history,rent_amount,water_bill,electricity_bill,common_fee,additional_fees_total,additional_fees_breakdown,discount_amount,discount_breakdown,status,slip_url,opened_count,first_opened_at,last_opened_at,tenants(full_name,custom_payment_method,move_in_date,line_user_id),rooms(room_number,price_month)"
+        "id,room_id,start_date,fee_model,kind,total_amount,paid_amount,carry_forward_amount,late_fee_amount,payment_history,rent_amount,water_bill,electricity_bill,common_fee,additional_fees_total,additional_fees_breakdown,discount_amount,discount_breakdown,status,slip_url,opened_count,first_opened_at,last_opened_at,tenants(full_name,custom_payment_method,move_in_date,line_user_id),rooms(room_number,price_month)"
       )
       .eq("public_token", token)
       .maybeSingle();
@@ -102,6 +103,17 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: updateResult.error.message }, { status: 500 });
     }
 
+    // v2 bills (25 Oct 2026 cycle on): total_amount is the bill's own
+    // charges only and its late fee is derived by the balance engine, so the
+    // page needs the engine's figures to show what is actually owed today.
+    // Null for legacy bills, which keep their stored-column display.
+    const lateFeeV2 =
+      (invoice as any).fee_model === "v2"
+        ? (await loadV2LateFeeStates(supabase, [String((invoice as any).id)])).get(
+            String((invoice as any).id),
+          ) ?? null
+        : null;
+
     return NextResponse.json({
       success: true,
       opened_count: nextCount,
@@ -112,6 +124,7 @@ export async function POST(req: Request) {
       settingsRow: settingsResult.data ?? null,
       arrearsRows: (arrearsResult as any)?.data ?? [],
       meterReading: meterResult.data ?? null,
+      lateFeeV2,
     });
   } catch (error: any) {
     return NextResponse.json(

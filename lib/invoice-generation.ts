@@ -1,6 +1,12 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { toLocalDateString, toNumber, formatMoney } from "@/lib/format";
 import { computeLateFeeSnapshot, syncInvoiceLedger } from "@/lib/invoice-ledger";
+import { bangkokYmd } from "@/lib/move-out-notice";
+import {
+  resolveGenerationFeeModel,
+  v2MonthlyMoneyColumns,
+  type FeeModel,
+} from "@/lib/fee-model-v2";
 import {
   clampDay,
   buildRuleBreakdown,
@@ -30,10 +36,18 @@ export type GenerateInvoicesParams = {
    * stored. Never allowed to affect a real, writing run.
    */
   dryRunIncludeExisting?: boolean;
+  /**
+   * Preview a run under a specific fee model. Only ever honored when dryRun
+   * is also true (see resolveGenerationFeeModel): a real run always decides
+   * by today's Bangkok date against V2_FEE_MODEL_CUTOVER_DATE.
+   */
+  forceFeeModel?: FeeModel | null;
 };
 
 export type GenerateInvoicesDryRunResult = {
   dryRun: true;
+  /** The fee model the bills in insertPayload were built under. */
+  feeModel: FeeModel;
   insertPayload: any[];
   missingTenantRoomNumbers: string[];
   existingRoomCount: number;
@@ -44,6 +58,7 @@ export type GenerateInvoicesDryRunResult = {
 export type GenerateInvoicesResult = {
   dryRun?: false;
   success: true;
+  feeModel: FeeModel;
   generated: number;
   errorMessage: string | null;
   alerts: string[];
@@ -77,6 +92,17 @@ export async function generateInvoicesForPeriod(
   }
   const dryRun = Boolean(params.dryRun);
   const dryRunIncludeExisting = dryRun && Boolean(params.dryRunIncludeExisting);
+
+  // Switch-over (design A6/B8, decision C3): bills CREATED on/after the
+  // cut-over use the new rules — own charges only, no carry-forward, no
+  // relayed late-fee line, nothing locked or billed on older bills. Before
+  // the cut-over every line below runs exactly as it always has (legacy).
+  const feeModel = resolveGenerationFeeModel({
+    todayBangkok: bangkokYmd(),
+    dryRun,
+    forceFeeModel: params.forceFeeModel ?? null,
+  });
+  const isV2 = feeModel === "v2";
 
   const startDate = new Date(year, month - 1, 1);
   const endDate = new Date(year, month, 0);
@@ -243,8 +269,11 @@ export async function generateInvoicesForPeriod(
   }
 
   const tenantIdsToGenerate = tenantsToGenerate.map((tenant: any) => String(tenant.id));
+  // v2: nothing is relayed from older bills, so they are not even read. An
+  // older unpaid bill stays on its own row and is shown NEXT TO the new one
+  // (A3), never added into it.
   const { data: previousUnpaidInvoices, error: previousUnpaidError } =
-    tenantIdsToGenerate.length > 0
+    !isV2 && tenantIdsToGenerate.length > 0
       ? await supabase
           .from("invoices")
           .select(
@@ -404,6 +433,19 @@ export async function generateInvoicesForPeriod(
 
     const commonFee = toNumber((settings as any).common_fee);
     const totalAmount = rentAmount + waterBill + elecBill + commonFee + additionalTotal + carriedLateFeeTotal - discountAmount;
+    // v2: the bill's own charges through the one totals engine, every relay
+    // term zero. (carryForwardByTenant is empty for v2, so lateFeeBreakdown
+    // is already [] — this does not depend on that.)
+    const v2Money = isV2
+      ? v2MonthlyMoneyColumns({
+          rent: rentAmount,
+          water: waterBill,
+          electricity: elecBill,
+          commonFee,
+          fees: additionalTotal,
+          discount: discountAmount,
+        })
+      : null;
 
     const electricityRate = toNumber((settings as any).electricity_rate);
     const waterRate = toNumber((settings as any).water_rate);
@@ -448,6 +490,36 @@ export async function generateInvoicesForPeriod(
         ])
       : [];
 
+    if (v2Money) {
+      return {
+        tenant_id: tenant.id,
+        room_id: tenant.room_id,
+        issue_date: issueDateText,
+        due_date: generatedDueDateText,
+        start_date: toLocalDateString(startDate),
+        end_date: toLocalDateString(endDate),
+        rent_amount: rentAmount,
+        water_bill: waterBill,
+        electricity_bill: elecBill,
+        common_fee: commonFee,
+        discount_amount: v2Money.discount_amount,
+        discount_breakdown: discountBreakdown,
+        // Not a cache of anything yet: the live fee always comes from the
+        // engine. Kept 0 so no legacy reader adds it to the total.
+        late_fee_amount: v2Money.late_fee_amount,
+        late_fee_per_day: lateFeePerDay,
+        late_fee_start_date: generatedLateFeeStartDateText,
+        carry_forward_amount: v2Money.carry_forward_amount,
+        additional_fees_total: v2Money.additional_fees_total,
+        additional_fees_breakdown: [...additionalBreakdown, ...transferBreakdownRows],
+        total_amount: v2Money.total_amount,
+        notes: null,
+        status: "draft",
+        fee_model: "v2",
+        kind: "monthly",
+      };
+    }
+
     return {
       tenant_id: tenant.id,
       room_id: tenant.room_id,
@@ -482,6 +554,7 @@ export async function generateInvoicesForPeriod(
     );
     return {
       dryRun: true,
+      feeModel,
       insertPayload,
       missingTenantRoomNumbers: missingTenantRooms.map((room: any) => room.room_number),
       existingRoomCount: existingRoomIds.size,
@@ -505,7 +578,8 @@ export async function generateInvoicesForPeriod(
       .insert(insertPayload)
       .select("id,tenant_id");
     if (insertError) throw new Error(insertError.message);
-    if ((insertedInvoices ?? []).length > 0) {
+    // v2: no late fee was relayed, so no older bill is frozen or marked billed.
+    if (!isV2 && (insertedInvoices ?? []).length > 0) {
       const allSourceRows = (insertedInvoices ?? []).flatMap((row: any) =>
         (carryForwardByTenant.get(String(row.tenant_id ?? "")) ?? []).filter(
           (carryRow: any) => toNumber(carryRow.snapshot_late_fee_amount) > 0 && carryRow.late_fee_billed_at == null
@@ -575,6 +649,7 @@ export async function generateInvoicesForPeriod(
 
   return {
     success: true,
+    feeModel,
     generated: insertPayload.length,
     errorMessage,
     alerts,

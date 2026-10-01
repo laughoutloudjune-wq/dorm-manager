@@ -57,6 +57,22 @@ type InvoiceData = {
   }>;
 };
 
+/**
+ * The balance engine's late-fee figures for a v2 bill (from /api/invoice-view).
+ * Null for legacy bills, which keep their stored-column display.
+ */
+type LateFeeV2 = {
+  lateFeePerDay: number;
+  pausedFrom: string | null;
+  balance: {
+    feeDays: number;
+    feeAccrued: number;
+    feeWaived: number;
+    feeRunning: boolean;
+    amountDue: number;
+  };
+};
+
 type MeterReadingRow = {
   electricity_usage?: number | null;
   water_usage?: number | null;
@@ -217,6 +233,7 @@ export default function PaymentTokenPage() {
   const token = params?.token as string;
 
   const [invoice, setInvoice] = useState<InvoiceData | null>(null);
+  const [lateFeeV2, setLateFeeV2] = useState<LateFeeV2 | null>(null);
   const [defaultMethod, setDefaultMethod] = useState<PaymentMethod | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [submitted, setSubmitted] = useState(false);
@@ -362,6 +379,7 @@ export default function PaymentTokenPage() {
             source_start_date: typeof row.source_invoice === 'object' && row.source_invoice ? String((row.source_invoice as any).start_date) : null,
           }));
       setInvoice(normalized);
+      setLateFeeV2((authData.lateFeeV2 as LateFeeV2 | null) ?? null);
       setPreview(normalized.slip_url ?? null);
 
       const reading = (authData.meterReading as MeterReadingRow | null) ?? null;
@@ -541,6 +559,15 @@ export default function PaymentTokenPage() {
     }
   };
 
+  // v2: the bill costs its own charges plus the late fee accrued on it, less
+  // anything waived (design A2). Derived from total_amount so a coupon applied
+  // on this page is still reflected. Legacy: the stored total, as before.
+  const v2FeeNet = lateFeeV2
+    ? Math.max(0, toNumber(lateFeeV2.balance.feeAccrued) - toNumber(lateFeeV2.balance.feeWaived))
+    : 0;
+  const displayTotal = invoice ? toNumber(invoice.total_amount) + v2FeeNet : 0;
+  const displayRemaining = invoice ? Math.max(0, displayTotal - toNumber(invoice.paid_amount)) : 0;
+
   if (submitted) {
     return (
       <div className="min-h-screen px-4 py-10">
@@ -584,10 +611,10 @@ export default function PaymentTokenPage() {
             </div>
             <div className="text-right">
               <p className="text-xs uppercase tracking-[0.2em] text-slate-400">TOTAL</p>
-              <p className="text-3xl font-semibold text-green-600">฿{formatBaht(toNumber(invoice.total_amount))}</p>
+              <p className="text-3xl font-semibold text-green-600">฿{formatBaht(displayTotal)}</p>
               <p className="mt-1 text-xs text-slate-500">ชำระแล้ว: ฿{formatBaht(invoice.paid_amount)}</p>
               <p className="text-xs text-rose-600">
-                คงเหลือ: ฿{formatBaht(Math.max(0, toNumber(invoice.total_amount) - toNumber(invoice.paid_amount)))}
+                คงเหลือ: ฿{formatBaht(displayRemaining)}
               </p>
             </div>
           </div>
@@ -696,6 +723,26 @@ export default function PaymentTokenPage() {
                     </div>
                   ))}
                 </div>
+              </div>
+            )}
+            {lateFeeV2 && lateFeeV2.balance.feeAccrued > 0 && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                <div className="flex items-center justify-between">
+                  <span>
+                    ค่าปรับล่าช้า
+                    <span className="block text-2xs font-normal text-amber-800">
+                      {lateFeeV2.balance.feeDays.toLocaleString("th-TH")} วัน x ฿{formatBaht(lateFeeV2.lateFeePerDay)}/วัน
+                      {lateFeeV2.balance.feeRunning ? " (เพิ่มวันละ " + formatBaht(lateFeeV2.lateFeePerDay) + " บาทจนกว่าจะชำระ)" : ""}
+                    </span>
+                  </span>
+                  <span className="font-semibold">฿{formatBaht(lateFeeV2.balance.feeAccrued)}</span>
+                </div>
+                {lateFeeV2.balance.feeWaived > 0 && (
+                  <div className="mt-1 flex items-center justify-between text-emerald-700">
+                    <span>ยกเว้นค่าปรับ</span>
+                    <span className="font-semibold">-฿{formatBaht(lateFeeV2.balance.feeWaived)}</span>
+                  </div>
+                )}
               </div>
             )}
             {invoice.late_fee_breakdown.length > 0 ? (

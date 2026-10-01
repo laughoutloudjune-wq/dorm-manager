@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { computeInvoiceTotal } from "./invoice-total";
+import { refreshV2InvoiceStatuses } from "./fee-model-v2";
 import {
   buildLateFeeLineDetail,
   isCarryForwardBreakdownRow,
@@ -7,6 +8,14 @@ import {
   isLateFeeBreakdownRow,
   toChargeFeeRows,
 } from "./invoice-utils";
+
+/**
+ * Thrown by the legacy allocators when handed a `v2` bill. A v2 bill's
+ * payment must go through the `record_payment` database function (split +
+ * engine amount due), never the carry-forward chain allocator.
+ */
+export const V2_PAYMENT_PATH_ERROR =
+  "บิลนี้ใช้กติกาค่าปรับใหม่ ต้องบันทึกการชำระผ่านหน้ารับชำระ (record_payment) เท่านั้น";
 
 export const OPEN_INVOICE_STATUSES = [
   "pending",
@@ -645,7 +654,11 @@ export async function syncInvoiceLedger(
     .select(
       "id,tenant_id,total_amount,paid_amount,status,payment_history,slip_url,slip_uploaded_at,late_fee_amount,late_fee_per_day,late_fee_start_date,due_date,start_date,waived_late_fee_amount,locked_late_fee_amount",
     )
-    .not("status", "in", '("draft","paid","cancelled")');
+    .not("status", "in", '("draft","paid","cancelled")')
+    // v2 bills (design B1/B4) never get a frozen fee and their status comes
+    // from the balance engine, not from total − paid: they are handled by
+    // refreshV2InvoiceStatuses below, never by this legacy loop.
+    .eq("fee_model", "legacy");
 
   if (options.invoiceIds && options.invoiceIds.length > 0) {
     query = query.in("id", options.invoiceIds);
@@ -714,6 +727,15 @@ export async function syncInvoiceLedger(
     }
   }
 
+  // Same scope, v2 bills: status recomputed by the engine (pending → overdue
+  // the day after the due date, etc.). Status only; no money column.
+  const v2 = await refreshV2InvoiceStatuses(supabase, {
+    invoiceIds: options.invoiceIds,
+    tenantIds: options.tenantIds,
+    beforeStartDate: options.beforeStartDate,
+  });
+  updatedIds.push(...v2.updatedIds);
+
   return { updatedIds };
 }
 
@@ -732,6 +754,17 @@ export async function getCarryForwardCandidatesForTarget(
   targetInvoiceId?: string | null,
   valuationDateForLateFee?: string | null,
 ) {
+  // A v2 bill never carries anything in (design A2.1): no candidates at all.
+  if (targetInvoiceId) {
+    const { data: targetRow, error: targetError } = await supabase
+      .from("invoices")
+      .select("fee_model")
+      .eq("id", targetInvoiceId)
+      .maybeSingle();
+    if (targetError) throw new Error(targetError.message);
+    if ((targetRow as any)?.fee_model === "v2") return [];
+  }
+
   await syncInvoiceLedger(supabase, { tenantIds: [tenantId], beforeStartDate });
 
   const asOfLateFee = String(valuationDateForLateFee || beforeStartDate).slice(
@@ -746,6 +779,9 @@ export async function getCarryForwardCandidatesForTarget(
     )
     .eq("tenant_id", tenantId)
     .lt("start_date", beforeStartDate)
+    // A v2 bill's debt and late fee stay on the v2 bill itself; it is never
+    // a carry-forward or late-fee-relay source.
+    .eq("fee_model", "legacy")
     // Still-open invoices (there's principal and/or a late fee left to carry),
     // OR a PAID invoice whose late fee was frozen at payment time but never
     // made it onto a bill yet. Without that second branch, a tenant who pays
@@ -849,9 +885,11 @@ export async function refreshCarryForwardTargets(
   const { data: targets, error: targetsError } = await supabase
     .from("invoices")
     .select(
-      "id,tenant_id,status,start_date,issue_date,rent_amount,water_bill,electricity_bill,common_fee,late_fee_amount,late_fee_per_day,late_fee_start_date,waived_late_fee_amount,locked_late_fee_amount,additional_fees_breakdown,discount_amount,total_amount",
+      "id,tenant_id,status,fee_model,start_date,issue_date,rent_amount,water_bill,electricity_bill,common_fee,late_fee_amount,late_fee_per_day,late_fee_start_date,waived_late_fee_amount,locked_late_fee_amount,additional_fees_breakdown,discount_amount,total_amount",
     )
-    .in("id", targetIds);
+    .in("id", targetIds)
+    // A v2 bill's total is fixed to its own charges; never rewritten here.
+    .eq("fee_model", "legacy");
   if (targetsError) throw new Error(targetsError.message);
 
   const refreshedInvoiceIds: string[] = [];
@@ -1012,7 +1050,9 @@ export async function autoBillUnbilledLateFees(
     .select(
       "id,tenant_id,status,start_date,late_fee_per_day,late_fee_start_date,waived_late_fee_amount,locked_late_fee_amount,late_fee_billed_at",
     )
-    .in("id", paidInvoiceIds);
+    .in("id", paidInvoiceIds)
+    // A v2 bill's fee stays on itself (design A2.2); it is never relayed.
+    .eq("fee_model", "legacy");
   if (sourceError) throw new Error(sourceError.message);
 
   const eligibleSources = (sourceRows ?? []).filter(
@@ -1029,6 +1069,10 @@ export async function autoBillUnbilledLateFees(
       "id,tenant_id,status,start_date,issue_date,rent_amount,water_bill,electricity_bill,common_fee,late_fee_amount,late_fee_per_day,late_fee_start_date,waived_late_fee_amount,locked_late_fee_amount,additional_fees_breakdown,discount_amount,total_amount",
     )
     .eq("tenant_id", tenantId)
+    // Never lands a legacy fee on a v2 bill: after the cut-over, a frozen,
+    // unbilled legacy fee stays on its own (legacy) bill, where the balance
+    // engine's legacy adapter shows it as owed.
+    .eq("fee_model", "legacy")
     .order("start_date", { ascending: true });
   if (targetError) throw new Error(targetError.message);
 
@@ -1629,12 +1673,17 @@ export async function applyInvoicePaymentAllocation(
   const { data: targetInvoice, error: targetError } = await supabase
     .from("invoices")
     .select(
-      "id,tenant_id,total_amount,paid_amount,status,payment_history,slip_url,slip_uploaded_at,late_fee_amount,late_fee_per_day,late_fee_start_date,due_date",
+      "id,tenant_id,total_amount,paid_amount,status,payment_history,slip_url,slip_uploaded_at,late_fee_amount,late_fee_per_day,late_fee_start_date,due_date,fee_model",
     )
     .eq("id", invoiceId)
     .single();
   if (targetError || !targetInvoice) {
     throw new Error(targetError?.message ?? "Invoice not found.");
+  }
+  if ((targetInvoice as any).fee_model === "v2") {
+    // v2 money goes only through the record_payment database function, which
+    // knows the bill's late fee; this chain allocator does not.
+    throw new Error(V2_PAYMENT_PATH_ERROR);
   }
 
   await syncInvoiceLedger(supabase, { invoiceIds: [invoiceId] });
@@ -2031,6 +2080,17 @@ export async function applyManualInvoicePaymentAllocation(
 
   const invoiceIds = cleanAllocations.map((row) => row.invoiceId);
   const triggerInvoiceId = invoiceIds[0];
+
+  {
+    const { data: modelRows, error: modelError } = await supabase
+      .from("invoices")
+      .select("id,fee_model")
+      .in("id", invoiceIds);
+    if (modelError) throw new Error(modelError.message);
+    if ((modelRows ?? []).some((row: any) => row.fee_model === "v2")) {
+      throw new Error(V2_PAYMENT_PATH_ERROR);
+    }
+  }
 
   const trimmedIdem = idempotencyKey?.trim() || null;
   if (trimmedIdem) {

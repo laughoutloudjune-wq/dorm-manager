@@ -7,7 +7,11 @@ import {
   getPaymentChainOutstanding,
   calculateLateFeeAmount,
   resolveFullyPaidAtDate,
+  resolvePaymentMethodForTenant,
 } from "@/lib/invoice-ledger";
+import { loadV2LateFeeStates, refreshV2InvoiceStatuses } from "@/lib/fee-model-v2";
+import { bangkokYmd } from "@/lib/move-out-notice";
+import { roundTo2 } from "@/lib/format";
 import { syncPointsForTenant } from "@/lib/points-ledger";
 import { notifyTenantPointsEarned } from "@/lib/points-notify";
 import { declinePaymentSlip } from "@/lib/slip-review";
@@ -60,10 +64,21 @@ export async function POST(req: Request) {
       }
       const { data: beforeRow } = await supabase
         .from("invoices")
-        .select("status")
+        .select("status,fee_model")
         .eq("id", invoiceId)
         .maybeSingle();
       const wasPaid = String((beforeRow as any)?.status ?? "") === "paid";
+      // Same rule as the web admin route: on a v2 bill "paid" is calculated
+      // from real money, never picked by hand (design B4).
+      if ((beforeRow as any)?.fee_model === "v2" && status === "paid") {
+        return NextResponse.json(
+          {
+            error:
+              "บิลนี้ใช้กติกาค่าปรับใหม่ สถานะ “ชำระแล้ว” จะเปลี่ยนเองเมื่อรับเงินครบ ตั้งเองไม่ได้ (ใช้ปุ่มอนุมัติสลิป)",
+          },
+          { status: 400 },
+        );
+      }
 
       const { error } = await supabase.from("invoices").update({ status }).eq("id", invoiceId);
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
@@ -84,7 +99,7 @@ export async function POST(req: Request) {
         : null;
       const { data: current, error: fetchError } = await supabase
         .from("invoices")
-        .select("status,total_amount,paid_amount,payment_history,slip_url")
+        .select("status,total_amount,paid_amount,payment_history,slip_url,fee_model,tenant_id")
         .eq("id", invoiceId)
         .single();
       if (fetchError || !current) {
@@ -93,6 +108,67 @@ export async function POST(req: Request) {
       const nowIso = selectedDate
         ? new Date(`${selectedDate}T12:00:00`).toISOString()
         : new Date().toISOString();
+
+      if ((current as any).fee_model === "v2") {
+        // v2 (design B3): the slip becomes money only through the
+        // record_payment database function — one split line on THIS bill,
+        // capped at the engine's amount due (charges + late fee − waived −
+        // paid) as of the transfer date. Never the legacy chain allocator,
+        // which knows nothing about a v2 bill's fee.
+        if (String((current as any).status ?? "") !== "verifying" || !(current as any).slip_url) {
+          return NextResponse.json(
+            {
+              error:
+                "ไม่สามารถอนุมัติได้ เนื่องจากใบแจ้งหนี้นี้ไม่มีสลิปที่รอตรวจสอบ กรุณาให้ผู้เช่าอัปโหลดสลิปก่อน",
+            },
+            { status: 400 },
+          );
+        }
+        const tenantId = String((current as any).tenant_id ?? "");
+        const asOf = bangkokYmd(new Date(nowIso));
+        const atTransfer = (await loadV2LateFeeStates(supabase, [invoiceId], asOf)).get(invoiceId);
+        const today = (await loadV2LateFeeStates(supabase, [invoiceId])).get(invoiceId);
+        if (!atTransfer || !today) {
+          return NextResponse.json({ error: "Invoice not found" }, { status: 404 });
+        }
+        // A backdated approval must not pay for charges a later-dated payment
+        // already covered: never more than what is owed on either date.
+        const due = roundTo2(Math.min(atTransfer.balance.amountDue, today.balance.amountDue));
+        const requested = Number(body?.amount);
+        const amount =
+          Number.isFinite(requested) && requested > 0 ? roundTo2(Math.min(requested, due)) : due;
+        if (amount <= 0) {
+          await refreshV2InvoiceStatuses(supabase, { invoiceIds: [invoiceId] });
+          await syncPointsAfterPayment(supabase, invoiceId);
+          return NextResponse.json({ success: true, alreadySettled: true });
+        }
+        const slipUrl = String((current as any).slip_url);
+        const { data: rpc, error: rpcError } = await supabase.rpc("record_payment", {
+          p_tenant_id: tenantId,
+          p_amount_received: amount,
+          p_paid_at: nowIso,
+          p_slip_url: slipUrl,
+          p_source: "admin_liff_approve",
+          p_split: [
+            {
+              invoice_id: invoiceId,
+              amount,
+              expected_amount_due: due,
+              expected_paid_sum: atTransfer.paidSum,
+              expected_waived_sum: atTransfer.waivedSum,
+            },
+          ],
+          p_payment_method_snapshot: (await resolvePaymentMethodForTenant(supabase, tenantId)).snapshot,
+          // Stable per slip: a double tap replays instead of paying twice.
+          p_idempotency_key: `liff_approve:${invoiceId}:${slipUrl}`,
+          p_created_by: `line:${auth.profile.userId}`,
+        });
+        if (rpcError) {
+          return NextResponse.json({ error: rpcError.message }, { status: 400 });
+        }
+        await syncPointsAfterPayment(supabase, invoiceId);
+        return NextResponse.json({ success: true, result: (rpc as any)?.result ?? null, appliedAmount: amount });
+      }
 
       // Already settled (e.g. approving an invoice whose status was flipped away
       // from paid and back): the money is still recorded, nothing left to

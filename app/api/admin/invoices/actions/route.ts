@@ -18,16 +18,25 @@ import {
 } from "@/lib/invoice-utils";
 import { chargesFromInvoiceRow, computeInvoiceTotal } from "@/lib/invoice-total";
 import { roundTo2, toLocalDateString, toNumber } from "@/lib/format";
+import { getInvoiceBalance, type BalanceTenant } from "@/lib/invoice-balance";
 import {
-  getInvoiceBalance,
-  type BalanceAllocation,
-  type BalanceInvoice,
-  type BalanceTenant,
-  type BalanceWaiver,
-  type ManualInvoiceStatus,
-} from "@/lib/invoice-balance";
+  BALANCE_INVOICE_COLUMNS,
+  MoneyRouteError,
+  UUID_RE,
+  loadBalanceAllocationsAndWaivers,
+  moneyErrorResponse,
+  rpcErrorResponse,
+  toBalanceInvoice,
+} from "@/lib/money-rpc";
 import { bangkokYmd } from "@/lib/move-out-notice";
 import { generateInvoicesForPeriod } from "@/lib/invoice-generation";
+import {
+  lateFeeActionBlockReason,
+  loadV2LateFeeStates,
+  refreshV2InvoiceStatuses,
+  validatePauseRequest,
+  validateWaiverRequest,
+} from "@/lib/fee-model-v2";
 import { syncPointsForTenant } from "@/lib/points-ledger";
 import { notifyTenantPointsEarned } from "@/lib/points-notify";
 import { declinePaymentSlip } from "@/lib/slip-review";
@@ -63,98 +72,9 @@ async function syncPointsAfterPayment(supabase: SupabaseClient, invoiceId: strin
 // freezes the receiving account, and (c) hands both to the function. It never
 // writes a money column itself.
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/** Every column `getInvoiceBalance` needs for either fee model, plus the owner. */
-const BALANCE_INVOICE_COLUMNS =
-  "id,tenant_id,status,fee_model,kind,total_amount,carry_forward_amount,paid_amount,due_date," +
-  "late_fee_start_date,late_fee_per_day,late_fee_paused_from,locked_late_fee_amount,late_fee_billed_at";
-
 /** The shape the client already reads back (`updatedInvoices`) after a payment. */
 const UPDATED_INVOICE_COLUMNS =
   "id,paid_amount,status,payment_history,slip_url,slip_uploaded_at,total_amount";
-
-/**
- * Codes raised as `[code] message` by the money functions that mean "the
- * request, or the data it was based on, is wrong" rather than a server fault.
- */
-const RPC_CLIENT_ERROR_CODES = new Set([
-  "bad_request",
-  "stale_balance",
-  "over_allocation",
-  "split_mismatch",
-  "amount_due_implausible",
-  "not_payable",
-  "idempotency_key_conflict",
-  "idempotency_key_voided",
-  "settlement_batch",
-]);
-
-/** A request error the money actions report with a specific HTTP status. */
-class MoneyRouteError extends Error {
-  constructor(
-    readonly status: number,
-    message: string,
-    readonly code: string | null = null,
-  ) {
-    super(message);
-  }
-}
-
-const moneyErrorResponse = (err: MoneyRouteError) =>
-  NextResponse.json({ error: err.message, code: err.code }, { status: err.status });
-
-/** Map a `raise exception '[code] message'` from an RPC to an HTTP response. */
-function rpcErrorResponse(error: { message?: string | null } | null) {
-  const raw = String(error?.message ?? "Database error.");
-  const match = /^\[([a-z_]+)\]\s*([\s\S]*)$/.exec(raw);
-  const code = match ? match[1] : null;
-  const message = match && match[2] ? match[2] : raw;
-  const status =
-    code === "not_found" ? 404 : code && RPC_CLIENT_ERROR_CODES.has(code) ? 400 : 500;
-  return NextResponse.json({ error: message, code }, { status });
-}
-
-const MANUAL_STATUSES: ReadonlySet<string> = new Set(["draft", "cancelled", "closed_unpaid"]);
-
-/** A live `invoices` row (BALANCE_INVOICE_COLUMNS) + its tenant → the engine's input. */
-function toBalanceInvoice(row: any, tenant: BalanceTenant): BalanceInvoice {
-  const status = String(row.status ?? "");
-  const common = {
-    id: String(row.id),
-    manual_status: MANUAL_STATUSES.has(status) ? (status as ManualInvoiceStatus) : null,
-    is_verifying: status === "verifying",
-    tenant,
-  };
-  const nullableNumber = (value: unknown) => (value == null ? null : toNumber(value as any));
-  if (row.fee_model === "v2") {
-    if (row.kind !== "monthly" && row.kind !== "move_out") {
-      throw new MoneyRouteError(500, `Invoice ${row.id} has an unknown kind: ${row.kind}`);
-    }
-    return {
-      ...common,
-      fee_model: "v2",
-      kind: row.kind,
-      total_amount: toNumber(row.total_amount),
-      due_date: String(row.due_date),
-      late_fee_start_date: row.late_fee_start_date ?? null,
-      late_fee_per_day: nullableNumber(row.late_fee_per_day),
-      late_fee_paused_from: row.late_fee_paused_from ?? null,
-    };
-  }
-  if (row.fee_model === "legacy") {
-    return {
-      ...common,
-      fee_model: "legacy",
-      total_amount: nullableNumber(row.total_amount),
-      carry_forward_amount: nullableNumber(row.carry_forward_amount),
-      due_date: row.due_date ?? null,
-      locked_late_fee_amount: nullableNumber(row.locked_late_fee_amount),
-      late_fee_billed_at: row.late_fee_billed_at ?? null,
-    };
-  }
-  throw new MoneyRouteError(500, `Invoice ${row.id} has an unknown fee_model: ${row.fee_model}`);
-}
 
 type SplitRequestLine = { invoiceId: string; amount: number };
 
@@ -217,55 +137,7 @@ async function buildRecordPaymentSplit(
     tenancy_end_date: (tenantRow as any).tenancy_end_date ?? null,
   };
 
-  // Allocations carry their batch's paid_at / voided_at — the same join
-  // `_dm_paid_sum` uses, so the stamps below match what the function re-reads.
-  const { data: allocRows, error: allocError } = await supabase
-    .from("invoice_payment_allocations")
-    .select("invoice_id,amount,payment_batch_id")
-    .in("invoice_id", ids);
-  if (allocError) throw new MoneyRouteError(500, allocError.message);
-  const batchIds = [
-    ...new Set(((allocRows ?? []) as any[]).map((row) => String(row.payment_batch_id))),
-  ];
-  const batchById = new Map<string, { paid_at: string; voided_at: string | null }>();
-  if (batchIds.length > 0) {
-    const { data: batchRows, error: batchError } = await supabase
-      .from("payment_batches")
-      .select("id,paid_at,voided_at")
-      .in("id", batchIds);
-    if (batchError) throw new MoneyRouteError(500, batchError.message);
-    for (const row of (batchRows ?? []) as any[]) {
-      batchById.set(String(row.id), {
-        paid_at: String(row.paid_at),
-        voided_at: row.voided_at ?? null,
-      });
-    }
-  }
-  const allocationsById = new Map<string, BalanceAllocation[]>(ids.map((id) => [id, []]));
-  for (const row of (allocRows ?? []) as any[]) {
-    const batch = batchById.get(String(row.payment_batch_id));
-    if (!batch) continue; // `_dm_paid_sum` inner-joins the batch; so do we.
-    allocationsById.get(String(row.invoice_id))?.push({
-      invoice_id: String(row.invoice_id),
-      amount: toNumber(row.amount),
-      paid_at: batch.paid_at,
-      voided_at: batch.voided_at,
-    });
-  }
-
-  const { data: waiverRows, error: waiverError } = await supabase
-    .from("late_fee_waivers")
-    .select("invoice_id,amount,voided_at")
-    .in("invoice_id", ids);
-  if (waiverError) throw new MoneyRouteError(500, waiverError.message);
-  const waiversById = new Map<string, BalanceWaiver[]>(ids.map((id) => [id, []]));
-  for (const row of (waiverRows ?? []) as any[]) {
-    waiversById.get(String(row.invoice_id))?.push({
-      invoice_id: String(row.invoice_id),
-      amount: toNumber(row.amount),
-      voided_at: row.voided_at ?? null,
-    });
-  }
+  const { allocationsById, waiversById } = await loadBalanceAllocationsAndWaivers(supabase, ids);
 
   // B3: a line may not exceed the bill's amount due AS OF THE TRANSFER DATE
   // (Bangkok), the same day `record_payment` derives from p_paid_at.
@@ -483,14 +355,32 @@ export async function POST(req: Request) {
       // points earned for this invoice get revoked, not just awarded.
       const { data: beforeRow } = await auth.supabase
         .from("invoices")
-        .select("status,tenant_id")
+        .select("status,tenant_id,fee_model")
         .eq("id", invoiceId)
         .maybeSingle();
       const wasPaid = String((beforeRow as any)?.status ?? "") === "paid";
+      const isV2 = (beforeRow as any)?.fee_model === "v2";
+
+      // v2 (design B4): "paid" is calculated — amount due reached 0 through
+      // real money (or a waiver) — never picked by hand. Nothing below about
+      // freezing or relaying a late fee applies to a v2 bill either: its fee
+      // lives on itself and is derived by the balance engine.
+      if (isV2 && status === "paid") {
+        return NextResponse.json(
+          {
+            error:
+              "บิลนี้ใช้กติกาค่าปรับใหม่ สถานะ “ชำระแล้ว” จะเปลี่ยนเองเมื่อบันทึกการรับเงินครบ (หรือยกเว้นค่าปรับส่วนที่เหลือ) ตั้งเองไม่ได้",
+            code: "bad_request",
+          },
+          { status: 400 },
+        );
+      }
 
       const updatePayload: Record<string, unknown> = { status };
 
-      if (status === "paid") {
+      if (isV2) {
+        // Status only.
+      } else if (status === "paid") {
         // Re-freeze the late fee if it is currently unfrozen. Flipping an
         // invoice away from paid clears `locked_late_fee_amount`, which puts
         // the fee back on a live ฿/day calculation; leaving it unfrozen would
@@ -534,7 +424,7 @@ export async function POST(req: Request) {
       // tenant's next invoice right away, not wait for someone to notice it
       // in a checklist. No-ops when this invoice wasn't actually the "paid"
       // branch above, or had nothing new to bill.
-      if (status === "paid") {
+      if (status === "paid" && !isV2) {
         const tenantId = String((beforeRow as any)?.tenant_id ?? "");
         if (tenantId) {
           await autoBillUnbilledLateFees(auth.supabase, tenantId, [invoiceId]);
@@ -564,11 +454,66 @@ export async function POST(req: Request) {
       if (!invoiceId || !payload || typeof payload !== "object") {
         return NextResponse.json({ error: "Invalid save payload." }, { status: 400 });
       }
+      // Never settable through this form, on any bill.
+      for (const key of ["fee_model", "kind", "late_fee_paused_from", "late_fee_paused_reason"]) {
+        delete (payload as any)[key];
+      }
+      const { data: modelRow, error: modelError } = await authEdit.supabase
+        .from("invoices")
+        .select("fee_model,status")
+        .eq("id", invoiceId)
+        .maybeSingle();
+      if (modelError) return NextResponse.json({ error: modelError.message }, { status: 500 });
+      const isV2Bill = (modelRow as any)?.fee_model === "v2";
+      if (isV2Bill) {
+        // A v2 bill is its own charges only (design B1): it can never carry
+        // another bill's debt or a relayed late-fee line, and its paid_amount
+        // is Σ allocations, written only by record_payment / void_payment.
+        const rows = Array.isArray((payload as any).additional_fees_breakdown)
+          ? ((payload as any).additional_fees_breakdown as any[])
+          : [];
+        const hasRelayRow = rows.some((row) => {
+          const type = String(row?.item_type ?? row?.type ?? "").toLowerCase();
+          return type === "carry_forward" || isLateFeeBreakdownRow(row);
+        });
+        if (
+          hasRelayRow ||
+          toNumber((payload as any).carry_forward_amount) !== 0 ||
+          toNumber((payload as any).late_fee_amount) !== 0
+        ) {
+          return NextResponse.json(
+            {
+              error:
+                "บิลนี้ใช้กติกาค่าปรับใหม่: ห้ามใส่ยอดยกมาหรือรายการค่าปรับของบิลอื่น ค่าปรับของบิลนี้คำนวณอัตโนมัติ ยกเว้นหรือหยุดนับได้ที่แผงค่าปรับ",
+              code: "bad_request",
+            },
+            { status: 400 },
+          );
+        }
+        if (
+          String((payload as any).status ?? "") === "paid" &&
+          String((modelRow as any)?.status ?? "") !== "paid"
+        ) {
+          return NextResponse.json(
+            { error: "บิลนี้ใช้กติกาค่าปรับใหม่ สถานะ “ชำระแล้ว” ตั้งเองไม่ได้", code: "bad_request" },
+            { status: 400 },
+          );
+        }
+        for (const key of [
+          "paid_amount",
+          "payment_history",
+          "locked_late_fee_amount",
+          "late_fee_billed_at",
+          "waived_late_fee_amount",
+        ]) {
+          delete (payload as any)[key];
+        }
+      }
       let wasPaidBeforeSave = false;
       if ("status" in payload) {
         const authStatus = await requireAdminPermission(req, "invoice.status.update");
         if ("error" in authStatus) return authStatus.error;
-        if (!["paid", "verifying", "cancelled"].includes(String(payload.status))) {
+        if (!isV2Bill && !["paid", "verifying", "cancelled"].includes(String(payload.status))) {
           payload.locked_late_fee_amount = null;
         }
         const { data: beforeRow } = await authEdit.supabase
@@ -589,7 +534,7 @@ export async function POST(req: Request) {
       ) {
         await syncPointsAfterPayment(authEdit.supabase, invoiceId);
       }
-      if ("additional_fees_breakdown" in payload) {
+      if (!isV2Bill && "additional_fees_breakdown" in payload) {
         const rows = Array.isArray((payload as any).additional_fees_breakdown)
           ? ((payload as any).additional_fees_breakdown as any[])
           : [];
@@ -886,8 +831,17 @@ export async function POST(req: Request) {
         .eq("start_date", periodStart)
         .eq("end_date", periodEnd)
         .is("slip_url", null)
-        .lt("due_date", today);
+        .lt("due_date", today)
+        // v2 status comes from the balance engine (just below), not from
+        // the due date alone.
+        .eq("fee_model", "legacy");
       if (overdueError) return NextResponse.json({ error: overdueError.message }, { status: 500 });
+
+      try {
+        await refreshV2InvoiceStatuses(auth.supabase, { periodStart, periodEnd });
+      } catch (v2Error: any) {
+        return NextResponse.json({ error: v2Error?.message ?? "v2 status refresh failed." }, { status: 500 });
+      }
 
       const { error: verifyingError } = await auth.supabase
         .from("invoices")
@@ -933,7 +887,7 @@ export async function POST(req: Request) {
       const { data: invoicesInMonth, error: invoiceError } = await auth.supabase
         .from("invoices")
         .select(
-          "id,room_id,status,rent_amount,water_bill,electricity_bill,common_fee,late_fee_amount,carry_forward_amount,additional_fees_total,additional_fees_breakdown,discount_amount,discount_breakdown,total_amount"
+          "id,room_id,status,fee_model,rent_amount,water_bill,electricity_bill,common_fee,late_fee_amount,carry_forward_amount,additional_fees_total,additional_fees_breakdown,discount_amount,discount_breakdown,total_amount"
         )
         .eq("start_date", periodStart)
         .eq("end_date", periodEnd);
@@ -969,6 +923,11 @@ export async function POST(req: Request) {
           );
           const totalAmount = computeInvoiceTotal({
             ...chargesFromInvoiceRow(invoice as any),
+            // A v2 bill's total is its own charges only: whatever sits in
+            // the legacy fee/carry columns is never part of it.
+            ...(invoice.fee_model === "v2"
+              ? { nativeLateFee: 0, lateFeeItems: 0, carryForward: 0 }
+              : {}),
             discount: discountAmount,
           });
 
@@ -1084,7 +1043,7 @@ export async function POST(req: Request) {
       const { data, error } = await auth.supabase
         .from("invoices")
         .select(
-          "id,tenant_id,room_id,status,total_amount,paid_amount,payment_history,issue_date,due_date,start_date,end_date,rent_amount,water_bill,electricity_bill,common_fee,discount_amount,discount_breakdown,late_fee_amount,late_fee_per_day,late_fee_start_date,carry_forward_amount,additional_fees_total,additional_fees_breakdown,notes,public_token,slip_url,opened_count,first_opened_at,last_opened_at,tenants(full_name,phone_number,line_user_id,custom_payment_method,move_in_date,move_out_date,status),rooms(room_number,price_month,buildings(name))"
+          "id,tenant_id,room_id,status,fee_model,kind,total_amount,paid_amount,payment_history,issue_date,due_date,start_date,end_date,rent_amount,water_bill,electricity_bill,common_fee,discount_amount,discount_breakdown,late_fee_amount,late_fee_per_day,late_fee_start_date,carry_forward_amount,additional_fees_total,additional_fees_breakdown,notes,public_token,slip_url,opened_count,first_opened_at,last_opened_at,tenants(full_name,phone_number,line_user_id,custom_payment_method,move_in_date,move_out_date,status),rooms(room_number,price_month,buildings(name))"
         )
         .in("status", ["pending", "partial", "overdue", "verifying"])
         .order("start_date", { ascending: true });
@@ -1176,7 +1135,7 @@ export async function POST(req: Request) {
       const { data, error: fetchError } = await auth.supabase
         .from("invoices")
         .select(
-          "id,tenant_id,room_id,status,total_amount,paid_amount,payment_history,issue_date,due_date,start_date,end_date,rent_amount,water_bill,electricity_bill,common_fee,discount_amount,discount_breakdown,late_fee_amount,late_fee_per_day,late_fee_start_date,carry_forward_amount,additional_fees_total,additional_fees_breakdown,notes,public_token,slip_url,slip_rejections,opened_count,first_opened_at,last_opened_at,tenants(full_name,phone_number,line_user_id,custom_payment_method,move_in_date,move_out_date,status),rooms(room_number,price_month,buildings(name))"
+          "id,tenant_id,room_id,status,fee_model,kind,late_fee_paused_from,late_fee_paused_reason,total_amount,paid_amount,payment_history,issue_date,due_date,start_date,end_date,rent_amount,water_bill,electricity_bill,common_fee,discount_amount,discount_breakdown,late_fee_amount,late_fee_per_day,late_fee_start_date,carry_forward_amount,additional_fees_total,additional_fees_breakdown,notes,public_token,slip_url,slip_rejections,opened_count,first_opened_at,last_opened_at,tenants(full_name,phone_number,line_user_id,custom_payment_method,move_in_date,move_out_date,status),rooms(room_number,price_month,buildings(name))"
         )
         .eq("start_date", periodStart)
         .eq("end_date", periodEnd)
@@ -1460,11 +1419,190 @@ export async function POST(req: Request) {
           month,
           dryRun: Boolean(body?.dryRun),
           dryRunIncludeExisting: Boolean(body?.dryRunIncludeExisting),
+          // Honored only together with dryRun (resolveGenerationFeeModel).
+          forceFeeModel:
+            body?.forceFeeModel === "v2" || body?.forceFeeModel === "legacy"
+              ? body.forceFeeModel
+              : null,
         });
         return NextResponse.json(result);
       } catch (error: any) {
         return NextResponse.json({ error: error?.message ?? "Unexpected server error." }, { status: 500 });
       }
+    }
+
+    // ─── v2 late fee: read / waive / pause ───────────────────────────────────
+    //
+    // Design A2.4 / B1: a v2 bill's late fee can be waived (all or part) or
+    // paused, always with a reason. None of these touch a money column: the
+    // engine derives the fee from late_fee_waivers and late_fee_paused_from,
+    // so the only writes are a waiver row or the two pause columns, followed
+    // by a status-cache refresh (a waiver can bring amount due to 0 → paid).
+    //
+    // Permission: "invoice.edit". Waiving/pausing changes what a bill
+    // charges, which is exactly what "Edit invoice details" governs — the
+    // legacy equivalent ("ยกเว้นค่าปรับนี้" on the fees tab) was saved through
+    // save_details under the same key. "invoice.status.update" is only about
+    // the label, and "invoice.payment.record" is about money received; a
+    // waiver is neither.
+
+    if (action === "get_late_fee_state") {
+      const auth = await requireAdminPermission(req, "tenant.view");
+      if ("error" in auth) return auth.error;
+      const invoiceId = String(body?.invoiceId ?? "");
+      if (!UUID_RE.test(invoiceId)) {
+        return NextResponse.json({ error: "Invalid invoiceId.", code: "bad_request" }, { status: 400 });
+      }
+      const states = await loadV2LateFeeStates(auth.supabase, [invoiceId]);
+      const state = states.get(invoiceId) ?? null;
+      if (!state) return NextResponse.json({ state: null, waivers: [] });
+      const { data: waivers, error: waiverError } = await auth.supabase
+        .from("late_fee_waivers")
+        .select("id,amount,reason,source,created_by,created_at,voided_at")
+        .eq("invoice_id", invoiceId)
+        .order("created_at", { ascending: true });
+      if (waiverError) return NextResponse.json({ error: waiverError.message }, { status: 500 });
+      return NextResponse.json({ state, waivers: waivers ?? [] });
+    }
+
+    if (
+      action === "waive_late_fee" ||
+      action === "void_late_fee_waiver" ||
+      action === "pause_late_fee" ||
+      action === "resume_late_fee"
+    ) {
+      const auth = await requireAdminPermission(req, "invoice.edit");
+      if ("error" in auth) return auth.error;
+      const bad = (message: string, status = 400, code = "bad_request") =>
+        NextResponse.json({ error: message, code }, { status });
+
+      // Resolve the bill (the waiver's bill, for a void).
+      let invoiceId = String(body?.invoiceId ?? "");
+      let waiverRow: any = null;
+      if (action === "void_late_fee_waiver") {
+        const waiverId = String(body?.waiverId ?? "");
+        if (!UUID_RE.test(waiverId)) return bad("Invalid waiverId.");
+        const { data, error } = await auth.supabase
+          .from("late_fee_waivers")
+          .select("id,invoice_id,amount,reason,source,voided_at")
+          .eq("id", waiverId)
+          .maybeSingle();
+        if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+        if (!data) return bad("ไม่พบรายการยกเว้นค่าปรับ", 404, "not_found");
+        waiverRow = data;
+        invoiceId = String((data as any).invoice_id);
+      }
+      if (!UUID_RE.test(invoiceId)) return bad("Invalid invoiceId.");
+
+      const { data: invoiceRow, error: invoiceError } = await auth.supabase
+        .from("invoices")
+        .select("id,status,fee_model,kind,tenant_id")
+        .eq("id", invoiceId)
+        .maybeSingle();
+      if (invoiceError) return NextResponse.json({ error: invoiceError.message }, { status: 500 });
+      if (!invoiceRow) return bad("ไม่พบใบแจ้งหนี้", 404, "not_found");
+      const blocked = lateFeeActionBlockReason(invoiceRow as any);
+      if (blocked) return bad(blocked);
+
+      const reason = String(body?.reason ?? "").trim();
+      let result: Record<string, unknown> = {};
+
+      if (action === "waive_late_fee") {
+        const amount = roundTo2(Number(body?.amount));
+        const before = (await loadV2LateFeeStates(auth.supabase, [invoiceId])).get(invoiceId);
+        if (!before) return bad("ไม่พบข้อมูลค่าปรับของบิลนี้", 404, "not_found");
+        const invalid = validateWaiverRequest({ amount, reason, feeDue: before.balance.feeDue });
+        if (invalid) return bad(invalid);
+
+        // One INSERT. There is a race window between reading feeDue above
+        // and this insert: a concurrent waiver or payment on the same bill
+        // could land in between. record_payment is protected (it compares
+        // expected_waived_sum), and the engine caps waived at accrued so
+        // amount due can never go negative; the remaining risk — an
+        // over-waiver silently absorbing fee that accrues LATER — is closed
+        // by the re-check right after the insert, which voids this row again
+        // if the bill ended up waived beyond what was due.
+        const { data: inserted, error: insertError } = await auth.supabase
+          .from("late_fee_waivers")
+          .insert({
+            invoice_id: invoiceId,
+            amount,
+            reason,
+            source: "manual",
+            created_by: auth.user.id,
+          })
+          .select("id")
+          .single();
+        if (insertError) return NextResponse.json({ error: insertError.message }, { status: 500 });
+
+        const after = (await loadV2LateFeeStates(auth.supabase, [invoiceId])).get(invoiceId);
+        const waivable = after
+          ? roundTo2(Math.max(0, after.balance.feeAccrued - after.balance.feePaid))
+          : 0;
+        if (!after || after.waivedSum > waivable + 0.005) {
+          await auth.supabase
+            .from("late_fee_waivers")
+            .update({ voided_at: new Date().toISOString() })
+            .eq("id", (inserted as any).id)
+            .is("voided_at", null);
+          return bad(
+            "ค่าปรับของบิลนี้เพิ่งถูกเปลี่ยน (มีการยกเว้นหรือรับชำระพร้อมกัน) จึงยกเลิกรายการนี้ กรุณาโหลดใหม่แล้วลองอีกครั้ง",
+            409,
+            "stale_balance",
+          );
+        }
+        result = { waiverId: (inserted as any).id };
+      } else if (action === "void_late_fee_waiver") {
+        if (!reason) return bad("กรุณาระบุเหตุผลในการยกเลิกการยกเว้นค่าปรับ");
+        if (waiverRow.voided_at) {
+          return NextResponse.json({ success: true, alreadyVoided: true });
+        }
+        if (String(waiverRow.source) !== "manual") {
+          return bad("ยกเลิกได้เฉพาะการยกเว้นที่ทำด้วยมือ (ยกเว้นจากการย้ายออก/เปลี่ยนระบบ ยกเลิกจากหน้านี้ไม่ได้)");
+        }
+        // late_fee_waivers has no voided_by / void_reason columns yet, so the
+        // void is recorded by appending to the reason text — the original
+        // reason is kept intact as the prefix. One UPDATE, guarded on
+        // voided_at IS NULL so a double click voids once.
+        const stamp = `[ยกเลิก ${new Date().toISOString()} โดย ${auth.user.id}: ${reason}]`;
+        const { data: voided, error: voidError } = await auth.supabase
+          .from("late_fee_waivers")
+          .update({
+            voided_at: new Date().toISOString(),
+            reason: `${String(waiverRow.reason ?? "")} ${stamp}`.trim(),
+          })
+          .eq("id", waiverRow.id)
+          .is("voided_at", null)
+          .select("id");
+        if (voidError) return NextResponse.json({ error: voidError.message }, { status: 500 });
+        result = { alreadyVoided: (voided ?? []).length === 0 };
+      } else if (action === "pause_late_fee") {
+        const fromDate = String(body?.fromDate ?? "");
+        const invalid = validatePauseRequest({ fromDate, reason });
+        if (invalid) return bad(invalid);
+        const { error } = await auth.supabase
+          .from("invoices")
+          .update({ late_fee_paused_from: fromDate, late_fee_paused_reason: reason })
+          .eq("id", invoiceId)
+          .eq("fee_model", "v2");
+        if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      } else {
+        const { error } = await auth.supabase
+          .from("invoices")
+          .update({ late_fee_paused_from: null, late_fee_paused_reason: null })
+          .eq("id", invoiceId)
+          .eq("fee_model", "v2");
+        if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      }
+
+      // The status cache follows the engine (e.g. a waiver of the last baht
+      // makes the bill paid; voiding it takes it back out).
+      const refreshed = await refreshV2InvoiceStatuses(auth.supabase, { invoiceIds: [invoiceId] });
+      if (refreshed.updatedIds.length > 0) {
+        await syncPointsAfterPayment(auth.supabase, invoiceId);
+      }
+      const state = (await loadV2LateFeeStates(auth.supabase, [invoiceId])).get(invoiceId) ?? null;
+      return NextResponse.json({ success: true, ...result, state });
     }
 
     if (action === "sync_overdue") {

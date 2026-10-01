@@ -78,7 +78,9 @@ export async function POST(req: Request) {
           .order("transfer_date", { ascending: false }),
         supabase
           .from("invoices")
-          .select("id,tenant_id,room_id,total_amount,discount_amount,notes,issue_date,rooms(room_number,buildings(name))")
+          .select(
+            "id,tenant_id,room_id,total_amount,discount_amount,notes,issue_date,kind,fee_model,rooms(room_number,buildings(name))"
+          )
           .ilike("notes", "ย้ายออก%")
           .order("issue_date", { ascending: false }),
         supabase
@@ -110,6 +112,24 @@ export async function POST(req: Request) {
     if (firstError) {
       return NextResponse.json({ error: firstError.message }, { status: 500 });
     }
+
+    // Money OUT: move-out refunds marked paid (mark_refund_paid) with paid_at
+    // in the selected year. Returned separately and never mixed into the
+    // allocation (income) data above. The tenant's room is read through the
+    // move-out bill the refund came from — settle_move_out clears
+    // tenants.room_id, so the tenant row no longer knows the room. The year is
+    // cut at Bangkok midnight since paid_at is a full timestamp.
+    const { data: refundRows, error: refundError } = await supabase
+      .from("refunds")
+      .select(
+        "id,tenant_id,invoice_id,amount,status,paid_at,method,payment_method_snapshot,note,created_at," +
+          "tenants(full_name),invoice:invoices(room_id,rooms(room_number,buildings(name)))",
+      )
+      .eq("status", "paid")
+      .gte("paid_at", `${start}T00:00:00+07:00`)
+      .lt("paid_at", `${end}T00:00:00+07:00`)
+      .order("paid_at", { ascending: true });
+    if (refundError) return NextResponse.json({ error: refundError.message }, { status: 500 });
 
     // A handful of legacy allocation rows never got their own
     // payment_method_snapshot even though the payment_batches row they
@@ -152,6 +172,7 @@ export async function POST(req: Request) {
       settlementInvoices: settlementInvoicesRes.data ?? [],
       allocationsByPaidAt: withSnapshotFallback(allocationsByPaidAtRes.data ?? []),
       allocationsByPeriod: withSnapshotFallback(allocationsByPeriodRes.data ?? []),
+      paidRefunds: refundRows ?? [],
     });
   } catch (error: any) {
     return NextResponse.json({ error: error?.message ?? "Unexpected server error." }, { status: 500 });
