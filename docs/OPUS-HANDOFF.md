@@ -25,3 +25,6 @@ Screens, CSV/report labels, tenant/admin displays, permission wiring, non-atomic
 - Findings 61 and 76 (`approve_paid` settled-chain branch skips the `verifying` + `slip_url` guard; admin `update_status` -> paid still allowed) touch payment flows and should be considered with the atomic function review.
 - Finding 98: `refund_due_vs_paid` excludes advance rent from refund due; confirm the rule with the owner before changing the view.
 - SQL test scripts for the atomic functions are in `supabase/tests/` once merged (the known-gap cases are intentionally failing).
+
+## From the SQL test run (supabase/tests/RESULTS.md on dorm-test)
+Findings 105-108 are defects in the atomic functions found by the rollback-wrapped tests: whitespace-only reasons accepted, excess dropped when tenant_id is NULL, allocations/paid_amount not validated, void can drive paid_amount negative. Known-gap cases (35, 36, 44) are intentionally failing in the scripts.
