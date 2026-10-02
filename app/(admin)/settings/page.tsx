@@ -154,6 +154,7 @@ const PERMISSION_LABELS_THAI: Partial<Record<PermissionKey, string>> = {
     "rewards.manage": "จัดการคะแนนสะสม/อนุมัติ",
     "reconciliation.view": "ดูรายงานตรวจสอบยอดเงิน",
     "action_queue.view": "ดูคิวงานที่ต้องจัดการ",
+    "credits.view": "ดูรายงานเครดิตและการคืนเงิน",
 };
 
 const permissionLabelThai = (permission: PermissionKey) =>
