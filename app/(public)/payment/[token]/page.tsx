@@ -7,6 +7,7 @@ import { useParams } from "next/navigation";
 import { Badge } from "@/components/ui/Badge";
 import { isLateFeeBreakdownRow, isCarryForwardBreakdownRow, toChargeFeeRows } from "@/lib/invoice-utils";
 import { CheckCircle2, Download, UploadCloud } from "lucide-react";
+import type { TenantStatement } from "@/lib/money/tenant-statement";
 
 const NGROK_SKIP_QUERY = "ngrok-skip-browser-warning=true";
 
@@ -217,6 +218,7 @@ export default function PaymentTokenPage() {
   const token = params?.token as string;
 
   const [invoice, setInvoice] = useState<InvoiceData | null>(null);
+  const [statement, setStatement] = useState<TenantStatement | null>(null);
   const [defaultMethod, setDefaultMethod] = useState<PaymentMethod | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [submitted, setSubmitted] = useState(false);
@@ -362,6 +364,7 @@ export default function PaymentTokenPage() {
             source_start_date: typeof row.source_invoice === 'object' && row.source_invoice ? String((row.source_invoice as any).start_date) : null,
           }));
       setInvoice(normalized);
+      setStatement((authData.statement as TenantStatement | null) ?? null);
       setPreview(normalized.slip_url ?? null);
 
       const reading = (authData.meterReading as MeterReadingRow | null) ?? null;
@@ -607,6 +610,44 @@ export default function PaymentTokenPage() {
             </div>
           )}
         </header>
+
+        {statement && (
+          <section className="rounded-3xl border border-white/60 bg-white/90 p-6 shadow-xl">
+            <h2 className="text-lg font-semibold text-slate-900">สรุปยอดและสถานะ</h2>
+            <p className="mt-2 text-sm text-slate-800">{statement.explanationTh}</p>
+            <p className="mt-1 text-sm font-medium text-blue-700">ขั้นตอนถัดไป: {statement.nextActionTh}</p>
+            <div className="mt-3 space-y-1 text-sm text-slate-700">
+              <div className="flex justify-between"><span>ยอดรวมค่าใช้จ่าย</span><span>฿{formatBaht(statement.charges)}</span></div>
+              {statement.credits.map((c, i) => (
+                <div key={i} className="flex justify-between text-green-700"><span>{c.label}</span><span>-฿{formatBaht(c.amount)}</span></div>
+              ))}
+              <div className="flex justify-between"><span>ชำระแล้ว (ยืนยันแล้ว)</span><span>฿{formatBaht(statement.confirmedPaid)}</span></div>
+              <div className="flex justify-between font-semibold text-slate-900"><span>คงเหลือ</span><span>฿{formatBaht(statement.balance)}</span></div>
+            </div>
+            {statement.underReview && (
+              <div className="mt-3 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900">
+                รอตรวจสอบ: {statement.underReview.note}
+              </div>
+            )}
+            {statement.lateFee.state === "estimate" && (
+              <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                <p className="font-semibold">ค่าปรับล่าช้า (ประมาณการ) ฿{formatBaht(statement.lateFee.amount)}</p>
+                <p className="text-xs">{statement.lateFee.formula}</p>
+                <p className="text-xs">{statement.lateFee.note}</p>
+              </div>
+            )}
+            {statement.lateFee.state === "charged" && (
+              <p className="mt-3 text-xs text-slate-600">
+                ค่าปรับล่าช้าที่เรียกเก็บแล้ว: ฿{formatBaht(statement.lateFee.amount)}
+              </p>
+            )}
+            {statement.refund && (
+              <p className="mt-3 text-xs text-slate-600">
+                เงินคืน: ต้องคืน ฿{formatBaht(statement.refund.due)} คืนแล้ว ฿{formatBaht(statement.refund.paid)}
+              </p>
+            )}
+          </section>
+        )}
 
         <section className="rounded-3xl border border-white/60 bg-white/90 p-6 shadow-xl">
           <h2 className="text-lg font-semibold text-slate-900">รายละเอียดค่าใช้จ่าย</h2>
@@ -878,7 +919,7 @@ export default function PaymentTokenPage() {
                   key={`${item.paid_at ?? item.created_at ?? idx}-${idx}`}
                   className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700"
                 >
-                  <p className="font-semibold text-slate-900">฿{formatBaht(toNumber(item.amount))}</p>
+                  <p className="font-semibold text-slate-900">฿{formatBaht(toNumber(item.amount))}{item.type === "void" ? " (ยกเลิกรายการ)" : ""}</p>
                   <p className="text-xs text-slate-500">
                     {item.mode === "full" ? "Full" : "Partial"} |{" "}
                     {item.paid_at ? new Date(item.paid_at).toLocaleString("th-TH") : "-"}

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase-admin";
+import { buildTenantStatement } from "@/lib/money/tenant-statement";
 
 const toNumber = (value: unknown) => {
   const parsed = Number(value ?? 0);
@@ -49,7 +50,7 @@ export async function POST(req: Request) {
     const { data: pendingInvoices, error: pendingError } = await supabase
       .from("invoices")
       .select(
-        "id,public_token,issue_date,due_date,total_amount,paid_amount,status,rent_amount,water_bill,electricity_bill,common_fee,additional_fees_total,carry_forward_amount,late_fee_amount,late_fee_per_day,late_fee_start_date,waived_late_fee_amount,locked_late_fee_amount"
+        "id,public_token,issue_date,start_date,due_date,total_amount,paid_amount,status,slip_url,slip_uploaded_at,payment_history,additional_fees_breakdown,discount_amount,discount_breakdown,rent_amount,water_bill,electricity_bill,common_fee,additional_fees_total,carry_forward_amount,late_fee_amount,late_fee_per_day,late_fee_start_date,waived_late_fee_amount,locked_late_fee_amount"
       )
       .eq("tenant_id", tenant.id)
       .in("status", ["pending", "partial", "overdue", "verifying"])
@@ -60,6 +61,35 @@ export async function POST(req: Request) {
     }
 
     const visiblePendingInvoices = pendingInvoices ?? [];
+
+    // Additive per-invoice statement; existing fields are untouched.
+    let invoicesWithStatement: any[] = visiblePendingInvoices;
+    try {
+      const ids = visiblePendingInvoices.map((i: any) => i.id);
+      let allocs: any[] = [];
+      if (ids.length > 0) {
+        const res = await supabase
+          .from("invoice_payment_allocations")
+          .select("*,invoice:invoice_id(start_date)")
+          .in("invoice_id", ids);
+        if (!res.error) {
+          allocs = (res.data ?? []).map((r: any) => ({
+            ...r,
+            invoice_period: (Array.isArray(r.invoice) ? r.invoice[0] : r.invoice)?.start_date ?? null,
+          }));
+        }
+      }
+      invoicesWithStatement = visiblePendingInvoices.map((inv: any) => ({
+        ...inv,
+        statement: buildTenantStatement(
+          inv,
+          allocs.filter((a) => String(a.invoice_id) === String(inv.id)),
+          Array.isArray(inv.payment_history) ? inv.payment_history : []
+        ),
+      }));
+    } catch {
+      invoicesWithStatement = visiblePendingInvoices;
+    }
 
     const { data: paidInvoices, error: paidError } = await supabase
       .from("invoices")
@@ -85,8 +115,8 @@ export async function POST(req: Request) {
         has_corporate_receipt: !!(tenant as any)?.custom_receipt_profile,
         policy_accepted: !!(tenant as any)?.policy_accepted,
       },
-      invoices: visiblePendingInvoices,
-      pending_invoices: visiblePendingInvoices,
+      invoices: invoicesWithStatement,
+      pending_invoices: invoicesWithStatement,
       paid_invoices: paidInvoices ?? [],
       message: null,
     });

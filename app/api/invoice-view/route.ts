@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase-admin";
 import { verifyLineAccessToken } from "@/lib/line-admin-auth";
 import { isLateFeeBreakdownRow } from "@/lib/invoice-utils";
+import { buildTenantStatement } from "@/lib/money/tenant-statement";
 
 export async function POST(req: Request) {
   try {
@@ -28,7 +29,7 @@ export async function POST(req: Request) {
     const { data: invoice, error: fetchError } = await supabase
       .from("invoices")
       .select(
-        "id,room_id,start_date,total_amount,paid_amount,carry_forward_amount,late_fee_amount,payment_history,rent_amount,water_bill,electricity_bill,common_fee,additional_fees_total,additional_fees_breakdown,discount_amount,discount_breakdown,status,slip_url,opened_count,first_opened_at,last_opened_at,tenants(full_name,custom_payment_method,move_in_date,line_user_id),rooms(room_number,price_month)"
+        "id,room_id,start_date,due_date,slip_uploaded_at,late_fee_per_day,late_fee_start_date,waived_late_fee_amount,locked_late_fee_amount,total_amount,paid_amount,carry_forward_amount,late_fee_amount,payment_history,rent_amount,water_bill,electricity_bill,common_fee,additional_fees_total,additional_fees_breakdown,discount_amount,discount_breakdown,status,slip_url,opened_count,first_opened_at,last_opened_at,tenants(full_name,custom_payment_method,move_in_date,line_user_id),rooms(room_number,price_month)"
       )
       .eq("public_token", token)
       .maybeSingle();
@@ -102,8 +103,42 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: updateResult.error.message }, { status: 500 });
     }
 
+    // Additive tenant statement. Allocations are read-only; if the columns/table
+    // are unavailable the builder falls back to the payment_history cache.
+    let statement: ReturnType<typeof buildTenantStatement> | null = null;
+    try {
+      let allocations: any[] = [];
+      const own = await supabase
+        .from("invoice_payment_allocations")
+        .select("payment_batch_id")
+        .eq("invoice_id", (invoice as any).id);
+      const batchIds = Array.from(
+        new Set((own.data ?? []).map((r: any) => r.payment_batch_id).filter(Boolean))
+      );
+      if (!own.error && batchIds.length > 0) {
+        const all = await supabase
+          .from("invoice_payment_allocations")
+          .select("*,invoice:invoice_id(start_date)")
+          .in("payment_batch_id", batchIds);
+        if (!all.error) {
+          allocations = (all.data ?? []).map((r: any) => ({
+            ...r,
+            invoice_period: (Array.isArray(r.invoice) ? r.invoice[0] : r.invoice)?.start_date ?? null,
+          }));
+        }
+      }
+      statement = buildTenantStatement(
+        invoice as any,
+        allocations,
+        Array.isArray((invoice as any).payment_history) ? (invoice as any).payment_history : []
+      );
+    } catch {
+      statement = null;
+    }
+
     return NextResponse.json({
       success: true,
+      statement,
       opened_count: nextCount,
       first_opened_at: firstOpenedAt,
       last_opened_at: nowIso,
