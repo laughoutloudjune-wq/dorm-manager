@@ -2,17 +2,24 @@
  * Move-out settlement planning — pure arithmetic, no database.
  *
  * Builds the line-by-line picture of a final move-out:
- *   final bill  = prorated rent + utilities + other documented charges
+ *   final bill  = full-month rent + prorated rent + utilities + other documented charges
  *   owed        = final bill + older outstanding invoice debt
  *   credit      = advance rent held + (security deposit held - forfeited deposit)
+ *                 + unapplied overpayment credit held
  *
  * Rules:
- *  - Advance rent is consumed before the security deposit.
- *  - Forfeiture reduces the deposit available. Forfeited money is neither
- *    refund nor cash — it is simply retained. A reason is REQUIRED.
+ *  - Credit is drawn in a fixed order: advance rent, then security deposit,
+ *    then unapplied overpayment credit.
  *  - Credit pays older invoice debt oldest-first, then the final bill.
- *  - `refundDue` is the credit left over and is never negative.
- *  - If credit is insufficient the shortfall is `balanceStillOwed`.
+ *  - ADVANCE RENT IS NOT REFUNDABLE (owner decision 2026-10-03). Advance rent
+ *    left over once everything owed is covered is absorbed (`advanceRentAbsorbed`)
+ *    and never becomes refund due.
+ *  - Forfeiture reduces the deposit available. Forfeited money is neither refund
+ *    nor cash — it is simply retained. A reason is REQUIRED.
+ *  - `refundDue` = deposit left + unapplied overpayment credit left. Only those two
+ *    can ever produce a refund. Never negative.
+ *  - If credit is insufficient the shortfall is `balanceStillOwed`. It is never
+ *    written off here.
  *  - Recorded refund payouts may not exceed `refundDue`.
  *
  * Amounts are worked in whole satang (integers) so sums never drift.
@@ -48,6 +55,9 @@ export type DepositForfeiture = {
 };
 
 export type MoveOutSettlementInput = {
+  /** Rent for whole billing months not yet invoiced (baht). */
+  fullMonthRent?: number;
+  /** Rent for the trailing partial period, computed with dailyRentRate (baht). */
   proratedRent: number;
   electricity?: UtilityChargeInput;
   water?: UtilityChargeInput;
@@ -55,6 +65,8 @@ export type MoveOutSettlementInput = {
   outstandingDebts?: OutstandingDebt[];
   securityDeposit?: number;
   advanceRent?: number;
+  /** Unapplied overpayment credit held for the tenant (refundable). */
+  unappliedCredit?: number;
   depositForfeiture?: DepositForfeiture;
   /** Refund payouts already paid to the tenant, in baht. */
   refundPayouts?: number[];
@@ -69,6 +81,7 @@ export type DebtPayment = {
 };
 
 export type MoveOutSettlementPlan = {
+  fullMonthRent: number;
   proratedRent: number;
   electricity: number;
   water: number;
@@ -80,19 +93,30 @@ export type MoveOutSettlementPlan = {
   totalOwed: number;
   advanceRentHeld: number;
   advanceRentApplied: number;
+  /** Advance rent left over after everything owed was covered. Not refundable. */
+  advanceRentAbsorbed: number;
   depositHeld: number;
   depositForfeited: number;
   forfeitReason: string | null;
   forfeitDetail: string | null;
   depositAvailable: number;
   depositApplied: number;
+  /** Deposit left after forfeiture and application — refundable. */
+  depositRemaining: number;
+  unappliedCreditHeld: number;
+  unappliedCreditApplied: number;
+  unappliedCreditRemaining: number;
   creditAvailable: number;
+  creditApplied: number;
   /** Credit applied to older invoices, oldest first. */
   debtPayments: DebtPayment[];
   debtPaidFromCredit: number;
   finalBillPaidFromCredit: number;
-  /** Credit left after settling debt and the final bill. */
+  /** What the final invoice still asks the tenant to pay. */
+  finalBillDue: number;
+  /** Credit left after settling debt and the final bill (all buckets). */
   remainingCredit: number;
+  /** depositRemaining + unappliedCreditRemaining. Advance rent never counts. */
   refundDue: number;
   balanceStillOwed: number;
   refundPaid: number;
@@ -130,6 +154,8 @@ function utilitySatang(label: string, input: UtilityChargeInput | undefined, err
 export function planMoveOutSettlement(input: MoveOutSettlementInput): MoveOutSettlementPlan {
   const errors: string[] = [];
 
+  const fullMonthRent = toSatang(input.fullMonthRent ?? 0);
+  if (fullMonthRent < 0) errors.push("fullMonthRent must not be negative");
   const rent = toSatang(input.proratedRent);
   if (rent < 0) errors.push("proratedRent must not be negative");
   const electricity = utilitySatang("electricity", input.electricity, errors);
@@ -152,7 +178,7 @@ export function planMoveOutSettlement(input: MoveOutSettlementInput): MoveOutSet
     otherTotal += amount;
   }
 
-  const finalBill = Math.max(rent, 0) + electricity + water + otherTotal;
+  const finalBill = Math.max(fullMonthRent, 0) + Math.max(rent, 0) + electricity + water + otherTotal;
 
   const debts = [...(input.outstandingDebts ?? [])]
     .map((d) => ({ ...d, owed: toSatang(d.outstanding) }))
@@ -163,6 +189,7 @@ export function planMoveOutSettlement(input: MoveOutSettlementInput): MoveOutSet
 
   const deposit = Math.max(toSatang(input.securityDeposit ?? 0), 0);
   const advance = Math.max(toSatang(input.advanceRent ?? 0), 0);
+  const unapplied = Math.max(toSatang(input.unappliedCredit ?? 0), 0);
 
   let forfeit = toSatang(input.depositForfeiture?.forfeitAmount ?? 0);
   const forfeitReason = input.depositForfeiture?.reason?.trim() || null;
@@ -180,12 +207,13 @@ export function planMoveOutSettlement(input: MoveOutSettlementInput): MoveOutSet
   }
 
   const depositAvailable = deposit - forfeit;
-  const creditAvailable = advance + depositAvailable;
+  const creditAvailable = advance + depositAvailable + unapplied;
 
-  // Advance rent first, then deposit.
+  // Advance rent first, then deposit, then unapplied overpayment credit.
   const advanceApplied = Math.min(advance, totalOwed);
   const depositApplied = Math.min(depositAvailable, totalOwed - advanceApplied);
-  const creditUsed = advanceApplied + depositApplied;
+  const unappliedApplied = Math.min(unapplied, totalOwed - advanceApplied - depositApplied);
+  const creditUsed = advanceApplied + depositApplied + unappliedApplied;
 
   // Older invoices first (oldest to newest), then the final bill.
   let pool = creditUsed;
@@ -203,8 +231,11 @@ export function planMoveOutSettlement(input: MoveOutSettlementInput): MoveOutSet
   const finalBillPaid = Math.min(pool, finalBill);
   const debtPaid = creditUsed - finalBillPaid;
 
-  const remainingCredit = Math.max(creditAvailable - creditUsed, 0);
-  const refundDue = remainingCredit;
+  const advanceAbsorbed = advance - advanceApplied;
+  const depositRemaining = depositAvailable - depositApplied;
+  const unappliedRemaining = unapplied - unappliedApplied;
+  const remainingCredit = advanceAbsorbed + depositRemaining + unappliedRemaining;
+  const refundDue = depositRemaining + unappliedRemaining;
   const balanceStillOwed = Math.max(totalOwed - creditUsed, 0);
 
   let refundPaid = 0;
@@ -221,6 +252,7 @@ export function planMoveOutSettlement(input: MoveOutSettlementInput): MoveOutSet
   }
 
   return {
+    fullMonthRent: toBaht(Math.max(fullMonthRent, 0)),
     proratedRent: toBaht(Math.max(rent, 0)),
     electricity: toBaht(electricity),
     water: toBaht(water),
@@ -232,16 +264,23 @@ export function planMoveOutSettlement(input: MoveOutSettlementInput): MoveOutSet
     totalOwed: toBaht(totalOwed),
     advanceRentHeld: toBaht(advance),
     advanceRentApplied: toBaht(advanceApplied),
+    advanceRentAbsorbed: toBaht(advanceAbsorbed),
     depositHeld: toBaht(deposit),
     depositForfeited: toBaht(forfeit),
     forfeitReason: forfeit > 0 ? forfeitReason : null,
     forfeitDetail: forfeit > 0 ? input.depositForfeiture?.detail ?? null : null,
     depositAvailable: toBaht(depositAvailable),
     depositApplied: toBaht(depositApplied),
+    depositRemaining: toBaht(depositRemaining),
+    unappliedCreditHeld: toBaht(unapplied),
+    unappliedCreditApplied: toBaht(unappliedApplied),
+    unappliedCreditRemaining: toBaht(unappliedRemaining),
     creditAvailable: toBaht(creditAvailable),
+    creditApplied: toBaht(creditUsed),
     debtPayments,
     debtPaidFromCredit: toBaht(debtPaid),
     finalBillPaidFromCredit: toBaht(finalBillPaid),
+    finalBillDue: toBaht(finalBill - finalBillPaid),
     remainingCredit: toBaht(remainingCredit),
     refundDue: toBaht(refundDue),
     balanceStillOwed: toBaht(balanceStillOwed),
