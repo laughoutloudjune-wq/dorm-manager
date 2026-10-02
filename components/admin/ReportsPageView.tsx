@@ -15,6 +15,19 @@ import {
 } from "@/lib/invoice-utils";
 import { chargesFromInvoiceRow, computeInvoiceTotal } from "@/lib/invoice-total";
 import { getInvoiceOwnOutstanding, sumOwnOutstanding } from "@/lib/invoice-ledger";
+import {
+  BASIS_LABELS,
+  BILLING_PERIOD_ALLOCATION_LABEL,
+  REPORT_TERMS,
+  dropUnreversedVoided,
+  effectiveSource,
+  monthOf,
+  summarizeAdjustments,
+  summarizeAllocations,
+  summarizeByReceiptMonth,
+  sumRefundPaid,
+  NON_CASH_SOURCES,
+} from "@/lib/money/report-definitions";
 
 type ReportTab = "income" | "arrears" | "move_in" | "move_out" | "yearly" | "utilities" | "movement";
 
@@ -108,8 +121,19 @@ const csvCell = (value: any) => {
     : text;
 };
 
-const downloadCsv = (filename: string, headers: string[], rows: Array<Array<string | number>>) => {
-  const csv = [headers.map(csvCell).join(","), ...rows.map((row) => row.map(csvCell).join(","))].join("\n");
+// `preamble` rows (e.g. the basis label) are written above the header so a
+// CSV carries the same definition the screen shows.
+const downloadCsv = (
+  filename: string,
+  headers: string[],
+  rows: Array<Array<string | number>>,
+  preamble: Array<Array<string | number>> = [],
+) => {
+  const csv = [
+    ...preamble.map((row) => row.map(csvCell).join(",")),
+    headers.map(csvCell).join(","),
+    ...rows.map((row) => row.map(csvCell).join(",")),
+  ].join("\n");
   const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
@@ -150,6 +174,9 @@ export default function ReportsPageView() {
   const [transfers, setTransfers] = useState<any[]>([]);
   const [settlementInvoices, setSettlementInvoices] = useState<any[]>([]);
   const [allocations, setAllocations] = useState<any[]>([]);
+  const [voidedBatchIds, setVoidedBatchIds] = useState<string[]>([]);
+  const [refundPayouts, setRefundPayouts] = useState<any[]>([]);
+  const [adjustments, setAdjustments] = useState<any[]>([]);
 
   const canViewReports = can("tenant.view") || can("room.view") || can("invoice.create");
 
@@ -241,6 +268,9 @@ export default function ReportsPageView() {
       setLogs(logsRes.data ?? []);
       setTransfers(transfersRes.data ?? []);
       setSettlementInvoices(settlementInvoicesRes.data ?? []);
+      setVoidedBatchIds(Array.isArray(reportData.voidedBatchIds) ? reportData.voidedBatchIds.map(String) : []);
+      setRefundPayouts(Array.isArray(reportData.refundPayouts) ? reportData.refundPayouts : []);
+      setAdjustments(Array.isArray(reportData.adjustments) ? reportData.adjustments : []);
 
       const allocationById = new Map<string, any>();
       for (const row of [
@@ -281,6 +311,7 @@ export default function ReportsPageView() {
           const isLate = dueDate ? new Date(row.paid_at) > new Date(`${dueDate}T23:59:59`) : false;
           const method = paymentMethodSnapshotLabel(row.payment_method_snapshot ?? null);
           const noteParts: string[] = [];
+          if (row.reverses_allocation_id || amount < 0) noteParts.push("ยกเลิกรายการรับเงิน (void) — หักล้างรายการเดิม");
           if (isNonCashPaymentSource(row.source)) noteParts.push(paymentSourceLabel(row.source));
           if (isLate) noteParts.push("ชำระเกินกำหนด (หลังวันครบกำหนดของบิลนี้)");
           if (method === UNKNOWN_PAYMENT_METHOD) {
@@ -299,6 +330,7 @@ export default function ReportsPageView() {
             amount,
             paid_at: row.paid_at,
             source: row.source ?? null,
+            reverses_allocation_id: row.reverses_allocation_id ? String(row.reverses_allocation_id) : null,
             // The frozen snapshot, used as-is. NULL for anything recorded before
             // payment_batches existed — reported as UNKNOWN_METHOD, not guessed.
             method,
@@ -423,13 +455,22 @@ export default function ReportsPageView() {
   // here are issued the 25th with a due date early the FOLLOWING month, so
   // grouping by receipt date instead would put most on-time rent one tab away
   // from the period it belongs to.
-  const cashRows = useMemo(
-    () =>
-      allocations
-        .map((row) => ({ ...row, month: row.invoice_period }))
-        .filter((row) => row.amount > 0),
-    [allocations]
-  );
+  // Reversal (negative) rows are KEPT so the original and its void both show
+  // and net to zero; non-cash credit rows are kept too but flagged `isCredit`
+  // so they never count as cash received.
+  const cashRows = useMemo(() => {
+    const live = dropUnreversedVoided(allocations, voidedBatchIds);
+    const byId = new Map<string, any>(allocations.map((row) => [row.id, row]));
+    return live.map((row) => {
+      const source = effectiveSource(row, byId);
+      return {
+        ...row,
+        month: row.invoice_period,
+        isReversal: Boolean(row.reverses_allocation_id) || row.amount < 0,
+        isCredit: NON_CASH_SOURCES.includes(source.trim()),
+      };
+    });
+  }, [allocations, voidedBatchIds]);
 
   const filteredCashRows = useMemo(() => {
     let rows = cashRows.filter((row) => row.month === selectedMonth);
@@ -461,6 +502,7 @@ export default function ReportsPageView() {
     // payment(s) so summing the column in a spreadsheet doesn't double-count.
     const oldestPaidAtByInvoice = new Map<string, number>();
     for (const row of sorted) {
+      if (row.isReversal) continue;
       const paidAtMs = new Date(row.paid_at).getTime();
       const prev = oldestPaidAtByInvoice.get(row.invoice_id);
       if (prev == null || paidAtMs < prev) oldestPaidAtByInvoice.set(row.invoice_id, paidAtMs);
@@ -468,7 +510,7 @@ export default function ReportsPageView() {
     const invoiceIdsWithBreakdownShown = new Set<string>();
     return sorted.map((row) => {
       const isOldestForInvoice =
-        new Date(row.paid_at).getTime() === oldestPaidAtByInvoice.get(row.invoice_id);
+        !row.isReversal && new Date(row.paid_at).getTime() === oldestPaidAtByInvoice.get(row.invoice_id);
       const showBreakdown = isOldestForInvoice && !invoiceIdsWithBreakdownShown.has(row.invoice_id);
       if (showBreakdown) invoiceIdsWithBreakdownShown.add(row.invoice_id);
       return { ...row, showBreakdown };
@@ -476,26 +518,44 @@ export default function ReportsPageView() {
   }, [cashRows, selectedMonth, incomeSearchQuery, incomeBuildingFilter, incomePaymentMethodFilter]);
 
   const cashSummary = useMemo(() => {
-    const received = filteredCashRows.reduce((sum, row) => sum + row.amount, 0);
-    const batches = new Set(filteredCashRows.map((row) => row.payment_batch_id || row.id));
-    const invoicesTouched = new Set(filteredCashRows.map((row) => row.invoice_id));
+    // Billing-period view: cash actually received AGAINST invoices of this
+    // period (net of voids, credit separate), whenever it arrived.
+    const appliedSummary = summarizeAllocations(filteredCashRows, [], allocations);
+    const received = appliedSummary.cashReceived;
+    const batches = new Set(
+      filteredCashRows.filter((row) => !row.isReversal && !row.isCredit).map((row) => row.payment_batch_id || row.id)
+    );
+    const invoicesTouched = new Set(filteredCashRows.filter((row) => !row.isReversal).map((row) => row.invoice_id));
     // Money that arrived AFTER the invoice it settled was already due — genuine
     // arrears, as opposed to rent paid on the normal cycle (invoices here are
     // issued the 25th and due early the following month, so "paid next month"
     // is routine and must not be flagged).
     const backPaid = filteredCashRows
-      .filter((row) => isLatePayment(row))
+      .filter((row) => !row.isCredit && isLatePayment(row))
       .reduce((sum, row) => sum + row.amount, 0);
+    // Cash basis proper: money that physically arrived in the selected
+    // calendar month (by paid_at), regardless of which period it paid for.
+    const receivedInMonth = summarizeByReceiptMonth(allocations, selectedMonth, voidedBatchIds);
+    const monthRefundPaid = sumRefundPaid(refundPayouts.filter((row) => monthOf(row.paid_at) === selectedMonth));
+    const monthAdjustments = summarizeAdjustments(
+      adjustments.filter((row) => monthOf(row.created_at) === selectedMonth)
+    );
     return {
       received,
+      credit: appliedSummary.creditApplied,
+      receivedInMonth: receivedInMonth.cashReceived,
+      creditInMonth: receivedInMonth.creditApplied,
+      refundPaid: monthRefundPaid,
+      waived: monthAdjustments.waived,
+      writtenOff: monthAdjustments.writtenOff,
       payments: batches.size,
       invoicesTouched: invoicesTouched.size,
       backPaid,
       unattributed: filteredCashRows
-        .filter((row) => row.method === UNKNOWN_METHOD)
+        .filter((row) => !row.isCredit && row.method === UNKNOWN_METHOD)
         .reduce((sum, row) => sum + row.amount, 0),
     };
-  }, [filteredCashRows, selectedMonth]);
+  }, [filteredCashRows, selectedMonth, allocations, voidedBatchIds, refundPayouts, adjustments]);
 
   const incomeBuildingOptions = useMemo(
     () =>
@@ -578,6 +638,8 @@ export default function ReportsPageView() {
     const totals = new Map<string, number>();
     let totalReceived = 0;
     for (const row of filteredCashRows) {
+      // Credit settlements have no receiving account; never attribute them to one.
+      if (row.isCredit) continue;
       totals.set(row.method, (totals.get(row.method) ?? 0) + row.amount);
       totalReceived += row.amount;
     }
@@ -954,7 +1016,7 @@ export default function ReportsPageView() {
   const exportIncome = () =>
     downloadCsv(
       `income-report-${selectedMonth}.csv`,
-      ["เดือน", "อาคาร", "เลขห้อง", "ชื่อผู้เช่า", "หน่วยไฟ", "ค่าไฟ", "หน่วยน้ำ", "ค่าน้ำ", "ยอดเรียกเก็บ", "ยอดที่ชำระ", "วิธีชำระ", "สถานะ", "ค่าธรรมเนียมเพิ่มเติม"],
+      ["เดือน", "อาคาร", "เลขห้อง", "ชื่อผู้เช่า", "หน่วยไฟ", "ค่าไฟ", "หน่วยน้ำ", "ค่าน้ำ", "ยอดเรียกเก็บ", "ยอดตัดชำระของบิลงวดนี้ (ตามงวดบิล)", "วิธีชำระ", "สถานะ", "ค่าธรรมเนียมเพิ่มเติม"],
       filteredIncomeRows.map((row) => [
         row.month,
         row.building_name,
@@ -969,7 +1031,8 @@ export default function ReportsPageView() {
         row.paymentMethod,
         statusLabel(row.status),
         row.additionalFeeText,
-      ])
+      ]),
+      [["เกณฑ์รายงาน", BASIS_LABELS.billing.th]]
     );
 
   // One row per allocation, filed under the invoice's own billing period (see
@@ -995,7 +1058,8 @@ export default function ReportsPageView() {
         "เลขห้อง",
         "ชื่อผู้เช่า",
         "งวดบิลที่ตัดชำระ",
-        "จำนวนเงิน",
+        "ประเภทรายการ",
+        "จำนวนเงิน (ยกเลิก = ติดลบ)",
         "ค่าเช่า",
         "ค่าไฟ",
         "ค่าน้ำ",
@@ -1013,6 +1077,11 @@ export default function ReportsPageView() {
         row.room_number,
         row.tenant_name,
         row.invoice_period,
+        row.isReversal
+          ? "ยกเลิกรายการรับเงิน (void)"
+          : row.isCredit
+            ? REPORT_TERMS.creditApplied.th
+            : REPORT_TERMS.cashReceived.th,
         row.amount,
         row.showBreakdown ? Math.round(row.invoiceRent * 100) / 100 : "-",
         row.showBreakdown ? Math.round(row.invoiceElectricity * 100) / 100 : "-",
@@ -1024,7 +1093,15 @@ export default function ReportsPageView() {
         row.method,
         row.payment_batch_id,
         row.notes,
-      ])
+      ]),
+      [
+        ["เกณฑ์รายงาน (แถวด้านล่าง)", `${BILLING_PERIOD_ALLOCATION_LABEL.th} — ${BASIS_LABELS.billing.th}`],
+        [`${REPORT_TERMS.cashReceived.th} ในเดือน ${selectedMonth} — ${BASIS_LABELS.cash.th}`, cashSummary.receivedInMonth],
+        [`${REPORT_TERMS.creditApplied.th} ในเดือน ${selectedMonth} — ${BASIS_LABELS.cash.th}`, cashSummary.creditInMonth],
+        [`${REPORT_TERMS.refundPaid.th} ในเดือน ${selectedMonth} — ${BASIS_LABELS.cash.th}`, cashSummary.refundPaid],
+        [`${REPORT_TERMS.waived.th} ในเดือน ${selectedMonth}`, cashSummary.waived],
+        [`${REPORT_TERMS.writtenOff.th} ในเดือน ${selectedMonth}`, cashSummary.writtenOff],
+      ]
     );
 
   const exportMoveIn = () =>
@@ -1044,7 +1121,7 @@ export default function ReportsPageView() {
   const exportYearly = () =>
     downloadCsv(
       `year-summary-${selectedYear}.csv`,
-      ["เดือน", "จำนวนบิล", "ยอดเรียกเก็บ", "ยอดชำระ", "ยอดค้าง", "ค่าไฟ", "ค่าน้ำ", "ค่าธรรมเนียมเพิ่ม"],
+      ["เดือน", "จำนวนบิล", "ยอดเรียกเก็บ", "ยอดตัดชำระ (ตามงวดบิล)", "ยอดค้าง", "ค่าไฟ", "ค่าน้ำ", "ค่าธรรมเนียมเพิ่ม"],
       yearlyRows.map((row) => [
         row.month,
         row.invoiceCount,
@@ -1187,8 +1264,8 @@ export default function ReportsPageView() {
                 )}
                 <div className="inline-flex rounded-control border border-slate-200 p-0.5">
                   {([
-                    { key: "billing", label: "ตามงวดบิล" },
-                    { key: "cash", label: "ตามเงินเข้าจริง" },
+                    { key: "billing", label: "ยอดเรียกเก็บ (ตามงวดบิล)" },
+                    { key: "cash", label: "รายการรับชำระ (เงินเข้าจริง)" },
                   ] as const).map((option) => (
                     <button
                       key={option.key}
@@ -1244,7 +1321,27 @@ export default function ReportsPageView() {
           {incomeBasis === "cash" ? (
             <SummaryCards
               items={[
-                { label: "ยอดรับเงินจริง", value: formatMoney(cashSummary.received) },
+                {
+                  label: `${REPORT_TERMS.cashReceived.th} — ${BASIS_LABELS.cash.th}`,
+                  value: formatMoney(cashSummary.receivedInMonth),
+                },
+                {
+                  label: `${REPORT_TERMS.creditApplied.th} — ${BASIS_LABELS.cash.th}`,
+                  value: formatMoney(cashSummary.creditInMonth),
+                },
+                {
+                  label: `${REPORT_TERMS.refundPaid.th} — ${BASIS_LABELS.cash.th}`,
+                  value: formatMoney(cashSummary.refundPaid),
+                },
+                { label: `${REPORT_TERMS.waived.th} / ${REPORT_TERMS.writtenOff.th}`, value: `${formatMoney(cashSummary.waived)} / ${formatMoney(cashSummary.writtenOff)}` },
+                {
+                  label: `${BILLING_PERIOD_ALLOCATION_LABEL.th} (เงินที่รับจริง) — ${BASIS_LABELS.billing.th}`,
+                  value: formatMoney(cashSummary.received),
+                },
+                {
+                  label: `${BILLING_PERIOD_ALLOCATION_LABEL.th} (${REPORT_TERMS.creditApplied.th}) — ${BASIS_LABELS.billing.th}`,
+                  value: formatMoney(cashSummary.credit),
+                },
                 { label: "จำนวนครั้งที่รับชำระ", value: String(cashSummary.payments) },
                 { label: "บิลที่ถูกตัดชำระ", value: String(cashSummary.invoicesTouched) },
                 { label: "ชำระเกินกำหนด", value: formatMoney(cashSummary.backPaid) },
@@ -1255,7 +1352,7 @@ export default function ReportsPageView() {
             <SummaryCards
               items={[
                 { label: "ยอดเรียกเก็บ", value: formatMoney(incomeSummary.billed) },
-                { label: "ยอดชำระ", value: formatMoney(incomeSummary.paid) },
+                { label: "ยอดตัดชำระ (ตามงวดบิล)", value: formatMoney(incomeSummary.paid) },
                 { label: "ยอดค้าง", value: formatMoney(incomeSummary.outstanding) },
                 { label: "ค่าธรรมเนียมเพิ่ม", value: formatMoney(incomeSummary.additional) },
                 { label: "ค่าไฟ", value: formatMoney(incomeSummary.electricityCollected) },
@@ -1269,7 +1366,7 @@ export default function ReportsPageView() {
                 <div>
                   <h3 className="text-base font-semibold text-slate-900">สัดส่วนยอดโอนเข้าแต่ละบัญชี</h3>
                   <p className="text-sm text-slate-500">
-                    คำนวณจากเงินที่รับเข้าจริงสำหรับใบแจ้งหนี้งวดที่เลือก (นับตามงวดบิล ไม่ใช่วันที่รับเงิน) แยกตามบัญชีที่บันทึกไว้ ณ ตอนรับชำระ
+                    คำนวณจากเงินที่รับจริงที่ตัดชำระใบแจ้งหนี้งวดที่เลือก ({BASIS_LABELS.billing.th} ไม่ใช่เงินที่รับในเดือนนี้) ไม่รวมการหักเครดิต แยกตามบัญชีที่บันทึกไว้ ณ ตอนรับชำระ
                   </p>
                   <p className="text-xs text-slate-400">
                     รายการที่ขึ้นว่า “{UNKNOWN_METHOD}” คือการชำระที่บันทึกไว้ก่อนระบบเริ่มเก็บบัญชีผู้รับ จึงไม่สามารถระบุย้อนหลังได้
@@ -1305,7 +1402,7 @@ export default function ReportsPageView() {
                         <th className="px-3 py-2">เลขห้อง</th>
                         <th className="px-3 py-2">ชื่อผู้เช่า</th>
                         <th className="px-3 py-2 text-center">งวดบิลที่ตัดชำระ</th>
-                        <th className="px-3 py-2 text-right">จำนวนเงิน</th>
+                        <th className="px-3 py-2 text-right">จำนวนเงิน (ยกเลิก = ติดลบ)</th>
                         <th className="px-3 py-2 text-right">ค่าเช่า</th>
                         <th className="px-3 py-2 text-right">ค่าไฟ</th>
                         <th className="px-3 py-2 text-right">ค่าน้ำ</th>
@@ -1334,7 +1431,14 @@ export default function ReportsPageView() {
                                   </span>
                                 )}
                               </td>
-                              <td className="px-3 py-2 text-right text-success-600">{formatMoney(row.amount)}</td>
+                              <td
+                                className={`px-3 py-2 text-right ${
+                                  row.isReversal ? "text-danger-600" : row.isCredit ? "text-slate-500" : "text-success-600"
+                                }`}
+                              >
+                                {formatMoney(row.amount)}
+                                {row.isCredit && <span className="ml-1 text-2xs">({REPORT_TERMS.creditApplied.th})</span>}
+                              </td>
                               <td className="px-3 py-2 text-right text-slate-600">
                                 {row.showBreakdown ? formatMoney(row.invoiceRent) : "-"}
                               </td>
@@ -1389,7 +1493,7 @@ export default function ReportsPageView() {
                       <th className="px-3 py-2">เลขห้อง</th>
                       <th className="px-3 py-2">ชื่อผู้เช่า</th>
                       <th className="px-3 py-2 text-right">ยอดเรียกเก็บ</th>
-                      <th className="px-3 py-2 text-right">ยอดชำระ</th>
+                      <th className="px-3 py-2 text-right">ยอดตัดชำระ (ตามงวดบิล)</th>
                       <th className="px-3 py-2 text-center">บัญชีที่รับเงิน</th>
                       <th className="px-3 py-2 text-center">สถานะ</th>
                     </tr>
@@ -1655,7 +1759,7 @@ export default function ReportsPageView() {
             items={[
               { label: "จำนวนบิลทั้งปี", value: yearlySummary.invoiceCount.toLocaleString("th-TH") },
               { label: "ยอดเรียกเก็บทั้งปี", value: formatMoney(yearlySummary.billed) },
-              { label: "ยอดชำระทั้งปี", value: formatMoney(yearlySummary.paid) },
+              { label: "ยอดตัดชำระทั้งปี (ตามงวดบิล)", value: formatMoney(yearlySummary.paid) },
               { label: "ยอดค้างทั้งปี", value: formatMoney(yearlySummary.outstanding) },
             ]}
           />
@@ -1669,7 +1773,7 @@ export default function ReportsPageView() {
                 <ExportButton onClick={exportYearly} />
               </div>
               <ReportTable
-                headers={["เดือน", "จำนวนบิล", "ยอดเรียกเก็บ", "ยอดชำระ", "ยอดค้าง", "ค่าไฟ", "ค่าน้ำ", "ค่าธรรมเนียมเพิ่ม"]}
+                headers={["เดือน", "จำนวนบิล", "ยอดเรียกเก็บ", "ยอดตัดชำระ (ตามงวดบิล)", "ยอดค้าง", "ค่าไฟ", "ค่าน้ำ", "ค่าธรรมเนียมเพิ่ม"]}
                 rows={yearlyRows.map((row) => [
                   row.month,
                   row.invoiceCount.toLocaleString("th-TH"),

@@ -4,6 +4,7 @@ import { createAdminClient } from "@/lib/supabase-admin";
 import { runReconciliationChecks, type ReconciliationFinding } from "@/lib/reconciliation";
 import { findMeterAnomalies, type MeterAnomaly } from "@/lib/meter-anomalies";
 import { OPEN_INVOICE_STATUSES, sumOwnOutstanding } from "@/lib/invoice-ledger";
+import { BASIS_LABELS, REPORT_TERMS, fetchReceiptLedger, summarizeAllocations } from "@/lib/money/report-definitions";
 
 const channelAccessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN || "";
 const recipientIds = (process.env.LINE_DIGEST_ADMIN_USER_IDS || process.env.LINE_ADMIN_USER_IDS || "")
@@ -30,6 +31,7 @@ const formatMoney = (value: number) =>
 type Digest = {
   generatedAt: string;
   receivedYesterday: number;
+  creditAppliedYesterday: number;
   overdueCount: number;
   overdueAmount: number;
   slipsWaiting: number;
@@ -55,7 +57,7 @@ function buildDigestFlexMessage(digest: Digest) {
 
   return {
     type: "flex" as const,
-    altText: `สรุปประจำวัน: รับเงินเมื่อวาน ฿${formatMoney(digest.receivedYesterday)} ค้างชำระ ${digest.overdueCount} บิล พบ ${ordered.length} รายการต้องตรวจสอบ`,
+    altText: `สรุปประจำวัน: ${REPORT_TERMS.cashReceived.th}เมื่อวาน ฿${formatMoney(digest.receivedYesterday)} ค้างชำระ ${digest.overdueCount} บิล พบ ${ordered.length} รายการต้องตรวจสอบ`,
     contents: {
       type: "bubble",
       header: {
@@ -70,7 +72,23 @@ function buildDigestFlexMessage(digest: Digest) {
         layout: "vertical",
         spacing: "md",
         contents: [
-          { type: "text", text: `รับเงินเมื่อวาน: ฿${formatMoney(digest.receivedYesterday)}`, size: "sm", color: "#111827" },
+          {
+            type: "text",
+            text: `${REPORT_TERMS.cashReceived.th}เมื่อวาน: ฿${formatMoney(digest.receivedYesterday)}`,
+            size: "sm",
+            color: "#111827",
+          },
+          ...(digest.creditAppliedYesterday !== 0
+            ? [
+                {
+                  type: "text" as const,
+                  text: `${REPORT_TERMS.creditApplied.th}เมื่อวาน: ฿${formatMoney(digest.creditAppliedYesterday)}`,
+                  size: "sm" as const,
+                  color: "#111827",
+                },
+              ]
+            : []),
+          { type: "text", text: `(${BASIS_LABELS.cash.th})`, size: "xxs", color: "#6B7280" },
           {
             type: "text",
             text: `บิลค้างชำระ: ${digest.overdueCount} รายการ (฿${formatMoney(digest.overdueAmount)})`,
@@ -131,11 +149,7 @@ async function handle(req: Request) {
 
     const [paidYesterdayRes, openInvoicesRes, slipsWaitingRes, reconciliationFindings, meterAnomalies] =
       await Promise.all([
-        supabase
-          .from("invoice_payment_allocations")
-          .select("amount")
-          .gte("paid_at", yesterdayStart.toISOString())
-          .lt("paid_at", todayStart.toISOString()),
+        fetchReceiptLedger(supabase, yesterdayStart.toISOString(), todayStart.toISOString()),
         supabase
           .from("invoices")
           .select("id,status,total_amount,paid_amount,carry_forward_amount")
@@ -145,15 +159,18 @@ async function handle(req: Request) {
         findMeterAnomalies(supabase, monthKeyOf(now)),
       ]);
 
-    const receivedYesterday = (paidYesterdayRes.data ?? []).reduce(
-      (sum: number, row: any) => sum + Number(row.amount ?? 0),
-      0
-    );
+    if (paidYesterdayRes.error) throw new Error(paidYesterdayRes.error);
+    // Cash basis (by actual receipt date): non-voided receipts net of
+    // reversals; abandon_room/credit settlements are credit, not cash.
+    const yesterdayReceipts = summarizeAllocations(paidYesterdayRes.rows, paidYesterdayRes.voidedBatchIds);
+    const receivedYesterday = yesterdayReceipts.cashReceived;
+    const creditAppliedYesterday = yesterdayReceipts.creditApplied;
     const overdueRows = (openInvoicesRes.data ?? []).filter((row: any) => row.status === "overdue");
 
     const digest: Digest = {
       generatedAt: now.toISOString(),
       receivedYesterday,
+      creditAppliedYesterday,
       overdueCount: overdueRows.length,
       overdueAmount: sumOwnOutstanding(overdueRows as any),
       slipsWaiting: slipsWaitingRes.count ?? 0,

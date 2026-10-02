@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/admin-api-auth";
+import { isMissingSchemaError } from "@/lib/money/report-definitions";
 
 // The FK hint is required: invoice_payment_allocations has TWO foreign keys
 // to invoices (invoice_id and trigger_invoice_id), so an unqualified
@@ -8,12 +9,27 @@ import { requireAdminPermission } from "@/lib/admin-api-auth";
 // on the embedded invoice are pulled in so each allocation can be prorated
 // into rent/utilities/late-fee shares via chargesFromInvoiceRow (client-side,
 // unchanged) — payments aren't itemized by line item in the ledger.
-const ALLOCATION_SELECT =
-  "id,payment_batch_id,invoice_id,amount,paid_at,source,payment_method_id,payment_method_snapshot," +
+const ALLOCATION_BASE_COLUMNS =
+  "id,payment_batch_id,invoice_id,amount,paid_at,source,payment_method_id,payment_method_snapshot,";
+const ALLOCATION_INVOICE_EMBED =
   "invoice:invoices!invoice_payment_allocations_invoice_id_fkey!inner(" +
   "id,start_date,due_date,tenant_id,room_id,rent_amount,water_bill,electricity_bill,common_fee," +
   "late_fee_amount,additional_fees_total,additional_fees_breakdown,carry_forward_amount,discount_amount," +
   "tenants(full_name),rooms(room_number,buildings(name)))";
+// reverses_allocation_id exists only after the void-payment migration; a DB
+// without it falls back to the legacy select (no reversal rows exist there).
+const ALLOCATION_SELECT = ALLOCATION_BASE_COLUMNS + "reverses_allocation_id," + ALLOCATION_INVOICE_EMBED;
+const ALLOCATION_SELECT_LEGACY = ALLOCATION_BASE_COLUMNS + ALLOCATION_INVOICE_EMBED;
+
+// Runs the allocation select with reverses_allocation_id, retrying without it
+// when that column does not exist yet.
+async function fetchAllocations(supabase: any, filter: (query: any) => any) {
+  const run = (columns: string) =>
+    filter(supabase.from("invoice_payment_allocations").select(columns)).order("paid_at", { ascending: false });
+  const first = await run(ALLOCATION_SELECT);
+  if (first.error && isMissingSchemaError(first.error)) return run(ALLOCATION_SELECT_LEGACY);
+  return first;
+}
 
 /**
  * Powers ReportsPageView.tsx, which used to run 9 parallel direct-anon-key
@@ -75,13 +91,8 @@ export async function POST(req: Request) {
           .select("id,tenant_id,room_id,total_amount,discount_amount,notes,issue_date,rooms(room_number,buildings(name))")
           .ilike("notes", "ย้ายออก%")
           .order("issue_date", { ascending: false }),
-        supabase.from("invoice_payment_allocations").select(ALLOCATION_SELECT).gte("paid_at", start).lt("paid_at", end).order("paid_at", { ascending: false }),
-        supabase
-          .from("invoice_payment_allocations")
-          .select(ALLOCATION_SELECT)
-          .gte("invoice.start_date", start)
-          .lt("invoice.start_date", end)
-          .order("paid_at", { ascending: false }),
+        fetchAllocations(supabase, (q) => q.gte("paid_at", start).lt("paid_at", end)),
+        fetchAllocations(supabase, (q) => q.gte("invoice.start_date", start).lt("invoice.start_date", end)),
       ]);
 
     const firstError =
@@ -122,6 +133,45 @@ export async function POST(req: Request) {
       if (batchError) return NextResponse.json({ error: batchError.message }, { status: 500 });
       batchSnapshotById = new Map((batchRows ?? []).map((row: any) => [String(row.id), row.payment_method_snapshot]));
     }
+
+    // Voided receipts: the allocation rows stay (with negative reversal rows),
+    // but a voided batch is no longer money received. Tolerates a DB without
+    // voided_at (migration not applied) by treating nothing as voided.
+    const allBatchIds = [...new Set(allAllocations.map((row: any) => String(row.payment_batch_id ?? "")).filter(Boolean))];
+    const voidedBatchIds: string[] = [];
+    for (let i = 0; i < allBatchIds.length; i += 200) {
+      const { data: voidRows, error: voidError } = await supabase
+        .from("payment_batches")
+        .select("id,voided_at")
+        .in("id", allBatchIds.slice(i, i + 200))
+        .not("voided_at", "is", null);
+      if (voidError) {
+        if (isMissingSchemaError(voidError)) break;
+        return NextResponse.json({ error: voidError.message }, { status: 500 });
+      }
+      for (const row of voidRows ?? []) voidedBatchIds.push(String((row as any).id));
+    }
+
+    // Refunds actually paid out and admin adjustments (waived / written off),
+    // by event date within the year. Optional: a missing table is just empty.
+    const optional = async (run: () => PromiseLike<{ data: any[] | null; error: any }>) => {
+      const res = await run();
+      if (res.error) {
+        if (isMissingSchemaError(res.error)) return [] as any[];
+        throw new Error(res.error.message);
+      }
+      return res.data ?? [];
+    };
+    const refundPayouts = await optional(() =>
+      supabase.from("refund_payouts").select("id,tenant_id,amount,paid_at,voided_at").gte("paid_at", start).lt("paid_at", end),
+    );
+    const adjustments = await optional(() =>
+      supabase
+        .from("adjustments")
+        .select("id,type,amount,invoice_id,tenant_id,reverses_adjustment_id,created_at")
+        .gte("created_at", start)
+        .lt("created_at", end),
+    );
     const withSnapshotFallback = (rows: any[]) =>
       rows.map((row: any) =>
         row.payment_method_snapshot
@@ -139,6 +189,9 @@ export async function POST(req: Request) {
       settlementInvoices: settlementInvoicesRes.data ?? [],
       allocationsByPaidAt: withSnapshotFallback(allocationsByPaidAtRes.data ?? []),
       allocationsByPeriod: withSnapshotFallback(allocationsByPeriodRes.data ?? []),
+      voidedBatchIds,
+      refundPayouts,
+      adjustments,
     });
   } catch (error: any) {
     return NextResponse.json({ error: error?.message ?? "Unexpected server error." }, { status: 500 });
