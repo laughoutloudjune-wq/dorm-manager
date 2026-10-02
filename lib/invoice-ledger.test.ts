@@ -8,6 +8,8 @@ import {
   planAbandonCredit,
   planPaymentReplay,
   resolveInvoiceStatus,
+  roundMoney,
+  sumAllocated,
   sumOwnOutstanding,
 } from "./invoice-ledger";
 
@@ -86,6 +88,49 @@ describe("allocatePaymentAcrossChain", () => {
     expect(
       allocatePaymentAcrossChain([{ id: "a", total_amount: 500, paid_amount: 0 }], -50),
     ).toEqual([]);
+  });
+
+  // record_payment_batch (finding 34/107) rejects amounts with more than 2
+  // decimals and requires nextPaidAmount == paid_amount + allocated exactly.
+  it("keeps every figure at 2 decimals with no float drift", () => {
+    const result = allocatePaymentAcrossChain(
+      [
+        { id: "a", total_amount: 0.3, paid_amount: 0.1 },
+        { id: "b", total_amount: 100.7, paid_amount: 0.2 },
+      ],
+      0.1 + 0.2 + 50.004,
+    );
+    expect(result).toEqual([
+      { id: "a", allocated: 0.2, nextPaidAmount: 0.3 },
+      { id: "b", allocated: 50.1, nextPaidAmount: 50.3 },
+    ]);
+    for (const row of result) {
+      expect(Math.round(row.allocated * 100) / 100).toBe(row.allocated);
+      expect(Math.round(row.nextPaidAmount * 100) / 100).toBe(row.nextPaidAmount);
+    }
+    expect(sumAllocated(result)).toBe(50.3);
+  });
+
+  it("nextPaidAmount is always paid_amount + allocated (never silently capped)", () => {
+    const invoices = [
+      { id: "a", total_amount: 1203.45, paid_amount: 100.15 },
+      { id: "b", total_amount: 8128.1, paid_amount: 0 },
+    ];
+    const result = allocatePaymentAcrossChain(invoices, 5000.33);
+    for (const row of result) {
+      const before = invoices.find((i) => i.id === row.id)!.paid_amount;
+      expect(row.nextPaidAmount).toBe(roundMoney(before + row.allocated));
+      expect(row.nextPaidAmount).toBeLessThanOrEqual(invoices.find((i) => i.id === row.id)!.total_amount);
+    }
+    expect(sumAllocated(result)).toBe(5000.33);
+  });
+});
+
+describe("roundMoney", () => {
+  it("rounds half up at the satang", () => {
+    expect(roundMoney(1.005)).toBe(1.01);
+    expect(roundMoney(0.1 + 0.2)).toBe(0.3);
+    expect(roundMoney(2.344)).toBe(2.34);
   });
 });
 

@@ -106,6 +106,10 @@ const toNumber = (value: unknown) => {
   return Number.isNaN(parsed) ? 0 : parsed;
 };
 
+/** Round to 2 decimals (satang), the precision of every money column. */
+export const roundMoney = (value: number) =>
+  Math.round((value + Number.EPSILON) * 100) / 100;
+
 export const toDateOnly = (value: string) => {
   const [year, month, day] = String(value).split("-").map(Number);
   return new Date(year, (month || 1) - 1, day || 1);
@@ -160,24 +164,30 @@ export const allocatePaymentAcrossChain = (
   invoices: ChainAllocationInput[],
   amount: number,
 ): ChainAllocationResult[] => {
-  let remaining = Math.max(0, toNumber(amount));
+  // Everything is rounded to whole satang (2 decimals): record_payment_batch
+  // rejects amounts with more decimals and requires, per invoice, that
+  // nextPaidAmount == paid_amount + allocated exactly. Raw float arithmetic
+  // (0.1 + 0.2) would otherwise fail those checks or drift from numeric(10,2).
+  let remaining = Math.max(0, roundMoney(toNumber(amount)));
   const results: ChainAllocationResult[] = [];
   for (const invoice of invoices) {
+    const paid = roundMoney(toNumber(invoice.paid_amount));
     const outstanding = Math.max(
       0,
-      toNumber(invoice.total_amount) - toNumber(invoice.paid_amount),
+      roundMoney(toNumber(invoice.total_amount) - paid),
     );
     if (outstanding <= 0 || remaining <= 0) continue;
-    const allocated = Math.min(outstanding, remaining);
-    const nextPaidAmount = Math.min(
-      toNumber(invoice.total_amount),
-      toNumber(invoice.paid_amount) + allocated,
-    );
+    const allocated = roundMoney(Math.min(outstanding, remaining));
+    const nextPaidAmount = roundMoney(paid + allocated);
     results.push({ id: invoice.id, allocated, nextPaidAmount });
-    remaining -= allocated;
+    remaining = roundMoney(remaining - allocated);
   }
   return results;
 };
+
+/** Sum of allocations, rounded to 2 decimals (equals record_payment_batch's own sum). */
+export const sumAllocated = (rows: Array<{ allocated: number }>) =>
+  roundMoney(rows.reduce((sum, row) => sum + roundMoney(row.allocated), 0));
 
 /**
  * How much of THIS invoice's own charge (excluding whatever it already carried in
@@ -1619,7 +1629,7 @@ export async function applyInvoicePaymentAllocation(
     createdBy = null,
     keepExcessAsCredit = false,
   } = options;
-  const safeAmount = Math.max(0, toNumber(amount));
+  const safeAmount = Math.max(0, roundMoney(toNumber(amount)));
   if (safeAmount <= 0) {
     throw new Error("Payment amount must be greater than zero.");
   }
@@ -1695,15 +1705,25 @@ export async function applyInvoicePaymentAllocation(
       (freshTargetInvoice as any).tenant_id,
     ));
 
-  const totalOutstanding = paymentTargets.reduce(
-    (sum, invoice) => sum + getInvoiceOutstanding(invoice as InvoiceLike),
-    0,
+  if (String((freshTargetInvoice as any).status ?? "") === "cancelled") {
+    throw new Error("A cancelled invoice cannot receive a payment.");
+  }
+  // A cancelled carry-forward source owes nothing; record_payment_batch
+  // refuses to allocate to it, so leave it out of the split.
+  const payableTargets = paymentTargets.filter(
+    (invoice) => String(invoice.status ?? "") !== "cancelled",
+  );
+
+  const totalOutstanding = roundMoney(
+    payableTargets.reduce(
+      (sum, invoice) => sum + getInvoiceOutstanding(invoice as InvoiceLike),
+      0,
+    ),
   );
   if (totalOutstanding <= 0) {
     throw new Error("This invoice chain is already fully paid.");
   }
 
-  const amountToAllocate = Math.min(safeAmount, totalOutstanding);
   const paymentBatchId = crypto.randomUUID();
   const updates: {
     invoiceId: string;
@@ -1737,14 +1757,18 @@ export async function applyInvoicePaymentAllocation(
   // its own outstanding — never accumulating another invoice's share onto
   // this one. See allocatePaymentAcrossChain's doc comment for how this
   // regressed once before.
-  const chainAllocations = new Map(
-    allocatePaymentAcrossChain(
-      paymentTargets as ChainAllocationInput[],
-      amountToAllocate,
-    ).map((result) => [result.id, result]),
+  const chainResults = allocatePaymentAcrossChain(
+    payableTargets as ChainAllocationInput[],
+    Math.min(safeAmount, totalOutstanding),
   );
+  const chainAllocations = new Map(
+    chainResults.map((result) => [result.id, result]),
+  );
+  // The exact sum of the (rounded) rows, so amount_allocated always equals the
+  // allocation rows to the satang, as record_payment_batch requires.
+  const amountToAllocate = sumAllocated(chainResults);
 
-  for (const invoice of paymentTargets) {
+  for (const invoice of payableTargets) {
     const chainAllocation = chainAllocations.get(String(invoice.id));
     if (!chainAllocation) continue;
 
@@ -1822,6 +1846,10 @@ export async function applyInvoicePaymentAllocation(
   // allocations (all or nothing), replays a retried idempotency key, and fails
   // with STALE_INVOICE if another admin changed an invoice since we read it.
   const receiptAmount = keepExcessAsCredit ? safeAmount : amountToAllocate;
+  if (receiptAmount > amountToAllocate && !(freshTargetInvoice as any).tenant_id) {
+    // record_payment_batch would refuse it too (TENANT_REQUIRED); fail early and clearly.
+    throw new Error("Cannot keep the excess as credit: the invoice has no tenant.");
+  }
   const { data: rpcResult, error: rpcError } = await supabase.rpc(
     "record_payment_batch",
     {
@@ -1842,9 +1870,13 @@ export async function applyInvoicePaymentAllocation(
           created_by: createdBy,
         },
         invoices: updates.map((update) => {
+          const seen = revertSnapshots.get(update.invoiceId)!;
           const row: Record<string, unknown> = {
             id: update.invoiceId,
-            expected_paid_amount: revertSnapshots.get(update.invoiceId)!.paid_amount,
+            // Stale guard: the DB refuses the payment if either changed since
+            // this read (a concurrent payment, void, or slip decision).
+            expected_paid_amount: seen.paid_amount,
+            expected_history_length: seen.payment_history.length,
             paid_amount: update.paid_amount,
             status: update.status,
             payment_history: update.payment_history,
@@ -1960,7 +1992,7 @@ export async function applyManualInvoicePaymentAllocation(
   const cleanAllocations = allocations
     .map((row) => ({
       invoiceId: String(row.invoiceId ?? ""),
-      amount: Math.max(0, toNumber(row.amount)),
+      amount: Math.max(0, roundMoney(toNumber(row.amount))),
     }))
     .filter((row) => row.invoiceId && row.amount > 0);
   if (cleanAllocations.length === 0) {
@@ -2012,8 +2044,10 @@ export async function applyManualInvoicePaymentAllocation(
         `ใบแจ้งหนี้ที่เลือกไม่สามารถรับชำระได้ในสถานะปัจจุบัน (${invoice.status})`,
       );
     }
-    const outstanding = getInvoiceOutstanding(invoice);
-    if (entry.amount > outstanding + 0.005) {
+    // Both sides are whole satang now, so compare exactly (the old 0.005
+    // tolerance let through amounts record_payment_batch then rejected).
+    const outstanding = roundMoney(getInvoiceOutstanding(invoice));
+    if (entry.amount > outstanding) {
       throw new Error(
         `ยอดที่กรอกเกินยอดค้างชำระจริง — ค้างชำระ ${outstanding.toFixed(2)} บาท แต่กรอก ${entry.amount.toFixed(2)} บาท`,
       );

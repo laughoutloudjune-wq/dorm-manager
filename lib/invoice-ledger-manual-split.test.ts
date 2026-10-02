@@ -80,8 +80,51 @@ describe("buildManualSplitPayload", () => {
     expect(entry).toMatchObject({ payment_batch_id: "batch-1", trigger_invoice_id: "a", idempotency_key: "k1", amount: 800 });
   });
 
-  it("caps paid_amount at the invoice total", () => {
-    const { payload } = build({ allocations: [{ invoiceId: "a", amount: 900 }] });
-    expect(payload.invoices[0].paid_amount).toBe(1000);
+  it("refuses an allocation above the invoice's outstanding instead of capping paid_amount", () => {
+    // Capping used to record allocation 900 while paid_amount moved only 800;
+    // record_payment_batch now rejects that, so the builder must not emit it.
+    expect(() => build({ allocations: [{ invoiceId: "a", amount: 900 }] })).toThrow(/exceeds its outstanding 800.00/);
+  });
+
+  it("refuses a zero or negative allocation", () => {
+    expect(() => build({ allocations: [{ invoiceId: "a", amount: 0 }] })).toThrow(/greater than 0/);
+    expect(() => build({ allocations: [{ invoiceId: "a", amount: -5 }] })).toThrow(/greater than 0/);
+  });
+
+  it("sends expected_history_length equal to the payment_history it read", () => {
+    const invoicesById = new Map([
+      ["a", inv("a", 1000, 200, { payment_history: [{ n: 1 }, { n: 2 }] })],
+      ["b", inv("b", 500, 0)],
+    ]);
+    const { payload } = build({ invoicesById });
+    expect(payload.invoices[0]).toMatchObject({ id: "a", expected_history_length: 2 });
+    expect(payload.invoices[1]).toMatchObject({ id: "b", expected_history_length: 0 });
+    // new history = old entries unchanged + exactly one appended entry
+    expect((payload.invoices[0].payment_history as unknown[]).slice(0, 2)).toEqual([{ n: 1 }, { n: 2 }]);
+    expect((payload.invoices[0].payment_history as unknown[]).length).toBe(3);
+  });
+
+  it("satisfies record_payment_batch arithmetic: paid = expected + allocation, 2 decimals, sum == amount_allocated", () => {
+    const invoicesById = new Map([
+      ["a", inv("a", 1000.3, 0.1)],
+      ["b", inv("b", 500, 0.2)],
+    ]);
+    const { payload } = build({
+      invoicesById,
+      allocations: [
+        { invoiceId: "a", amount: 1000.2 },
+        { invoiceId: "b", amount: 0.1 },
+      ],
+    });
+    for (const row of payload.invoices) {
+      const alloc = payload.allocations.find((a) => a.invoice_id === row.id)!;
+      const expected = Number(row.expected_paid_amount);
+      const amount = Number(alloc.amount);
+      expect(Number(row.paid_amount)).toBe(Math.round((expected + amount) * 100) / 100);
+      expect(amount * 100).toBeCloseTo(Math.round(amount * 100), 9);
+    }
+    expect(payload.invoices[0].paid_amount).toBe(1000.3);
+    expect(payload.invoices[1].paid_amount).toBe(0.3);
+    expect(payload.batch.amount_allocated).toBe(1000.3);
   });
 });

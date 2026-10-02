@@ -435,7 +435,8 @@ export async function POST(req: Request) {
         p_actor: auth.user.id,
       });
       if (error) {
-        const status = /not found|already voided/i.test(error.message) ? 409 : 500;
+        // VOID_WOULD_MAKE_NEGATIVE / VOID_CREDIT_ALREADY_USED are business refusals, not server errors.
+        const status = /not found|already voided|VOID_WOULD_MAKE_NEGATIVE|VOID_CREDIT_ALREADY_USED/i.test(error.message) ? 409 : 500;
         return NextResponse.json({ error: error.message }, { status });
       }
 
