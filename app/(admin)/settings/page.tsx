@@ -13,6 +13,7 @@ import { usePermissions } from "@/lib/use-permissions";
 import {
   PERMISSION_KEYS,
   PERMISSION_LABELS,
+  PermissionKey,
   RoleKey,
   RolePermissionMap,
   defaultRolePermissions,
@@ -130,8 +131,8 @@ const roleLabelThai = (role: RoleKey) => {
   return "ดูอย่างเดียว";
 };
 
-const permissionLabelThai = (permission: (typeof PERMISSION_KEYS)[number]) => {
-  const labels: Record<(typeof PERMISSION_KEYS)[number], string> = {
+/** Thai overrides. Partial on purpose: a permission without one falls back to PERMISSION_LABELS. */
+const PERMISSION_LABELS_THAI: Partial<Record<PermissionKey, string>> = {
     "invoice.create": "สร้างใบแจ้งหนี้",
     "invoice.edit": "แก้ไขรายละเอียดใบแจ้งหนี้",
     "invoice.delete": "ลบใบแจ้งหนี้",
@@ -153,9 +154,10 @@ const permissionLabelThai = (permission: (typeof PERMISSION_KEYS)[number]) => {
     "rewards.manage": "จัดการคะแนนสะสม/อนุมัติ",
     "reconciliation.view": "ดูรายงานตรวจสอบยอดเงิน",
     "action_queue.view": "ดูคิวงานที่ต้องจัดการ",
-  };
-  return labels[permission] ?? PERMISSION_LABELS[permission];
 };
+
+const permissionLabelThai = (permission: PermissionKey) =>
+  PERMISSION_LABELS_THAI[permission] ?? PERMISSION_LABELS[permission];
 
 export default function SettingsPage() {
   const supabase = useMemo(() => createClient(), []);

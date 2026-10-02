@@ -83,6 +83,8 @@ import {
 
 import { useInvoicesState } from "@/lib/hooks/use-invoices-state";
 import { statusVariant } from "@/lib/invoice-utils"; // Need this for the UI
+import { toast } from "sonner";
+import { monthFromStartDate, parseDeepLinkId } from "@/lib/deep-links";
 
 import { InvoiceProvider } from "./invoices/InvoiceContext";
 import { SlipViewerModal } from "./invoices/SlipViewerModal";
@@ -255,6 +257,47 @@ export default function InvoicesPage() {
     modalProrateSummary,
 
   } = state;
+
+  // Deep link: /invoices?invoice=<id> opens that invoice's detail modal. The
+  // list is per billing month, so if the invoice is not in the loaded month we
+  // resolve its month once and switch to it; the effect then re-runs.
+  const deepLinkInvoiceId = parseDeepLinkId(searchParams.get("invoice"));
+  const deepLinkDone = useRef<string | null>(null);
+  const deepLinkMonthSwitched = useRef<string | null>(null);
+  useEffect(() => {
+    if (!deepLinkInvoiceId || loading || deepLinkDone.current === deepLinkInvoiceId) return;
+    const found = invoices.find((inv) => String(inv.id) === deepLinkInvoiceId);
+    if (found) {
+      deepLinkDone.current = deepLinkInvoiceId;
+      void openInvoice(found);
+      return;
+    }
+    if (deepLinkMonthSwitched.current === deepLinkInvoiceId) {
+      deepLinkDone.current = deepLinkInvoiceId; // searched its month, still absent
+      toast.error("ไม่พบใบแจ้งหนี้ที่ระบุ");
+      return;
+    }
+    deepLinkMonthSwitched.current = deepLinkInvoiceId;
+    void (async () => {
+      try {
+        const { data } = await supabase.auth.getSession();
+        const token = data.session?.access_token;
+        const res = await fetch(`/api/admin/invoices/lookup?id=${encodeURIComponent(deepLinkInvoiceId)}`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        const json = await res.json().catch(() => ({}));
+        const month = res.ok ? monthFromStartDate(json?.startDate) : null;
+        if (month && month !== selectedMonth) setSelectedMonth(month);
+        else {
+          deepLinkDone.current = deepLinkInvoiceId;
+          toast.error("ไม่พบใบแจ้งหนี้ที่ระบุ");
+        }
+      } catch {
+        deepLinkDone.current = deepLinkInvoiceId;
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deepLinkInvoiceId, invoices, loading]);
 
   return (
     <InvoiceProvider state={state}>

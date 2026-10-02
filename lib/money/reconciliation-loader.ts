@@ -1,7 +1,7 @@
 /**
- * Read-only loader that runs the reconciliation checks and returns the raw
- * findings. Mirrors the loading in app/api/admin/reconciliation/route.ts (which
- * is deliberately left untouched); used by the action queue for severity counts.
+ * Read-only loader for the reconciliation checks. Single source of the paging
+ * and selects, shared by app/api/admin/reconciliation/route.ts (which needs the
+ * raw rows to resolve names) and the action queue (which only needs findings).
  */
 import {
   runReconciliation,
@@ -30,12 +30,25 @@ async function fetchAll<T>(build: (from: number, to: number) => PromiseLike<{ da
 export const isMissingTable = (message: string) =>
   /does not exist|could not find the table|schema cache|relation .* not found/i.test(message);
 
-export async function loadReconciliationFindings(supabase: any): Promise<ReconciliationFinding[]> {
-  const [invoices, batches, allocations, carryForwards] = await Promise.all([
-    fetchAll<InvoiceRow>((from, to) =>
+export type ReconciliationData = {
+  /** Invoice rows exactly as selected, including the tenants/rooms name joins. */
+  invoiceRows: any[];
+  invoices: InvoiceRow[];
+  batches: BatchRow[];
+  allocations: AllocationRow[];
+  carryForwards: CarryForwardRow[];
+  /** undefined when money_events does not exist: the audit-trail check is skipped. */
+  moneyEvents: MoneyEventRow[] | undefined;
+};
+
+export async function loadReconciliationData(supabase: any): Promise<ReconciliationData> {
+  const [invoiceRows, batches, allocations, carryForwards] = await Promise.all([
+    fetchAll<any>((from, to) =>
       supabase
         .from("invoices")
-        .select("id,tenant_id,room_id,status,total_amount,paid_amount,locked_late_fee_amount,payment_history")
+        .select(
+          "id,tenant_id,room_id,status,total_amount,paid_amount,locked_late_fee_amount,payment_history,tenants(full_name),rooms(room_number)"
+        )
         .order("id")
         .range(from, to)
     ),
@@ -69,5 +82,11 @@ export async function loadReconciliationFindings(supabase: any): Promise<Reconci
     moneyEvents = undefined;
   }
 
+  const invoices: InvoiceRow[] = invoiceRows.map(({ tenants: _t, rooms: _r, ...inv }: any) => inv);
+  return { invoiceRows, invoices, batches, allocations, carryForwards, moneyEvents };
+}
+
+export async function loadReconciliationFindings(supabase: any): Promise<ReconciliationFinding[]> {
+  const { invoices, batches, allocations, carryForwards, moneyEvents } = await loadReconciliationData(supabase);
   return runReconciliation({ invoices, batches, allocations, carryForwards, moneyEvents });
 }

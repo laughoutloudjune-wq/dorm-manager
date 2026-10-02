@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Plus, Search } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -11,6 +11,7 @@ import { TenantEditorModal } from "@/components/admin/tenant-editor-modal";
 import { usePermissions } from "@/lib/use-permissions";
 import { useTenants, useRooms, useMoveOutRequests } from "@/lib/hooks/use-data";
 import { TenantRow, RoomRow, MoveOutRequestRow } from "@/types";
+import { parseDeepLinkId } from "@/lib/deep-links";
 import { tenantStatusLabel, tenantRoomNumber } from "@/lib/tenant-utils";
 
 export default function TenantsPage() {
@@ -36,6 +37,21 @@ export default function TenantsPage() {
     setActiveTab(initialTab);
     setIsModalOpen(true);
   };
+
+  // Deep link: /tenants?tenant=<id> opens that tenant's modal once, after data loads.
+  const deepLinkHandled = useRef(false);
+  useEffect(() => {
+    if (deepLinkHandled.current || isPageLoading || !canViewTenants) return;
+    deepLinkHandled.current = true;
+    const id = parseDeepLinkId(new URLSearchParams(window.location.search).get("tenant"));
+    if (!id) return;
+    const target = tenants.find((t) => String(t.id) === id);
+    if (target) {
+      setStatusFilter("all");
+      openModal(target);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPageLoading, canViewTenants, tenants]);
 
   const roomsById = useMemo(() => new Map(rooms.map((r) => [String(r.id), r])), [rooms]);
 

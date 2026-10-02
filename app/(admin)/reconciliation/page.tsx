@@ -10,6 +10,7 @@ import { Card } from "@/components/ui/Card";
 import { Select } from "@/components/ui/Input";
 import { EmptyState, Notice, PageHeader, Skeleton } from "@/components/ui/Page";
 import { Table, TableCard, TBody, TD, TH, THead, TR } from "@/components/ui/Table";
+import { invoiceDeepLink, tenantDeepLink } from "@/lib/deep-links";
 import { createClient } from "@/lib/supabase-client";
 import type { CheckName, Severity } from "@/lib/money/reconciliation-checks";
 import {
@@ -228,13 +229,19 @@ export default function ReconciliationPage() {
                   <TD className="min-w-[18rem] text-slate-700">{f.explanation}</TD>
                   <TD className="min-w-[16rem] text-slate-500">{f.suggestedNextStep}</TD>
                   <TD className="whitespace-nowrap">
-                    {f.invoiceId ? (
-                      <Link href="/invoices" className={buttonClasses({ variant: "subtle", size: "sm" })}>
-                        ไปหน้าบิล
-                      </Link>
-                    ) : (
-                      "-"
-                    )}
+                    <div className="flex flex-wrap gap-1">
+                      {f.invoiceId ? (
+                        <Link href={invoiceDeepLink(f.invoiceId)} className={buttonClasses({ variant: "subtle", size: "sm" })}>
+                          เปิดบิล
+                        </Link>
+                      ) : null}
+                      {f.tenantId ? (
+                        <Link href={tenantDeepLink(f.tenantId)} className={buttonClasses({ variant: "subtle", size: "sm" })}>
+                          เปิดผู้เช่า
+                        </Link>
+                      ) : null}
+                      {!f.invoiceId && !f.tenantId ? "-" : null}
+                    </div>
                     {f.invoiceId || f.batchId ? (
                       <p className="mt-1 font-mono text-2xs text-slate-400">
                         {f.invoiceId ? `บิล ${f.invoiceId.slice(0, 8)}` : ""}
