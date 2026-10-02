@@ -491,6 +491,12 @@ export async function POST(req: Request) {
       if (!periodStart || !periodEnd) {
         return NextResponse.json({ error: "Missing periodStart or periodEnd." }, { status: 400 });
       }
+      // Reading the list must not write for roles that cannot change
+      // statuses: without invoice.status.update, load succeeds but nothing
+      // is written (and no money_events are logged).
+      if (!auth.matrix[auth.role]?.["invoice.status.update"]) {
+        return NextResponse.json({ success: true, skipped: true });
+      }
       // Same toLocalDateString(new Date()) call this replaces used in the
       // browser, where it read the admin's own clock. Here it reads the
       // server's — the same not-yet-fixed UTC-vs-Bangkok gap CLAUDE.md

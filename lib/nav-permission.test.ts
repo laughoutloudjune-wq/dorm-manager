@@ -7,6 +7,9 @@ describe("filterNavByPermission", () => {
   it("shows everything while loading", () => {
     expect(filterNavByPermission(items, () => false, true)).toHaveLength(2);
   });
+  it("fails open for display when the permission fetch failed", () => {
+    expect(filterNavByPermission(items, () => false, false, true)).toHaveLength(2);
+  });
   it("hides items lacking permission once loaded", () => {
     expect(filterNavByPermission(items, () => false, false).map((i) => i.href)).toEqual(["/a"]);
     expect(filterNavByPermission(items, () => true, false)).toHaveLength(2);

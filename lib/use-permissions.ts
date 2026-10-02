@@ -14,6 +14,9 @@ export function usePermissions() {
   const [loading, setLoading] = useState(true);
   const [role, setRole] = useState<RoleKey>("viewer");
   const [matrix, setMatrix] = useState(defaultRolePermissions());
+  // True when the role could not be determined (no token / fetch failed). The
+  // viewer fallback is then a guess; callers should fail open for display only.
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -24,21 +27,30 @@ export function usePermissions() {
         // browser with the anon key. See app/api/admin/permissions/route.ts.
         const { data: sessionData } = await supabase.auth.getSession();
         const token = sessionData.session?.access_token;
-        if (!token) return;
+        if (!token) {
+          if (mounted) setFailed(true);
+          return;
+        }
 
         const response = await fetch("/api/admin/permissions", {
           headers: { Authorization: `Bearer ${token}` },
         });
-        if (!response.ok) return;
+        if (!response.ok) {
+          if (mounted) setFailed(true);
+          return;
+        }
         const result = await response.json();
 
         if (mounted) {
+          setFailed(false);
           const nextRole = result?.role;
           if (nextRole === "owner" || nextRole === "admin" || nextRole === "staff" || nextRole === "viewer") {
             setRole(nextRole);
           }
           setMatrix(normalizeRolePermissions(result?.matrix ?? undefined));
         }
+      } catch {
+        if (mounted) setFailed(true);
       } finally {
         if (mounted) setLoading(false);
       }
@@ -51,6 +63,6 @@ export function usePermissions() {
 
   const can = (permission: PermissionKey) => !!matrix[role]?.[permission];
 
-  return { loading, role, can, matrix };
+  return { loading, failed, error: failed, role, can, matrix };
 }
 
