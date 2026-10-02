@@ -4,6 +4,7 @@ import {
   Gift,
   LayoutDashboard,
   LogOut,
+  Scale,
   ReceiptText,
   Settings,
   SlidersHorizontal,
@@ -20,6 +21,7 @@ const adminNavKeys = [
   { href: "/meter-staff", labelKey: null, label: "พนักงานมิเตอร์ LINE", icon: Users },
   { href: "/invoices", labelKey: "nav_invoices", icon: FileText },
   { href: "/reports", labelKey: null, label: "รายงาน", icon: ReceiptText },
+  { href: "/reconciliation", labelKey: null, label: "ตรวจสอบยอดเงิน", icon: Scale },
   { href: "/rewards", labelKey: null, label: "คะแนนสะสม", icon: Gift },
   { href: "/settings", labelKey: "nav_settings", icon: Settings },
 ] as const;
