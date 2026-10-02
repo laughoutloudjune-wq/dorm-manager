@@ -4,7 +4,6 @@ import React from "react";
 import { Modal } from "@/components/ui/Modal";
 import { buttonClasses } from "@/components/ui/Button";
 import { useInvoiceContext } from "./InvoiceContext";
-import { LateFeeV2Panel, useLateFeeV2, type LateFeeV2State } from "./LateFeeV2Panel";
 import { Input } from "@/components/ui/Input";
 import { Badge } from "@/components/ui/Badge";
 import {
@@ -317,34 +316,6 @@ export function InvoiceDetailModal() {
 
   const activeInvoiceId = activeInvoice?.id ? String(activeInvoice.id) : "";
 
-  // ── v2 late fee (bills from the 25 Oct 2026 cycle) ────────────────────────
-  // A v2 bill's late fee lives on the bill itself and is derived by the
-  // balance engine on the server; it is never a stored line item, never
-  // carried, never relayed. Legacy bills keep the fees-tab display below.
-  const isV2Bill = activeInvoice?.fee_model === "v2";
-  const lateFeeV2 = useLateFeeV2(
-    isV2Bill ? activeInvoiceId : null,
-    detailOpen && isV2Bill,
-    callInvoiceAdminAction,
-    // Refetch after a payment is recorded/voided on this bill.
-    `${toNumber(activeInvoice?.paid_amount)}:${activeInvoice?.status ?? ""}`,
-  );
-  const handleLateFeeV2Changed = (next: LateFeeV2State | null) => {
-    lateFeeV2.reload();
-    if (!next || !activeInvoiceId) return;
-    const status = next.status as keyof typeof statusVariant;
-    patchInvoiceInState(activeInvoiceId, { status });
-    setActiveInvoice((prev) => (prev ? { ...prev, status } : prev));
-    setForm((prev) => ({ ...prev, status }));
-  };
-  // The payment form's default amount is total − paid, which leaves out a v2
-  // bill's late fee. Default to the engine's amount due instead.
-  const v2AmountDue = lateFeeV2.state ? lateFeeV2.state.balance.amountDue : null;
-  React.useEffect(() => {
-    if (!isV2Bill || v2AmountDue == null) return;
-    setPaymentAmountInput(v2AmountDue > 0 ? String(v2AmountDue) : "");
-  }, [isV2Bill, v2AmountDue, setPaymentAmountInput]);
-
   /**
    * Backfill path for a payment recorded BEFORE payment_batches existed — it
    * has a payment_history entry but no batch/allocation row, so there is
@@ -486,46 +457,15 @@ export function InvoiceDetailModal() {
   ]);
 
   const deletePaymentBatch = async (batchId: string) => {
-    // The server now voids instead of deleting, and a void requires a reason
-    // (void_payment). Cancel on the prompt = don't void.
-    const reasonInput = window.prompt(
-      "ยืนยันการยกเลิกรายการชำระเงินนี้?\n\nรายการจะถูกยกเลิกจากทุกใบแจ้งหนี้ที่เงินก้อนนี้ถูกแบ่งไปชำระ (ระบบยังเก็บประวัติไว้)\n\nกรุณาระบุเหตุผล:",
+    const confirmed = window.confirm(
+      "ยืนยันการลบรายการชำระเงินนี้?\n\nการลบนี้จะลบรายการออกจากทุกใบแจ้งหนี้ที่เงินก้อนนี้ถูกแบ่งไปชำระ และไม่สามารถย้อนกลับได้ผ่านหน้านี้",
     );
-    if (reasonInput === null) return;
-    const reason = reasonInput.trim();
-    if (!reason) {
-      setError("กรุณาระบุเหตุผลในการยกเลิกรายการชำระเงิน");
-      return;
-    }
+    if (!confirmed) return;
     setDeletingBatchId(batchId);
     try {
       const result = await callInvoiceAdminAction("delete_payment_batch", {
         paymentBatchId: batchId,
-        reason,
       });
-      // A void (unlike the old delete) changes paid_amount, status and
-      // payment_history on every bill the batch touched. Re-read them so the
-      // screen never shows — or lets someone act on — the voided money.
-      const touchedIds: string[] = Array.isArray(result?.touchedInvoiceIds)
-        ? result.touchedInvoiceIds.map(String)
-        : [];
-      for (const touchedId of touchedIds) {
-        const snapshot = await callInvoiceAdminAction("get_invoice_snapshot", {
-          invoiceId: touchedId,
-        }).catch(() => null);
-        const fresh = snapshot?.invoice as any;
-        if (!fresh) continue;
-        const patch = {
-          paid_amount: toNumber(fresh.paid_amount),
-          status: fresh.status,
-          payment_history: Array.isArray(fresh.payment_history) ? fresh.payment_history : [],
-        };
-        patchInvoiceInState(touchedId, patch);
-        if (touchedId === activeInvoiceId) {
-          setActiveInvoice((prev) => (prev ? { ...prev, ...patch } : prev));
-          setForm((prev) => ({ ...prev, paid_amount: patch.paid_amount, status: patch.status }));
-        }
-      }
       const mismatches = Array.isArray(result?.mismatches) ? result.mismatches : [];
       if (mismatches.length > 0) {
         const isSelf = mismatches.some(
@@ -587,15 +527,11 @@ export function InvoiceDetailModal() {
                   title={!canUpdateInvoiceStatus ? "ไม่มีสิทธิ์เปลี่ยนสถานะใบแจ้งหนี้" : undefined}
                   className={`w-full rounded-control border border-slate-200 px-3 py-2 text-sm font-bold capitalize transition focus:border-primary-500 focus:ring-1 focus:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-70 ${statusPillClass(form.status)}`}
                 >
-                  {Object.keys(statusVariant)
-                    // v2: "paid" is calculated from real money, never picked
-                    // (the server refuses it too).
-                    .filter((status) => !(isV2Bill && status === "paid" && form.status !== "paid"))
-                    .map((status) => (
-                      <option key={status} value={status}>
-                        {statusLabelThai(status)}
-                      </option>
-                    ))}
+                  {Object.keys(statusVariant).map((status) => (
+                    <option key={status} value={status}>
+                      {statusLabelThai(status)}
+                    </option>
+                  ))}
                 </select>
               </div>
             </div>
@@ -626,19 +562,6 @@ export function InvoiceDetailModal() {
                   <span>ยอดรวม</span>
                   <span className="font-semibold text-slate-900">{formatMoney(form.total_amount)}</span>
                 </div>
-                {isV2Bill && lateFeeV2.state && (
-                  <div className="flex justify-between text-sm text-slate-500 mt-1.5">
-                    <span>ค่าปรับ (หลังยกเว้น)</span>
-                    <span className="font-semibold text-slate-900">
-                      {formatMoney(
-                        Math.max(
-                          0,
-                          lateFeeV2.state.balance.feeAccrued - lateFeeV2.state.balance.feeWaived,
-                        ),
-                      )}
-                    </span>
-                  </div>
-                )}
                 <div className="flex justify-between text-sm text-success-600 mt-1.5">
                   <span>ชำระแล้ว</span>
                   <span className="font-semibold">{formatMoney(toNumber(form.paid_amount))}</span>
@@ -647,12 +570,10 @@ export function InvoiceDetailModal() {
                   <span>คงเหลือ</span>
                   <span>
                     {formatMoney(
-                      isV2Bill && lateFeeV2.state
-                        ? lateFeeV2.state.balance.amountDue
-                        : invoiceDisplayOutstanding({
-                            total_amount: form.total_amount,
-                            paid_amount: toNumber(form.paid_amount),
-                          })
+                      invoiceDisplayOutstanding({
+                        total_amount: form.total_amount,
+                        paid_amount: toNumber(form.paid_amount),
+                      })
                     )}
                   </span>
                 </div>
@@ -1014,23 +935,8 @@ export function InvoiceDetailModal() {
                   </div>
                 </div>
                 
-                {isV2Bill && (
-                  <LateFeeV2Panel
-                    state={lateFeeV2.state}
-                    waivers={lateFeeV2.waivers}
-                    loading={lateFeeV2.loading}
-                    loadError={lateFeeV2.loadError}
-                    canEdit={canEditInvoice}
-                    callAction={callInvoiceAdminAction}
-                    onChanged={handleLateFeeV2Changed}
-                  />
-                )}
-
                 <fieldset disabled={!(canEditDetails && canEditInvoice)} className={!(canEditDetails && canEditInvoice) ? "opacity-70" : ""}>
                   
-                  {/* Carry Forwards and relayed late-fee lines: legacy bills only. A
-                      v2 bill never carries another bill's debt or fee (design A2). */}
-                  {!isV2Bill && (<>
                   {/* Carry Forwards */}
                   <div className="rounded-panel border border-warning-200 bg-white shadow-sm overflow-hidden">
                     <div className="bg-warning-50 px-6 py-5 border-b border-warning-200 flex justify-between items-center">
@@ -1248,8 +1154,6 @@ export function InvoiceDetailModal() {
                       )}
                     </div>
                   </div>
-
-                  </>)}
 
                   {/* Additional Fees */}
                   <div className="rounded-panel border border-slate-200 bg-white shadow-sm overflow-hidden mt-8">

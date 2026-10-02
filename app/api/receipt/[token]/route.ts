@@ -1,7 +1,6 @@
 import { existsSync } from "node:fs";
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase-admin";
-import { loadV2LateFeeStates } from "@/lib/fee-model-v2";
 import chromium from "@sparticuz/chromium";
 import puppeteer from "puppeteer-core";
 
@@ -150,7 +149,7 @@ export async function GET(req: Request) {
     const { data, error } = await supabase
       .from("invoices")
       .select(
-        "id,room_id,start_date,public_token,status,fee_model,issue_date,due_date,total_amount,paid_amount,rent_amount,water_bill,electricity_bill,common_fee,additional_fees_total,additional_fees_breakdown,discount_amount,late_fee_amount,payment_history,slip_uploaded_at,tenants(full_name,address,phone_number,custom_receipt_profile),rooms(room_number,buildings(name))"
+        "id,room_id,start_date,public_token,status,issue_date,due_date,total_amount,paid_amount,rent_amount,water_bill,electricity_bill,common_fee,additional_fees_total,additional_fees_breakdown,discount_amount,late_fee_amount,payment_history,slip_uploaded_at,tenants(full_name,address,phone_number,custom_receipt_profile),rooms(room_number,buildings(name))"
       )
       .eq("public_token", token)
       .single();
@@ -294,27 +293,6 @@ export async function GET(req: Request) {
               })()
             : "";
 
-    // v2 bills (25 Oct 2026 cycle on) never store their late fee: it lives on
-    // the bill itself and comes from the balance engine. Print what was
-    // charged (days × rate) and anything waived, so the itemization adds up
-    // to the amount paid. Empty for legacy bills.
-    let v2FeeRowsHtml = "";
-    if ((data as any).fee_model === "v2") {
-      const state = (await loadV2LateFeeStates(supabase, [String((data as any).id)])).get(
-        String((data as any).id),
-      );
-      if (state && state.balance.feeAccrued > 0) {
-        v2FeeRowsHtml += `<tr><td>ค่าปรับล่าช้า (${escapeHtml(
-          `${state.balance.feeDays.toLocaleString("th-TH")} วัน x ${formatMoney(state.lateFeePerDay)}/วัน`,
-        )})</td><td>${escapeHtml(formatMoney(state.balance.feeAccrued))}</td></tr>`;
-      }
-      if (state && state.balance.feeWaived > 0) {
-        v2FeeRowsHtml += `<tr><td>ยกเว้นค่าปรับล่าช้า</td><td>-${escapeHtml(
-          formatMoney(state.balance.feeWaived),
-        )}</td></tr>`;
-      }
-    }
-
     const html = `
 <!doctype html>
 <html>
@@ -414,7 +392,6 @@ export async function GET(req: Request) {
           }
           <tr><td>ส่วนลด</td><td>-${escapeHtml(formatMoney(toNumber((data as any).discount_amount)))}</td></tr>
           ${lateFeeRowsHtml}
-          ${v2FeeRowsHtml}
         </tbody>
       </table>
       <div class="total row">

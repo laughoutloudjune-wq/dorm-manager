@@ -30,8 +30,6 @@ const formatMoney = (value: number) =>
 type Digest = {
   generatedAt: string;
   receivedYesterday: number;
-  /** Paid move-out refunds (money out). Separate from receivedYesterday, never subtracted from it. */
-  refundedYesterday: number;
   overdueCount: number;
   overdueAmount: number;
   slipsWaiting: number;
@@ -73,7 +71,6 @@ function buildDigestFlexMessage(digest: Digest) {
         spacing: "md",
         contents: [
           { type: "text", text: `รับเงินเมื่อวาน: ฿${formatMoney(digest.receivedYesterday)}`, size: "sm", color: "#111827" },
-          { type: "text", text: `คืนเงินเมื่อวาน: ฿${formatMoney(digest.refundedYesterday)}`, size: "sm", color: "#111827" },
           {
             type: "text",
             text: `บิลค้างชำระ: ${digest.overdueCount} รายการ (฿${formatMoney(digest.overdueAmount)})`,
@@ -132,29 +129,11 @@ async function handle(req: Request) {
     const yesterdayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1));
     const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 
-    const [
-      paidYesterdayRes,
-      refundsYesterdayRes,
-      openInvoicesRes,
-      slipsWaitingRes,
-      reconciliationFindings,
-      meterAnomalies,
-    ] =
+    const [paidYesterdayRes, openInvoicesRes, slipsWaitingRes, reconciliationFindings, meterAnomalies] =
       await Promise.all([
         supabase
           .from("invoice_payment_allocations")
-          // payment_batch is !inner so the voided_at filter actually excludes
-          // rows — a void never deletes the allocation row (finding H2's fix).
-          .select("amount,payment_batch:payment_batches!inner(voided_at)")
-          .gte("paid_at", yesterdayStart.toISOString())
-          .lt("paid_at", todayStart.toISOString())
-          .is("payment_batch.voided_at", null),
-        // Money OUT: move-out refunds marked paid yesterday (mark_refund_paid).
-        // Reported on its own line, never netted against receivedYesterday.
-        supabase
-          .from("refunds")
           .select("amount")
-          .eq("status", "paid")
           .gte("paid_at", yesterdayStart.toISOString())
           .lt("paid_at", todayStart.toISOString()),
         supabase
@@ -170,17 +149,11 @@ async function handle(req: Request) {
       (sum: number, row: any) => sum + Number(row.amount ?? 0),
       0
     );
-    if (refundsYesterdayRes.error) throw new Error(refundsYesterdayRes.error.message);
-    const refundedYesterday = (refundsYesterdayRes.data ?? []).reduce(
-      (sum: number, row: any) => sum + Number(row.amount ?? 0),
-      0
-    );
     const overdueRows = (openInvoicesRes.data ?? []).filter((row: any) => row.status === "overdue");
 
     const digest: Digest = {
       generatedAt: now.toISOString(),
       receivedYesterday,
-      refundedYesterday,
       overdueCount: overdueRows.length,
       overdueAmount: sumOwnOutstanding(overdueRows as any),
       slipsWaiting: slipsWaitingRes.count ?? 0,

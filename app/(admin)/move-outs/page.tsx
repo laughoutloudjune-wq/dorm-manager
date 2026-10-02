@@ -6,14 +6,10 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/Badge";
 import { buttonClasses } from "@/components/ui/Button";
 import { createClient } from "@/lib/supabase-client";
-import { callTenantsAction } from "@/lib/tenants-action-client";
-import { formatMoney } from "@/lib/format";
 import { usePermissions } from "@/lib/use-permissions";
 import { AlertTriangle, Building2, CalendarDays, CheckCircle2, ChevronRight, Clock, LogOut, Plus, RefreshCw, Smartphone, XCircle } from "lucide-react";
 import { MoveOutProcessingModal } from "@/components/admin/MoveOutProcessingModal";
 import { AddManualMoveOutModal } from "@/components/admin/AddManualMoveOutModal";
-import { RefundsSection } from "@/components/admin/RefundsSection";
-import { toRefundView, type RefundView } from "@/lib/refunds";
 
 type RequestRow = {
   id: string;
@@ -38,10 +34,6 @@ type TenantWithMoveOut = {
   id: string;
   full_name: string;
   move_out_date: string;
-  /** Key-return date set by unlock_room (pending-settlement rows only). */
-  handover_date?: string | null;
-  /** Rent runs to this date on the move-out bill (the notice date). */
-  tenancy_end_date?: string | null;
   room_id: string | null;
   rooms:
     | { room_number: string; buildings: { name: string } | { name: string }[] | null }[]
@@ -101,12 +93,8 @@ export default function MoveOutsPage() {
   const supabase = useMemo(() => createClient(), []);
   const { can, loading: permLoading } = usePermissions();
   const canView = can("tenant.view");
-  // mark_refund_paid requires both (money out + the move-out permission).
-  const canMarkRefundPaid = can("invoice.payment.record") && can("tenant.edit");
 
   const [loading, setLoading] = useState(true);
-  const [refunds, setRefunds] = useState<RefundView[]>([]);
-  const [refundsLoading, setRefundsLoading] = useState(true);
   const [requests, setRequests] = useState<RequestRow[]>([]);
   const [tenantsWithDate, setTenantsWithDate] = useState<TenantWithMoveOut[]>([]);
   const [pendingSettlementTenants, setPendingSettlementTenants] = useState<TenantWithMoveOut[]>([]);
@@ -135,10 +123,10 @@ export default function MoveOutsPage() {
 
       setRequests((result.requests ?? []) as unknown as RequestRow[]);
       setTenantsWithDate((result.tenantsWithDate ?? []) as TenantWithMoveOut[]);
-      // Tenants unlocked via "ปลดล็อกห้อง" (unlock_room, or the old
-      // move_out action): already inactive, but room_id is only cleared by
-      // the settlement (settle_move_out/abandon_room), so a non-null room_id
-      // here means the move-out hasn't been settled yet.
+      // Tenants freed via the quick "ปลดล็อกห้องทันที" action: already
+      // inactive, but room_id is only cleared by the full settlement
+      // (final_move_out/abandon_room), so a non-null room_id here means the
+      // settlement invoice hasn't been made yet.
       setPendingSettlementTenants((result.pendingSettlementTenants ?? []) as TenantWithMoveOut[]);
     } catch (error: any) {
       toast.error(error?.message ?? "โหลดข้อมูลย้ายออกไม่สำเร็จ");
@@ -150,36 +138,9 @@ export default function MoveOutsPage() {
     }
   }, [canView, supabase]);
 
-  const loadRefunds = useCallback(async () => {
-    if (!canView) return;
-    setRefundsLoading(true);
-    try {
-      const result = await callTenantsAction<{ refunds: any[] }>("get_refunds");
-      setRefunds((result.refunds ?? []).map(toRefundView));
-    } catch (error: any) {
-      toast.error(error?.message ?? "โหลดรายการเงินคืนไม่สำเร็จ");
-      setRefunds([]);
-    } finally {
-      setRefundsLoading(false);
-    }
-  }, [canView]);
-
-  const reloadAll = useCallback(async () => {
-    await Promise.all([load(), loadRefunds()]);
-  }, [load, loadRefunds]);
-
   useEffect(() => {
-    if (!permLoading && canView) void reloadAll();
-  }, [canView, permLoading, reloadAll]);
-
-  const pendingRefundByTenantId = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const r of refunds) {
-      if (r.status !== "pending") continue;
-      map.set(r.tenantId, (map.get(r.tenantId) ?? 0) + r.amount);
-    }
-    return map;
-  }, [refunds]);
+    if (!permLoading && canView) void load();
+  }, [canView, permLoading, load]);
 
   const unifiedList = useMemo(() => {
     const map = new Map<string, any>();
@@ -251,8 +212,6 @@ export default function MoveOutsPage() {
       if (existing) {
         existing.status = "pending_settlement";
         existing.status_label = requestStatusThai("pending_settlement");
-        existing.handover_date = t.handover_date ?? null;
-        existing.tenancy_end_date = t.tenancy_end_date ?? null;
         return;
       }
       const { room, building } = roomFromTenant(t);
@@ -270,8 +229,6 @@ export default function MoveOutsPage() {
         status_label: requestStatusThai("pending_settlement"),
         source: "admin",
         notice_date: null,
-        handover_date: t.handover_date ?? null,
-        tenancy_end_date: t.tenancy_end_date ?? null,
       });
     });
 
@@ -388,7 +345,7 @@ export default function MoveOutsPage() {
               </button>
               <button
                 type="button"
-                onClick={() => void reloadAll()}
+                onClick={() => void load()}
                 disabled={loading}
                 className={buttonClasses({ variant: "secondary", size: "sm" })}
               >
@@ -477,16 +434,9 @@ export default function MoveOutsPage() {
                         className={`border-t border-slate-100/90 transition-colors hover:bg-slate-50/60 ${isUrgent ? "bg-danger-50/30" : ""}`}
                       >
                         <td className="px-5 py-3.5">
-                          <div className="flex flex-col items-start gap-1">
-                            <Badge variant={getBadgeVariant(row.status)}>
-                              {row.status_label}
-                            </Badge>
-                            {pendingRefundByTenantId.has(row.tenant_id) && (
-                              <Badge variant="info" size="sm">
-                                รอคืนเงิน ฿{formatMoney(pendingRefundByTenantId.get(row.tenant_id) ?? 0)}
-                              </Badge>
-                            )}
-                          </div>
+                          <Badge variant={getBadgeVariant(row.status)}>
+                            {row.status_label}
+                          </Badge>
                         </td>
                         <td className="px-5 py-3.5 font-medium text-slate-900">{row.tenant_name}</td>
                         <td className="px-5 py-3.5 text-slate-600">
@@ -520,21 +470,6 @@ export default function MoveOutsPage() {
                             {row.notice_date && (
                               <span className="text-2xs text-slate-400">แจ้งเมื่อ: {formatThai(row.notice_date)}</span>
                             )}
-                            {row.status === "pending_settlement" &&
-                              (row.handover_date ? (
-                                <>
-                                  <span className="text-2xs text-slate-500">
-                                    คืนกุญแจ: {formatThai(row.handover_date)}
-                                  </span>
-                                  {row.tenancy_end_date && (
-                                    <span className="text-2xs text-slate-500">
-                                      ค่าเช่าถึง: {formatThai(row.tenancy_end_date)}
-                                    </span>
-                                  )}
-                                </>
-                              ) : (
-                                <span className="text-2xs text-warning-700">ปลดล็อกด้วยระบบเดิม — ต้องบันทึกวันคืนกุญแจ</span>
-                              ))}
                           </div>
                         </td>
                         <td className="px-5 py-3.5">
@@ -566,21 +501,12 @@ export default function MoveOutsPage() {
         </div>
       )}
 
-      {canView && (
-        <RefundsSection
-          refunds={refunds}
-          loading={refundsLoading}
-          canMarkPaid={canMarkRefundPaid}
-          onChanged={loadRefunds}
-        />
-      )}
-
       {isModalOpen && (
         <MoveOutProcessingModal
           isOpen={isModalOpen}
           onClose={() => setIsModalOpen(false)}
           tenantId={selectedTenantId}
-          onSuccess={reloadAll}
+          onSuccess={load}
         />
       )}
 

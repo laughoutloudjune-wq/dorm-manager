@@ -830,15 +830,6 @@ export type InvoiceRecord = {
   room_number: string;
   room_price_month: number;
   building_name: string;
-  /**
-   * `legacy` (made before the 25 Oct 2026 cycle) or `v2` (new late-fee rules:
-   * own charges only, fee derived by lib/invoice-balance.ts). Optional only so
-   * hand-built records elsewhere keep compiling; normalizeInvoice always sets it.
-   */
-  fee_model?: "legacy" | "v2";
-  kind?: "monthly" | "move_out";
-  late_fee_paused_from?: string | null;
-  late_fee_paused_reason?: string | null;
 };
 
 export type ArrearsSnapshotItem = {
@@ -921,9 +912,5 @@ export function normalizeInvoice(row: any): InvoiceRecord {
     room_number: room?.room_number ?? "-",
     room_price_month: toNumber(room?.price_month),
     building_name: buildingItem?.name ?? "Unassigned",
-    fee_model: row.fee_model === "v2" ? "v2" : "legacy",
-    kind: row.kind === "move_out" ? "move_out" : "monthly",
-    late_fee_paused_from: row.late_fee_paused_from ?? null,
-    late_fee_paused_reason: row.late_fee_paused_reason ?? null,
   };
 }

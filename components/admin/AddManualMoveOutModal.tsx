@@ -199,8 +199,7 @@ export function AddManualMoveOutModal({ isOpen, onClose, onSuccess }: Props) {
 
         <div>
           <Input
-            label="วันย้ายออกตามที่แจ้ง"
-            hint="ค่าเช่าในบิลย้ายออกคิดถึงวันนี้ แม้ผู้เช่าจะคืนกุญแจก่อน — ปลดล็อกห้องและสรุปยอดได้จากหน้าจัดการย้ายออก"
+            label="วันที่ย้ายออก"
             type="date"
             value={moveOutDate}
             onChange={(e) => setMoveOutDate(e.target.value)}

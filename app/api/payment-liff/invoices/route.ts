@@ -1,28 +1,5 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase-admin";
-import { loadV2LateFeeStates, type V2LateFeeState } from "@/lib/fee-model-v2";
-
-/**
- * v2 bills (from the 25 Oct 2026 cycle) store only their own charges; the late
- * fee is derived by the balance engine. Give the LINE pages the engine's
- * answer in the fields they already read, so a v2 bill shows (and is paid as)
- * charges + fee − waived − paid. Legacy rows pass through untouched.
- */
-const withV2Balance = (row: any, states: Map<string, V2LateFeeState>) => {
-  const state = states.get(String(row.id));
-  if (!state) return row;
-  const b = state.balance;
-  return {
-    ...row,
-    amount_due: b.amountDue,
-    // Late fee still owed on this bill (accrued − waived − already paid).
-    late_fee_amount: b.feeDue,
-    late_fee_days: b.feeDays,
-    late_fee_accrued: b.feeAccrued,
-    late_fee_waived: b.feeWaived,
-    late_fee_running: b.feeRunning,
-  };
-};
 
 const toNumber = (value: unknown) => {
   const parsed = Number(value ?? 0);
@@ -72,7 +49,7 @@ export async function POST(req: Request) {
     const { data: pendingInvoices, error: pendingError } = await supabase
       .from("invoices")
       .select(
-        "id,public_token,issue_date,due_date,total_amount,paid_amount,status,fee_model,rent_amount,water_bill,electricity_bill,common_fee,additional_fees_total,carry_forward_amount,late_fee_amount,late_fee_per_day,late_fee_start_date,waived_late_fee_amount,locked_late_fee_amount"
+        "id,public_token,issue_date,due_date,total_amount,paid_amount,status,rent_amount,water_bill,electricity_bill,common_fee,additional_fees_total,carry_forward_amount,late_fee_amount,late_fee_per_day,late_fee_start_date,waived_late_fee_amount,locked_late_fee_amount"
       )
       .eq("tenant_id", tenant.id)
       .in("status", ["pending", "partial", "overdue", "verifying"])
@@ -82,11 +59,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: pendingError.message }, { status: 500 });
     }
 
-    const v2States = await loadV2LateFeeStates(
-      supabase,
-      (pendingInvoices ?? []).filter((row: any) => row.fee_model === "v2").map((row: any) => String(row.id)),
-    );
-    const visiblePendingInvoices = (pendingInvoices ?? []).map((row: any) => withV2Balance(row, v2States));
+    const visiblePendingInvoices = pendingInvoices ?? [];
 
     const { data: paidInvoices, error: paidError } = await supabase
       .from("invoices")
