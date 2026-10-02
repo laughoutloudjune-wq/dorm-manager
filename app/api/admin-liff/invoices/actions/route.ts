@@ -8,6 +8,7 @@ import {
   calculateLateFeeAmount,
   resolveFullyPaidAtDate,
 } from "@/lib/invoice-ledger";
+import { recordMoneyEvent } from "@/lib/money-events";
 import { syncPointsForTenant } from "@/lib/points-ledger";
 import { notifyTenantPointsEarned } from "@/lib/points-notify";
 import { declinePaymentSlip } from "@/lib/slip-review";
@@ -60,13 +61,24 @@ export async function POST(req: Request) {
       }
       const { data: beforeRow } = await supabase
         .from("invoices")
-        .select("status")
+        .select("status,tenant_id")
         .eq("id", invoiceId)
         .maybeSingle();
       const wasPaid = String((beforeRow as any)?.status ?? "") === "paid";
 
       const { error } = await supabase.from("invoices").update({ status }).eq("id", invoiceId);
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+      await recordMoneyEvent(supabase, {
+        action: "invoice.status_change",
+        actorUserId: null,
+        tenantId: ((beforeRow as any)?.tenant_id as string) ?? null,
+        invoiceId,
+        before: { status: (beforeRow as any)?.status ?? null },
+        after: { status },
+        reason: `line_user:${auth.profile.userId}`,
+        source: "admin_liff",
+      });
 
       // Same fix as the web admin route: points must be revoked when status
       // LEAVES paid, not just awarded when it becomes paid.

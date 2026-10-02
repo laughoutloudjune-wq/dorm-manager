@@ -3,16 +3,15 @@ import { requireAdminPermission } from "@/lib/admin-api-auth";
 import {
   applyInvoicePaymentAllocation,
   applyManualInvoicePaymentAllocation,
-  autoBillUnbilledLateFees,
   syncInvoiceLedger,
   getCarryForwardCandidatesForTarget,
   snapshotFromPaymentMethodRow,
-  calculateLateFeeAmount,
-  resolveFullyPaidAtDate,
   OPEN_INVOICE_STATUSES,
 } from "@/lib/invoice-ledger";
 import { isLateFeeBreakdownRow, isInvoiceDetailEditable, buildRuleBreakdown } from "@/lib/invoice-utils";
 import { chargesFromInvoiceRow, computeInvoiceTotal } from "@/lib/invoice-total";
+import { recordMoneyEvent } from "@/lib/money-events";
+import { INVOICE_MONEY_COLUMNS, diffMoneyColumns, invoicesBlockedFromDelete } from "@/lib/money/money-diff";
 import { toLocalDateString, toNumber } from "@/lib/format";
 import { generateInvoicesForPeriod } from "@/lib/invoice-generation";
 import { syncPointsForTenant } from "@/lib/points-ledger";
@@ -76,58 +75,26 @@ export async function POST(req: Request) {
         .maybeSingle();
       const wasPaid = String((beforeRow as any)?.status ?? "") === "paid";
 
-      const updatePayload: Record<string, unknown> = { status };
-
-      if (status === "paid") {
-        // Re-freeze the late fee if it is currently unfrozen. Flipping an
-        // invoice away from paid clears `locked_late_fee_amount`, which puts
-        // the fee back on a live ฿/day calculation; leaving it unfrozen would
-        // let an old invoice's fee keep growing from its original due date.
-        // `syncInvoiceLedger` normally freezes it on the transition to paid,
-        // but it skips invoices already marked paid, so it cannot recover this
-        // afterwards. Freezing a fee is bookkeeping, not a payment.
-        const { data: feeRow } = await auth.supabase
-          .from("invoices")
-          .select(
-            "locked_late_fee_amount,late_fee_start_date,late_fee_per_day,waived_late_fee_amount,payment_history,slip_uploaded_at",
-          )
-          .eq("id", invoiceId)
-          .maybeSingle();
-        if (feeRow && (feeRow as any).locked_late_fee_amount == null) {
-          updatePayload.locked_late_fee_amount = calculateLateFeeAmount(
-            feeRow as any,
-            resolveFullyPaidAtDate(
-              feeRow as any,
-              new Date().toISOString().slice(0, 10),
-            ),
-          );
-        }
-      } else if (!["verifying", "cancelled"].includes(status)) {
-        // Leaving paid must clear the freeze, same as `save_details` below —
-        // otherwise a fee frozen (even at 0) by an earlier accidental "paid"
-        // flip stays stuck forever: `applyInvoicePaymentAllocation` and this
-        // same "paid" branch both treat any non-null value as "already
-        // frozen, don't touch," so a later real payment's actual date never
-        // gets a chance to recompute it.
-        updatePayload.locked_late_fee_amount = null;
-      }
-
+      // Write ONLY `status`. Status is a label, not evidence of money, so it
+      // must carry no monetary side effects: no late-fee freeze/unfreeze
+      // (`locked_late_fee_amount`) and no auto-billing of late fees. Those
+      // happen when a real payment is recorded or an invoice is carried
+      // forward, never because someone changed a dropdown.
       const { error } = await auth.supabase
         .from("invoices")
-        .update(updatePayload)
+        .update({ status })
         .eq("id", invoiceId);
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-      // A freshly-frozen, still-unbilled late fee should land on the
-      // tenant's next invoice right away, not wait for someone to notice it
-      // in a checklist. No-ops when this invoice wasn't actually the "paid"
-      // branch above, or had nothing new to bill.
-      if (status === "paid") {
-        const tenantId = String((beforeRow as any)?.tenant_id ?? "");
-        if (tenantId) {
-          await autoBillUnbilledLateFees(auth.supabase, tenantId, [invoiceId]);
-        }
-      }
+      await recordMoneyEvent(auth.supabase, {
+        action: "invoice.status_change",
+        actorUserId: auth.user.id,
+        tenantId: ((beforeRow as any)?.tenant_id as string) ?? null,
+        invoiceId,
+        before: { status: (beforeRow as any)?.status ?? null },
+        after: { status },
+        source: "admin_webapp",
+      });
 
       // Rewards points are derived entirely from invoice status
       // (syncPointsForTenant reads status='paid' to award on-time/streak
@@ -159,15 +126,29 @@ export async function POST(req: Request) {
         if (!["paid", "verifying", "cancelled"].includes(String(payload.status))) {
           payload.locked_late_fee_amount = null;
         }
-        const { data: beforeRow } = await authEdit.supabase
-          .from("invoices")
-          .select("status")
-          .eq("id", invoiceId)
-          .maybeSingle();
-        wasPaidBeforeSave = String((beforeRow as any)?.status ?? "") === "paid";
       }
+      const { data: beforeMoneyRow } = await authEdit.supabase
+        .from("invoices")
+        .select(`tenant_id,room_id,${INVOICE_MONEY_COLUMNS.join(",")}`)
+        .eq("id", invoiceId)
+        .maybeSingle();
+      wasPaidBeforeSave = String((beforeMoneyRow as any)?.status ?? "") === "paid";
       const { error } = await authEdit.supabase.from("invoices").update(payload).eq("id", invoiceId);
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+      const moneyDiff = diffMoneyColumns(beforeMoneyRow as any, payload as Record<string, unknown>);
+      if (moneyDiff) {
+        await recordMoneyEvent(authEdit.supabase, {
+          action: "invoice.save_details",
+          actorUserId: authEdit.user.id,
+          tenantId: (beforeMoneyRow as any)?.tenant_id ?? null,
+          roomId: (beforeMoneyRow as any)?.room_id ?? null,
+          invoiceId,
+          before: moneyDiff.before,
+          after: moneyDiff.after,
+          source: "admin_webapp",
+        });
+      }
 
       // Same rewards-revocation gap as update_status: this form can also move
       // status away from "paid" (or into it), and points must follow.
@@ -1028,6 +1009,56 @@ export async function POST(req: Request) {
           { error: "Cannot delete invoices with payment slip or paid/verifying status." },
           { status: 400 }
         );
+      }
+
+      // Hard delete erases the money trail. Refuse anything money has touched;
+      // only unpaid invoices (e.g. drafts) may be deleted.
+      const { data: moneyRows, error: moneyError } = await auth.supabase
+        .from("invoices")
+        .select("*")
+        .in("id", invoiceIds);
+      if (moneyError) return NextResponse.json({ error: moneyError.message }, { status: 500 });
+      const { data: allocRows, error: allocError } = await auth.supabase
+        .from("invoice_payment_allocations")
+        .select("invoice_id")
+        .in("invoice_id", invoiceIds);
+      if (allocError) return NextResponse.json({ error: allocError.message }, { status: 500 });
+      const { data: batchRows, error: batchError } = await auth.supabase
+        .from("payment_batches")
+        .select("trigger_invoice_id")
+        .in("trigger_invoice_id", invoiceIds);
+      if (batchError) return NextResponse.json({ error: batchError.message }, { status: 500 });
+      const allocSet = new Set((allocRows ?? []).map((r: any) => String(r.invoice_id)));
+      const batchSet = new Set((batchRows ?? []).map((r: any) => String(r.trigger_invoice_id)));
+      const moneyBlocked = invoicesBlockedFromDelete(
+        (moneyRows ?? []).map((r: any) => ({
+          id: String(r.id),
+          paid_amount: r.paid_amount,
+          hasAllocation: allocSet.has(String(r.id)),
+          hasBatchTrigger: batchSet.has(String(r.id)),
+        })),
+      );
+      if (moneyBlocked.length > 0) {
+        return NextResponse.json(
+          {
+            error:
+              "ไม่สามารถลบใบแจ้งหนี้ที่มีการชำระเงิน/บันทึกการจัดสรรเงินแล้วได้ (ลบได้เฉพาะใบแจ้งหนี้ที่ยังไม่มีการชำระเงิน)",
+            blockedInvoiceIds: moneyBlocked,
+          },
+          { status: 409 },
+        );
+      }
+
+      for (const row of (moneyRows ?? []) as any[]) {
+        await recordMoneyEvent(auth.supabase, {
+          action: "invoice.delete",
+          actorUserId: auth.user.id,
+          tenantId: row.tenant_id ?? null,
+          roomId: row.room_id ?? null,
+          invoiceId: row.id,
+          before: row,
+          source: "admin_webapp",
+        });
       }
 
       const { error } = await auth.supabase.from("invoices").delete().in("id", invoiceIds);
