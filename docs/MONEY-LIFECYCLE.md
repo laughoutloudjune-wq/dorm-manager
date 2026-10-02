@@ -1,6 +1,6 @@
 # Money lifecycle: what is authoritative, what is derived
 
-Status as of 2026-10-03, repo state after commit `55ae4b7`. None of the `20261002*` migrations is applied to production (they are files; see `docs/money-rewrite-plan.md`). They were exercised only on the dummy project `dorm-test`.
+Status as of 2026-10-03, repo state after commit `d9923d7` (`main`). **Nothing has been applied to production**: none of the `20261002*` migrations has been run there (they are files; see `docs/README-money.md` for the go-live order and `docs/money-rewrite-plan.md` for the checklist). They were exercised only on the dummy project `dorm-test`, which has a few gaps against production (`docs/TEST-SCHEMA-GAPS.md`).
 
 Legend used throughout:
 - **IMPLEMENTED**: code exists in the repo and is wired into a route or screen.
@@ -23,7 +23,7 @@ An invoice states what a tenant owes (a charge). Real money arrives as a receipt
 | Tenant credit | `tenant_credits` + view `tenant_credit_balances` (`...000200`) | Money held, in buckets `deposit`, `advance`, `unapplied`. Append-only. | FILE ONLY, except that `record_payment_batch` writes an `overpayment` / `unapplied` row when a receipt exceeds the open balance. |
 | Refund payout | `refund_payouts` + view `refund_due_vs_paid` (`...000300`) | Money actually sent to a tenant. One void allowed per row, never deleted. | FILE ONLY |
 | Late-fee charge / policy | `late_fee_charges`, `late_fee_policies` (`...000400`), `lib/money/late-fee.ts` | A posted fee as its own explainable row; versioned policy. | FILE ONLY. Live late fees still use `calculateLateFeeAmount` and `locked_late_fee_amount` in `lib/invoice-ledger.ts`. |
-| Audit log | `money_events` (`...000000`), `lib/money-events.ts` | Append-only before/after log with actor and reason. | IMPLEMENTED for payment record, payment void, status change, and the edit/delete paths in the admin and admin-LIFF invoice routes. |
+| Audit log | `money_events` (`...000000`), `lib/money-events.ts` | Append-only before/after log with actor and reason. | IMPLEMENTED for payment record, payment void, status change, the edit/delete paths in the admin and admin-LIFF invoice routes, slip submit/approve/decline, `sync_period_statuses` and invoice generation (batch logging, `lib/money-events.ts`). Still unlogged: `sync_overdue`, points revert snapshot, slip-decline internals (findings 60, 82). |
 | `payment_history` (JSON on invoices) | `invoices.payment_history` | **Display projection only.** A cache for the UI. Never a source for reports or balances. | IMPLEMENTED as a cache. Reconciliation check `payment_history_mismatch` compares it to allocations. |
 | `invoices.paid_amount` | column | Running balance per invoice. Not an income figure and not evidence of when money arrived. Reconciled against the sum of allocations (`invoice_paid_vs_allocations`). | IMPLEMENTED |
 
@@ -39,6 +39,8 @@ Rule of thumb: reports of money read receipts and allocations. Screens of "what 
 Changing an invoice status never moves money (see `CLAUDE.md`). Money is recorded only by `record_payment`, `record_split_payment`, and `approve_paid` (LINE admin; needs a slip and `verifying` status).
 
 Planner note: `lib/money/allocation.ts` (`planReceiptAllocation`) is tested pure logic but no route calls it yet; the routes still use the older in-ledger calculation. FILE ONLY.
+
+LINE admin `approve_paid` (`app/api/admin-liff/invoices/actions/route.ts`) now takes the admin's **confirmed amount and transfer date** (validated by `lib/money/slip-approval.ts`), requires `verifying` plus a non-empty `slip_url`, and records through `applyInvoicePaymentAllocation` with `keepExcessAsCredit`. It no longer passes `Number.MAX_SAFE_INTEGER`. LIFF `update_status` to `paid` is rejected. Remaining loose end: when the chain has nothing outstanding the route only sets status `paid` and returns before the slip guard (finding 76). Web-admin `update_status` to `paid` is still allowed as a label (finding 61).
 
 ## 4. Invoice total and balance
 
@@ -58,7 +60,7 @@ A non-cash settlement reduces what is owed but moves no money into a bank accoun
 | Write-off | Debt forgiven | DESIGNED: `adjustments.type = 'write_off'` exists as a table only. |
 | Waiver of a fee | A late fee cancelled | Existing column `waived_late_fee_amount`; the `waiver` adjustment type is DESIGNED. |
 
-Known gap: an `abandon_room` credit is currently a real `payment_batches` + allocation row. The Reports cash view only adds a note for it (`components/admin/ReportsPageView.tsx`); it is still included in cash rows and cash totals. The intended rule is that non-cash rows are excluded from cash totals.
+An `abandon_room` credit is still a real `payment_batches` + allocation row (finding 58). It is now excluded from cash totals: `summarizeAllocations` in `lib/money/report-definitions.ts` splits cash from non-cash, the per-account breakdown in `ReportsPageView` skips credit rows, and the dashboard and daily digest use the same summariser. The row itself still appears in the cash rows list with a label. Verify with real data before relying on it (finding 43 was the original gap).
 
 ## 6. Receiving-account snapshot rule (IMPLEMENTED)
 
@@ -82,7 +84,9 @@ FILE ONLY: versioned policies, posted charges with a unique key, waiver events (
 
 ## 10. Reconciliation (IMPLEMENTED, report only)
 
-`lib/money/reconciliation-checks.ts` runs nine checks: batch vs allocations, invoice paid vs allocations, orphan allocation, batch without allocations, payment history mismatch, status vs balance, carry forward, missing money event, missing account snapshot. `GET /api/admin/reconciliation` (permission `reconciliation.view`) and the admin page `/reconciliation` show the findings with a CSV export. It never fixes anything.
+`lib/money/reconciliation-checks.ts` runs nine checks: batch vs allocations, invoice paid vs allocations, orphan allocation, batch without allocations, payment history mismatch, status vs balance, carry forward, missing money event, missing account snapshot. `GET /api/admin/reconciliation` (permission `reconciliation.view`, loader shared in `lib/money/reconciliation-loader.ts`) and the admin page `/reconciliation` show the findings with a CSV export and deep links to the invoice and tenant. The action queue (`/action-queue`, `action_queue.view`, `lib/money/action-queue.ts`) shows the same findings next to slips, estimated late fees, refunds due and unapplied credits. Neither fixes anything.
+
+Read-only discrepancy report: `scripts/discrepancy-report.ts` (`npm run report:discrepancies`, logic in `lib/money/discrepancy-report.ts`) runs the same checks over the whole database from the owner's machine, with a read-only client wrapper and `--redact`. See `docs/DISCREPANCY-REPORT-HOWTO.md`.
 
 ## 11. Reserved for Opus
 
@@ -90,3 +94,20 @@ FILE ONLY: versioned policies, posted charges with a unique key, waiver events (
 - `supabase/migrations/20261002000500_migration-record-payment-batch.sql` (`record_payment_batch`), with open items 34-36 in `docs/money-system-findings.md`
 - Atomic final move-out settlement, atomic points redemption/reversal, late-fee post/waive functions (stopped branches listed in `docs/OPUS-HANDOFF.md`)
 - Wiring `lib/money/settlement.ts` into the move-out routes
+
+## 12. Implemented versus designed-but-not-built (summary)
+
+| Area | Built and wired (code on main) | File only / pure logic, not wired | Designed, not built |
+|---|---|---|---|
+| Recording | `record_payment`, split payment, atomic `record_payment_batch`, idempotency, stale guard, overpayment credit, LINE `approve_paid` with confirmed amount and date | `planReceiptAllocation` | Server dry-run of a payment |
+| Reversal | `void_payment` via `void_payment_batch`, reason required, UI confirm | none | Void reversing the overpayment credit (Opus); void of legacy entries |
+| Audit | `money_events` on record, void, status, edit, delete, slip events, period sync, generation | none | Logging for `sync_overdue`, points revert, slip decline internals |
+| Slips | Slip states (`lib/money/slip-states.ts`, badge), decline with reason, approval validation | none | Archive of replaced slips |
+| Late fees | Legacy locked fee; estimate shown in tenant statement and action queue | `lib/money/late-fee.ts`, `late_fee_charges`, `late_fee_policies` | Post and waive with approval (Opus) |
+| Adjustments, write-offs, waivers | Ledger view shows 0 | `adjustments` table | Writer, and an adjustments term in `computeInvoiceTotal` |
+| Credits and refunds | Overpayment credit row; action-queue sections read `tenant_credit_balances`, `refund_due_vs_paid` | `tenant_credits`, `refund_payouts`, views | Credit application to invoices, refund payout recording, tenant display |
+| Move-out | Legacy vacate and settle routes | `lib/money/settlement.ts` | Atomic settlement and wiring (Opus) |
+| Points | Legacy non-atomic `lib/points-ledger.ts` | `lib/money/points-redemption.ts` | Atomic redemption and paired reversal (Opus) |
+| Screens | Reconciliation page, action queue, invoice Payments tab with ledger view, void and discrepancy notice, deep links, nav gating by permission, tenant statement on payment link and LIFF list, receipts show reversals | none | LIFF invoice list on statement for paid rows, refund due vs paid view |
+| Reports | `report-definitions.ts` cash vs billing labels; Reports page toggle; web dashboard and daily digest from receipts | none | LINE admin dashboard labels (finding 68) |
+| Tooling | Discrepancy report script, dorm-test project, scenario suite `lib/money/scenarios.test.ts` | none | Production schema export and diff |
