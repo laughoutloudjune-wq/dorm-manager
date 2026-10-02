@@ -458,29 +458,23 @@ export function InvoiceDetailModal() {
 
   const deletePaymentBatch = async (batchId: string) => {
     const confirmed = window.confirm(
-      "ยืนยันการลบรายการชำระเงินนี้?\n\nการลบนี้จะลบรายการออกจากทุกใบแจ้งหนี้ที่เงินก้อนนี้ถูกแบ่งไปชำระ และไม่สามารถย้อนกลับได้ผ่านหน้านี้",
+      "ยืนยันการยกเลิก (void) รายการชำระเงินนี้?\n\nระบบจะเก็บรายการเดิมไว้ และเพิ่มรายการกลับรายการในทุกใบแจ้งหนี้ที่เงินก้อนนี้ถูกแบ่งไปชำระ ยอดที่ชำระของใบแจ้งหนี้เหล่านั้นจะลดลง",
     );
     if (!confirmed) return;
+    const reason = (window.prompt("ระบุเหตุผลในการยกเลิกการชำระเงิน (จำเป็น)") ?? "").trim();
+    if (!reason) {
+      setError("ต้องระบุเหตุผลในการยกเลิกการชำระเงิน");
+      return;
+    }
     setDeletingBatchId(batchId);
     try {
-      const result = await callInvoiceAdminAction("delete_payment_batch", {
+      await callInvoiceAdminAction("void_payment", {
         paymentBatchId: batchId,
+        reason,
       });
-      const mismatches = Array.isArray(result?.mismatches) ? result.mismatches : [];
-      if (mismatches.length > 0) {
-        const isSelf = mismatches.some(
-          (m: any) => String(m.invoiceId) === activeInvoiceId,
-        );
-        setError(
-          (isSelf
-            ? "ลบรายการชำระเงินแล้ว แต่ยอดที่ชำระของใบแจ้งหนี้นี้ยังไม่ตรงกับรายการที่เหลืออยู่ กรุณาตรวจสอบและแก้ไขยอดในแท็บรายละเอียด"
-            : "ลบรายการชำระเงินแล้ว แต่มีใบแจ้งหนี้อื่นที่เงินก้อนนี้เคยตัดชำระ ซึ่งยอดที่ชำระอาจไม่ตรงกับรายการที่เหลืออยู่ กรุณาตรวจสอบใบแจ้งหนี้ที่เกี่ยวข้อง") +
-            ` (${mismatches.length} ใบ)`,
-        );
-      }
       setChainReloadToken((n) => n + 1);
     } catch (err: any) {
-      setError(err?.message ?? "ไม่สามารถลบรายการชำระเงินได้");
+      setError(err?.message ?? "ไม่สามารถยกเลิกรายการชำระเงินได้");
     } finally {
       setDeletingBatchId(null);
     }

@@ -1095,70 +1095,43 @@ export function useInvoicesState() {
 
     const target = existingHistory[historyIndex] as any;
     const targetAmount = Math.max(0, toNumber(target?.amount));
+    const batchId = String(target?.payment_batch_id ?? "");
+    if (!batchId) {
+      setError(
+        "รายการนี้ไม่มีเลขอ้างอิงใบรับเงิน (payment batch) จึงยกเลิกอัตโนมัติไม่ได้ กรุณาตรวจสอบในหน้ากระทบยอด",
+      );
+      return;
+    }
     const confirmed = window.confirm(
-      `ยืนยันยกเลิกรายการชำระเงิน ${formatMoney(targetAmount)} ?`,
+      `ยืนยันยกเลิก (void) รายการชำระเงิน ${formatMoney(targetAmount)} ?\n\nรายการเดิมจะถูกเก็บไว้ และระบบจะเพิ่มรายการกลับรายการในทุกใบแจ้งหนี้ที่เงินก้อนนี้ถูกแบ่งไปชำระ`,
     );
     if (!confirmed) return;
+    const reason = (window.prompt("ระบุเหตุผลในการยกเลิกการชำระเงิน (จำเป็น)") ?? "").trim();
+    if (!reason) {
+      setError("ต้องระบุเหตุผลในการยกเลิกการชำระเงิน");
+      return;
+    }
 
     setPaymentSubmitting(true);
     try {
-      const nextHistory = existingHistory.filter(
-        (_, idx) => idx !== historyIndex,
-      );
-      const total = toNumber(form.total_amount || activeInvoice.total_amount);
-      const currentPaid = toNumber(
-        form.paid_amount || activeInvoice.paid_amount,
-      );
-      const nextPaidAmount = Math.max(0, currentPaid - targetAmount);
-      const lastEntry =
-        nextHistory.length > 0
-          ? (nextHistory[nextHistory.length - 1] as any)
-          : null;
-      const nextSlipUrl =
-        (lastEntry?.slip_url as string | null | undefined) ?? null;
-      const nextSlipUploadedAt =
-        (lastEntry?.paid_at as string | null | undefined) ?? null;
-      const nextStatus: keyof typeof statusVariant =
-        nextPaidAmount >= total
-          ? "paid"
-          : nextPaidAmount > 0
-            ? "partial"
-            : "pending";
-
-      await callInvoiceAdminAction("record_payment", {
+      await callInvoiceAdminAction("void_payment", {
+        paymentBatchId: batchId,
+        reason,
+      });
+      const refreshed = await callInvoiceAdminAction("get_invoice_snapshot", {
         invoiceId: activeInvoice.id,
-        payload: {
-          paid_amount: nextPaidAmount,
-          payment_history: nextHistory,
-          slip_url: nextSlipUrl,
-          slip_uploaded_at: nextSlipUploadedAt,
-          status: nextStatus,
-        },
       });
-
-      setForm((prev) => ({
-        ...prev,
-        paid_amount: nextPaidAmount,
-        status: nextStatus,
-      }));
-      setSlipPreview(nextSlipUrl);
-      setActiveInvoice((prev) =>
-        prev
-          ? {
-              ...prev,
-              paid_amount: nextPaidAmount,
-              payment_history: nextHistory,
-              status: nextStatus,
-              slip_url: nextSlipUrl,
-            }
-          : prev,
-      );
-      patchInvoiceInState(activeInvoice.id, {
-        paid_amount: nextPaidAmount,
-        payment_history: nextHistory,
-        status: nextStatus,
-        slip_url: nextSlipUrl,
-      });
+      const row = (refreshed?.invoice ?? refreshed) as any;
+      if (row && row.id === activeInvoice.id) {
+        const patch = {
+          paid_amount: toNumber(row.paid_amount),
+          status: row.status,
+          payment_history: Array.isArray(row.payment_history) ? row.payment_history : [],
+        };
+        setForm((prev) => ({ ...prev, paid_amount: patch.paid_amount, status: patch.status }));
+        setActiveInvoice((prev) => (prev ? { ...prev, ...patch } : prev));
+        patchInvoiceInState(activeInvoice.id, patch);
+      }
       setError(null);
     } catch (error: any) {
       setError(error?.message ?? "ยกเลิกรายการชำระเงินไม่สำเร็จ");

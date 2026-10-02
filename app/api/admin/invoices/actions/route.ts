@@ -281,6 +281,17 @@ export async function POST(req: Request) {
         await syncPointsAfterPayment(auth.supabase, invoiceId);
         return NextResponse.json({ success: true, ...result });
       }
+      // Raw payloads may only touch slip evidence / the display cache. Money
+      // fields (paid_amount, totals, status, fees) must go through the payment
+      // and void actions so every change is allocated and logged.
+      const EVIDENCE_FIELDS = new Set(["slip_url", "slip_uploaded_at", "payment_history"]);
+      const blocked = Object.keys(payload ?? {}).filter((key) => !EVIDENCE_FIELDS.has(key));
+      if (blocked.length > 0) {
+        return NextResponse.json(
+          { error: `ไม่อนุญาตให้แก้ไขฟิลด์การเงินโดยตรง: ${blocked.join(", ")}` },
+          { status: 400 },
+        );
+      }
       const { error } = await auth.supabase.from("invoices").update(payload).eq("id", invoiceId);
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
       return NextResponse.json({ success: true });
@@ -323,116 +334,40 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: true, ...result });
     }
 
-    if (action === "delete_payment_batch") {
-      // Lets an admin remove a payment_batches row directly from the invoice's
-      // Payments tab — the manual-review counterpart to everything this
-      // session's cleanup did by hand in SQL. Same permission as recording a
-      // payment: deleting a bad record needs the same authority as creating a
-      // good one.
-      //
-      // Deliberately does NOT touch invoices.paid_amount/status/payment_history
-      // beyond stripping the matching payment_history entries (a display cache
-      // — leaving a stale entry there is what made 101/2 briefly look
-      // inconsistent even after its batch was gone). Recomputing paid_amount
-      // from what remains is NOT done here: for a carry-forward invoice,
-      // total_amount already bundles an earlier invoice's debt, so naively
-      // resetting paid_amount to "whatever allocations remain" double-counts
-      // exactly the way `reallocatePaymentsForInvoice` was found to (see the
-      // comment on the withdrawn auto-replay above). If the invoice's own
-      // paid_amount no longer matches its remaining allocations after this
-      // delete, that mismatch is reported back so the admin can adjust the
-      // invoice amount directly, the same way 101/2 was fixed.
+    if (action === "void_payment" || action === "delete_payment_batch") {
+      // Voiding appends reversing allocation rows and lowers paid_amount in one
+      // database transaction (void_payment_batch). The original receipt and
+      // allocations are kept, so the history shows original and reversal
+      // together. "delete_payment_batch" is kept as an alias for older clients
+      // but no longer deletes anything.
       const auth = await requireAdminPermission(req, "invoice.payment.record");
       if ("error" in auth) return auth.error;
       const paymentBatchId = String(body?.paymentBatchId ?? "");
+      const reason = String(body?.reason ?? "").trim();
       if (!paymentBatchId) {
         return NextResponse.json({ error: "Missing paymentBatchId." }, { status: 400 });
       }
-
-      const { data: allocRows, error: allocFetchError } = await auth.supabase
-        .from("invoice_payment_allocations")
-        .select("invoice_id")
-        .eq("payment_batch_id", paymentBatchId);
-      if (allocFetchError) {
-        return NextResponse.json({ error: allocFetchError.message }, { status: 500 });
-      }
-      const touchedInvoiceIds = [
-        ...new Set((allocRows ?? []).map((row: any) => String(row.invoice_id))),
-      ];
-      if (touchedInvoiceIds.length === 0) {
-        return NextResponse.json(
-          { error: "ไม่พบรายการชำระเงินนี้ในระบบแล้ว (อาจถูกลบไปก่อนหน้านี้)" },
-          { status: 404 },
-        );
+      if (!reason) {
+        return NextResponse.json({ error: "ต้องระบุเหตุผลในการยกเลิกการชำระเงิน" }, { status: 400 });
       }
 
-      const { error: deleteAllocError } = await auth.supabase
-        .from("invoice_payment_allocations")
-        .delete()
-        .eq("payment_batch_id", paymentBatchId);
-      if (deleteAllocError) {
-        return NextResponse.json({ error: deleteAllocError.message }, { status: 500 });
-      }
-
-      const { error: deleteBatchError } = await auth.supabase
-        .from("payment_batches")
-        .delete()
-        .eq("id", paymentBatchId);
-      if (deleteBatchError) {
-        return NextResponse.json({ error: deleteBatchError.message }, { status: 500 });
-      }
-
-      // Strip the matching payment_history entries and collect mismatch
-      // warnings, per touched invoice.
-      const mismatches: { invoiceId: string; paidAmount: number; allocationSum: number }[] = [];
-      for (const invoiceId of touchedInvoiceIds) {
-        const [{ data: invRow }, { data: remainingAllocs }] = await Promise.all([
-          auth.supabase
-            .from("invoices")
-            .select("paid_amount,payment_history")
-            .eq("id", invoiceId)
-            .maybeSingle(),
-          auth.supabase
-            .from("invoice_payment_allocations")
-            .select("amount")
-            .eq("invoice_id", invoiceId),
-        ]);
-
-        const history = Array.isArray((invRow as any)?.payment_history)
-          ? (invRow as any).payment_history
-          : [];
-        const filteredHistory = history.filter(
-          (entry: any) => String(entry?.payment_batch_id ?? "") !== paymentBatchId,
-        );
-        if (filteredHistory.length !== history.length) {
-          const { error: historyError } = await auth.supabase
-            .from("invoices")
-            .update({ payment_history: filteredHistory })
-            .eq("id", invoiceId);
-          if (historyError) {
-            console.error(
-              "[delete_payment_batch] Failed to strip payment_history entry:",
-              invoiceId,
-              historyError,
-            );
-          }
-        }
-
-        const paidAmount = Number((invRow as any)?.paid_amount ?? 0);
-        const allocationSum = (remainingAllocs ?? []).reduce(
-          (sum: number, row: any) => sum + Number(row.amount ?? 0),
-          0,
-        );
-        if (Math.abs(paidAmount - allocationSum) > 0.005) {
-          mismatches.push({ invoiceId, paidAmount, allocationSum });
-        }
-      }
-
-      return NextResponse.json({
-        success: true,
-        touchedInvoiceIds,
-        mismatches,
+      const { data, error } = await auth.supabase.rpc("void_payment_batch", {
+        p_batch_id: paymentBatchId,
+        p_reason: reason,
+        p_actor: auth.user.id,
       });
+      if (error) {
+        const status = /not found|already voided/i.test(error.message) ? 409 : 500;
+        return NextResponse.json({ error: error.message }, { status });
+      }
+
+      const touchedInvoiceIds: string[] = Array.isArray((data as any)?.touched_invoice_ids)
+        ? (data as any).touched_invoice_ids
+        : [];
+      for (const invoiceId of touchedInvoiceIds) {
+        await syncPointsAfterPayment(auth.supabase, invoiceId);
+      }
+      return NextResponse.json({ success: true, touchedInvoiceIds, mismatches: [] });
     }
 
     if (action === "decline_slip") {
