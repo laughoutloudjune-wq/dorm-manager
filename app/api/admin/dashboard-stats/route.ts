@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/admin-api-auth";
 import { toNumber, formatMoney } from "@/lib/format";
 import { sumOwnOutstanding } from "@/lib/invoice-ledger";
+import { BASIS_LABELS, fetchReceiptLedger, summarizeByReceiptMonth } from "@/lib/money/report-definitions";
 
 const monthKey = (value: string) => String(value).slice(0, 7);
 const relationItem = <T,>(value: T | T[] | null | undefined): T | null =>
@@ -60,7 +61,12 @@ export async function GET(req: Request) {
         .order("created_at", { ascending: false }),
     ]);
 
+    // Collected = money actually received (receipt ledger, cash basis by
+    // receipt date), not invoices marked paid.
+    const ledger = await fetchReceiptLedger(supabase, sixMonthsAgoKey, `${today.getFullYear() + 1}-01-01`);
+
     const firstError =
+      (ledger.error ? { message: ledger.error } : null) ||
       roomsRes.error ||
       tenantsRes.error ||
       invoicesRes.error ||
@@ -201,9 +207,11 @@ export async function GET(req: Request) {
 
     const monthlyTrend = monthBuckets.map((month) => {
       const monthInvoices = invoices.filter((invoice) => monthKey(String(invoice.start_date)) === month);
+      const receipts = summarizeByReceiptMonth(ledger.rows, month, ledger.voidedBatchIds);
       return {
         month,
-        collected: monthInvoices.filter((invoice) => String(invoice.status) === "paid").reduce((sum, invoice) => sum + toNumber(invoice.paid_amount || invoice.total_amount), 0),
+        collected: receipts.cashReceived,
+        creditApplied: receipts.creditApplied,
         outstanding: monthInvoices
           .filter((invoice) => ["pending", "partial", "overdue", "verifying"].includes(String(invoice.status)))
           .reduce((sum, invoice) => sum + Math.max(toNumber(invoice.total_amount) - toNumber(invoice.paid_amount), 0), 0),
@@ -235,6 +243,12 @@ export async function GET(req: Request) {
       anomalies,
       recentActivities,
       monthlyTrend,
+      // `collected` is cash received by actual receipt date; `outstanding` is
+      // by invoice period. Different bases on purpose; both are labelled.
+      monthlyTrendBasis: {
+        collected: BASIS_LABELS.cash.th,
+        outstanding: BASIS_LABELS.billing.th,
+      },
       utilityTrend,
     });
   } catch (err: any) {
