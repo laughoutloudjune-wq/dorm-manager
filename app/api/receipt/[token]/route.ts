@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase-admin";
 import chromium from "@sparticuz/chromium";
 import puppeteer from "puppeteer-core";
-import { classifyReceiptPayments } from "@/lib/money/receipt-payments";
+import { classifyReceiptPayments, summarizeReceiptPayments } from "@/lib/money/receipt-payments";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -221,16 +221,35 @@ export async function GET(req: Request) {
       : [];
     // Display only: reversed/void payments never count as received and never
     // supply the receipt date; they are listed separately as reversed.
-    const classifiedPayments = classifyReceiptPayments(paymentHistory);
+    // The ledger (invoice_payment_allocations) is the record; the payment_history
+    // cache is only used when the allocation query fails (e.g. columns missing).
+    const allocRes = await supabase
+      .from("invoice_payment_allocations")
+      .select("*")
+      .eq("invoice_id", String((data as any).id));
+    const paySummary = summarizeReceiptPayments({
+      invoiceId: String((data as any).id),
+      allocations: allocRes.error ? null : ((allocRes.data ?? []) as any[]),
+      history: paymentHistory,
+      paidAmount: (data as any).paid_amount,
+    });
+    const hasActive =
+      paySummary.basis === "legacy"
+        ? classifyReceiptPayments(paymentHistory).active.length > 0
+        : paySummary.cashReceived + paySummary.creditApplied > 0;
     const paymentDate =
-      classifiedPayments.active.length > 0
-        ? classifiedPayments.lastActivePaidAt
-        : classifiedPayments.reversed.length > 0
-          ? null
-          : (data as any).slip_uploaded_at ?? null;
+      paySummary.basis === "legacy"
+        ? hasActive
+          ? classifyReceiptPayments(paymentHistory).lastActivePaidAt
+          : (data as any).slip_uploaded_at ?? null
+        : paySummary.lastActivePaidAt
+          ? paySummary.lastActivePaidAt
+          : paySummary.reversed.length > 0
+            ? null
+            : (data as any).slip_uploaded_at ?? null;
     const reversedPaymentsHtml =
-      classifiedPayments.reversed.length > 0
-        ? `<div class="card"><h2>รายการชำระที่ถูกยกเลิก (ไม่นับเป็นยอดที่ได้รับ)</h2>${classifiedPayments.reversed
+      paySummary.reversed.length > 0
+        ? `<div class="card"><h2>รายการชำระที่ถูกยกเลิก (ไม่นับเป็นยอดที่ได้รับ)</h2>${paySummary.reversed
             .map(
               (e) =>
                 `<div class="row"><span class="label">${escapeHtml(formatDate(e?.paid_at ?? null))} - ยกเลิกแล้ว${
@@ -420,10 +439,23 @@ export async function GET(req: Request) {
           // money on record, not the bill total. Showing total_amount whenever
           // paid_amount happened to be 0 used to let a "paid" invoice with no
           // real payment behind it (a status flipped without money moving)
-          // print as if it had been paid in full.
-          formatMoney(toNumber((data as any).paid_amount))
+          // print as if it had been paid in full. Now derived from confirmed
+          // allocations (reversals netted), not the running paid_amount.
+          formatMoney(paySummary.printedAmount)
         )}</span>
       </div>
+      ${
+        paySummary.basis === "legacy"
+          ? `<div class="formula">ข้อมูลเดิม (ไม่มีบันทึกใบรับเงิน)</div>`
+          : ""
+      }
+      ${
+        paySummary.creditApplied > 0
+          ? `<div class="row"><span class="label">หักเครดิต (ไม่ใช่เงินสด)</span><span class="value">${escapeHtml(
+              formatMoney(paySummary.creditApplied)
+            )}</span></div>`
+          : ""
+      }
     </div>
     ${reversedPaymentsHtml}
   </body>

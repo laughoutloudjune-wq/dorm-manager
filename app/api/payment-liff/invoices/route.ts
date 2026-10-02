@@ -7,6 +7,11 @@ const toNumber = (value: unknown) => {
   return Number.isNaN(parsed) ? 0 : parsed;
 };
 
+// Every column buildTenantStatement / chargesFromInvoiceRow reads, plus the
+// legacy fields the LIFF page already renders.
+const INVOICE_STATEMENT_SELECT =
+  "id,public_token,issue_date,start_date,due_date,total_amount,paid_amount,status,slip_url,slip_uploaded_at,payment_history,additional_fees_breakdown,discount_amount,discount_breakdown,rent_amount,water_bill,electricity_bill,common_fee,additional_fees_total,carry_forward_amount,late_fee_amount,late_fee_per_day,late_fee_start_date,waived_late_fee_amount,locked_late_fee_amount";
+
 export async function POST(req: Request) {
   try {
     const body = await req.json();
@@ -50,7 +55,7 @@ export async function POST(req: Request) {
     const { data: pendingInvoices, error: pendingError } = await supabase
       .from("invoices")
       .select(
-        "id,public_token,issue_date,start_date,due_date,total_amount,paid_amount,status,slip_url,slip_uploaded_at,payment_history,additional_fees_breakdown,discount_amount,discount_breakdown,rent_amount,water_bill,electricity_bill,common_fee,additional_fees_total,carry_forward_amount,late_fee_amount,late_fee_per_day,late_fee_start_date,waived_late_fee_amount,locked_late_fee_amount"
+        INVOICE_STATEMENT_SELECT
       )
       .eq("tenant_id", tenant.id)
       .in("status", ["pending", "partial", "overdue", "verifying"])
@@ -62,38 +67,9 @@ export async function POST(req: Request) {
 
     const visiblePendingInvoices = pendingInvoices ?? [];
 
-    // Additive per-invoice statement; existing fields are untouched.
-    let invoicesWithStatement: any[] = visiblePendingInvoices;
-    try {
-      const ids = visiblePendingInvoices.map((i: any) => i.id);
-      let allocs: any[] = [];
-      if (ids.length > 0) {
-        const res = await supabase
-          .from("invoice_payment_allocations")
-          .select("*,invoice:invoice_id(start_date)")
-          .in("invoice_id", ids);
-        if (!res.error) {
-          allocs = (res.data ?? []).map((r: any) => ({
-            ...r,
-            invoice_period: (Array.isArray(r.invoice) ? r.invoice[0] : r.invoice)?.start_date ?? null,
-          }));
-        }
-      }
-      invoicesWithStatement = visiblePendingInvoices.map((inv: any) => ({
-        ...inv,
-        statement: buildTenantStatement(
-          inv,
-          allocs.filter((a) => String(a.invoice_id) === String(inv.id)),
-          Array.isArray(inv.payment_history) ? inv.payment_history : []
-        ),
-      }));
-    } catch {
-      invoicesWithStatement = visiblePendingInvoices;
-    }
-
     const { data: paidInvoices, error: paidError } = await supabase
       .from("invoices")
-      .select("id,public_token,issue_date,due_date,total_amount,paid_amount,status,late_fee_amount")
+      .select(INVOICE_STATEMENT_SELECT)
       .eq("tenant_id", tenant.id)
       .eq("status", "paid")
       .order("issue_date", { ascending: false })
@@ -102,6 +78,38 @@ export async function POST(req: Request) {
     if (paidError) {
       return NextResponse.json({ error: paidError.message }, { status: 500 });
     }
+
+    // Additive per-invoice statement (pending and paid); existing fields are untouched.
+    const withStatements = async (rows: any[]) => {
+      try {
+        const ids = rows.map((i: any) => i.id);
+        let allocs: any[] = [];
+        if (ids.length > 0) {
+          const res = await supabase
+            .from("invoice_payment_allocations")
+            .select("*,invoice:invoice_id(start_date)")
+            .in("invoice_id", ids);
+          if (!res.error) {
+            allocs = (res.data ?? []).map((r: any) => ({
+              ...r,
+              invoice_period: (Array.isArray(r.invoice) ? r.invoice[0] : r.invoice)?.start_date ?? null,
+            }));
+          }
+        }
+        return rows.map((inv: any) => ({
+          ...inv,
+          statement: buildTenantStatement(
+            inv,
+            allocs.filter((a) => String(a.invoice_id) === String(inv.id)),
+            Array.isArray(inv.payment_history) ? inv.payment_history : []
+          ),
+        }));
+      } catch {
+        return rows;
+      }
+    };
+    const invoicesWithStatement = await withStatements(visiblePendingInvoices);
+    const paidWithStatement = await withStatements(paidInvoices ?? []);
 
     const roomRel = Array.isArray((tenant as any).rooms) ? (tenant as any).rooms[0] : (tenant as any).rooms;
 
@@ -117,7 +125,7 @@ export async function POST(req: Request) {
       },
       invoices: invoicesWithStatement,
       pending_invoices: invoicesWithStatement,
-      paid_invoices: paidInvoices ?? [],
+      paid_invoices: paidWithStatement,
       message: null,
     });
   } catch (error: any) {
