@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase-admin";
 import { isTrustedSlipUrl } from "@/lib/slip-url";
+import { recordMoneyEvent } from "@/lib/money-events";
 
 export async function POST(req: Request) {
   try {
@@ -52,7 +53,7 @@ export async function POST(req: Request) {
       : ["pending", "partial", "overdue"];
     const { data: invoices, error: invoiceError } = await supabase
       .from("invoices")
-      .select("id,status,tenant_id")
+      .select("id,status,tenant_id,slip_url")
       .eq("tenant_id", tenant.id)
       .in("id", invoiceIds)
       .in("status", allowedStatuses);
@@ -109,6 +110,21 @@ export async function POST(req: Request) {
     if (updateError) {
       return NextResponse.json({ error: updateError.message }, { status: 500 });
     }
+
+    // Evidence submitted, not money received: log the status change only.
+    await Promise.all(
+      validInvoices.map((inv: any) =>
+        recordMoneyEvent(supabase, {
+          action: "slip.submitted",
+          tenantId: tenant.id,
+          invoiceId: String(inv.id),
+          before: { status: inv.status ?? null, slip_url: inv.slip_url ?? null },
+          after: { status: "verifying", slip_url: slipUrl },
+          source: "payment_liff",
+          actorLabel: `line:${lineUserId}`,
+        }),
+      ),
+    );
 
     await Promise.all(
       invoiceIds.map((invoiceId) =>

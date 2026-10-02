@@ -11,6 +11,7 @@ import {
 import { recordMoneyEvent } from "@/lib/money-events";
 import { syncPointsForTenant } from "@/lib/points-ledger";
 import { notifyTenantPointsEarned } from "@/lib/points-notify";
+import { parseSlipApproval } from "@/lib/money/slip-approval";
 import { declinePaymentSlip } from "@/lib/slip-review";
 import { notifyTenantSlipDeclined } from "@/lib/slip-notify";
 import { getPublicSiteOrigin } from "@/lib/public-site-url";
@@ -99,10 +100,15 @@ export async function POST(req: Request) {
     }
 
     if (action === "approve_paid") {
-      const paymentDateInput = String(body?.paymentDate ?? "").trim();
-      const selectedDate = /^\d{4}-\d{2}-\d{2}$/.test(paymentDateInput)
-        ? paymentDateInput
-        : null;
+      // The slip is evidence; the amount and transfer time are what the admin
+      // CONFIRMED from it. Never invented from the invoice balance.
+      const parsed = parseSlipApproval({
+        amount: body?.amount,
+        paidAt: body?.paidAt ?? body?.paymentDate,
+      });
+      if (!parsed.ok) {
+        return NextResponse.json({ error: parsed.error }, { status: 400 });
+      }
       const { data: current, error: fetchError } = await supabase
         .from("invoices")
         .select("status,total_amount,paid_amount,payment_history,slip_url")
@@ -111,9 +117,7 @@ export async function POST(req: Request) {
       if (fetchError || !current) {
         return NextResponse.json({ error: fetchError?.message ?? "Invoice not found" }, { status: 404 });
       }
-      const nowIso = selectedDate
-        ? new Date(`${selectedDate}T12:00:00`).toISOString()
-        : new Date().toISOString();
+      const nowIso = parsed.paidAtIso;
 
       // Already settled (e.g. approving an invoice whose status was flipped away
       // from paid and back): the money is still recorded, nothing left to
@@ -172,12 +176,15 @@ export async function POST(req: Request) {
 
       const result = await applyInvoicePaymentAllocation(supabase, {
         invoiceId,
-        amount: Number.MAX_SAFE_INTEGER,
+        // Confirmed amount. An overpaying slip keeps the excess as tenant
+        // credit; an underpaying one is a partial payment (status -> partial).
+        amount: parsed.amount,
         paidAt: nowIso,
         slipUrl: ((current as any).slip_url as string | null | undefined) ?? null,
-        mode: "full",
+        mode: parsed.amount < chainOutstanding ? "partial" : "full",
         source: "admin_liff_approve",
         createdBy: `line:${auth.profile.userId}`,
+        keepExcessAsCredit: true,
       });
       await syncPointsAfterPayment(supabase, invoiceId);
       return NextResponse.json({ success: true, ...result });

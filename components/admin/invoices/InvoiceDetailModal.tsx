@@ -6,6 +6,7 @@ import { buttonClasses } from "@/components/ui/Button";
 import { useInvoiceContext } from "./InvoiceContext";
 import { Input } from "@/components/ui/Input";
 import { Badge } from "@/components/ui/Badge";
+import { SlipStateBadge } from "./SlipStateBadge";
 import {
   Loader2,
   Plus,
@@ -584,6 +585,7 @@ const loadChains = async () => {
                     <AlertCircle className="shrink-0 text-primary-600" size={20} />
                     <div className="flex-1">
                       <b className="block text-primary-900 mb-0.5">รอตรวจสอบการชำระเงิน</b>
+                      <div className="mb-1"><SlipStateBadge invoice={activeInvoice as any} /></div>
                       <span>ผู้เช่าได้อัปโหลดหลักฐานการโอนเงินแล้ว กรุณาไปที่แท็บ <button onClick={() => setActiveTab('payments')} className="underline font-bold hover:text-primary-600">ประวัติการชำระเงิน</button> เพื่อตรวจสอบสลิปและยืนยัน</span>
                     </div>
                     <button
