@@ -1,3 +1,4 @@
+import { buildManualSplitPayload } from "@/lib/money/manual-split-payload";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { computeInvoiceTotal } from "./invoice-total";
 import {
@@ -2023,192 +2024,47 @@ export async function applyManualInvoicePaymentAllocation(
   const resolvedMethod: ResolvedPaymentMethod =
     paymentMethod ?? (await resolvePaymentMethodForTenant(supabase, tenantId));
 
-  const revertSnapshots = new Map<string, InvoiceRowSnapshot>();
-  for (const entry of cleanAllocations) {
-    const invoice = byId.get(entry.invoiceId);
-    revertSnapshots.set(entry.invoiceId, {
-      paid_amount: toNumber(invoice.paid_amount),
-      payment_history: Array.isArray(invoice.payment_history)
-        ? invoice.payment_history
-        : [],
-      status: String(invoice.status ?? ""),
-      slip_url: invoice.slip_url ?? null,
-      slip_uploaded_at: invoice.slip_uploaded_at ?? null,
-      locked_late_fee_amount:
-        invoice.locked_late_fee_amount === undefined
-          ? null
-          : invoice.locked_late_fee_amount,
-    });
-  }
+  const { payload, updates, amountToAllocate } = buildManualSplitPayload({
+    batchId: paymentBatchId,
+    tenantId,
+    triggerInvoiceId,
+    allocations: cleanAllocations,
+    invoicesById: byId,
+    paidAt,
+    slipUrl,
+    mode,
+    source,
+    idempotencyKey: trimmedIdem,
+    method: resolvedMethod,
+    createdBy,
+    statusFor: (invoice: any, nextPaid) =>
+      resolveInvoiceStatus(
+        {
+          total_amount: invoice.total_amount,
+          paid_amount: nextPaid,
+          due_date: invoice.due_date,
+        },
+        paidAt.slice(0, 10),
+      ),
+    lateFeeFor: (invoice) =>
+      calculateLateFeeAmount(invoice as any, paidAt.slice(0, 10)),
+  });
 
-  const updates: {
-    invoiceId: string;
-    paid_amount: number;
-    status: string;
-    payment_history: any[];
-    allocatedAmount: number;
-    lockedLateFeeAmount?: number;
-  }[] = [];
-  const allocationRows: any[] = [];
-
-  for (const entry of cleanAllocations) {
-    const invoice = byId.get(entry.invoiceId);
-    const allocated = entry.amount;
-    const nextPaidAmount = Math.min(
-      toNumber(invoice.total_amount),
-      toNumber(invoice.paid_amount) + allocated,
-    );
-    const paymentHistory = Array.isArray(invoice.payment_history)
-      ? invoice.payment_history
-      : [];
-    const paymentEntry: Record<string, unknown> = {
-      amount: allocated,
-      mode,
-      paid_at: paidAt,
-      slip_url: slipUrl,
-      created_at: new Date().toISOString(),
-      source,
-      payment_batch_id: paymentBatchId,
-      trigger_invoice_id: triggerInvoiceId,
-      payment_method: resolvedMethod.snapshot,
-      payment_method_id: resolvedMethod.id,
-    };
-    if (trimmedIdem) {
-      paymentEntry.idempotency_key = trimmedIdem;
-    }
-
-    const nextStatus = resolveInvoiceStatus(
-      {
-        total_amount: invoice.total_amount,
-        paid_amount: nextPaidAmount,
-        due_date: invoice.due_date,
-      },
-      paidAt.slice(0, 10),
-    );
-
-    const lockedLateFeeAmount =
-      nextStatus === "paid" &&
-      (invoice.locked_late_fee_amount === null ||
-        invoice.locked_late_fee_amount === undefined)
-        ? calculateLateFeeAmount(invoice, paidAt.slice(0, 10))
-        : undefined;
-
-    updates.push({
-      invoiceId: entry.invoiceId,
-      paid_amount: nextPaidAmount,
-      status: nextStatus,
-      payment_history: [...paymentHistory, paymentEntry],
-      allocatedAmount: allocated,
-      lockedLateFeeAmount,
-    });
-
-    allocationRows.push({
-      payment_batch_id: paymentBatchId,
-      trigger_invoice_id: triggerInvoiceId,
-      invoice_id: entry.invoiceId,
-      amount: allocated,
-      paid_at: paidAt,
-      slip_url: slipUrl,
-      source,
-      payment_method_id: resolvedMethod.id,
-      payment_method_snapshot: resolvedMethod.snapshot,
-      created_at: new Date().toISOString(),
-    });
-  }
-
-  const amountToAllocate = cleanAllocations.reduce(
-    (sum, entry) => sum + entry.amount,
-    0,
+  // One atomic database call writes the receipt, every invoice update and the
+  // allocations (all or nothing), replays a retried idempotency key, and fails
+  // with STALE_INVOICE if another admin changed an invoice since we read it.
+  const { data: rpcResult, error: rpcError } = await supabase.rpc(
+    "record_payment_batch",
+    { p: payload },
   );
-
-  try {
-    const { error: batchError } = await supabase.from("payment_batches").insert({
-      id: paymentBatchId,
-      tenant_id: tenantId,
-      trigger_invoice_id: triggerInvoiceId,
-      amount_received: amountToAllocate,
-      amount_allocated: amountToAllocate,
-      paid_at: paidAt,
-      mode,
-      source,
-      slip_url: slipUrl,
-      payment_method_id: resolvedMethod.id,
-      payment_method_snapshot: resolvedMethod.snapshot,
-      idempotency_key: trimmedIdem,
-      created_by: createdBy,
-    });
-    if (batchError) throw new Error(batchError.message);
-
-    for (const update of updates) {
-      const updatePayload: Record<string, unknown> = {
-        paid_amount: update.paid_amount,
-        payment_history: update.payment_history,
-        status: update.status,
-      };
-      if (update.lockedLateFeeAmount !== undefined) {
-        updatePayload.locked_late_fee_amount = update.lockedLateFeeAmount;
-      }
-      if (slipUrl && update.invoiceId === triggerInvoiceId) {
-        updatePayload.slip_url = slipUrl;
-        updatePayload.slip_uploaded_at = paidAt;
-      }
-      const { error: updateError } = await supabase
-        .from("invoices")
-        .update(updatePayload)
-        .eq("id", update.invoiceId);
-      if (updateError) throw new Error(updateError.message);
-    }
-
-    if (allocationRows.length > 0) {
-      const { error: allocationError } = await supabase
-        .from("invoice_payment_allocations")
-        .insert(allocationRows);
-      if (allocationError) throw new Error(allocationError.message);
-    }
-  } catch (err) {
-    const { error: allocCleanupError } = await supabase
-      .from("invoice_payment_allocations")
-      .delete()
-      .eq("payment_batch_id", paymentBatchId);
-    if (allocCleanupError) {
-      console.error(
-        "[invoice-ledger] Failed to clean up allocations after error:",
-        paymentBatchId,
-        allocCleanupError,
-      );
-    }
-    const { error: batchCleanupError } = await supabase
-      .from("payment_batches")
-      .delete()
-      .eq("id", paymentBatchId);
-    if (batchCleanupError) {
-      console.error(
-        "[invoice-ledger] Failed to clean up payment batch after error:",
-        paymentBatchId,
-        batchCleanupError,
-      );
-    }
-    for (const [id, snap] of revertSnapshots) {
-      const { error: revertError } = await supabase
-        .from("invoices")
-        .update({
-          paid_amount: snap.paid_amount,
-          payment_history: snap.payment_history,
-          status: snap.status,
-          slip_url: snap.slip_url,
-          slip_uploaded_at: snap.slip_uploaded_at,
-          locked_late_fee_amount: snap.locked_late_fee_amount,
-        })
-        .eq("id", id);
-      if (revertError) {
-        console.error(
-          "[invoice-ledger] Failed to revert invoice after allocation error:",
-          id,
-          revertError,
-        );
-      }
-    }
-    throw err;
+  if (rpcError) throw new Error(rpcError.message);
+  if ((rpcResult as any)?.replayed) {
+    const replay = await findIdempotentPaymentResult(
+      supabase,
+      triggerInvoiceId,
+      trimmedIdem ?? "",
+    );
+    if (replay) return replay;
   }
 
   // Cascade: any later invoice bundling one of the invoices just paid as a
