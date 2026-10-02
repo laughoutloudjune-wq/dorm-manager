@@ -9,6 +9,7 @@ import {
   ReceiptText,
   Settings,
   SlidersHorizontal,
+  Timer,
   Users,
   Wallet,
 } from "lucide-react";
@@ -34,6 +35,7 @@ const adminNavKeys: readonly NavDef[] = [
   { href: "/invoices", labelKey: "nav_invoices", icon: FileText },
   { href: "/reports", labelKey: null, label: "รายงาน", icon: ReceiptText },
   { href: "/action-queue", labelKey: null, label: "คิวงานที่ต้องจัดการ", icon: ListChecks, permission: "action_queue.view" },
+  { href: "/late-fees", labelKey: null, label: "ค่าปรับล่าช้า", icon: Timer, permission: "late_fee.view" },
   { href: "/reconciliation", labelKey: null, label: "ตรวจสอบยอดเงิน", icon: Scale, permission: "reconciliation.view" },
   { href: "/credits-refunds", labelKey: null, label: "เครดิตและการคืนเงิน", icon: Wallet, permission: "credits.view" },
   { href: "/rewards", labelKey: null, label: "คะแนนสะสม", icon: Gift, permission: "rewards.view" },

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase-admin";
 import { buildTenantStatement } from "@/lib/money/tenant-statement";
+import { loadPostedLateFeesBySource } from "@/lib/money/late-fee-posting";
 
 const toNumber = (value: unknown) => {
   const parsed = Number(value ?? 0);
@@ -96,12 +97,14 @@ export async function POST(req: Request) {
             }));
           }
         }
+        const postedBySource = await loadPostedLateFeesBySource(supabase, ids);
         return rows.map((inv: any) => ({
           ...inv,
           statement: buildTenantStatement(
             inv,
             allocs.filter((a) => String(a.invoice_id) === String(inv.id)),
-            Array.isArray(inv.payment_history) ? inv.payment_history : []
+            Array.isArray(inv.payment_history) ? inv.payment_history : [],
+            { postedLateFees: postedBySource.get(String(inv.id)) }
           ),
         }));
       } catch {

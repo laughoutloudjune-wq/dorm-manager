@@ -166,3 +166,44 @@ Summary: 21 PASS, 0 FAIL. F1 forces a failure on the LAST write (room status upd
 earlier write (final invoice, credit receipt, allocations, tenant_credits, settlement row, tenant update) is proven to roll back.
 Not covered single-session: two concurrent sessions racing on the same tenant (the tenant row lock + partial unique index
 `uq_move_out_settlements_live_tenant` are the guards).
+## 06_late_fee_actions.sql (late-fee approval flow, migration 20261002000800)
+Run 2026-10-03 on dorm-test (rghxelkifdrpvabyxopb) only, rolled back (post-run check: 0 fixture tenants, 0 policies,
+0 charges, 0 late-fee adjustments, 0 `late_fee_flow` events left). Functions as in 20261002000800 (applied to dorm-test as
+migrations `late_fee_actions_20261002000800` + `late_fee_actions_whitespace_reasons`; the second makes the blank checks
+strip tab/CR/LF as well as spaces, matching the file).
+```
+PASS  P1 policies are new versions (v1, v2), auto_post defaults false, old version unchanged, event logged
+PASS  P2 editing an existing policy rejected (late_fee_policies is append-only)
+PASS  L1 post: distinct linked late_fee_line, columns +150, charge row, audit event (cols=3350.00/150.00/350.00 line=1 charge=1 event=1 engine=true)
+PASS  L2 duplicate post replayed the original (charges=1, total still 3350)
+PASS  L2b same key with a different amount rejected (DUPLICATE_CHARGE_DIFFERENT)
+PASS  L3 overlapping period rejected (OVERLAPPING_CHARGE)
+PASS  L4 stale target total rejected, nothing written (STALE_INVOICE)
+PASS  L5 columns not equal to current+fee rejected (INCONSISTENT_COLUMNS)
+PASS  L6 2 days x 50 cannot post 500 (AMOUNT_EXCEEDS_RATE)
+PASS  L7 150 posted + 1000 over the 1000 cap rejected (CAP_EXCEEDED)
+PASS  L8 automation refused when policy auto_post=false (AUTO_POST_DISABLED)
+PASS  L9 cross-tenant target rejected (TENANT_MISMATCH)
+PASS  L10 charge rate must match its policy version (RATE_MISMATCH)
+PASS  L11 paid target rejected (TARGET_NOT_OPEN)
+PASS  L12 target whose total disagrees with the totals engine rejected (ENGINE_MISMATCH)
+PASS  W1 blank reason [] rejected (REASON_REQUIRED)
+PASS  W1 blank reason [   ] rejected (REASON_REQUIRED)
+PASS  W1 blank reason [\t\n] rejected (REASON_REQUIRED)
+PASS  W1b blank approver rejected (APPROVER_REQUIRED)
+PASS  W2 waiver of 151 on a 150 fee rejected (WAIVER_EXCEEDS_FEE)
+PASS  W2 waiver of 99999999 on a 150 fee rejected (WAIVER_EXCEEDS_FEE)
+PASS  W3 waiver 100 of 150: adjustments row (reason+approver), line 150/100/50, columns -100, engine ok
+PASS  W4 retried waiver replayed (1 adjustment)
+PASS  W5 second waiver of 60 with only 50 left rejected (WAIVER_EXCEEDS_FEE)
+PASS  R1 reversal with blank reason rejected (REASON_REQUIRED)
+PASS  R2 reversal: paired -100 row, original waiver kept, net waived 0, line back to 150, total 3350
+PASS  R3 second reversal replayed (1 reversal row)
+PASS  R4 waiver rows cannot be deleted (adjustments is append-only (post a reversal instead))
+PASS  T1 target total = engine identity, and late-fee lines = charges - net adjustments (150.00)
+PASS  T2 source invoice untouched (fee lives on the later invoice only)
+PASS  A1 historical invoice needs admin approval even under auto_post (AUTO_POST_HISTORICAL)
+PASS  A2 automation posts under an auto_post policy and is logged as automation:test
+```
+Summary: 32 PASS, 0 FAIL. Not exercisable single-session: two concurrent posts racing on the same key (the target-row
+lock and the unique key are the arbiters; needs two connections).

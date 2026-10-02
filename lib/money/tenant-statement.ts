@@ -60,7 +60,15 @@ export type StatementOptions = {
   policy?: LateFeePolicy;
   /** Only pass when real data exists; otherwise the refund block is omitted. */
   refund?: { due: number; paid: number } | null;
+  /**
+   * Late fees approved and posted FROM this invoice (late_fee_charges rows with
+   * this invoice as source; billed as a line on a later invoice), net of
+   * waivers. When present they are the charged figure and no estimate is shown.
+   */
+  postedLateFees?: PostedLateFee[];
 };
+
+export type PostedLateFee = { amount: number; waived: number; targetInvoiceId: string | null };
 
 export type StatementLine = {
   key: "rent" | "water" | "electricity" | "commonFee" | "lateFee" | "carriedLateFee" | "fees" | "carryForward";
@@ -92,9 +100,11 @@ export type StatementLateFee =
   | {
       state: "charged";
       amount: number;
-      /** True when the amount is frozen in locked_late_fee_amount. */
+      /** True when the amount is frozen in locked_late_fee_amount or posted as a charge. */
       locked: boolean;
       carriedAmount: number;
+      /** Set when the fee was approved and billed on a later invoice (late_fee_charges). */
+      postedOnInvoiceId?: string | null;
     }
   | {
       state: "estimate";
@@ -292,7 +302,16 @@ export function buildTenantStatement(
   // Late fee
   const locked = invoiceRow.locked_late_fee_amount;
   let lateFee: StatementLateFee = { state: "none" };
-  if (locked !== null && locked !== undefined) {
+  const posted = options.postedLateFees ?? [];
+  if (posted.length > 0) {
+    lateFee = {
+      state: "charged",
+      amount: posted.reduce((s, p) => s + toNumber(p.amount) - toNumber(p.waived), 0),
+      locked: true,
+      carriedAmount: c.lateFeeItems,
+      postedOnInvoiceId: posted.find((p) => p.targetInvoiceId)?.targetInvoiceId ?? null,
+    };
+  } else if (locked !== null && locked !== undefined) {
     lateFee = { state: "charged", amount: toNumber(locked), locked: true, carriedAmount: c.lateFeeItems };
   } else if (c.nativeLateFee > 0 || c.lateFeeItems > 0) {
     lateFee = {

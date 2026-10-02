@@ -21,6 +21,9 @@ export const PERMISSION_KEYS = [
   "reconciliation.view",
   "action_queue.view",
   "credits.view",
+  "late_fee.view",
+  "late_fee.approve",
+  "late_fee.policy",
 ] as const;
 
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
@@ -57,6 +60,9 @@ export const PERMISSION_LABELS: Record<PermissionKey, string> = {
   "reconciliation.view": "View money reconciliation report",
   "action_queue.view": "View admin action queue",
   "credits.view": "View tenant credits and refunds report",
+  "late_fee.view": "View late-fee estimates and posted fees",
+  "late_fee.approve": "Approve, waive and reverse late fees",
+  "late_fee.policy": "Create a new late-fee policy version",
 };
 
 export const defaultRolePermissions = (): RolePermissionMap => {
@@ -69,7 +75,8 @@ export const defaultRolePermissions = (): RolePermissionMap => {
     boolean
   >;
 
-  const admin = { ...allTrue, "settings.permissions": false };
+  // A late-fee policy decides what every tenant is charged: owner only by default.
+  const admin = { ...allTrue, "settings.permissions": false, "late_fee.policy": false };
   const staff = {
     ...allFalse,
     "invoice.create": true,
