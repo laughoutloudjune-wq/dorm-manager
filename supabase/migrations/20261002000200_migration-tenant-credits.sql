@@ -72,7 +72,7 @@ CREATE TRIGGER trg_tenant_credits_append_only
 
 ALTER TABLE public.tenant_credits ENABLE ROW LEVEL SECURITY;  -- service role only
 
-CREATE OR REPLACE VIEW public.tenant_credit_balances AS
+CREATE OR REPLACE VIEW public.tenant_credit_balances WITH (security_invoker = true) AS
 SELECT
     tenant_id,
     COALESCE(SUM(amount) FILTER (WHERE bucket = 'deposit'), 0)   AS deposit_held,

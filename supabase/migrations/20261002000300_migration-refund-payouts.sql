@@ -77,7 +77,7 @@ ALTER TABLE public.refund_payouts ENABLE ROW LEVEL SECURITY;  -- service role on
 -- 'refunded' ledger rows so payouts are the single source of truth for money
 -- sent. Advance rent is not refundable by default and is excluded.
 -- Paid = non-voided payouts. outstanding > 0: still owed; < 0: paid out beyond due.
-CREATE OR REPLACE VIEW public.refund_due_vs_paid AS
+CREATE OR REPLACE VIEW public.refund_due_vs_paid WITH (security_invoker = true) AS
 WITH due AS (
     SELECT tenant_id, SUM(amount) AS refundable_credit
     FROM public.tenant_credits
