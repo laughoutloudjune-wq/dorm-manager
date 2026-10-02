@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { resolveInvoiceStatus } from "@/lib/invoice-ledger";
+import { recordMoneyEvent } from "@/lib/money-events";
 
 /**
  * Declining a payment slip during verification.
@@ -108,6 +109,19 @@ export async function declinePaymentSlip(
     .select("*")
     .single();
   if (updateError) throw new Error(updateError.message);
+
+  // Audit only — a decline moves no money.
+  await recordMoneyEvent(supabase, {
+    action: "slip.declined",
+    actorUserId: null,
+    tenantId: ((invoice as any).tenant_id as string | null) ?? null,
+    invoiceId,
+    before: { status: previousStatus, slip_url: rejectedSlipUrl },
+    after: { status: nextStatus, slip_url: null },
+    reason,
+    source: "slip_review",
+    actorLabel: reviewedBy,
+  });
 
   return {
     invoiceId,
