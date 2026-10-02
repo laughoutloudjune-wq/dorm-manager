@@ -277,6 +277,7 @@ export async function POST(req: Request) {
             ? String((payment as any).idempotency_key)
             : null,
           createdBy: auth.user.id,
+          keepExcessAsCredit: true,
         });
         await syncPointsAfterPayment(auth.supabase, invoiceId);
         return NextResponse.json({ success: true, ...result });
