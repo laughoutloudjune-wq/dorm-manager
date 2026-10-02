@@ -23,43 +23,38 @@ one action at a time, with the old code as fallback until each new action is pro
 4. Reconciliation report and admin views.
 5. Delete replaced old code. Operator guide.
 
-## Progress checklist (updated 2026-10-02, after merging the four parallel agents)
+## Progress checklist (updated 2026-10-03)
 
-Legend: [x] done and tested, [~] logic written and tested but not wired into routes/screens, [ ] not started.
-Nothing below has been applied to production. Tests: 199 passing.
+Legend: [x] done, tested and on main; [O] reserved for Opus (atomic DB functions, move-out settlement); [ ] not started. Nothing is applied to production. Tests: 299 passing + 3 todo.
 
-- [~] Phase 1 - Canonical money model
-  - [x] Void/reversal model; `money_events` audit log
-  - [x] Tables as migration files, tested on dorm-test: adjustments, tenant credits, refund payouts, late-fee charges and policies
-  - [ ] Money lifecycle document (record authority, non-cash settlement labels)
-  - [ ] Add an adjustments term to `computeInvoiceTotal`
-- [~] Phase 2 - Close bypasses
-  - [x] Payment delete replaced by void; raw money payload to `record_payment` blocked
-  - [ ] `update_status` stops touching late-fee fields; before/after logging
-  - [ ] `save_details`, `delete_many`, tenants and admin-LIFF routes audited and logged
-- [~] Phase 3 - Payment and correction workflow
-  - [x] Allocation planner (oldest-first, manual split, overpayment kept as credit)
-  - [x] Atomic void, tested on dorm-test
-  - [ ] `record_payment` and split payment switched to planner + atomic DB function
-  - [ ] Slip review states
-- [~] Phase 4 - Late fees
-  - [x] Versioned-policy estimate engine
-  - [x] Posted-fee and policy tables (files)
-  - [ ] Approval flow, waiver events, admin and tenant display
-- [~] Phase 5 - Deposits, credits, move-out, refunds
-  - [x] Settlement planner (refund due vs paid, forfeiture needs a reason)
-  - [x] Refund payout table (file)
-  - [ ] Atomic final-settlement function; wire into move-out screens
-- [~] Phase 6 - Points and discounts
-  - [x] Redemption/reversal planner with shared key; discrepancy finder
-  - [ ] Atomic DB function; replace non-atomic `redeemPoints` and hard-delete reversal
-- [ ] Phase 7 - Tenant and admin screens
-- [~] Phase 8 - Reports and reconciliation
-  - [x] Report-only reconciliation checks + CSV
-  - [ ] Admin review view, action queue, cash vs billing report labels, dashboard from receipts
-- [~] Phase 9 - Historical safety and delivery
-  - [x] Test project dorm-test; findings report (25 entries so far)
-  - [ ] Production schema export to rebuild an accurate test copy
-  - [ ] Read-only discrepancy report + proposed repair per category
-  - [ ] Scenario test suite for every case in the brief
-  - [ ] Audit brief for GPT, operator guide
+- Phase 1 - Money model
+  - [x] Void/reversal model, `money_events` audit log, lifecycle document (docs/MONEY-LIFECYCLE.md)
+  - [x] Adjustments, tenant credits, refund payouts, late-fee tables as migration files (tested on dorm-test)
+  - [ ] Adjustments term in `computeInvoiceTotal`; writers for the new tables
+- Phase 2 - Close bypasses
+  - [x] Void replaces delete; raw money edits blocked; status/edit/delete log and refuse unsafe deletes
+  - [x] LIFF "paid" with no money rejected; `save_details` whitelisted; extra audit logging
+  - [ ] Remaining unlogged writes listed in findings 56-62
+- Phase 3 - Payments
+  - [x] Allocation planner; atomic void; `record_payment` and split payment on `record_payment_batch`
+  - [O] Review/fix of the atomic functions (tenant check, history guard, rounding, void reverses overpayment credit)
+  - [ ] Slip review states; LIFF slip approval records the confirmed amount
+- Phase 4 - Late fees
+  - [x] Versioned estimate engine; posted-fee and policy tables (files)
+  - [O] Post/waive atomic functions
+  - [ ] Admin and tenant display of estimate vs posted (tenant statement shows charged vs estimate)
+- Phase 5 - Deposits, move-out, refunds
+  - [x] Settlement planner (pure); refund payout table (file)
+  - [O] Atomic final settlement and move-out wiring
+- Phase 6 - Points
+  - [x] Redemption/reversal planner
+  - [O] Atomic redemption and paired reversal
+- Phase 7 - Screens
+  - [x] Admin reconciliation review; admin action queue; admin invoice Payments tab (ledger view, voids, discrepancy notice); tenant statement
+  - [ ] Tenant LIFF invoices page uses the statement; refund due vs paid views
+- Phase 8 - Reports and reconciliation
+  - [x] Report-only checks with CSV; review page
+  - [ ] Cash vs billing labels and dashboard from receipts (agent running)
+- Phase 9 - Delivery
+  - [x] Test project; findings report (66 entries); scenario suite; operator guide; audit brief
+  - [ ] Production schema export; read-only discrepancy report on real data; Opus review; production go-live (backup, migrations in order, then code)
