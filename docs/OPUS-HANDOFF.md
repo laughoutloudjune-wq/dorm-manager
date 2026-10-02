@@ -28,3 +28,6 @@ Screens, CSV/report labels, tenant/admin displays, permission wiring, non-atomic
 
 ## From the SQL test run (supabase/tests/RESULTS.md on dorm-test)
 Findings 105-108 are defects in the atomic functions found by the rollback-wrapped tests: whitespace-only reasons accepted, excess dropped when tenant_id is NULL, allocations/paid_amount not validated, void can drive paid_amount negative. Known-gap cases (35, 36, 44) are intentionally failing in the scripts.
+
+## Owner decision (2026-10-03)
+Advance rent is NOT refundable. At move-out it is applied as credit; it never becomes refund due. Check `lib/money/settlement.ts` (`planMoveOutSettlement`) honours this: refund due may come only from the security deposit (and unapplied overpayment credit).
