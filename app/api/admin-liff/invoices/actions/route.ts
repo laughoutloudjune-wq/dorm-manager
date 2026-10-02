@@ -29,6 +29,9 @@ async function syncPointsAfterPayment(supabase: SupabaseClient, invoiceId: strin
   }
 }
 
+const PAID_STATUS_BLOCKED_MESSAGE =
+  'ไม่สามารถเปลี่ยนสถานะเป็น “ชำระแล้ว” โดยตรงได้ กรุณาอนุมัติสลิปที่ผู้เช่าอัปโหลด หรือบันทึกการรับชำระเงินในหน้าเว็บแอดมิน';
+
 const channelAccessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN || "";
 const lineClient = new Client({ channelAccessToken });
 
@@ -59,6 +62,11 @@ export async function POST(req: Request) {
       if (!allowed.includes(status)) {
         return NextResponse.json({ error: "Invalid status" }, { status: 400 });
       }
+      // "paid" asserts money was received. It is reachable only through
+      // approve_paid (slip review) or a recorded payment, never a bare label.
+      if (status === "paid") {
+        return NextResponse.json({ error: PAID_STATUS_BLOCKED_MESSAGE }, { status: 400 });
+      }
       const { data: beforeRow } = await supabase
         .from("invoices")
         .select("status,tenant_id")
@@ -78,6 +86,7 @@ export async function POST(req: Request) {
         after: { status },
         reason: `line_user:${auth.profile.userId}`,
         source: "admin_liff",
+        actorLabel: `line:${auth.profile.userId}`,
       });
 
       // Same fix as the web admin route: points must be revoked when status
@@ -217,13 +226,32 @@ export async function POST(req: Request) {
         if (!allowed.includes(nextStatus)) {
           return NextResponse.json({ error: "Invalid status" }, { status: 400 });
         }
+        if (nextStatus === "paid") {
+          return NextResponse.json({ error: PAID_STATUS_BLOCKED_MESSAGE }, { status: 400 });
+        }
         updatePayload.status = nextStatus;
       }
       if (Object.keys(updatePayload).length === 0) {
         return NextResponse.json({ error: "No fields to update" }, { status: 400 });
       }
+      const { data: editBefore } = await supabase
+        .from("invoices")
+        .select("status,tenant_id,room_id,due_date,issue_date")
+        .eq("id", invoiceId)
+        .maybeSingle();
       const { error } = await supabase.from("invoices").update(updatePayload).eq("id", invoiceId);
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      await recordMoneyEvent(supabase, {
+        action: "invoice.edit_fields",
+        actorUserId: null,
+        tenantId: ((editBefore as any)?.tenant_id as string) ?? null,
+        roomId: ((editBefore as any)?.room_id as string) ?? null,
+        invoiceId,
+        before: Object.fromEntries(Object.keys(updatePayload).map((k) => [k, (editBefore as any)?.[k] ?? null])),
+        after: updatePayload,
+        source: "admin_liff",
+        actorLabel: `line:${auth.profile.userId}`,
+      });
       return NextResponse.json({ success: true });
     }
 
