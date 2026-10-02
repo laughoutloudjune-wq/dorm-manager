@@ -219,6 +219,23 @@ export default function DashboardPage() {
         <div className="space-y-6 lg:col-span-2">
           <div className="grid gap-6 sm:grid-cols-2">
             <SectionCard title="กระแสเงินสด 6 เดือนล่าสุด">
+              <div className="mb-3.5 space-y-1 text-2xs leading-relaxed text-slate-500">
+                <p className="flex items-start gap-1.5">
+                  <span className="mt-1 size-2 shrink-0 rounded-full bg-success-500" />
+                  <span>
+                    <span className="font-medium text-slate-700">เงินที่รับ (สีเขียว)</span>{" "}
+                    {dashboard.monthlyTrendBasis?.collected ?? "ตามเงินเข้าจริง"}
+                  </span>
+                </p>
+                <p className="flex items-start gap-1.5">
+                  <span className="mt-1 size-2 shrink-0 rounded-full bg-danger-400" />
+                  <span>
+                    <span className="font-medium text-slate-700">ยอดค้าง (สีแดง)</span>{" "}
+                    {dashboard.monthlyTrendBasis?.outstanding ?? "ตามงวดบิล"}
+                  </span>
+                </p>
+                <p>สองแถบนี้คนละฐาน จึงไม่ควรนำมารวมเป็นสัดส่วนของยอดบิลเดือนเดียวกัน</p>
+              </div>
               <div className="space-y-3.5">
                 {dashboard.monthlyTrend.slice().reverse().map((row) => (
                   <div key={row.month} className="space-y-1.5">

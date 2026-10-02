@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { ArrowLeft, UploadCloud } from "lucide-react";
+import type { TenantStatement } from "@/lib/money/tenant-statement";
+import { appliedToLabel, balanceDiffersFromLegacy, displayBalance } from "@/lib/money/statement-display";
 
 type TenantInfo = {
   id: string;
@@ -19,6 +21,8 @@ type InvoiceRow = {
   paid_amount?: number;
   status?: string;
   late_fee_amount?: number;
+  /** Additive; null/absent when the server could not build one. */
+  statement?: TenantStatement | null;
 };
 
 const NGROK_SKIP_QUERY = "ngrok-skip-browser-warning=true";
@@ -26,8 +30,86 @@ const NGROK_SKIP_QUERY = "ngrok-skip-browser-warning=true";
 const formatMoney = (value: number) =>
   Number(value || 0).toLocaleString("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-const outstandingAmount = (invoice: InvoiceRow) =>
-  Math.max(0, Number(invoice.total_amount ?? 0) - Number(invoice.paid_amount ?? 0));
+const outstandingAmount = (invoice: InvoiceRow) => displayBalance(invoice, invoice.statement);
+
+function StatementDetails({ invoice }: { invoice: InvoiceRow }) {
+  const st = invoice.statement;
+  if (!st) return null;
+  const lf = st.lateFee;
+  return (
+    <details className="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
+      <summary className="cursor-pointer font-semibold text-slate-800">รายละเอียดยอดและการชำระ</summary>
+      <p className="mt-2 text-slate-800">{st.explanationTh}</p>
+      <p className="mt-1 font-medium text-blue-700">ขั้นตอนถัดไป: {st.nextActionTh}</p>
+      <div className="mt-2 space-y-1">
+        {st.lines.map((l) => (
+          <div key={l.key} className="flex justify-between">
+            <span>{l.labelTh}</span>
+            <span>฿{formatMoney(l.amount)}</span>
+          </div>
+        ))}
+        {st.credits.map((c, i) => (
+          <div key={i} className="flex justify-between text-emerald-700">
+            <span>{c.label}</span>
+            <span>-฿{formatMoney(c.amount)}</span>
+          </div>
+        ))}
+        <div className="flex justify-between border-t border-slate-200 pt-1 font-semibold">
+          <span>ยอดรวม</span>
+          <span>฿{formatMoney(st.total)}</span>
+        </div>
+        <div className="flex justify-between">
+          <span>ชำระแล้ว (ยืนยันแล้ว)</span>
+          <span>฿{formatMoney(st.confirmedPaid)}</span>
+        </div>
+        <div className="flex justify-between font-semibold text-slate-900">
+          <span>คงเหลือ</span>
+          <span>฿{formatMoney(st.balance)}</span>
+        </div>
+      </div>
+      {balanceDiffersFromLegacy(invoice, st) && (
+        <p className="mt-1 text-2xs text-slate-400">ยอดนี้คำนวณจากรายการรับเงินที่ยืนยันแล้ว อาจต่างจากยอดในบิลเก่า</p>
+      )}
+      {st.underReview && (
+        <div className="mt-2 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-sky-900">
+          รอตรวจสอบ: {st.underReview.note}
+        </div>
+      )}
+      {st.payments.length > 0 && (
+        <div className="mt-2 space-y-1">
+          <p className="font-semibold text-slate-800">การชำระเงิน</p>
+          {st.payments.map((p) => (
+            <div
+              key={p.id}
+              className={`rounded-lg border px-2 py-1.5 ${
+                p.state === "reversed" ? "border-slate-200 bg-white text-slate-400" : "border-emerald-200 bg-white"
+              }`}
+            >
+              <div className={`flex justify-between ${p.state === "reversed" ? "line-through" : ""}`}>
+                <span>{p.paidAt ? new Date(p.paidAt).toLocaleDateString("th-TH") : "-"}</span>
+                <span>฿{formatMoney(p.amountToThisInvoice)}</span>
+              </div>
+              {appliedToLabel(p) && <p className="text-2xs text-slate-500">{appliedToLabel(p)}</p>}
+              <p className="text-2xs">
+                {p.state === "reversed" ? `ยกเลิกแล้ว${p.reversedReason ? `: ${p.reversedReason}` : ""}` : "ยืนยันแล้ว"}
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
+      {lf.state === "estimate" && (
+        <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-amber-900">
+          <p className="font-semibold">ค่าปรับล่าช้า (ประมาณการ) ฿{formatMoney(lf.amount)}</p>
+          <p>{lf.formula}</p>
+          <p>{lf.note}</p>
+        </div>
+      )}
+      {lf.state === "charged" && (
+        <p className="mt-2 text-slate-600">ค่าปรับล่าช้าที่เรียกเก็บแล้ว: ฿{formatMoney(lf.amount)}</p>
+      )}
+    </details>
+  );
+}
 
 const statusLabel = (status?: string) => {
   if (status === "pending") return "รอชำระ";
@@ -316,6 +398,7 @@ export default function PaymentLiffCurrentInvoicesPage() {
                                   </p>
                                 </div>
                               )}
+                              <StatementDetails invoice={invoice} />
                               <a
                                 href={`/payment/${invoice.public_token}`}
                                 className="mt-2 inline-block text-xs font-semibold text-blue-600"

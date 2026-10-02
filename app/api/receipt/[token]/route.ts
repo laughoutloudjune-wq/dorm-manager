@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase-admin";
 import chromium from "@sparticuz/chromium";
 import puppeteer from "puppeteer-core";
+import { classifyReceiptPayments } from "@/lib/money/receipt-payments";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -218,10 +219,28 @@ export async function GET(req: Request) {
     const paymentHistory = Array.isArray((data as any).payment_history)
       ? (data as any).payment_history
       : [];
+    // Display only: reversed/void payments never count as received and never
+    // supply the receipt date; they are listed separately as reversed.
+    const classifiedPayments = classifyReceiptPayments(paymentHistory);
     const paymentDate =
-      paymentHistory.length > 0
-        ? paymentHistory[paymentHistory.length - 1]?.paid_at
-        : (data as any).slip_uploaded_at ?? null;
+      classifiedPayments.active.length > 0
+        ? classifiedPayments.lastActivePaidAt
+        : classifiedPayments.reversed.length > 0
+          ? null
+          : (data as any).slip_uploaded_at ?? null;
+    const reversedPaymentsHtml =
+      classifiedPayments.reversed.length > 0
+        ? `<div class="card"><h2>รายการชำระที่ถูกยกเลิก (ไม่นับเป็นยอดที่ได้รับ)</h2>${classifiedPayments.reversed
+            .map(
+              (e) =>
+                `<div class="row"><span class="label">${escapeHtml(formatDate(e?.paid_at ?? null))} - ยกเลิกแล้ว${
+                  e.reversedReason ? ` (${escapeHtml(String(e.reversedReason))})` : ""
+                }</span><span class="value" style="text-decoration: line-through;">${escapeHtml(
+                  formatMoney(toNumber(e?.amount))
+                )}</span></div>`
+            )
+            .join("")}</div>`
+        : "";
     const receiptNo = `RC-${String((data as any).id).slice(0, 8).toUpperCase()}`;
 
     const issuerName = String(
@@ -406,6 +425,7 @@ export async function GET(req: Request) {
         )}</span>
       </div>
     </div>
+    ${reversedPaymentsHtml}
   </body>
 </html>`;
 

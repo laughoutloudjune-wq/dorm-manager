@@ -87,6 +87,7 @@ export type DashboardStats = {
   anomalies: { id: string; text: string; severity: "high" | "medium" }[];
   recentActivities: { id: string; text: string; created_at: string }[];
   monthlyTrend: { month: string; collected: number; outstanding: number }[];
+  monthlyTrendBasis?: { collected: string; outstanding: string };
   utilityTrend: { month: string; electricity: number; water: number }[];
 };
 

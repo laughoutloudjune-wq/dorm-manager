@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/Badge";
 import { isLateFeeBreakdownRow, isCarryForwardBreakdownRow, toChargeFeeRows } from "@/lib/invoice-utils";
 import { CheckCircle2, Download, UploadCloud } from "lucide-react";
 import type { TenantStatement } from "@/lib/money/tenant-statement";
+import { balanceDiffersFromLegacy, displayBalance } from "@/lib/money/statement-display";
 
 const NGROK_SKIP_QUERY = "ngrok-skip-browser-warning=true";
 
@@ -588,10 +589,18 @@ export default function PaymentTokenPage() {
             <div className="text-right">
               <p className="text-xs uppercase tracking-[0.2em] text-slate-400">TOTAL</p>
               <p className="text-3xl font-semibold text-green-600">฿{formatBaht(toNumber(invoice.total_amount))}</p>
-              <p className="mt-1 text-xs text-slate-500">ชำระแล้ว: ฿{formatBaht(invoice.paid_amount)}</p>
-              <p className="text-xs text-rose-600">
-                คงเหลือ: ฿{formatBaht(Math.max(0, toNumber(invoice.total_amount) - toNumber(invoice.paid_amount)))}
+              <p className="mt-1 text-xs text-slate-500">
+                ชำระแล้ว: ฿{formatBaht(statement ? statement.confirmedPaid : invoice.paid_amount)}
               </p>
+              <p className="text-xs text-rose-600">
+                คงเหลือ: ฿
+                {formatBaht(displayBalance(invoice, statement))}
+              </p>
+              {balanceDiffersFromLegacy(invoice, statement) && (
+                  <p className="mt-0.5 text-2xs text-slate-400">
+                    ยอดนี้คำนวณจากรายการรับเงินที่ยืนยันแล้ว อาจต่างจากยอดในบิลเก่า
+                  </p>
+                )}
             </div>
           </div>
           {invoice.status === "paid" && (

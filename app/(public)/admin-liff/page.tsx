@@ -50,6 +50,11 @@ type DashboardSummary = {
   tenant_active_count: number;
   total_amount: number;
   outstanding_amount: number;
+  paid_amount?: number;
+  paid_amount_basis?: string;
+  cash_received_amount?: number;
+  credit_applied_amount?: number;
+  cash_received_basis?: string;
   by_status: Record<string, number>;
 };
 
@@ -400,6 +405,15 @@ export default function AdminLiffPage() {
                   <div className="rounded-xl border border-slate-200 bg-white p-3"><p className="text-xs text-slate-500">ผู้เช่าใช้งาน</p><p className="text-lg font-bold">{dashboard.tenant_active_count}</p></div>
                   <div className="rounded-xl border border-slate-200 bg-white p-3"><p className="text-xs text-slate-500">ยอดรวมเดือนนี้</p><p className="text-sm font-bold">{fmtMoney(dashboard.total_amount)}</p></div>
                   <div className="rounded-xl border border-slate-200 bg-white p-3"><p className="text-xs text-slate-500">คงค้าง</p><p className="text-sm font-bold text-rose-700">{fmtMoney(dashboard.outstanding_amount)}</p></div>
+                  {dashboard.cash_received_amount != null && (
+                    <div className="rounded-xl border border-slate-200 bg-white p-3"><p className="text-xs text-slate-500">เงินที่รับจริง</p><p className="text-sm font-bold text-emerald-700">{fmtMoney(dashboard.cash_received_amount)}</p><p className="mt-0.5 text-[10px] leading-tight text-slate-400">{dashboard.cash_received_basis}</p></div>
+                  )}
+                  {dashboard.credit_applied_amount != null && (
+                    <div className="rounded-xl border border-slate-200 bg-white p-3"><p className="text-xs text-slate-500">หักเครดิต (ไม่ใช่เงินเข้า)</p><p className="text-sm font-bold">{fmtMoney(dashboard.credit_applied_amount)}</p></div>
+                  )}
+                  {dashboard.paid_amount != null && (
+                    <div className="col-span-2 rounded-xl border border-slate-200 bg-white p-3"><p className="text-xs text-slate-500">ชำระกับบิลของงวดนี้</p><p className="text-sm font-bold">{fmtMoney(dashboard.paid_amount)}</p><p className="mt-0.5 text-[10px] leading-tight text-slate-400">{dashboard.paid_amount_basis}</p></div>
+                  )}
                 </div>
                 <div className="rounded-2xl border border-slate-200 bg-white p-3">
                   <p className="mb-2 text-xs font-semibold text-slate-500">สถานะใบแจ้งหนี้</p>
