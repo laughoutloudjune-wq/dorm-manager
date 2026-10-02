@@ -10,6 +10,7 @@ import {
   Settings,
   SlidersHorizontal,
   Users,
+  Wallet,
 } from "lucide-react";
 import { AppLocale, t } from "@/lib/i18n";
 import type { PermissionKey } from "@/lib/permissions";
@@ -34,6 +35,7 @@ const adminNavKeys: readonly NavDef[] = [
   { href: "/reports", labelKey: null, label: "รายงาน", icon: ReceiptText },
   { href: "/action-queue", labelKey: null, label: "คิวงานที่ต้องจัดการ", icon: ListChecks, permission: "action_queue.view" },
   { href: "/reconciliation", labelKey: null, label: "ตรวจสอบยอดเงิน", icon: Scale, permission: "reconciliation.view" },
+  { href: "/credits-refunds", labelKey: null, label: "เครดิตและการคืนเงิน", icon: Wallet, permission: "credits.view" },
   { href: "/rewards", labelKey: null, label: "คะแนนสะสม", icon: Gift, permission: "rewards.view" },
   { href: "/settings", labelKey: "nav_settings", icon: Settings },
 ];

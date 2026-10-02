@@ -20,6 +20,7 @@ export const PERMISSION_KEYS = [
   "rewards.manage",
   "reconciliation.view",
   "action_queue.view",
+  "credits.view",
 ] as const;
 
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
@@ -55,6 +56,7 @@ export const PERMISSION_LABELS: Record<PermissionKey, string> = {
   "rewards.manage": "Manage rewards config, approvals & adjustments",
   "reconciliation.view": "View money reconciliation report",
   "action_queue.view": "View admin action queue",
+  "credits.view": "View tenant credits and refunds report",
 };
 
 export const defaultRolePermissions = (): RolePermissionMap => {
