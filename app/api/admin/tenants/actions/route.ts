@@ -3,6 +3,7 @@ import { requireAdminPermission } from "@/lib/admin-api-auth";
 import { dailyRentRate } from "@/lib/invoice-utils";
 import { computeInvoiceTotal } from "@/lib/invoice-total";
 import { pickFields } from "@/lib/pick-fields";
+import { recordMoneyEvent } from "@/lib/money-events";
 import {
   applyInvoicePaymentAllocation,
   planAbandonCredit,
@@ -312,8 +313,27 @@ export async function POST(req: Request) {
       if (Object.keys(updatePayload).length === 0) {
         return NextResponse.json({ success: true });
       }
+      const { data: draftBefore } = await auth.supabase
+        .from("tenants")
+        .select(Object.keys(updatePayload).join(","))
+        .eq("id", tenantId)
+        .maybeSingle();
       const { error } = await auth.supabase.from("tenants").update(updatePayload).eq("id", tenantId);
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      if (
+        "advance_rent_amount" in updatePayload ||
+        "security_deposit_amount" in updatePayload ||
+        "forfeit_security_deposit" in updatePayload
+      ) {
+        await recordMoneyEvent(auth.supabase, {
+          action: "tenant.move_out_draft_money",
+          actorUserId: auth.user.id,
+          tenantId,
+          before: draftBefore ?? null,
+          after: updatePayload,
+          source: "admin_webapp",
+        });
+      }
       return NextResponse.json({ success: true });
     }
 
@@ -321,8 +341,21 @@ export async function POST(req: Request) {
       const auth = await requireAdminPermission(req, "tenant.edit");
       if ("error" in auth) return auth.error;
       const tenantId = String(body?.tenantId ?? "");
+      const { data: tenantBefore } = await auth.supabase
+        .from("tenants")
+        .select("id,room_id,status,full_name,security_deposit_amount,advance_rent_amount")
+        .eq("id", tenantId)
+        .maybeSingle();
       const { error } = await auth.supabase.from("tenants").delete().eq("id", tenantId);
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      await recordMoneyEvent(auth.supabase, {
+        action: "tenant.delete",
+        actorUserId: auth.user.id,
+        tenantId,
+        roomId: (tenantBefore as any)?.room_id ?? null,
+        before: tenantBefore ?? null,
+        source: "admin_webapp",
+      });
       return NextResponse.json({ success: true });
     }
 

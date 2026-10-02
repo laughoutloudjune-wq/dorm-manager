@@ -11,6 +11,7 @@ import {
 import { isLateFeeBreakdownRow, isInvoiceDetailEditable, buildRuleBreakdown } from "@/lib/invoice-utils";
 import { chargesFromInvoiceRow, computeInvoiceTotal } from "@/lib/invoice-total";
 import { recordMoneyEvent } from "@/lib/money-events";
+import { guardSaveDetailsPayload } from "@/lib/money/save-details-guard";
 import { INVOICE_MONEY_COLUMNS, diffMoneyColumns, invoicesBlockedFromDelete } from "@/lib/money/money-diff";
 import { toLocalDateString, toNumber } from "@/lib/format";
 import { generateInvoicesForPeriod } from "@/lib/invoice-generation";
@@ -115,10 +116,24 @@ export async function POST(req: Request) {
       const authEdit = await requireAdminPermission(req, "invoice.edit");
       if ("error" in authEdit) return authEdit.error;
       const invoiceId = String(body?.invoiceId ?? "");
-      const payload = body?.payload ?? {};
-      if (!invoiceId || !payload || typeof payload !== "object") {
+      const rawPayload = body?.payload ?? {};
+      if (!invoiceId || !rawPayload || typeof rawPayload !== "object" || Array.isArray(rawPayload)) {
         return NextResponse.json({ error: "Invalid save payload." }, { status: 400 });
       }
+      // save_details edits charges and metadata only. It must not record
+      // money (paid_amount, payment_history, slips) or assert paid/partial.
+      const guarded = guardSaveDetailsPayload(rawPayload as Record<string, unknown>);
+      if (!guarded.ok) {
+        return NextResponse.json(
+          {
+            error: `ไม่สามารถบันทึกฟิลด์เหล่านี้ผ่านการแก้ไขรายละเอียดได้: ${guarded.blocked.join(", ")} — การรับชำระเงินต้องทำผ่านแท็บชำระเงิน`,
+            blockedFields: guarded.blocked,
+          },
+          { status: 400 },
+        );
+      }
+      const payload = guarded.payload;
+      const strippedFields = guarded.stripped;
       let wasPaidBeforeSave = false;
       if ("status" in payload) {
         const authStatus = await requireAdminPermission(req, "invoice.status.update");
@@ -135,6 +150,20 @@ export async function POST(req: Request) {
       wasPaidBeforeSave = String((beforeMoneyRow as any)?.status ?? "") === "paid";
       const { error } = await authEdit.supabase.from("invoices").update(payload).eq("id", invoiceId);
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+      if (Object.keys(strippedFields).length > 0) {
+        await recordMoneyEvent(authEdit.supabase, {
+          action: "invoice.save_details_stripped",
+          actorUserId: authEdit.user.id,
+          tenantId: (beforeMoneyRow as any)?.tenant_id ?? null,
+          roomId: (beforeMoneyRow as any)?.room_id ?? null,
+          invoiceId,
+          before: { paid_amount: (beforeMoneyRow as any)?.paid_amount ?? null },
+          after: { ignored_client_values: strippedFields },
+          reason: "client sent paid_amount to save_details; ignored server-side",
+          source: "admin_webapp",
+        });
+      }
 
       const moneyDiff = diffMoneyColumns(beforeMoneyRow as any, payload as Record<string, unknown>);
       if (moneyDiff) {
@@ -223,6 +252,17 @@ export async function POST(req: Request) {
           if (markBilledError) {
             return NextResponse.json({ error: markBilledError.message }, { status: 500 });
           }
+          await recordMoneyEvent(authEdit.supabase, {
+            action: "invoice.late_fee_billed",
+            actorUserId: authEdit.user.id,
+            tenantId: (beforeMoneyRow as any)?.tenant_id ?? null,
+            roomId: (beforeMoneyRow as any)?.room_id ?? null,
+            invoiceId,
+            before: { late_fee_billed_at: null },
+            after: { late_fee_billed_at: "now", source_invoice_ids: lateFeeSourceIds },
+            reason: "late fee carried as a line item on this invoice; sources marked billed",
+            source: "admin_webapp",
+          });
         }
       }
 
@@ -509,9 +549,18 @@ export async function POST(req: Request) {
             discount_amount: discountAmount,
             discount_breakdown: discountBreakdown,
             total_amount: totalAmount,
+            before_discount_amount: currentDiscount,
+            before_total_amount: currentTotal,
           };
         })
-        .filter(Boolean) as { id: string; discount_amount: number; discount_breakdown: any[]; total_amount: number }[];
+        .filter(Boolean) as {
+        id: string;
+        discount_amount: number;
+        discount_breakdown: any[];
+        total_amount: number;
+        before_discount_amount: number;
+        before_total_amount: number;
+      }[];
 
       for (const update of updates) {
         const { error: updateError } = await auth.supabase
@@ -523,6 +572,15 @@ export async function POST(req: Request) {
           })
           .eq("id", update.id);
         if (updateError) return NextResponse.json({ error: updateError.message }, { status: 500 });
+        await recordMoneyEvent(auth.supabase, {
+          action: "invoice.sync_period_discounts",
+          actorUserId: auth.user.id,
+          invoiceId: update.id,
+          before: { discount_amount: update.before_discount_amount, total_amount: update.before_total_amount },
+          after: { discount_amount: update.discount_amount, total_amount: update.total_amount },
+          reason: "discount rules re-applied to draft invoice",
+          source: "admin_webapp",
+        });
       }
 
       return NextResponse.json({ success: true, updated: updates.length });
@@ -1105,6 +1163,11 @@ export async function POST(req: Request) {
       const resolved = snapshotFromPaymentMethodRow(methodRow as any);
 
       if (paymentBatchId) {
+        const { data: batchBefore } = await auth.supabase
+          .from("payment_batches")
+          .select("tenant_id,trigger_invoice_id,payment_method_id,payment_method_snapshot")
+          .eq("id", paymentBatchId)
+          .maybeSingle();
         const { error: batchError } = await auth.supabase
           .from("payment_batches")
           .update({
@@ -1124,6 +1187,20 @@ export async function POST(req: Request) {
         if (allocationError) {
           return NextResponse.json({ error: allocationError.message }, { status: 500 });
         }
+
+        await recordMoneyEvent(auth.supabase, {
+          action: "payment.assign_method",
+          actorUserId: auth.user.id,
+          tenantId: (batchBefore as any)?.tenant_id ?? null,
+          invoiceId: (batchBefore as any)?.trigger_invoice_id ?? null,
+          paymentBatchId,
+          before: {
+            payment_method_id: (batchBefore as any)?.payment_method_id ?? null,
+            payment_method_snapshot: (batchBefore as any)?.payment_method_snapshot ?? null,
+          },
+          after: { payment_method_id: resolved.id, payment_method_snapshot: resolved.snapshot },
+          source: "admin_webapp",
+        });
 
         return NextResponse.json({ success: true, paymentMethod: resolved });
       }
@@ -1225,6 +1302,17 @@ export async function POST(req: Request) {
       if (historyError) {
         return NextResponse.json({ error: historyError.message }, { status: 500 });
       }
+
+      await recordMoneyEvent(auth.supabase, {
+        action: "payment.backfill_batches",
+        actorUserId: auth.user.id,
+        tenantId: (invoiceRow as any).tenant_id ?? null,
+        invoiceId,
+        before: { legacy_entries_without_batch: legacyIndexes.length },
+        after: { backfilled_batch_ids: newBatchIds, payment_method_id: resolved.id },
+        reason: "batch/allocation rows created for pre-ledger payment_history entries",
+        source: "admin_webapp",
+      });
 
       return NextResponse.json({
         success: true,

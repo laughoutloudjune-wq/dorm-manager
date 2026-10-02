@@ -13,7 +13,18 @@ export type MoneyEventInput = {
   reason?: string | null;
   /** Where it came from, e.g. "admin_webapp" or "admin_liff". */
   source?: string | null;
+  /**
+   * Who acted when there is no Supabase user (LIFF admins). Appended to
+   * `source` as `<source>:<label>`, e.g. "admin_liff:line:U123". No schema change.
+   */
+  actorLabel?: string | null;
 };
+
+/** Pure: compose the stored `source` string from source + actorLabel. */
+export function composeMoneySource(source?: string | null, actorLabel?: string | null): string | null {
+  if (source && actorLabel) return `${source}:${actorLabel}`;
+  return source ?? (actorLabel ? actorLabel : null);
+}
 
 /**
  * Append one row to money_events (the audit log). Best-effort: a logging
@@ -35,7 +46,7 @@ export async function recordMoneyEvent(
       before: event.before ?? null,
       after: event.after ?? null,
       reason: event.reason ?? null,
-      source: event.source ?? null,
+      source: composeMoneySource(event.source, event.actorLabel),
     });
     if (error) console.error("[money_events] insert failed:", event.action, error.message);
   } catch (err) {
