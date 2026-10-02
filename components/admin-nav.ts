@@ -47,14 +47,17 @@ export const getAdminNav = (locale: AppLocale) =>
 /**
  * Drop nav items the user lacks permission for. While permissions are still
  * loading everything is shown (fail open, display only) so the rail does not
- * flash items away; the API remains the real gate.
+ * flash items away; the API remains the real gate. The same holds when the
+ * permission fetch failed (`failed`): the viewer fallback is a guess, so show
+ * everything rather than hide the nav from a legitimate admin.
  */
 export function filterNavByPermission<T extends { permission?: PermissionKey }>(
   items: readonly T[],
   can: (permission: PermissionKey) => boolean,
-  loading: boolean
+  loading: boolean,
+  failed = false
 ): T[] {
-  if (loading) return [...items];
+  if (loading || failed) return [...items];
   return items.filter((item) => !item.permission || can(item.permission));
 }
 

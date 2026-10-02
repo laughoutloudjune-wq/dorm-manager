@@ -28,8 +28,8 @@ function NavList({
 }) {
   const pathname = usePathname();
   const locale = useUiLanguage();
-  const { can, loading } = usePermissions();
-  const adminNav = filterNavByPermission(getAdminNav(locale), can, loading);
+  const { can, loading, failed } = usePermissions();
+  const adminNav = filterNavByPermission(getAdminNav(locale), can, loading, failed);
 
   return (
     <nav className={`space-y-0.5 ${className}`}>

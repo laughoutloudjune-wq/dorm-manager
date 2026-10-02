@@ -10,6 +10,7 @@
  *     so original and reversal both stay listed and net to zero.
  * Never derive "collected" from invoices marked paid or from paid_amount.
  */
+import { bangkokDayStartIso, toBangkokMonth } from "@/lib/money/bangkok-date";
 
 export type ReportBasis = "cash" | "billing";
 
@@ -194,8 +195,8 @@ export function summarizeAllocations(
   };
 }
 
-/** YYYY-MM of a timestamp string, using the same string-slice convention as the rest of the app. */
-export const monthOf = (value: string | null | undefined) => String(value ?? "").slice(0, 7);
+/** YYYY-MM of a timestamp in Bangkok time (date-only strings pass through unchanged). */
+export const monthOf = (value: string | null | undefined) => toBangkokMonth(value);
 
 /** Cash basis: summarize rows received in `month` (by paid_at). */
 export function summarizeByReceiptMonth(rows: AllocationLike[], month: string, voidedBatchIds: Iterable<string> = []) {
@@ -255,7 +256,7 @@ export async function fetchReceiptLedger(
   toIso: string,
 ): Promise<{ rows: AllocationLike[]; voidedBatchIds: string[]; error: string | null }> {
   const run = (columns: string) =>
-    supabase.from("invoice_payment_allocations").select(columns).gte("paid_at", fromIso).lt("paid_at", toIso);
+    supabase.from("invoice_payment_allocations").select(columns).gte("paid_at", bangkokDayStartIso(fromIso)).lt("paid_at", bangkokDayStartIso(toIso));
   let res = await run("id,payment_batch_id,amount,paid_at,source,reverses_allocation_id");
   if (res.error && isMissingSchemaError(res.error)) res = await run("id,payment_batch_id,amount,paid_at,source");
   if (res.error) return { rows: [], voidedBatchIds: [], error: res.error.message };

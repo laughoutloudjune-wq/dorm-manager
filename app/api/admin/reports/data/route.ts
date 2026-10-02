@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/admin-api-auth";
+import { bangkokDayStartIso } from "@/lib/money/bangkok-date";
 import { isMissingSchemaError } from "@/lib/money/report-definitions";
 
 // The FK hint is required: invoice_payment_allocations has TWO foreign keys
@@ -91,7 +92,7 @@ export async function POST(req: Request) {
           .select("id,tenant_id,room_id,total_amount,discount_amount,notes,issue_date,rooms(room_number,buildings(name))")
           .ilike("notes", "ย้ายออก%")
           .order("issue_date", { ascending: false }),
-        fetchAllocations(supabase, (q) => q.gte("paid_at", start).lt("paid_at", end)),
+        fetchAllocations(supabase, (q) => q.gte("paid_at", bangkokDayStartIso(start)).lt("paid_at", bangkokDayStartIso(end))),
         fetchAllocations(supabase, (q) => q.gte("invoice.start_date", start).lt("invoice.start_date", end)),
       ]);
 
@@ -163,7 +164,7 @@ export async function POST(req: Request) {
       return res.data ?? [];
     };
     const refundPayouts = await optional(() =>
-      supabase.from("refund_payouts").select("id,tenant_id,amount,paid_at,voided_at").gte("paid_at", start).lt("paid_at", end),
+      supabase.from("refund_payouts").select("id,tenant_id,amount,paid_at,voided_at").gte("paid_at", bangkokDayStartIso(start)).lt("paid_at", bangkokDayStartIso(end)),
     );
     const adjustments = await optional(() =>
       supabase

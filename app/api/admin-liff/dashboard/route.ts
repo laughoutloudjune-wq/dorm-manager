@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase-admin";
 import { requireLineAdminAccess } from "@/lib/line-admin-auth";
+import { toBangkokMonth } from "@/lib/money/bangkok-date";
 import { sumOwnOutstanding } from "@/lib/invoice-ledger";
 import {
   BASIS_LABELS,
@@ -19,7 +20,7 @@ export async function POST(req: Request) {
   try {
     const body = await req.json();
     const accessToken = String(body?.accessToken ?? "");
-    const monthText = String(body?.month ?? new Date().toISOString().slice(0, 7));
+    const monthText = String(body?.month ?? toBangkokMonth(new Date()));
     const auth = await requireLineAdminAccess(accessToken);
     if ("error" in auth) return auth.error;
 

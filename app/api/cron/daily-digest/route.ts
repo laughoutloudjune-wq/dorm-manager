@@ -4,6 +4,7 @@ import { createAdminClient } from "@/lib/supabase-admin";
 import { runReconciliationChecks, type ReconciliationFinding } from "@/lib/reconciliation";
 import { findMeterAnomalies, type MeterAnomaly } from "@/lib/meter-anomalies";
 import { OPEN_INVOICE_STATUSES, sumOwnOutstanding } from "@/lib/invoice-ledger";
+import { addDaysToDate, bangkokDayStartIso, toBangkokDate, toBangkokMonth } from "@/lib/money/bangkok-date";
 import { BASIS_LABELS, REPORT_TERMS, fetchReceiptLedger, summarizeAllocations } from "@/lib/money/report-definitions";
 
 const channelAccessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN || "";
@@ -23,7 +24,6 @@ const isAuthorized = (req: Request) => {
   return req.headers.get("authorization") === `Bearer ${secret}`;
 };
 
-const monthKeyOf = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
 
 const formatMoney = (value: number) =>
   Number(value || 0).toLocaleString("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -144,19 +144,20 @@ async function handle(req: Request) {
     // fixed anywhere; matching it here rather than introducing a one-off
     // "more correct" boundary that would disagree with every other date
     // computation in the app.
-    const yesterdayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1));
-    const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const todayBangkok = toBangkokDate(now);
+    const yesterdayStartIso = bangkokDayStartIso(addDaysToDate(todayBangkok, -1));
+    const todayStartIso = bangkokDayStartIso(todayBangkok);
 
     const [paidYesterdayRes, openInvoicesRes, slipsWaitingRes, reconciliationFindings, meterAnomalies] =
       await Promise.all([
-        fetchReceiptLedger(supabase, yesterdayStart.toISOString(), todayStart.toISOString()),
+        fetchReceiptLedger(supabase, yesterdayStartIso, todayStartIso),
         supabase
           .from("invoices")
           .select("id,status,total_amount,paid_amount,carry_forward_amount")
           .in("status", [...OPEN_INVOICE_STATUSES]),
         supabase.from("invoices").select("id", { count: "exact", head: true }).eq("status", "verifying"),
         runReconciliationChecks(supabase),
-        findMeterAnomalies(supabase, monthKeyOf(now)),
+        findMeterAnomalies(supabase, toBangkokMonth(now)),
       ]);
 
     if (paidYesterdayRes.error) throw new Error(paidYesterdayRes.error);
