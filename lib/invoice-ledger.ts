@@ -76,6 +76,12 @@ export type ApplyPaymentOptions = {
   paymentMethod?: ResolvedPaymentMethod | null;
   /** Admin user id, or `line:<userId>` for the LIFF admin. */
   createdBy?: string | null;
+  /**
+   * When true, money received beyond what is owed is kept as tenant credit
+   * (receipt = amount entered). Default false: the receipt is capped at what
+   * is owed, which callers passing a "pay everything" sentinel rely on.
+   */
+  keepExcessAsCredit?: boolean;
 };
 
 export type AllocationBreakdownRow = {
@@ -1610,6 +1616,7 @@ export async function applyInvoicePaymentAllocation(
     idempotencyKey = null,
     paymentMethod = null,
     createdBy = null,
+    keepExcessAsCredit = false,
   } = options;
   const safeAmount = Math.max(0, toNumber(amount));
   if (safeAmount <= 0) {
@@ -1810,119 +1817,56 @@ export async function applyInvoicePaymentAllocation(
     });
   }
 
-  try {
-    // The batch row goes in first: it is the record of the money itself, and
-    // every allocation below is a slice of it.
-    const { error: batchError } = await supabase
-      .from("payment_batches")
-      .insert({
-        id: paymentBatchId,
-        tenant_id: (freshTargetInvoice as any).tenant_id ?? null,
-        trigger_invoice_id: invoiceId,
-        // Equal today — allocation is capped at the chain's outstanding, so a
-        // caller passing a sentinel "pay everything" amount does not record a
-        // fictional receipt. They diverge once overpayment is supported.
-        amount_received: amountToAllocate,
-        amount_allocated: amountToAllocate,
-        paid_at: paidAt,
-        mode,
-        source,
-        slip_url: slipUrl,
-        payment_method_id: resolvedMethod.id,
-        payment_method_snapshot: resolvedMethod.snapshot,
-        idempotency_key: trimmedIdem,
-        created_by: createdBy,
-      });
-    if (batchError) throw new Error(batchError.message);
-
-    for (const update of updates) {
-      const updatePayload: Record<string, unknown> = {
-        paid_amount: update.paid_amount,
-        payment_history: update.payment_history,
-        status: update.status,
-      };
-
-      if (update.lockedLateFeeAmount !== undefined) {
-        updatePayload.locked_late_fee_amount = update.lockedLateFeeAmount;
-      }
-
-      // `invoices.slip_url` means "a slip was submitted against THIS invoice".
-      // It used to be stamped onto every invoice in the carry-forward chain with
-      // the trigger payment's slip, so settling an August bill made a April
-      // invoice sprout an August slip and an August timestamp — the single
-      // biggest reason old invoices looked like they were being rewritten.
-      // Only the invoice the payment was recorded against gets the slip; the
-      // rest carry it on their payment_history entry (and on their allocation
-      // row), which is where per-payment evidence belongs.
-      //
-      // Only ever set, never clear: passing no slip (a cash payment, an
-      // abandon-room credit) must not wipe a slip the tenant already uploaded.
-      if (slipUrl && update.invoiceId === invoiceId) {
-        updatePayload.slip_url = slipUrl;
-        updatePayload.slip_uploaded_at = paidAt;
-      }
-
-      const { error: updateError } = await supabase
-        .from("invoices")
-        .update(updatePayload)
-        .eq("id", update.invoiceId);
-      if (updateError) throw new Error(updateError.message);
-    }
-
-    if (allocationRows.length > 0) {
-      const { error: allocationError } = await supabase
-        .from("invoice_payment_allocations")
-        .insert(allocationRows);
-      if (allocationError) throw new Error(allocationError.message);
-    }
-  } catch (err) {
-    // Unwind newest-first: allocations, then the batch, then the invoice rows.
-    // Leaving a batch behind would let its idempotency key block the retry that
-    // is supposed to fix this.
-    const { error: allocCleanupError } = await supabase
-      .from("invoice_payment_allocations")
-      .delete()
-      .eq("payment_batch_id", paymentBatchId);
-    if (allocCleanupError) {
-      console.error(
-        "[invoice-ledger] Failed to clean up allocations after error:",
-        paymentBatchId,
-        allocCleanupError,
-      );
-    }
-    const { error: batchCleanupError } = await supabase
-      .from("payment_batches")
-      .delete()
-      .eq("id", paymentBatchId);
-    if (batchCleanupError) {
-      console.error(
-        "[invoice-ledger] Failed to clean up payment batch after error:",
-        paymentBatchId,
-        batchCleanupError,
-      );
-    }
-
-    for (const [id, snap] of revertSnapshots) {
-      const { error: revertError } = await supabase
-        .from("invoices")
-        .update({
-          paid_amount: snap.paid_amount,
-          payment_history: snap.payment_history,
-          status: snap.status,
-          slip_url: snap.slip_url,
-          slip_uploaded_at: snap.slip_uploaded_at,
-          locked_late_fee_amount: snap.locked_late_fee_amount,
-        })
-        .eq("id", id);
-      if (revertError) {
-        console.error(
-          "[invoice-ledger] Failed to revert invoice after allocation error:",
-          id,
-          revertError,
-        );
-      }
-    }
-    throw err;
+  // One atomic database call writes the receipt, every invoice update and the
+  // allocations (all or nothing), replays a retried idempotency key, and fails
+  // with STALE_INVOICE if another admin changed an invoice since we read it.
+  const receiptAmount = keepExcessAsCredit ? safeAmount : amountToAllocate;
+  const { data: rpcResult, error: rpcError } = await supabase.rpc(
+    "record_payment_batch",
+    {
+      p: {
+        batch: {
+          id: paymentBatchId,
+          tenant_id: (freshTargetInvoice as any).tenant_id ?? null,
+          trigger_invoice_id: invoiceId,
+          amount_received: receiptAmount,
+          amount_allocated: amountToAllocate,
+          paid_at: paidAt,
+          mode,
+          source,
+          slip_url: slipUrl,
+          payment_method_id: resolvedMethod.id,
+          payment_method_snapshot: resolvedMethod.snapshot,
+          idempotency_key: trimmedIdem,
+          created_by: createdBy,
+        },
+        invoices: updates.map((update) => {
+          const row: Record<string, unknown> = {
+            id: update.invoiceId,
+            expected_paid_amount: revertSnapshots.get(update.invoiceId)!.paid_amount,
+            paid_amount: update.paid_amount,
+            status: update.status,
+            payment_history: update.payment_history,
+          };
+          if (update.lockedLateFeeAmount !== undefined) {
+            row.locked_late_fee_amount = update.lockedLateFeeAmount;
+          }
+          // Slip belongs to the invoice it was submitted against only, and is
+          // only ever set here, never cleared (see the note in git history).
+          if (slipUrl && update.invoiceId === invoiceId) {
+            row.slip_url = slipUrl;
+            row.slip_uploaded_at = paidAt;
+          }
+          return row;
+        }),
+        allocations: allocationRows,
+      },
+    },
+  );
+  if (rpcError) throw new Error(rpcError.message);
+  if ((rpcResult as any)?.replayed) {
+    const replay = await findIdempotentPaymentResult(supabase, invoiceId, trimmedIdem ?? "");
+    if (replay) return replay;
   }
 
   // Push any newly-frozen, still-unbilled late fee among the invoices this
