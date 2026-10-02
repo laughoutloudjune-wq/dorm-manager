@@ -5,7 +5,17 @@ import Link from "next/link";
 import { toast } from "sonner";
 import type { MoveOutRequestRow, SettingsRates, MoveOutFeeLine } from "@/types";
 import { toNumber, formatMoney } from "@/lib/format";
-import { getInvoiceOwnOutstanding, planAbandonCredit } from "@/lib/invoice-ledger";
+import { getInvoiceOwnOutstanding } from "@/lib/invoice-ledger";
+import type { MoveOutSettlementPlan } from "@/lib/money/settlement";
+import type { HeldCredit, MoveOutRentPeriod } from "@/lib/money/move-out-settlement-input";
+import { controlClasses } from "@/components/ui/Input";
+import { Notice } from "@/components/ui/Page";
+import {
+  ForfeitControls,
+  SettlementBreakdown,
+  forfeitReasonMissing,
+  type ForfeitState,
+} from "./MoveOutSettlementBreakdown";
 import { bangkokYmd, meets30DayMoveOutNotice } from "@/lib/move-out-notice";
 import { ConfirmActionModal } from "@/components/ui/ConfirmActionModal";
 import { buttonClasses } from "@/components/ui/Button";
@@ -60,7 +70,13 @@ type Props = {
   form: MoveOutWizardForm;
   setForm: (updater: (prev: MoveOutWizardForm) => MoveOutWizardForm) => void;
   forfeitDeposit: boolean;
-  setForfeitDeposit: (v: boolean) => void;
+  forfeit: ForfeitState;
+  setForfeit: (next: ForfeitState) => void;
+  heldCredit: HeldCredit;
+  settlementPlan: MoveOutSettlementPlan | null;
+  abandonPlan: MoveOutSettlementPlan | null;
+  rentPeriod: MoveOutRentPeriod;
+  existingSettlement: any | null;
   useProrate: boolean;
   setUseProrate: (v: boolean) => void;
   moveOutFeeLines: MoveOutFeeLine[];
@@ -163,6 +179,10 @@ function Step1RequestReview({
   form,
   setForm,
   forfeitDeposit,
+  forfeit,
+  setForfeit,
+  heldCredit,
+  abandonPlan,
   roomNumber,
   canEditTenant,
   isCancellingMoveOut,
@@ -178,6 +198,10 @@ function Step1RequestReview({
   form: MoveOutWizardForm;
   setForm: Props["setForm"];
   forfeitDeposit: boolean;
+  forfeit: ForfeitState;
+  setForfeit: (next: ForfeitState) => void;
+  heldCredit: HeldCredit;
+  abandonPlan: MoveOutSettlementPlan | null;
   roomNumber: string;
   canEditTenant: boolean;
   isCancellingMoveOut: boolean;
@@ -197,20 +221,9 @@ function Step1RequestReview({
   const [isAbandoning, setIsAbandoning] = useState(false);
 
   const moveOutDate = form.final_move_out_date || new Date().toISOString().slice(0, 10);
-  const prepaid = (forfeitDeposit ? 0 : toNumber(form.security_deposit_amount)) + toNumber(form.advance_rent_amount);
-
-  // Preview of the abandon settlement, computed with the same planner the API
-  // runs, so what the admin approves here is exactly what gets written.
-  const abandonPlan = useMemo(
-    () =>
-      planAbandonCredit(
-        [...outstandingMoveOutInvoices].sort((a: any, b: any) =>
-          String(a.start_date ?? "").localeCompare(String(b.start_date ?? "")),
-        ) as any,
-        prepaid,
-      ),
-    [outstandingMoveOutInvoices, prepaid],
-  );
+  // Preview of the abandon settlement: the same planner and inputs the API
+  // runs (advance rent first, then deposit, oldest debt first), so what the
+  // admin approves here is exactly what gets written.
   const abandonPeriodById = useMemo(
     () =>
       new Map(
@@ -223,6 +236,11 @@ function Step1RequestReview({
   );
 
   const handleAbandonment = async () => {
+    if (forfeitReasonMissing(forfeit)) {
+      toast.error("กรุณาระบุเหตุผลการริบเงินประกัน");
+      setAbandonOpen(false);
+      return;
+    }
     setIsAbandoning(true);
     try {
       await onAbandonRoom(forfeitDeposit, moveOutDate);
@@ -428,78 +446,31 @@ function Step1RequestReview({
         <div>
           <p className="text-base font-semibold text-warning-900">ผู้เช่าทิ้งห้อง</p>
           <p className="mt-0.5 text-sm text-warning-700">
-            ระบบจะใช้เครดิต (ค่าเช่าล่วงหน้า{!forfeitDeposit ? " + เงินประกัน" : ""}) หักบิลค้างชำระตามลำดับ
-            บิลที่เหลือจะถูกยกเลิก และผู้เช่าถูกย้ายออกทันที (ไม่สร้างใบแจ้งหนี้สุดท้าย ข้ามขั้นตอนมิเตอร์และสรุปค่าใช้จ่าย)
+            ระบบจะใช้เครดิต (ค่าเช่าล่วงหน้าก่อน แล้วจึงเงินประกัน) หักบิลค้างชำระจากงวดเก่าสุด
+            ยอดที่เครดิตไม่พอจะยังคงค้างในใบแจ้งหนี้ (ไม่ตัดหนี้สูญ) และผู้เช่าถูกย้ายออกทันที
+            (ไม่สร้างใบแจ้งหนี้สุดท้าย ข้ามขั้นตอนมิเตอร์และสรุปค่าใช้จ่าย)
           </p>
         </div>
       </label>
 
       {/* Abandon settlement preview */}
       {abandonMode && (
+        <ForfeitControls forfeit={forfeit} setForfeit={setForfeit} depositHeld={heldCredit.deposit} />
+      )}
+      {abandonMode && abandonPlan && (
         <SectionCard>
           <p className="text-base font-semibold text-slate-800">สรุปการตัดเครดิตเมื่อทิ้งห้อง</p>
-          <p className="mt-0.5 text-sm text-slate-500">
+          <p className="mt-0.5 mb-3 text-sm text-slate-500">
             ยอดค้างของแต่ละงวดคิดเฉพาะค่าใช้จ่ายของงวดนั้น ไม่รวมยอดยกมาที่นับไว้ในงวดก่อนแล้ว
           </p>
-
-          <div className="mt-3 space-y-1">
-            <LineItem
-              label={`เครดิตที่ใช้ได้ (ค่าเช่าล่วงหน้า${forfeitDeposit ? "" : " + เงินประกัน"})`}
-              value={`฿${formatMoney(abandonPlan.creditPool)}`}
-            />
-            <LineItem
-              label="ยอดค้างจริงทั้งหมด"
-              value={`฿${formatMoney(abandonPlan.totalOwed)}`}
-            />
-          </div>
-
-          {abandonPlan.lines.length > 0 && (
-            <div className="mt-3 space-y-2 border-t border-slate-100 pt-3">
-              {abandonPlan.lines.map((line) => (
-                <div
-                  key={line.invoiceId}
-                  className="flex flex-wrap items-baseline justify-between gap-2 text-sm"
-                >
-                  <span className="text-slate-600">
-                    งวด {abandonPeriodById.get(line.invoiceId) ?? "-"} · ค้าง ฿
-                    {formatMoney(line.owed)}
-                  </span>
-                  <span className="text-slate-800">
-                    {line.outcome === "already_clear" ? (
-                      <span className="text-slate-400">ไม่มียอดค้างของงวดนี้</span>
-                    ) : (
-                      <>
-                        หักเครดิต ฿{formatMoney(line.applied)}
-                        {line.writtenOff > 0 && (
-                          <span className="text-danger-700">
-                            {" "}
-                            · ตัดหนี้สูญ ฿{formatMoney(line.writtenOff)}
-                          </span>
-                        )}
-                      </>
-                    )}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div className="mt-3 space-y-1 border-t border-slate-100 pt-3">
-            <LineItem
-              label="รวมเครดิตที่ใช้"
-              value={`฿${formatMoney(abandonPlan.creditApplied)}`}
-            />
-            <LineItem
-              label="รวมตัดเป็นหนี้สูญ"
-              value={`฿${formatMoney(abandonPlan.writtenOff)}`}
-            />
-            {abandonPlan.refundableCredit > 0 && (
-              <LineItem
-                label="เครดิตคงเหลือ (ต้องคืนผู้เช่า)"
-                value={`฿${formatMoney(abandonPlan.refundableCredit)}`}
-              />
-            )}
-          </div>
+          <SettlementBreakdown
+            plan={abandonPlan}
+            prorateDays={0}
+            dailyRate={0}
+            fullMonths={0}
+            periodLabelById={abandonPeriodById}
+            debtOnly
+          />
         </SectionCard>
       )}
 
@@ -508,7 +479,7 @@ function Step1RequestReview({
           <button
             type="button"
             onClick={() => setAbandonOpen(true)}
-            disabled={!canEditTenant || isAbandoning}
+            disabled={!canEditTenant || isAbandoning || forfeitReasonMissing(forfeit) || (abandonPlan?.errors.length ?? 0) > 0}
             className="inline-flex items-center gap-2 rounded-control bg-warning-600 px-5 py-2.5 text-base font-semibold text-white hover:bg-warning-700 shadow-sm transition-all disabled:opacity-50"
           >
             {isAbandoning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Ban className="h-4 w-4" />}
@@ -554,13 +525,19 @@ function Step1RequestReview({
         onCancel={() => setAbandonOpen(false)}
         onConfirm={handleAbandonment}
         title="ยืนยันผู้เช่าทิ้งห้อง"
-        message={`ยืนยันว่า "${form.full_name || "ผู้เช่า"}" ทิ้งห้อง ${roomNumber}? ระบบจะใช้เครดิต ฿${formatMoney(
-          abandonPlan.creditPool
-        )} หักยอดค้างจริง ฿${formatMoney(abandonPlan.totalOwed)} → ตัดชำระ ฿${formatMoney(
-          abandonPlan.creditApplied
-        )}, ตัดเป็นหนี้สูญ ฿${formatMoney(abandonPlan.writtenOff)}${
-          abandonPlan.refundableCredit > 0
-            ? `, เหลือเครดิตคืนผู้เช่า ฿${formatMoney(abandonPlan.refundableCredit)}`
+        message={`ยืนยันว่า "${form.full_name || "ผู้เช่า"}" ทิ้งห้อง ${roomNumber}? ระบบจะหักเครดิต ฿${formatMoney(
+          abandonPlan?.creditApplied ?? 0
+        )} จากยอดค้างจริง ฿${formatMoney(abandonPlan?.totalOwed ?? 0)}${
+          (abandonPlan?.balanceStillOwed ?? 0) > 0
+            ? `, ยังค้างชำระ ฿${formatMoney(abandonPlan!.balanceStillOwed)} (ไม่ตัดหนี้สูญ)`
+            : ""
+        }${
+          (abandonPlan?.advanceRentAbsorbed ?? 0) > 0
+            ? `, ค่าเช่าล่วงหน้าที่เหลือ ฿${formatMoney(abandonPlan!.advanceRentAbsorbed)} ไม่คืน`
+            : ""
+        }${
+          (abandonPlan?.refundDue ?? 0) > 0
+            ? `, ยอดคืนผู้เช่า (ค้างจ่าย) ฿${formatMoney(abandonPlan!.refundDue)}`
             : ""
         } และผู้เช่าถูกย้ายออกทันที การดำเนินการนี้ไม่สามารถย้อนกลับได้`}
         confirmLabel="ยืนยันทิ้งห้อง"
@@ -712,67 +689,42 @@ function Step2MeterReadings({
 
 function Step3FinancialSummary({
   form,
-  setForm,
-  forfeitDeposit,
-  setForfeitDeposit,
+  forfeit,
+  setForfeit,
+  heldCredit,
   useProrate,
   setUseProrate,
   moveOutFeeLines,
   setMoveOutFeeLines,
-  rates,
   latestPrevElectricity,
   latestPrevWater,
-  unpaidInvoicesSubtotal,
   outstandingMoveOutInvoices,
-  appliedMoveOutRentBase,
-  tailDaysAfterBilledPeriod,
-  latestBilledEndYmd,
-  roomNumber,
-  activeMoveOutRequest,
+  rentPeriod,
+  settlementPlan,
   onBack,
   onNext,
 }: {
   form: MoveOutWizardForm;
-  setForm: Props["setForm"];
-  forfeitDeposit: boolean;
-  setForfeitDeposit: (v: boolean) => void;
+  forfeit: ForfeitState;
+  setForfeit: (next: ForfeitState) => void;
+  heldCredit: HeldCredit;
   useProrate: boolean;
   setUseProrate: (v: boolean) => void;
   moveOutFeeLines: MoveOutFeeLine[];
   setMoveOutFeeLines: React.Dispatch<React.SetStateAction<MoveOutFeeLine[]>>;
-  rates: SettingsRates;
   latestPrevElectricity: number;
   latestPrevWater: number;
-  unpaidInvoicesSubtotal: number;
   outstandingMoveOutInvoices: InvoiceHistoryRow[];
-  appliedMoveOutRentBase: number;
-  tailDaysAfterBilledPeriod: number;
-  latestBilledEndYmd: string | null;
-  roomNumber: string;
-  activeMoveOutRequest: MoveOutRequestRow | null;
+  rentPeriod: MoveOutRentPeriod;
+  settlementPlan: MoveOutSettlementPlan | null;
   onBack: () => void;
   onNext: () => void;
 }) {
-  const elecUsage = Math.max(toNumber(form.final_electricity_reading) - latestPrevElectricity, 0);
-  const waterUsage = Math.max(toNumber(form.final_water_reading) - latestPrevWater, 0);
-  const elecCost = elecUsage * rates.electricity_rate;
-  const waterCost = waterUsage * rates.water_rate;
-  const additionalFeesTotal = moveOutFeeLines.reduce((s, l) => s + toNumber(l.amount), 0);
-
-  const overstayDays = tailDaysAfterBilledPeriod;
-  const roomPrice = useMemo(() => {
-    if (!form) return 0;
-    return 0; // price is baked into appliedMoveOutRentBase
-  }, [form]);
-  const overstayRentCharge = 0; // included in appliedMoveOutRentBase from parent
-
-  const totalCost = unpaidInvoicesSubtotal + appliedMoveOutRentBase + elecCost + waterCost + additionalFeesTotal;
-  const refundableDeposit = forfeitDeposit ? 0 : toNumber(form.security_deposit_amount);
-  const forfeitedDepositAmount = forfeitDeposit ? toNumber(form.security_deposit_amount) : 0;
-  const prepaid = refundableDeposit + toNumber(form.advance_rent_amount);
-  const net = prepaid - totalCost;
-
   const createFeeLine = (): MoveOutFeeLine => ({ id: crypto.randomUUID(), label: "", amount: 0 });
+  const periodLabelById = useMemo(
+    () => new Map(outstandingMoveOutInvoices.map((inv) => [String(inv.id), String(inv.start_date ?? "").slice(0, 7)])),
+    [outstandingMoveOutInvoices]
+  );
 
   return (
     <div className="space-y-5 animate-fade-in-up">
@@ -781,50 +733,7 @@ function Step3FinancialSummary({
         <p className="mt-1 text-base text-slate-500">ตรวจสอบและปรับแต่งรายการค่าใช้จ่ายก่อนยืนยัน</p>
       </div>
 
-      {/* Charges breakdown */}
-      <SectionCard>
-        <p className="text-base font-semibold text-slate-700 mb-4 flex items-center gap-2">
-          <TrendingUp className="h-4 w-4 text-danger-400" />
-          รายการค่าใช้จ่าย
-        </p>
-        <div className="space-y-2.5">
-          {unpaidInvoicesSubtotal > 0 && (
-            <LineItem
-              label={`บิลค้างชำระ (${outstandingMoveOutInvoices.length} รายการ)`}
-              value={`฿${formatMoney(unpaidInvoicesSubtotal)}`}
-              className="text-warning-700"
-            />
-          )}
-          <LineItem
-            label={latestBilledEndYmd
-              ? `ค่าเช่า (หลังบิล ${latestBilledEndYmd})`
-              : "ค่าเช่าห้อง"}
-            value={`฿${formatMoney(appliedMoveOutRentBase)}`}
-          />
-          <LineItem
-            label="ค่าไฟฟ้า"
-            sub={`มิเตอร์ ${toNumber(form.final_electricity_reading)} - ${latestPrevElectricity} = ${elecUsage} หน่วย`}
-            value={`฿${formatMoney(elecCost)}`}
-          />
-          <LineItem
-            label="ค่าน้ำ"
-            sub={`มิเตอร์ ${toNumber(form.final_water_reading)} - ${latestPrevWater} = ${waterUsage} หน่วย`}
-            value={`฿${formatMoney(waterCost)}`}
-          />
-          {moveOutFeeLines.filter(l => l.label.trim() && toNumber(l.amount) > 0).map(l => (
-            <LineItem key={l.id} label={l.label.trim()} value={`฿${formatMoney(toNumber(l.amount))}`} />
-          ))}
-          <div className="pt-2 mt-1 border-t border-dashed border-slate-200">
-            <LineItem
-              label="รวมค่าใช้จ่ายทั้งหมด"
-              value={`฿${formatMoney(totalCost)}`}
-              className="font-bold text-slate-900 text-base"
-            />
-          </div>
-        </div>
-      </SectionCard>
-
-      {/* Additional fees */}
+      {/* Additional fees — the label is the documented reason for the charge */}
       <SectionCard>
         <div className="flex items-center justify-between mb-4">
           <p className="text-base font-semibold text-slate-700 flex items-center gap-2">
@@ -847,22 +756,23 @@ function Step3FinancialSummary({
             <div key={line.id} className="flex gap-2 items-start">
               <input
                 type="text"
-                placeholder="รายการ (เช่น ค่าซ่อมแซม)"
+                placeholder="รายการและเหตุผล (เช่น ค่าซ่อมประตูที่ชำรุด)"
                 value={line.label}
                 onChange={e => setMoveOutFeeLines(prev => prev.map(item => item.id === line.id ? { ...item, label: e.target.value } : item))}
-                className="flex-1 rounded-control border border-slate-200 bg-slate-50 px-3 py-2 text-base focus:border-primary-300 focus:outline-none focus:ring-2 focus:ring-primary-100"
+                className={controlClasses({ className: "flex-1", invalid: toNumber(line.amount) > 0 && !line.label.trim() })}
               />
               <input
                 type="number"
                 placeholder="จำนวน"
                 value={line.amount}
                 onChange={e => setMoveOutFeeLines(prev => prev.map(item => item.id === line.id ? { ...item, amount: toNumber(e.target.value) } : item))}
-                className="w-28 rounded-control border border-slate-200 bg-slate-50 px-3 py-2 text-base font-mono focus:border-primary-300 focus:outline-none focus:ring-2 focus:ring-primary-100"
+                className={controlClasses({ className: "w-28 font-mono" })}
               />
               <button
                 type="button"
                 onClick={() => setMoveOutFeeLines(prev => prev.filter(item => item.id !== line.id))}
-                className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-control border border-danger-100 text-danger-400 hover:border-danger-200 hover:bg-danger-50 hover:text-danger-600 transition-colors"
+                className={buttonClasses({ variant: "ghost", size: "icon" })}
+                aria-label="ลบรายการ"
               >
                 <Trash2 className="h-3.5 w-3.5" />
               </button>
@@ -871,73 +781,44 @@ function Step3FinancialSummary({
         </div>
       </SectionCard>
 
-      {/* Credits & Deposit */}
-      <SectionCard>
-        <p className="text-base font-semibold text-slate-700 mb-4 flex items-center gap-2">
-          <TrendingDown className="h-4 w-4 text-success-500" />
-          เครดิต / การหักคืน
-        </p>
-        <div className="space-y-2.5">
-          <LineItem
-            label="ค่าเช่าล่วงหน้า"
-            value={`฿${formatMoney(toNumber(form.advance_rent_amount))}`}
-            className="text-success-700"
-          />
-          <LineItem
-            label={forfeitDeposit ? "เงินประกัน (ริบ — ไม่คืน)" : "เงินประกัน"}
-            value={forfeitDeposit ? `−฿${formatMoney(toNumber(form.security_deposit_amount))}` : `฿${formatMoney(toNumber(form.security_deposit_amount))}`}
-            className={forfeitDeposit ? "text-danger-500 line-through" : "text-success-700"}
-          />
-          <div className="pt-2 mt-1 border-t border-dashed border-slate-200">
-            <LineItem
-              label="รวมเครดิต"
-              value={`฿${formatMoney(prepaid)}`}
-              className="font-bold text-success-700 text-base"
-            />
-          </div>
-        </div>
-      </SectionCard>
-
-      {/* Forfeit deposit toggle */}
       <div className="grid gap-3 sm:grid-cols-2">
-        <label className="flex cursor-pointer items-start gap-3 rounded-card border border-danger-200 bg-danger-50/60 px-4 py-4">
-          <div className="relative mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center">
-            <input
-              type="checkbox"
-              checked={forfeitDeposit}
-              onChange={e => setForfeitDeposit(e.target.checked)}
-              className="peer sr-only"
-            />
-            <div className="h-5 w-5 rounded-md border-2 border-danger-300 bg-white peer-checked:border-danger-600 peer-checked:bg-danger-600 transition-all" />
-            {forfeitDeposit && (
-              <CheckCircle2 className="absolute h-3.5 w-3.5 text-white pointer-events-none" />
-            )}
-          </div>
-          <div>
-            <p className="text-base font-semibold text-danger-800">ริบเงินประกัน (ไม่คืนเงินประกัน)</p>
-            <p className="mt-0.5 text-sm text-danger-600">ใช้กรณีผิดสัญญา ระบบจะไม่คืนเงินประกัน</p>
-          </div>
-        </label>
+        <ForfeitControls forfeit={forfeit} setForfeit={setForfeit} depositHeld={heldCredit.deposit} />
 
         <label className="flex cursor-pointer items-start gap-3 rounded-card border border-slate-200 bg-white px-4 py-4">
-          <div className="relative mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center">
-            <input
-              type="checkbox"
-              checked={useProrate}
-              onChange={e => setUseProrate(e.target.checked)}
-              className="peer sr-only"
-            />
-            <div className="h-5 w-5 rounded-md border-2 border-slate-300 bg-white peer-checked:border-primary-600 peer-checked:bg-primary-600 transition-all" />
-            {useProrate && (
-              <CheckCircle2 className="absolute h-3.5 w-3.5 text-white pointer-events-none" />
-            )}
-          </div>
+          <input
+            type="checkbox"
+            checked={useProrate}
+            onChange={e => setUseProrate(e.target.checked)}
+            className="mt-1 h-4 w-4 accent-primary-600"
+          />
           <div>
             <p className="text-base font-semibold text-slate-800">คิดค่าเช่าเฉลี่ยตามวัน (Prorate)</p>
             <p className="mt-0.5 text-sm text-slate-500">หากปิดใช้งาน จะไม่เรียกเก็บค่าเช่าในรอบบิลสุดท้าย</p>
           </div>
         </label>
       </div>
+
+      <SectionCard>
+        <p className="text-base font-semibold text-slate-700 mb-4 flex items-center gap-2">
+          <Calculator className="h-4 w-4 text-primary-500" />
+          สรุปยอดย้ายออก (รายบรรทัด)
+        </p>
+        {settlementPlan && (
+          <SettlementBreakdown
+            plan={settlementPlan}
+            prorateDays={rentPeriod.prorateDays}
+            dailyRate={rentPeriod.dailyRate}
+            fullMonths={rentPeriod.fullMonths}
+            meter={{
+              prevElec: latestPrevElectricity,
+              curElec: toNumber(form.final_electricity_reading),
+              prevWater: latestPrevWater,
+              curWater: toNumber(form.final_water_reading),
+            }}
+            periodLabelById={periodLabelById}
+          />
+        )}
+      </SectionCard>
 
       <div className="flex justify-between pt-2">
         <button
@@ -963,13 +844,9 @@ function Step3FinancialSummary({
 
 function Step4Confirm({
   form,
-  forfeitDeposit,
-  moveOutFeeLines,
-  rates,
+  forfeit,
   latestPrevElectricity,
   latestPrevWater,
-  unpaidInvoicesSubtotal,
-  appliedMoveOutRentBase,
   roomNumber,
   activeMoveOutRequest,
   isMovingOut,
@@ -977,18 +854,17 @@ function Step4Confirm({
   canEditTenant,
   activeTenant,
   outstandingMoveOutInvoices,
+  rentPeriod,
+  settlementPlan,
+  existingSettlement,
   onBack,
   onConfirmMoveOut,
   onCancelMoveOut,
 }: {
   form: MoveOutWizardForm;
-  forfeitDeposit: boolean;
-  moveOutFeeLines: MoveOutFeeLine[];
-  rates: SettingsRates;
+  forfeit: ForfeitState;
   latestPrevElectricity: number;
   latestPrevWater: number;
-  unpaidInvoicesSubtotal: number;
-  appliedMoveOutRentBase: number;
   roomNumber: string;
   activeMoveOutRequest: MoveOutRequestRow | null;
   isMovingOut: boolean;
@@ -996,25 +872,25 @@ function Step4Confirm({
   canEditTenant: boolean;
   activeTenant: any;
   outstandingMoveOutInvoices: any[];
+  rentPeriod: MoveOutRentPeriod;
+  settlementPlan: MoveOutSettlementPlan | null;
+  existingSettlement: any | null;
   onBack: () => void;
   onConfirmMoveOut: () => Promise<void> | void;
   onCancelMoveOut: () => Promise<void> | void;
 }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmCancelOpen, setConfirmCancelOpen] = useState(false);
-
-  const elecUsage = Math.max(toNumber(form.final_electricity_reading) - latestPrevElectricity, 0);
-  const waterUsage = Math.max(toNumber(form.final_water_reading) - latestPrevWater, 0);
-  const elecCost = elecUsage * rates.electricity_rate;
-  const waterCost = waterUsage * rates.water_rate;
-  const additionalFeesTotal = moveOutFeeLines.reduce((s, l) => s + toNumber(l.amount), 0);
-  const totalCost = unpaidInvoicesSubtotal + appliedMoveOutRentBase + elecCost + waterCost + additionalFeesTotal;
-  const refundableDeposit = forfeitDeposit ? 0 : toNumber(form.security_deposit_amount);
-  const prepaid = refundableDeposit + toNumber(form.advance_rent_amount);
-  const net = prepaid - totalCost;
-  const isRefund = net >= 0;
+  const periodLabelById = useMemo(
+    () => new Map(outstandingMoveOutInvoices.map((inv: any) => [String(inv.id), String(inv.start_date ?? "").slice(0, 7)])),
+    [outstandingMoveOutInvoices]
+  );
 
   const moveOutDate = form.final_move_out_date || new Date().toISOString().slice(0, 10);
+  const plan = settlementPlan;
+  const owes = (plan?.balanceStillOwed ?? 0) > 0;
+  const reasonMissing = forfeitReasonMissing(forfeit);
+  const blocked = !plan || plan.errors.length > 0 || reasonMissing || Boolean(existingSettlement);
 
   return (
     <div className="space-y-5 animate-fade-in-up">
@@ -1023,7 +899,17 @@ function Step4Confirm({
         <p className="mt-1 text-base text-slate-500">ตรวจสอบข้อมูลสุดท้ายก่อนบันทึก</p>
       </div>
 
-      {/* Tenant info card */}
+      {existingSettlement && (
+        <Notice tone="warning" title="ผู้เช่ารายนี้สรุปยอดย้ายออกไปแล้ว">
+          สรุปเมื่อ {String(existingSettlement.created_at ?? "").slice(0, 10)} — ไม่สามารถสรุปซ้ำได้
+        </Notice>
+      )}
+      {reasonMissing && (
+        <Notice tone="danger" title="ต้องระบุเหตุผลการริบเงินประกัน">
+          กลับไปขั้นตอน &quot;สรุปค่าใช้จ่าย&quot; เพื่อกรอกเหตุผล
+        </Notice>
+      )}
+
       <SectionCard>
         <div className="grid grid-cols-2 gap-3 text-base">
           <div>
@@ -1039,112 +925,51 @@ function Step4Confirm({
             <p className="font-semibold text-slate-800">{moveOutDate}</p>
           </div>
           <div>
-            <p className="text-sm text-slate-400 mb-0.5">สถานะเงินประกัน</p>
-            <p className={`font-semibold ${forfeitDeposit ? "text-danger-600" : "text-success-700"}`}>
-              {forfeitDeposit ? "ริบ (ไม่คืน)" : "คืนเต็มจำนวน"}
+            <p className="text-sm text-slate-400 mb-0.5">เงินประกัน</p>
+            <p className={`font-semibold ${(plan?.depositForfeited ?? 0) > 0 ? "text-danger-600" : "text-success-700"}`}>
+              {(plan?.depositForfeited ?? 0) > 0
+                ? `ริบ ฿${formatMoney(plan!.depositForfeited)} (${plan!.forfeitReason})`
+                : "ไม่ริบ"}
             </p>
           </div>
         </div>
       </SectionCard>
 
-      {/* Net amount — hero display */}
-      <div className={`
-        relative overflow-hidden rounded-card px-6 py-6 text-center
-        ${isRefund
-          ? "bg-gradient-to-br from-success-500 to-success-600"
-          : "bg-gradient-to-br from-danger-500 to-danger-600"
-        }
-      `}>
-        <div className="absolute inset-0 opacity-10">
-          <div className="absolute -top-4 -right-4 h-24 w-24 rounded-full bg-white" />
-          <div className="absolute -bottom-6 -left-6 h-32 w-32 rounded-full bg-white" />
+      {plan && (
+        <div className={`rounded-card px-6 py-6 text-center shadow-float ${owes ? "bg-danger-600" : "bg-success-600"}`}>
+          <p className="text-base font-medium text-white/80 mb-1">
+            {owes ? "ผู้เช่าต้องชำระเพิ่ม" : "ยอดคืนผู้เช่า (ค้างจ่าย — บันทึกการโอนแยกภายหลัง)"}
+          </p>
+          <p className="text-4xl font-black text-white tracking-tight">
+            ฿{formatMoney(owes ? plan.balanceStillOwed : plan.refundDue)}
+          </p>
+          <div className="mt-3 flex flex-wrap justify-center gap-x-6 gap-y-1 text-sm text-white/80">
+            <span>ยอดที่ต้องชำระรวม ฿{formatMoney(plan.totalOwed)}</span>
+            <span>เครดิตที่หัก ฿{formatMoney(plan.creditApplied)}</span>
+            {plan.advanceRentAbsorbed > 0 && <span>ค่าเช่าล่วงหน้าไม่คืน ฿{formatMoney(plan.advanceRentAbsorbed)}</span>}
+          </div>
         </div>
-        <p className="relative text-base font-medium text-white/80 mb-1">
-          {isRefund ? "คืนเงินให้ผู้เช่า" : "ผู้เช่าต้องชำระเพิ่ม"}
-        </p>
-        <p className="relative text-4xl font-black text-white tracking-tight">
-          ฿{formatMoney(Math.abs(net))}
-        </p>
-        <div className="relative mt-3 flex justify-center gap-6 text-sm text-white/70">
-          <span>ค่าใช้จ่ายรวม ฿{formatMoney(totalCost)}</span>
-          <span>เครดิต ฿{formatMoney(prepaid)}</span>
-        </div>
-      </div>
+      )}
 
-      {/* Cost summary table */}
       <SectionCard>
         <p className="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-3">รายละเอียดทั้งหมด</p>
-        <div className="space-y-2 text-base">
-          {unpaidInvoicesSubtotal > 0 && (
-            <div className="space-y-1">
-              <div className="flex justify-between text-warning-700">
-                <span>บิลค้างชำระ ({outstandingMoveOutInvoices?.length || 0} รายการ)</span>
-                <span className="font-semibold tabular-nums">฿{formatMoney(unpaidInvoicesSubtotal)}</span>
-              </div>
-              <div className="pl-4 space-y-1 text-sm text-slate-500">
-                {outstandingMoveOutInvoices?.map((inv: any) => {
-                  const remaining = getInvoiceOwnOutstanding(inv);
-                  if (remaining <= 0) return null;
-                  return (
-                    <div key={inv.id} className="flex justify-between">
-                      <span>รอบบิล {inv.start_date ? String(inv.start_date).slice(0, 7) : "ไม่ระบุ"}</span>
-                      <span className="tabular-nums">฿{formatMoney(remaining)}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-          <div className="flex justify-between text-slate-600">
-            <span>ค่าเช่า</span>
-            <span className="font-semibold tabular-nums">฿{formatMoney(appliedMoveOutRentBase)}</span>
-          </div>
-          <div className="space-y-1">
-            <div className="flex justify-between text-slate-600">
-              <span>ค่าไฟ + น้ำ</span>
-              <span className="font-semibold tabular-nums">฿{formatMoney(elecCost + waterCost)}</span>
-            </div>
-            <div className="pl-4 space-y-1 text-sm text-slate-500">
-              {elecUsage > 0 && (
-                <div className="flex justify-between">
-                  <span>
-                    ค่าไฟ ({latestPrevElectricity} → {toNumber(form.final_electricity_reading)}) = {elecUsage} หน่วย
-                  </span>
-                  <span className="tabular-nums">฿{formatMoney(elecCost)}</span>
-                </div>
-              )}
-              {waterUsage > 0 && (
-                <div className="flex justify-between">
-                  <span>
-                    ค่าน้ำ ({latestPrevWater} → {toNumber(form.final_water_reading)}) = {waterUsage} หน่วย
-                  </span>
-                  <span className="tabular-nums">฿{formatMoney(waterCost)}</span>
-                </div>
-              )}
-            </div>
-          </div>
-          {additionalFeesTotal > 0 && (
-            <div className="flex justify-between text-slate-600">
-              <span>ค่าใช้จ่ายอื่น</span>
-              <span className="font-semibold tabular-nums">฿{formatMoney(additionalFeesTotal)}</span>
-            </div>
-          )}
-          <div className="pt-2 border-t border-dashed border-slate-200 flex justify-between font-bold text-slate-900">
-            <span>รวมค่าใช้จ่าย</span>
-            <span className="tabular-nums">฿{formatMoney(totalCost)}</span>
-          </div>
-          <div className="flex justify-between text-success-700">
-            <span>ค่าเช่าล่วงหน้า</span>
-            <span className="font-semibold tabular-nums">−฿{formatMoney(toNumber(form.advance_rent_amount))}</span>
-          </div>
-          <div className={`flex justify-between ${forfeitDeposit ? "text-danger-400 line-through" : "text-success-700"}`}>
-            <span>เงินประกัน</span>
-            <span className="font-semibold tabular-nums">−฿{formatMoney(toNumber(form.security_deposit_amount))}</span>
-          </div>
-        </div>
+        {plan && (
+          <SettlementBreakdown
+            plan={plan}
+            prorateDays={rentPeriod.prorateDays}
+            dailyRate={rentPeriod.dailyRate}
+            fullMonths={rentPeriod.fullMonths}
+            meter={{
+              prevElec: latestPrevElectricity,
+              curElec: toNumber(form.final_electricity_reading),
+              prevWater: latestPrevWater,
+              curWater: toNumber(form.final_water_reading),
+            }}
+            periodLabelById={periodLabelById}
+          />
+        )}
       </SectionCard>
 
-      {/* Action buttons */}
       <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-100">
         <button
           type="button"
@@ -1160,7 +985,7 @@ function Step4Confirm({
               type="button"
               onClick={() => setConfirmCancelOpen(true)}
               disabled={isCancellingMoveOut}
-              className="inline-flex items-center gap-2 rounded-control border border-warning-200 bg-warning-50 px-4 py-2.5 text-base font-semibold text-warning-800 hover:bg-warning-100 transition-colors disabled:opacity-50"
+              className={buttonClasses({ variant: "secondary", size: "lg" })}
             >
               <Ban className="h-4 w-4" />
               {isCancellingMoveOut ? "กำลังยกเลิก…" : "ยกเลิกการย้ายออก"}
@@ -1170,7 +995,7 @@ function Step4Confirm({
           <button
             type="button"
             onClick={() => setConfirmOpen(true)}
-            disabled={!canEditTenant || isMovingOut}
+            disabled={!canEditTenant || isMovingOut || blocked}
             className={buttonClasses({ variant: "primary", size: "lg" })}
           >
             {isMovingOut ? <Loader2 className="h-4 w-4 animate-spin" /> : <Flag className="h-4 w-4" />}
@@ -1179,13 +1004,14 @@ function Step4Confirm({
         </div>
       </div>
 
-      {/* Confirm modals */}
       <ConfirmActionModal
         isOpen={confirmOpen}
         onCancel={() => setConfirmOpen(false)}
         onConfirm={() => { setConfirmOpen(false); onConfirmMoveOut(); }}
         title="ยืนยันการย้ายออก"
-        message={`ยืนยันการย้ายออกของ "${form.full_name || "ผู้เช่า"}" จากห้อง ${roomNumber}? ระบบจะสร้างใบแจ้งหนี้สุดท้าย เปลี่ยนสถานะผู้เช่าเป็น "ย้ายออกแล้ว" และเปลี่ยนสถานะห้องเป็น "ว่าง"`}
+        message={`ยืนยันการย้ายออกของ "${form.full_name || "ผู้เช่า"}" จากห้อง ${roomNumber}? ระบบจะสร้างใบแจ้งหนี้สุดท้าย หักเครดิตตามรายละเอียด${
+          plan && plan.refundDue > 0 ? ` บันทึกยอดคืนผู้เช่า ฿${formatMoney(plan.refundDue)} เป็นยอดค้างจ่าย (ยังไม่ใช่การโอน)` : ""
+        } จากนั้นจึงเปลี่ยนสถานะผู้เช่าเป็น "ย้ายออกแล้ว" และห้องเป็น "ว่าง" — ทั้งหมดสำเร็จพร้อมกันหรือไม่บันทึกเลย`}
         confirmLabel="ยืนยันการย้ายออก"
       />
       <ConfirmActionModal
@@ -1209,7 +1035,13 @@ export function MoveOutWizard({
   form,
   setForm,
   forfeitDeposit,
-  setForfeitDeposit,
+  forfeit,
+  setForfeit,
+  heldCredit,
+  settlementPlan,
+  abandonPlan,
+  rentPeriod,
+  existingSettlement,
   useProrate,
   setUseProrate,
   moveOutFeeLines,
@@ -1264,6 +1096,10 @@ export function MoveOutWizard({
               form={form}
               setForm={setForm}
               forfeitDeposit={forfeitDeposit}
+              forfeit={forfeit}
+              setForfeit={setForfeit}
+              heldCredit={heldCredit}
+              abandonPlan={abandonPlan}
               roomNumber={roomNumber}
               canEditTenant={canEditTenant}
               isCancellingMoveOut={isCancellingMoveOut}
@@ -1290,23 +1126,18 @@ export function MoveOutWizard({
           {step === 3 && (
             <Step3FinancialSummary
               form={form}
-              setForm={setForm}
-              forfeitDeposit={forfeitDeposit}
-              setForfeitDeposit={setForfeitDeposit}
+              forfeit={forfeit}
+              setForfeit={setForfeit}
+              heldCredit={heldCredit}
               useProrate={useProrate}
               setUseProrate={setUseProrate}
               moveOutFeeLines={moveOutFeeLines}
               setMoveOutFeeLines={setMoveOutFeeLines}
-              rates={rates}
               latestPrevElectricity={latestPrevElectricity}
               latestPrevWater={latestPrevWater}
-              unpaidInvoicesSubtotal={unpaidInvoicesSubtotal}
               outstandingMoveOutInvoices={outstandingMoveOutInvoices}
-              appliedMoveOutRentBase={appliedMoveOutRentBase}
-              tailDaysAfterBilledPeriod={tailDaysAfterBilledPeriod}
-              latestBilledEndYmd={latestBilledEndYmd}
-              roomNumber={roomNumber}
-              activeMoveOutRequest={activeMoveOutRequest}
+              rentPeriod={rentPeriod}
+              settlementPlan={settlementPlan}
               onBack={() => goTo(2)}
               onNext={() => goTo(4)}
             />
@@ -1314,13 +1145,9 @@ export function MoveOutWizard({
           {step === 4 && (
             <Step4Confirm
               form={form}
-              forfeitDeposit={forfeitDeposit}
-              moveOutFeeLines={moveOutFeeLines}
-              rates={rates}
+              forfeit={forfeit}
               latestPrevElectricity={latestPrevElectricity}
               latestPrevWater={latestPrevWater}
-              unpaidInvoicesSubtotal={unpaidInvoicesSubtotal}
-              appliedMoveOutRentBase={appliedMoveOutRentBase}
               roomNumber={roomNumber}
               activeMoveOutRequest={activeMoveOutRequest}
               isMovingOut={isMovingOut}
@@ -1328,6 +1155,9 @@ export function MoveOutWizard({
               canEditTenant={canEditTenant}
               activeTenant={activeTenant}
               outstandingMoveOutInvoices={outstandingMoveOutInvoices}
+              rentPeriod={rentPeriod}
+              settlementPlan={settlementPlan}
+              existingSettlement={existingSettlement}
               onBack={() => goTo(3)}
               onConfirmMoveOut={onConfirmMoveOut}
               onCancelMoveOut={onCancelMoveOut}

@@ -135,3 +135,34 @@ Not covered by design: a redemption that has NOT been reversed can still be hard
 - True two-connection races (same idempotency key in flight twice; two multi-invoice payments locking in opposite payload
   order; record vs void on the same invoice). The functions lock in ascending invoice id and check idempotency after the
   locks; that ordering is by construction, not exercised by a concurrent test. Needs two sessions (e.g. psql x2 or dblink).
+## 04_final_settle_move_out.sql (move-out settlement; self-contained section)
+Run date: 2026-10-03. Project: dorm-test (rghxelkifdrpvabyxopb) only. Function under test: `final_settle_move_out(jsonb)` from
+migration 20261002000600 as deployed on dorm-test (deployed body verified identical to the file, comments aside). Whole
+script rolled back; post-run check: 0 fixture tenants, 0 move_out_settlements, temporary failure trigger/function gone.
+```
+PASS  S1 success (final=0.00/2400.00/paid older=1500.00/paid batch=1/credit/credit/1500.00/credit alloc=1/1500.00 balances=100.00/0.00/0.00 credits=advance_rent_received:advance:1000.00:-,applied_to_invoice:advance:-1000.00:older,applied_to_invoice:deposit:-2400.00:final,applied_to_invoice:deposit:-500.00:older,deposit_received:deposit:3000.00:- tenant=inactive/null/2026-09-28 room=available settlements=1 log=2026-09-28 request=completed)
+PASS  S1b money_events for every change (credit.applyx3,credit.opening_balancex2,payment.allocatex1,payment.recordx1,settlement.createx1,settlement.final_invoicex1,tenant.move_out_settledx1)
+PASS  S7 deposit refund recorded as due, not paid (due/paid/outstanding=100.00/0.00/100.00, payouts=0)
+PASS  S2 replay same key returns original, writes nothing (invoices/credits/events/batches 2/5/10/1)
+PASS  S3 double settlement rejected (ERR:ALREADY_SETTLED: tenant <uuid>)
+PASS  F1 forced failure at last step left nothing written, room still occupied (invoices=1 older=0.00/overdue batches=0 credits=0 settlements=0 events=0 tenant=active/true room=occupied)
+PASS  S5 forfeiture with reason '' rejected
+PASS  S5 forfeiture with reason '   ' rejected
+PASS  S5 forfeiture with reason '\t\n' rejected
+PASS  S5b nothing written by the rejected forfeitures
+PASS  S5c forfeiture with reason recorded (forfeited=-500.00:broken window, final invoice still owes 400.00/pending)
+PASS  S6a plan with leftover advance in refund due rejected (ERR:PLAN_INVALID: advance applied + absorbed <> advance held)
+PASS  S6a2 refund due including absorbed advance rejected
+PASS  S6b advance never refund: balances deposit/advance=2000.00/0.00, refund_due=2000.00 (deposit only), 2000 advance absorbed with reason + event
+PASS  G1a open debt missing from plan rejected
+PASS  G1b invoice columns != engine rejected
+PASS  G1c stale paid_amount rejected
+PASS  G1d wrong room rejected
+PASS  G1e held deposit mismatch rejected
+PASS  G1f verifying invoice blocks settlement
+PASS  G1g rejected calls left no credits and the tenant in the room
+```
+Summary: 21 PASS, 0 FAIL. F1 forces a failure on the LAST write (room status update) via a temporary trigger, so every
+earlier write (final invoice, credit receipt, allocations, tenant_credits, settlement row, tenant update) is proven to roll back.
+Not covered single-session: two concurrent sessions racing on the same tenant (the tenant row lock + partial unique index
+`uq_move_out_settlements_live_tenant` are the guards).

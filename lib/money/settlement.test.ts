@@ -92,10 +92,56 @@ describe("planMoveOutSettlement", () => {
     expect(plan.refundDue).toBe(2600);
   });
 
-  it("refunds unused advance rent when the bill is zero", () => {
+  it("never refunds unused advance rent: it is absorbed", () => {
     const plan = planMoveOutSettlement({ proratedRent: 0, advanceRent: 600, securityDeposit: 0 });
     expect(plan.advanceRentApplied).toBe(0);
-    expect(plan.refundDue).toBe(600);
+    expect(plan.advanceRentAbsorbed).toBe(600);
+    expect(plan.remainingCredit).toBe(600);
+    expect(plan.refundDue).toBe(0);
+  });
+
+  it("leftover advance is absorbed while the untouched deposit is refund due", () => {
+    const plan = planMoveOutSettlement({ proratedRent: 1000, advanceRent: 3000, securityDeposit: 2000 });
+    expect(plan.advanceRentApplied).toBe(1000);
+    expect(plan.advanceRentAbsorbed).toBe(2000);
+    expect(plan.depositApplied).toBe(0);
+    expect(plan.depositRemaining).toBe(2000);
+    expect(plan.refundDue).toBe(2000);
+    expect(plan.finalBillDue).toBe(0);
+  });
+
+  it("unapplied overpayment credit is used after the deposit and is refundable", () => {
+    const used = planMoveOutSettlement({ proratedRent: 1000, advanceRent: 200, securityDeposit: 500, unappliedCredit: 800 });
+    expect(used.depositApplied).toBe(500);
+    expect(used.unappliedCreditApplied).toBe(300);
+    expect(used.refundDue).toBe(500);
+    const unused = planMoveOutSettlement({ proratedRent: 0, unappliedCredit: 250 });
+    expect(unused.refundDue).toBe(250);
+  });
+
+  it("full-month rent is part of the final bill", () => {
+    const plan = planMoveOutSettlement({ fullMonthRent: 3000, proratedRent: 300, securityDeposit: 1000 });
+    expect(plan.finalBillTotal).toBe(3300);
+    expect(plan.finalBillDue).toBe(2300);
+    expect(plan.balanceStillOwed).toBe(2300);
+  });
+
+  it("refund due never exceeds deposit left plus unapplied credit (property)", () => {
+    for (let i = 0; i < 200; i++) {
+      const r = (n: number) => Math.round(Math.random() * n * 100) / 100;
+      const deposit = r(5000);
+      const plan = planMoveOutSettlement({
+        proratedRent: r(4000),
+        advanceRent: r(5000),
+        securityDeposit: deposit,
+        unappliedCredit: r(1000),
+        outstandingDebts: [{ invoiceId: "a", periodStart: "2026-01-01", outstanding: r(3000) }],
+        depositForfeiture: { forfeitAmount: r(deposit), reason: "damage" },
+      });
+      expect(plan.refundDue).toBeLessThanOrEqual(plan.depositHeld - plan.depositForfeited + plan.unappliedCreditHeld + 1e-9);
+      expect(Math.round((plan.advanceRentApplied + plan.advanceRentAbsorbed) * 100)).toBe(Math.round(plan.advanceRentHeld * 100));
+      expect(Math.round((plan.debtPaidFromCredit + plan.finalBillPaidFromCredit) * 100)).toBe(Math.round(plan.creditApplied * 100));
+    }
   });
 
   it("settles older debt oldest first, then the final bill", () => {
