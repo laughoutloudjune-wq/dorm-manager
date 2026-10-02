@@ -6,11 +6,10 @@ import { SectionCard } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
-import { ConfirmActionModal } from "@/components/ui/ConfirmActionModal";
 import { PageHeader, EmptyState, Skeleton, Notice } from "@/components/ui/Page";
 import { Table, TableCard, TBody, THead, TD, TH, TR } from "@/components/ui/Table";
 import { createClient } from "@/lib/supabase-client";
-import { Gift, Save, Check, X, RefreshCw, Trash2 } from "lucide-react";
+import { Gift, Save, Check, X, RefreshCw, Undo2 } from "lucide-react";
 import { toast } from "sonner";
 
 type RewardsConfig = {
@@ -51,6 +50,7 @@ type LedgerRow = {
   baht_equivalent: number;
   notes: string | null;
   created_at: string;
+  reverses_entry_id?: string | null;
 };
 
 const REASON_LABELS: Record<string, string> = {
@@ -59,8 +59,40 @@ const REASON_LABELS: Record<string, string> = {
   referral_bonus: "โบนัสแนะนำเพื่อน",
   milestone_3mo: "โบนัสครบ 3 เดือน",
   milestone_1yr: "โบนัสครบ 1 ปี",
-  redemption: "แลกคะแนน",
+  redemption: "แลกคะแนน (ส่วนลดในบิล)",
+  redemption_reversal: "ยกเลิกการแลกคะแนน (คืนแต้ม + ยกเลิกส่วนลด)",
   manual_adjustment: "ปรับปรุงคะแนนโดยผู้ดูแล",
+};
+
+const formatBahtThai = (value: number) =>
+  value.toLocaleString("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+/**
+ * Earned points, redeemed points and the baht discount they bought are three
+ * different things, and none of them is cash received. Mirrors
+ * summarizePointsLedger in lib/points-ledger.ts (kept client-side here because
+ * that module is server-only).
+ */
+const summarizeHistory = (rows: LedgerRow[]) => {
+  let earned = 0;
+  let redeemed = 0;
+  let returned = 0;
+  let manual = 0;
+  let discount = 0;
+  for (const row of rows) {
+    if (row.reason === "redemption") {
+      redeemed += Math.abs(row.points);
+      discount += Number(row.baht_equivalent ?? 0);
+    } else if (row.reason === "redemption_reversal") {
+      returned += Math.abs(row.points);
+      discount -= Number(row.baht_equivalent ?? 0);
+    } else if (row.reason === "manual_adjustment") {
+      manual += row.points;
+    } else if (row.points > 0) {
+      earned += row.points;
+    }
+  }
+  return { earned, redeemedNet: redeemed - returned, returned, manual, discount: Math.round(discount * 100) / 100 };
 };
 
 const formatDateThai = (value?: string | null) => (value ? new Date(value).toLocaleDateString("th-TH") : "-");
@@ -81,6 +113,17 @@ export default function RewardsPage() {
   const [syncingAll, setSyncingAll] = useState(false);
   const [redemptionToDelete, setRedemptionToDelete] = useState<LedgerRow | null>(null);
   const [deletingRedemption, setDeletingRedemption] = useState(false);
+  const [reversalReason, setReversalReason] = useState("");
+  const historySummary = useMemo(() => summarizeHistory(detailHistory), [detailHistory]);
+  const reversedIds = useMemo(
+    () =>
+      new Set(
+        detailHistory
+          .filter((row) => row.reason === "redemption_reversal" && row.reverses_entry_id)
+          .map((row) => String(row.reverses_entry_id)),
+      ),
+    [detailHistory],
+  );
 
   const callAction = async (action: string, payload: Record<string, unknown> = {}) => {
     const { data } = await supabase.auth.getSession();
@@ -178,11 +221,16 @@ export default function RewardsPage() {
 
   const confirmDeleteRedemption = async () => {
     if (!redemptionToDelete || !detailTenant) return;
+    if (!reversalReason.trim()) {
+      toast.error("กรุณาระบุเหตุผล");
+      return;
+    }
     setDeletingRedemption(true);
     try {
-      await callAction("delete_redemption", { entryId: redemptionToDelete.id });
-      toast.success("ลบรายการแลกคะแนนแล้ว คืนแต้มและสิทธิ์แลกคะแนนของเดือนนี้ให้ผู้เช่าแล้ว");
+      await callAction("reverse_redemption", { entryId: redemptionToDelete.id, reason: reversalReason.trim() });
+      toast.success("ยกเลิกการแลกคะแนนแล้ว: คืนแต้มและยกเลิกส่วนลดบนใบแจ้งหนี้");
       setRedemptionToDelete(null);
+      setReversalReason("");
       await openTenantDetail(detailTenant);
       await loadOverview();
     } catch (error: any) {
@@ -429,6 +477,37 @@ export default function RewardsPage() {
           <Skeleton className="h-48" />
         ) : (
           <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <div className="rounded-card border border-slate-200/70 bg-white p-3">
+                <p className="text-xs text-slate-500">แต้มที่ได้รับ</p>
+                <p className="text-lg font-semibold tabular-nums text-success-700">
+                  +{historySummary.earned.toLocaleString("th-TH")}
+                </p>
+              </div>
+              <div className="rounded-card border border-slate-200/70 bg-white p-3">
+                <p className="text-xs text-slate-500">แต้มที่ใช้แลก (สุทธิ)</p>
+                <p className="text-lg font-semibold tabular-nums text-danger-700">
+                  -{historySummary.redeemedNet.toLocaleString("th-TH")}
+                </p>
+                {historySummary.returned > 0 && (
+                  <p className="text-xs text-slate-500">
+                    คืนจากการยกเลิก {historySummary.returned.toLocaleString("th-TH")}
+                  </p>
+                )}
+              </div>
+              <div className="rounded-card border border-slate-200/70 bg-white p-3">
+                <p className="text-xs text-slate-500">ส่วนลดในบิลจากแต้ม</p>
+                <p className="text-lg font-semibold tabular-nums">฿{formatBahtThai(historySummary.discount)}</p>
+                <p className="text-xs text-slate-500">ไม่ใช่เงินที่รับชำระ</p>
+              </div>
+              <div className="rounded-card border border-slate-200/70 bg-white p-3">
+                <p className="text-xs text-slate-500">ปรับโดยผู้ดูแล</p>
+                <p className="text-lg font-semibold tabular-nums">
+                  {historySummary.manual >= 0 ? "+" : ""}
+                  {historySummary.manual.toLocaleString("th-TH")}
+                </p>
+              </div>
+            </div>
             <div className="rounded-card border border-slate-200/70 bg-slate-50/60 p-4">
               <p className="text-sm font-medium text-slate-700">ปรับปรุงคะแนนด้วยตนเอง</p>
               <div className="mt-3 grid gap-3 sm:grid-cols-[1fr_2fr_auto]">
@@ -474,16 +553,22 @@ export default function RewardsPage() {
                           {row.points.toLocaleString("th-TH")}
                         </TD>
                         <TD className="text-right">
-                          {row.reason === "redemption" && (
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              onClick={() => setRedemptionToDelete(row)}
-                              title="ลบรายการแลกคะแนน (คืนแต้มและสิทธิ์เดือนนี้)"
-                            >
-                              <Trash2 size={16} className="text-danger-600" />
-                            </Button>
-                          )}
+                          {row.reason === "redemption" &&
+                            (reversedIds.has(row.id) ? (
+                              <Badge variant="neutral">ยกเลิกแล้ว</Badge>
+                            ) : (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => {
+                                  setReversalReason("");
+                                  setRedemptionToDelete(row);
+                                }}
+                                title="ยกเลิกการแลกคะแนน (คืนแต้มและยกเลิกส่วนลด)"
+                              >
+                                <Undo2 size={16} className="text-danger-600" />
+                              </Button>
+                            ))}
                         </TD>
                       </TR>
                     ))}
@@ -495,20 +580,43 @@ export default function RewardsPage() {
         )}
       </Modal>
 
-      <ConfirmActionModal
+      <Modal
         isOpen={!!redemptionToDelete}
-        title="ลบรายการแลกคะแนน"
-        message={
-          redemptionToDelete
-            ? `ลบรายการแลกคะแนนนี้ (${Math.abs(redemptionToDelete.points).toLocaleString("th-TH")} แต้ม, ${formatDateThai(redemptionToDelete.created_at)})? แต้มจะถูกคืนให้ผู้เช่าและสิทธิ์แลกคะแนนของเดือนนี้จะกลับมาใช้ได้อีกครั้ง ส่วนลดที่ใช้ไปแล้วบนใบแจ้งหนี้จะไม่ถูกย้อนกลับ`
-            : ""
+        onClose={() => setRedemptionToDelete(null)}
+        title="ยกเลิกการแลกคะแนน"
+        size="md"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setRedemptionToDelete(null)} disabled={deletingRedemption}>
+              ปิด
+            </Button>
+            <Button
+              variant="danger"
+              onClick={() => void confirmDeleteRedemption()}
+              loading={deletingRedemption}
+              disabled={!reversalReason.trim()}
+            >
+              ยืนยันยกเลิก
+            </Button>
+          </>
         }
-        confirmLabel="ลบรายการ"
-        destructive
-        loading={deletingRedemption}
-        onCancel={() => setRedemptionToDelete(null)}
-        onConfirm={confirmDeleteRedemption}
-      />
+      >
+        {redemptionToDelete && (
+          <div className="space-y-3">
+            <p className="text-sm leading-relaxed text-slate-600">
+              ยกเลิกการแลกคะแนน {Math.abs(redemptionToDelete.points).toLocaleString("th-TH")} แต้ม (ส่วนลด ฿
+              {formatBahtThai(Number(redemptionToDelete.baht_equivalent ?? 0))},{" "}
+              {formatDateThai(redemptionToDelete.created_at)})? ระบบจะบันทึกรายการคืนแต้มและยกเลิกส่วนลดบนใบแจ้งหนี้คู่กัน
+              โดยไม่ลบรายการเดิม ใบแจ้งหนี้ต้องยังไม่ชำระครบ สิทธิ์แลกคะแนนของเดือนนี้จะยังถูกนับว่าใช้ไปแล้ว
+            </p>
+            <Input
+              placeholder="เหตุผล (จำเป็น)"
+              value={reversalReason}
+              onChange={(e) => setReversalReason(e.target.value)}
+            />
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

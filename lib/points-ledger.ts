@@ -1,4 +1,12 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import {
+  chargesFromInvoiceRow,
+  computeInvoiceTotal,
+  toInvoiceMoneyColumns,
+  type InvoiceMoneyColumns,
+  type InvoiceMoneyRow,
+} from "./invoice-total";
+import { toBangkokMonth } from "./money/bangkok-date";
 
 /**
  * Tenant rewards/points ledger. Mirrors lib/invoice-ledger.ts conventions:
@@ -230,9 +238,160 @@ export const yearMilestonesReached = (moveInDateText: string, asOfDateText: stri
   return repeats ? years : 1;
 };
 
-/** Clamp a requested baht discount against the per-redemption cap and the invoice's own outstanding balance. */
-export const clampRedemptionBaht = (requestedBaht: number, maxRedemptionBaht: number, invoiceOutstanding: number) =>
-  Math.max(0, Math.min(requestedBaht, maxRedemptionBaht, invoiceOutstanding));
+/**
+ * Clamp a requested baht discount against the per-redemption cap and the
+ * invoice's redeemable charge (see redeemableChargeFor — rent/utilities only,
+ * never the invoice's whole outstanding balance).
+ */
+export const clampRedemptionBaht = (requestedBaht: number, maxRedemptionBaht: number, redeemableCharge: number) =>
+  Math.max(0, Math.min(requestedBaht, maxRedemptionBaht, redeemableCharge));
+
+export type RedemptionTarget = "rent" | "utility";
+
+export type RedeemableInvoiceLike = {
+  rent_amount?: number | null;
+  water_bill?: number | null;
+  electricity_bill?: number | null;
+  discount_amount?: number | null;
+  paid_amount?: number | null;
+};
+
+const round2 = (value: number) => Math.round(value * 100) / 100;
+
+/**
+ * The part of an invoice a points discount may touch. Mirrors the cap in
+ * redeem_points_atomic (migration 20261002000700), which re-checks it on the
+ * locked row:
+ *   - only the coupon's own target: rent for "rent", water + electricity for "utility";
+ *   - less every discount already on the invoice;
+ *   - less what has been paid, assuming payments covered rent/utilities first,
+ *     so a remainder made only of late fees / common fee / other fees / carried
+ *     debt is never discountable.
+ */
+export const redeemableChargeFor = (invoice: RedeemableInvoiceLike, target: RedemptionTarget) => {
+  const rent = toNumber(invoice.rent_amount);
+  const utilities = toNumber(invoice.water_bill) + toNumber(invoice.electricity_bill);
+  const discount = toNumber(invoice.discount_amount);
+  const paid = toNumber(invoice.paid_amount);
+  const targetRemaining = (target === "rent" ? rent : utilities) - discount;
+  const unpaidRedeemable = rent + utilities - discount - paid;
+  return Math.max(0, round2(Math.min(targetRemaining, unpaidRedeemable)));
+};
+
+/**
+ * Whole points actually spent and the baht they buy, after the caps. Points are
+ * floored so the discount never exceeds the cap, and the baht is derived from
+ * the points (not the other way round) so the pair always matches the rate.
+ */
+export const planRedemptionAmounts = (
+  requestedPoints: number,
+  config: Pick<RewardsConfig, "points_per_baht" | "max_redemption_baht">,
+  redeemableCharge: number,
+) => {
+  const ppb = config.points_per_baht;
+  if (!(ppb > 0)) return { pointsSpent: 0, bahtApplied: 0 };
+  const requested = Math.max(0, Math.floor(toNumber(requestedPoints)));
+  const cappedBaht = clampRedemptionBaht(requested / ppb, config.max_redemption_baht, redeemableCharge);
+  const pointsSpent = Math.min(requested, Math.floor(cappedBaht * ppb + 1e-9));
+  return { pointsSpent, bahtApplied: round2(pointsSpent / ppb) };
+};
+
+/**
+ * Redemptions that count toward the monthly limit: every 'redemption' row
+ * created in the current Asia/Bangkok calendar month, INCLUDING ones later
+ * reversed. A reversal is its own 'redemption_reversal' row and never hands the
+ * slot back (same rule as redeem_points_atomic).
+ */
+export const redemptionsUsedThisMonth = (
+  history: Pick<PointLedgerRow, "reason" | "created_at">[],
+  now: Date = new Date(),
+) => {
+  const month = toBangkokMonth(now);
+  return history.filter((row) => row.reason === "redemption" && toBangkokMonth(row.created_at) === month).length;
+};
+
+/** Ids of redemption rows that already have a paired reversal. */
+export const reversedRedemptionIds = (history: Pick<PointLedgerRow, "reason" | "reverses_entry_id">[]) =>
+  new Set(
+    history
+      .filter((row) => row.reason === "redemption_reversal" && row.reverses_entry_id)
+      .map((row) => String(row.reverses_entry_id)),
+  );
+
+/**
+ * Points earned, points redeemed (net of reversals) and the baht discount they
+ * bought, kept apart. None of these is cash: cash received lives in
+ * payment_batches / invoice_payment_allocations and is never summed with them.
+ */
+export const summarizePointsLedger = (history: Pick<PointLedgerRow, "reason" | "points" | "baht_equivalent">[]) => {
+  let pointsEarned = 0;
+  let pointsRedeemed = 0;
+  let pointsReturned = 0;
+  let otherAdjustments = 0;
+  let bahtDiscount = 0;
+  for (const row of history) {
+    const points = toNumber(row.points);
+    if (row.reason === "redemption") {
+      pointsRedeemed += Math.abs(points);
+      bahtDiscount += toNumber(row.baht_equivalent);
+    } else if (row.reason === "redemption_reversal") {
+      pointsReturned += Math.abs(points);
+      bahtDiscount -= toNumber(row.baht_equivalent);
+    } else if (row.reason === "manual_adjustment") {
+      otherAdjustments += points;
+    } else if (points > 0) {
+      pointsEarned += points;
+    }
+  }
+  return {
+    pointsEarned,
+    pointsRedeemedNet: pointsRedeemed - pointsReturned,
+    pointsReturned,
+    manualAdjustments: otherAdjustments,
+    bahtDiscountNet: round2(bahtDiscount),
+  };
+};
+
+const MONEY_TOLERANCE = 0.005;
+
+const INVOICE_REDEMPTION_COLUMNS =
+  "id,tenant_id,status,total_amount,paid_amount,discount_amount,late_fee_amount,additional_fees_total," +
+  "additional_fees_breakdown,carry_forward_amount,rent_amount,water_bill,electricity_bill,common_fee";
+
+/** The invoice values a redemption/reversal is computed from (sent as `expected`, checked under lock). */
+export const redemptionExpectedColumns = (row: InvoiceMoneyRow & { total_amount?: number | null; paid_amount?: number | null }) => ({
+  total_amount: toNumber(row.total_amount),
+  discount_amount: toNumber(row.discount_amount),
+  paid_amount: toNumber(row.paid_amount),
+  late_fee_amount: toNumber(row.late_fee_amount),
+  additional_fees_total: toNumber(row.additional_fees_total),
+  carry_forward_amount: toNumber(row.carry_forward_amount),
+  rent_amount: toNumber(row.rent_amount),
+  water_bill: toNumber(row.water_bill),
+  electricity_bill: toNumber(row.electricity_bill),
+  common_fee: toNumber(row.common_fee),
+});
+
+/**
+ * New money columns after changing the discount by `discountDelta` (positive
+ * for a redemption, negative for its reversal), computed through the invoice
+ * engine. Refuses when the stored total already disagrees with the engine:
+ * writing a discount on top of a drifted total would bake the drift in.
+ */
+export const redemptionInvoiceColumns = (
+  row: InvoiceMoneyRow & { total_amount?: number | null },
+  discountDelta: number,
+): InvoiceMoneyColumns => {
+  const charges = chargesFromInvoiceRow(row);
+  const engineTotal = computeInvoiceTotal(charges);
+  if (Math.abs(engineTotal - toNumber(row.total_amount)) > MONEY_TOLERANCE) {
+    throw new Error(
+      `Invoice total (${toNumber(row.total_amount)}) does not match its charges (${round2(engineTotal)}); re-save the invoice before changing points discounts.`,
+    );
+  }
+  const columns = toInvoiceMoneyColumns({ ...charges, discount: round2(charges.discount + discountDelta) });
+  return { ...columns, total_amount: round2(columns.total_amount), discount_amount: round2(columns.discount_amount) };
+};
 
 /** Canonical Thai labels for each ledger reason — shared by the admin page, tenant LIFF page, and LINE notifications. */
 export const POINTS_REASON_LABELS_TH: Record<string, string> = {
@@ -242,6 +401,7 @@ export const POINTS_REASON_LABELS_TH: Record<string, string> = {
   milestone_3mo: "โบนัสครบ 3 เดือน",
   milestone_1yr: "โบนัสครบ 1 ปี",
   redemption: "แลกคะแนน",
+  redemption_reversal: "ยกเลิกการแลกคะแนน (คืนแต้ม)",
   manual_adjustment: "ปรับปรุงคะแนนโดยผู้ดูแล",
 };
 
@@ -260,10 +420,12 @@ export type PointLedgerRow = {
   created_by: string | null;
   notes: string | null;
   created_at: string;
+  /** Set only on 'redemption_reversal' rows: the redemption they reverse. */
+  reverses_entry_id?: string | null;
 };
 
 const LEDGER_COLUMNS =
-  "id,tenant_id,points,reason,reference_type,reference_id,baht_equivalent,expires_at,idempotency_key,created_by,notes,created_at";
+  "id,tenant_id,points,reason,reference_type,reference_id,baht_equivalent,expires_at,idempotency_key,created_by,notes,created_at,reverses_entry_id";
 
 export async function getRewardsConfig(supabase: SupabaseClient): Promise<RewardsConfig> {
   const { data, error } = await supabase.from("settings").select("rewards_config").eq("id", 1).maybeSingle();
@@ -554,9 +716,16 @@ const OPEN_FOR_REDEMPTION_STATUSES = ["pending", "overdue", "partial"];
 export type RedeemPointsOptions = {
   tenantId: string;
   invoiceId: string;
-  target: "rent" | "utility";
+  target: RedemptionTarget;
   pointsToRedeem: number;
-  idempotencyKey?: string | null;
+  /**
+   * REQUIRED. One key per redemption attempt, reused on retry: a repeated key
+   * replays the original redemption instead of spending points twice. It is
+   * stored on both the ledger row and the invoice adjustment.
+   */
+  idempotencyKey: string;
+  createdBy?: string | null;
+  actor?: string | null;
 };
 
 export type RedeemPointsResult = {
@@ -564,137 +733,111 @@ export type RedeemPointsResult = {
   bahtApplied: number;
   updatedInvoice: any;
   ledgerEntry: PointLedgerRow;
+  /** True when the key had already been used: nothing new was written. */
+  replay: boolean;
 };
 
+/** Strip the Postgres error prefix codes the functions raise, keeping the human message. */
+const rpcErrorMessage = (message: string) => message.replace(/^[A-Z_]+:\s*/, "");
+
+/**
+ * Redeem points against an open invoice: ONE call to redeem_points_atomic,
+ * which locks the invoice and the tenant's point rows, re-checks the balance,
+ * the monthly limit and the discount cap, and writes the ledger row, the
+ * 'points_redemption' adjustment, the invoice columns and a money_event in one
+ * transaction (or nothing).
+ *
+ * This side only computes: the discount (rent/utilities only, see
+ * redeemableChargeFor) and the invoice's new money columns through the
+ * invoice engine. The database rejects the call if the invoice changed since
+ * it was read (STALE_INVOICE) or if the columns do not equal old -/+ discount.
+ */
 export async function redeemPoints(
   supabase: SupabaseClient,
   options: RedeemPointsOptions,
   config?: RewardsConfig,
 ): Promise<RedeemPointsResult> {
   const { tenantId, invoiceId, target, pointsToRedeem } = options;
+  const key = String(options.idempotencyKey ?? "").trim();
+  if (!key) throw new Error("A redemption key is required.");
+  if (target !== "rent" && target !== "utility") throw new Error("target must be rent or utility.");
   const cfg = config ?? (await getRewardsConfig(supabase));
   const requestedPoints = Math.max(0, Math.floor(toNumber(pointsToRedeem)));
   if (requestedPoints <= 0) throw new Error("Points to redeem must be greater than zero.");
 
-  const trimmedIdem = options.idempotencyKey?.trim() || null;
-  if (trimmedIdem) {
-    const { data: existing, error: existingError } = await supabase
-      .from("point_ledger_entries")
-      .select(LEDGER_COLUMNS)
-      .eq("idempotency_key", trimmedIdem)
-      .maybeSingle();
-    if (existingError) throw new Error(existingError.message);
-    if (existing) {
-      const { data: invoice } = await supabase.from("invoices").select("*").eq("id", invoiceId).maybeSingle();
-      return {
-        pointsSpent: Math.abs(toNumber((existing as any).points)),
-        bahtApplied: toNumber((existing as any).baht_equivalent),
-        updatedInvoice: invoice ?? null,
-        ledgerEntry: existing as PointLedgerRow,
-      };
-    }
-  }
-
-  const now = new Date();
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-  const { data: monthlyRedemptions, error: redemptionCountError } = await supabase
+  // Replay first: a retry must succeed quietly even though the first attempt
+  // already used the points/limit/discount room that the checks below look at.
+  const { data: existing, error: existingError } = await supabase
     .from("point_ledger_entries")
-    .select("id")
-    .eq("tenant_id", tenantId)
-    .eq("reason", "redemption")
-    .gte("created_at", monthStart);
-  if (redemptionCountError) throw new Error(redemptionCountError.message);
-  if ((monthlyRedemptions ?? []).length >= cfg.max_redemptions_per_month) {
-    throw new Error("Redemption limit for this month has already been used.");
+    .select(LEDGER_COLUMNS)
+    .eq("idempotency_key", key)
+    .maybeSingle();
+  if (existingError) throw new Error(existingError.message);
+  if (existing) {
+    const row = existing as PointLedgerRow;
+    if (row.tenant_id !== tenantId || row.reason !== "redemption" || row.reference_id !== invoiceId) {
+      throw new Error("This redemption key was already used for a different request.");
+    }
+    const { data: invoice } = await supabase.from("invoices").select("*").eq("id", invoiceId).maybeSingle();
+    return {
+      pointsSpent: Math.abs(toNumber(row.points)),
+      bahtApplied: toNumber(row.baht_equivalent),
+      updatedInvoice: invoice ?? null,
+      ledgerEntry: row,
+      replay: true,
+    };
   }
-
-  const balance = await getTenantPointBalance(supabase, tenantId);
-  if (balance < requestedPoints) throw new Error("Insufficient point balance.");
 
   const { data: invoice, error: invoiceError } = await supabase
     .from("invoices")
-    .select("id,tenant_id,status,total_amount,paid_amount,discount_amount,discount_breakdown")
+    .select(INVOICE_REDEMPTION_COLUMNS)
     .eq("id", invoiceId)
     .single();
   if (invoiceError || !invoice) throw new Error(invoiceError?.message ?? "Invoice not found.");
-  if (String((invoice as any).tenant_id) !== tenantId) throw new Error("Invoice does not belong to this tenant.");
-  if (!OPEN_FOR_REDEMPTION_STATUSES.includes(String((invoice as any).status))) {
+  const row = invoice as any;
+  if (String(row.tenant_id) !== tenantId) throw new Error("Invoice does not belong to this tenant.");
+  if (!OPEN_FOR_REDEMPTION_STATUSES.includes(String(row.status))) {
     throw new Error("This invoice is not open for redemption.");
   }
 
-  const outstanding = Math.max(0, toNumber((invoice as any).total_amount) - toNumber((invoice as any).paid_amount));
-  const requestedBaht = bahtEquivalent(requestedPoints, cfg);
-  const cappedBaht = clampRedemptionBaht(requestedBaht, cfg.max_redemption_baht, outstanding);
-  if (cappedBaht <= 0) throw new Error("Nothing available to redeem against this invoice.");
-  const actualPointsSpent = Math.min(requestedPoints, Math.round(cappedBaht * cfg.points_per_baht));
+  const { pointsSpent, bahtApplied } = planRedemptionAmounts(requestedPoints, cfg, redeemableChargeFor(row, target));
+  if (pointsSpent <= 0 || bahtApplied <= 0) throw new Error("Nothing available to redeem against this invoice.");
 
-  const label = target === "rent" ? "แลกคะแนนสะสม (ส่วนลดค่าเช่า)" : "แลกคะแนนสะสม (ส่วนลดค่าน้ำ-ไฟ)";
-  const existingBreakdown = Array.isArray((invoice as any).discount_breakdown) ? (invoice as any).discount_breakdown : [];
-  const nextBreakdown = [
-    ...existingBreakdown,
-    {
-      detail: label,
-      label,
-      unit: 1,
-      price_per_unit: cappedBaht,
-      total_amount: cappedBaht,
-      amount: cappedBaht,
-      source: "rewards_redemption",
+  const expected = redemptionExpectedColumns(row);
+  const next = redemptionInvoiceColumns(row, bahtApplied);
+
+  const { data, error } = await supabase.rpc("redeem_points_atomic", {
+    p: {
+      tenant_id: tenantId,
+      invoice_id: invoiceId,
+      target,
+      reference_key: key,
+      points_to_spend: pointsSpent,
+      baht_applied: bahtApplied,
+      points_per_baht: cfg.points_per_baht,
+      max_redemption_baht: cfg.max_redemption_baht,
+      max_redemptions_per_month: cfg.max_redemptions_per_month,
+      expected,
+      new: {
+        total_amount: next.total_amount,
+        discount_amount: next.discount_amount,
+        late_fee_amount: next.late_fee_amount,
+        additional_fees_total: next.additional_fees_total,
+        carry_forward_amount: next.carry_forward_amount,
+      },
+      created_by: options.createdBy ?? null,
+      actor: options.actor ?? null,
     },
-  ];
-  const nextDiscountAmount = toNumber((invoice as any).discount_amount) + cappedBaht;
-  const nextTotalAmount = toNumber((invoice as any).total_amount) - cappedBaht;
-
-  const revertSnapshot = {
-    discount_amount: toNumber((invoice as any).discount_amount),
-    discount_breakdown: existingBreakdown,
-    total_amount: toNumber((invoice as any).total_amount),
+  });
+  if (error) throw new Error(rpcErrorMessage(error.message));
+  const result = data as any;
+  return {
+    pointsSpent: toNumber(result?.points_spent),
+    bahtApplied: toNumber(result?.baht_applied),
+    updatedInvoice: result?.invoice ?? null,
+    ledgerEntry: result?.ledger_entry as PointLedgerRow,
+    replay: !!result?.replay,
   };
-
-  const { data: updatedInvoice, error: updateError } = await supabase
-    .from("invoices")
-    .update({
-      discount_amount: nextDiscountAmount,
-      discount_breakdown: nextBreakdown,
-      total_amount: nextTotalAmount,
-    })
-    .eq("id", invoiceId)
-    .select("*")
-    .single();
-  if (updateError) throw new Error(updateError.message);
-
-  try {
-    const { data: ledgerEntry, error: ledgerError } = await supabase
-      .from("point_ledger_entries")
-      .insert({
-        tenant_id: tenantId,
-        points: -actualPointsSpent,
-        reason: "redemption",
-        reference_type: "invoice",
-        reference_id: invoiceId,
-        baht_equivalent: cappedBaht,
-        expires_at: null,
-        idempotency_key: trimmedIdem,
-        created_by: null,
-        notes: target === "rent" ? "Redeemed toward rent" : "Redeemed toward utility bill",
-      })
-      .select(LEDGER_COLUMNS)
-      .single();
-    if (ledgerError) throw new Error(ledgerError.message);
-
-    return {
-      pointsSpent: actualPointsSpent,
-      bahtApplied: cappedBaht,
-      updatedInvoice,
-      ledgerEntry: ledgerEntry as PointLedgerRow,
-    };
-  } catch (err) {
-    const { error: revertError } = await supabase.from("invoices").update(revertSnapshot).eq("id", invoiceId);
-    if (revertError) {
-      console.error("[points-ledger] Failed to revert invoice after redemption error:", invoiceId, revertError);
-    }
-    throw err;
-  }
 }
 
 export async function approveReferral(
@@ -796,31 +939,98 @@ export async function manualAdjustPoints(
   return ledgerEntry as PointLedgerRow;
 }
 
+export type ReverseRedemptionOptions = {
+  entryId: string;
+  /** REQUIRED: why the redemption is being undone (kept on both reversal rows). */
+  reason: string;
+  createdBy?: string | null;
+  actor?: string | null;
+};
+
+export type ReverseRedemptionResult = {
+  originalEntry: PointLedgerRow;
+  reversalEntry: PointLedgerRow;
+  updatedInvoice: any;
+  pointsReturned: number;
+  bahtRestored: number;
+};
+
 /**
- * Admin correction: deletes a redemption ledger row. Since a tenant's balance
- * is always derived from SUM(points), deleting a redemption (which is stored
- * as negative points) automatically refunds those points back into their
- * balance. It also reverts that month's redemption count (redeemPoints checks
- * `reason = 'redemption' AND created_at >= monthStart`), lifting the
- * once-per-month limit for this tenant this month. This does NOT reverse the
- * invoice discount that redemption already applied — that's a separate,
- * deliberate admin call (the discount already reduced what the tenant owes;
- * un-doing that would require re-editing the invoice, which is out of scope
- * for a ledger correction).
+ * Undo a redemption as a PAIR of new rows through reverse_points_redemption:
+ * a '+points' 'redemption_reversal' ledger row and a negative adjustment, both
+ * linked to the originals under '<key>:reversal', plus the invoice's discount
+ * removed (columns computed through the invoice engine). Nothing is deleted,
+ * a redemption can be reversed once, and the monthly-limit slot it used stays
+ * used (see redemptionsUsedThisMonth).
  */
-export async function deleteRedemption(supabase: SupabaseClient, entryId: string) {
+export async function reverseRedemption(
+  supabase: SupabaseClient,
+  options: ReverseRedemptionOptions,
+): Promise<ReverseRedemptionResult> {
+  const reason = String(options.reason ?? "").trim();
+  if (!reason) throw new Error("A reason is required to reverse a redemption.");
+
   const { data: entry, error: fetchError } = await supabase
     .from("point_ledger_entries")
     .select(LEDGER_COLUMNS)
-    .eq("id", entryId)
+    .eq("id", options.entryId)
     .maybeSingle();
   if (fetchError) throw new Error(fetchError.message);
   if (!entry) throw new Error("Ledger entry not found.");
-  if ((entry as PointLedgerRow).reason !== "redemption") {
-    throw new Error("Only redemption entries can be deleted this way.");
+  const original = entry as PointLedgerRow;
+  if (original.reason !== "redemption") throw new Error("Only redemption entries can be reversed.");
+  if (original.reference_type !== "invoice" || !original.reference_id) {
+    throw new Error("Redemption has no invoice to restore.");
   }
 
-  const { error: deleteError } = await supabase.from("point_ledger_entries").delete().eq("id", entryId);
-  if (deleteError) throw new Error(deleteError.message);
-  return entry as PointLedgerRow;
+  const { data: invoice, error: invoiceError } = await supabase
+    .from("invoices")
+    .select(INVOICE_REDEMPTION_COLUMNS)
+    .eq("id", original.reference_id)
+    .single();
+  if (invoiceError || !invoice) throw new Error(invoiceError?.message ?? "Invoice not found.");
+
+  const baht = toNumber(original.baht_equivalent);
+  const expected = redemptionExpectedColumns(invoice as any);
+  const next = redemptionInvoiceColumns(invoice as any, -baht);
+
+  const { data, error } = await supabase.rpc("reverse_points_redemption", {
+    p: {
+      entry_id: original.id,
+      reason,
+      expected,
+      new: {
+        total_amount: next.total_amount,
+        discount_amount: next.discount_amount,
+        late_fee_amount: next.late_fee_amount,
+        additional_fees_total: next.additional_fees_total,
+        carry_forward_amount: next.carry_forward_amount,
+      },
+      created_by: options.createdBy ?? null,
+      actor: options.actor ?? null,
+    },
+  });
+  if (error) throw new Error(rpcErrorMessage(error.message));
+  const result = data as any;
+  return {
+    originalEntry: result?.original_entry as PointLedgerRow,
+    reversalEntry: result?.reversal_entry as PointLedgerRow,
+    updatedInvoice: result?.invoice ?? null,
+    pointsReturned: toNumber(result?.points_returned),
+    bahtRestored: toNumber(result?.baht_restored),
+  };
+}
+
+/**
+ * Kept for existing callers. A redemption is never deleted any more: this posts
+ * the paired reversal (points back AND discount removed) via reverseRedemption,
+ * and returns the ORIGINAL entry as before.
+ */
+export async function deleteRedemption(
+  supabase: SupabaseClient,
+  entryId: string,
+  options: { reason: string; createdBy?: string | null; actor?: string | null },
+) {
+  const result = await reverseRedemption(supabase, { entryId, ...options });
+  return result.originalEntry;
 }

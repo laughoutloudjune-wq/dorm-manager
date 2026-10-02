@@ -36,7 +36,8 @@ const REASON_LABELS: Record<string, string> = {
   referral_bonus: "โบนัสแนะนำเพื่อน",
   milestone_3mo: "โบนัสครบ 3 เดือน",
   milestone_1yr: "โบนัสครบ 1 ปี",
-  redemption: "แลกคะแนน",
+  redemption: "แลกคะแนนเป็นส่วนลด",
+  redemption_reversal: "ยกเลิกการแลกคะแนน (คืนแต้ม)",
   manual_adjustment: "ปรับปรุงคะแนนโดยผู้ดูแล",
 };
 
@@ -161,7 +162,13 @@ export default function RewardsPointsLiffPage() {
                             <p className="truncate text-sm font-medium text-slate-900">
                               {REASON_LABELS[row.reason] ?? row.reason}
                             </p>
-                            <p className="text-xs text-slate-500">{formatDateThai(row.created_at)}</p>
+                            <p className="text-xs text-slate-500">
+                              {formatDateThai(row.created_at)}
+                              {row.reason === "redemption" &&
+                                ` • ส่วนลดในบิล ฿${formatMoney(row.baht_equivalent)} (ไม่ใช่ยอดชำระ)`}
+                              {row.reason === "redemption_reversal" &&
+                                ` • ยกเลิกส่วนลด ฿${formatMoney(row.baht_equivalent)}`}
+                            </p>
                           </div>
                           <p className={`text-sm font-semibold ${row.points >= 0 ? "text-emerald-700" : "text-rose-700"}`}>
                             {row.points >= 0 ? "+" : ""}

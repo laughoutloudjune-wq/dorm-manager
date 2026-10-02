@@ -240,6 +240,10 @@ export default function PaymentTokenPage() {
   const [canRedeemThisInvoice, setCanRedeemThisInvoice] = useState(false);
   const [appliedCoupon, setAppliedCoupon] = useState<"rent" | "utility" | null>(null);
   const [redeemingTarget, setRedeemingTarget] = useState<"rent" | "utility" | null>(null);
+  // One key per redemption attempt. Kept when the request never got an answer
+  // (network error), so tapping again replays instead of redeeming twice;
+  // cleared once the server has answered either way.
+  const redeemKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     const init = async () => {
@@ -418,6 +422,14 @@ export default function PaymentTokenPage() {
       return;
     }
     setRedeemingTarget(target);
+    const keyPrefix = `${invoice.id}:${target}:`;
+    if (!redeemKeyRef.current || !redeemKeyRef.current.startsWith(keyPrefix)) {
+      const random =
+        typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      redeemKeyRef.current = `${keyPrefix}${random}`;
+    }
     try {
       const response = await fetch("/api/payment-liff/points", {
         method: "POST",
@@ -428,8 +440,10 @@ export default function PaymentTokenPage() {
           invoiceId: invoice.id,
           target,
           pointsToRedeem: points,
+          idempotencyKey: redeemKeyRef.current,
         }),
       });
+      redeemKeyRef.current = null;
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data?.error ?? "แลกคะแนนไม่สำเร็จ");
 
@@ -441,6 +455,12 @@ export default function PaymentTokenPage() {
           ? {
               ...prev,
               total_amount: toNumber(data.updatedInvoice?.total_amount ?? prev.total_amount),
+              // The points discount is a discount line, not a payment: show it
+              // under discounts so it is never read as cash received.
+              discount_amount: toNumber(data.updatedInvoice?.discount_amount ?? prev.discount_amount),
+              discount_breakdown: Array.isArray(data.updatedInvoice?.discount_breakdown)
+                ? data.updatedInvoice.discount_breakdown
+                : prev.discount_breakdown,
             }
           : prev
       );

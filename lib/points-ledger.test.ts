@@ -16,7 +16,127 @@ import {
   addMonthsToDate,
   resolveTier,
   couponCosts,
+  redeemableChargeFor,
+  planRedemptionAmounts,
+  redemptionsUsedThisMonth,
+  redemptionInvoiceColumns,
+  redemptionExpectedColumns,
+  summarizePointsLedger,
+  reversedRedemptionIds,
+  redeemPoints,
 } from "./points-ledger";
+
+describe("redeemableChargeFor (rent/utilities only)", () => {
+  const inv = { rent_amount: 3000, water_bill: 200, electricity_bill: 300, discount_amount: 0, paid_amount: 0 };
+  it("rent target is limited to rent, utility target to water + electricity", () => {
+    expect(redeemableChargeFor(inv, "rent")).toBe(3000);
+    expect(redeemableChargeFor(inv, "utility")).toBe(500);
+  });
+  it("never includes late fees, common fee, other fees or carried debt (they are not inputs)", () => {
+    const withExtras = { ...inv, late_fee_amount: 500, carry_forward_amount: 1000, common_fee: 50 } as any;
+    expect(redeemableChargeFor(withExtras, "rent")).toBe(3000);
+  });
+  it("subtracts existing discounts and payments (payments assumed to cover rent/utilities first)", () => {
+    expect(redeemableChargeFor({ ...inv, discount_amount: 100 }, "utility")).toBe(400);
+    // rent 1000 + late fee 200, paid 1000: only the late fee is left, nothing redeemable
+    expect(redeemableChargeFor({ rent_amount: 1000, paid_amount: 1000 }, "rent")).toBe(0);
+  });
+});
+
+describe("planRedemptionAmounts", () => {
+  it("spends whole points and derives baht from them", () => {
+    expect(planRedemptionAmounts(3000, cfg, 3000)).toEqual({ pointsSpent: 3000, bahtApplied: 300 });
+  });
+  it("caps at the redeemable charge and spends only the points that buys", () => {
+    expect(planRedemptionAmounts(3000, cfg, 123.45)).toEqual({ pointsSpent: 1234, bahtApplied: 123.4 });
+  });
+  it("caps at max_redemption_baht", () => {
+    expect(planRedemptionAmounts(5000, cfg, 3000)).toEqual({ pointsSpent: 3000, bahtApplied: 300 });
+  });
+  it("nothing redeemable -> zero", () => {
+    expect(planRedemptionAmounts(1500, cfg, 0)).toEqual({ pointsSpent: 0, bahtApplied: 0 });
+  });
+});
+
+describe("redemptionsUsedThisMonth", () => {
+  it("counts redemptions in the Bangkok month, including reversed ones; reversals never free the slot", () => {
+    const now = new Date("2026-10-15T05:00:00Z");
+    const rows = [
+      { reason: "redemption", created_at: "2026-10-01T02:00:00Z" },
+      { reason: "redemption_reversal", created_at: "2026-10-02T02:00:00Z" },
+      // 00:30 Bangkok on 1 Oct is still 30 Sep in UTC: counts for October
+      { reason: "redemption", created_at: "2026-09-30T17:30:00Z" },
+      { reason: "redemption", created_at: "2026-09-30T16:00:00Z" },
+    ];
+    expect(redemptionsUsedThisMonth(rows, now)).toBe(2);
+  });
+});
+
+describe("redemptionInvoiceColumns (through the invoice engine)", () => {
+  const row = {
+    rent_amount: 3000,
+    water_bill: 200,
+    electricity_bill: 300,
+    common_fee: 0,
+    late_fee_amount: 250,
+    additional_fees_total: 350,
+    additional_fees_breakdown: [{ item_type: "late_fee_line", amount: 150 }, { amount: 200 }],
+    carry_forward_amount: 1000,
+    discount_amount: 0,
+    // 3000 + 200 + 300 + own late fee 100 + late-fee line 150 + other fee 200 + carry 1000
+    total_amount: 4950,
+  };
+  it("moves only total and discount; late fee / fees / carry stay as stored", () => {
+    expect(redemptionInvoiceColumns(row, 150)).toEqual({
+      total_amount: 4800,
+      discount_amount: 150,
+      late_fee_amount: 250,
+      additional_fees_total: 350,
+      carry_forward_amount: 1000,
+    });
+    expect(redemptionInvoiceColumns({ ...row, total_amount: 4800, discount_amount: 150 }, -150).total_amount).toBe(4950);
+  });
+  it("refuses an invoice whose stored total disagrees with its charges", () => {
+    expect(() => redemptionInvoiceColumns({ ...row, total_amount: 5250 }, 150)).toThrow(/does not match its charges/);
+  });
+  it("expected columns carry every value the database re-checks", () => {
+    expect(Object.keys(redemptionExpectedColumns(row as any)).sort()).toEqual(
+      [
+        "additional_fees_total", "carry_forward_amount", "common_fee", "discount_amount", "electricity_bill",
+        "late_fee_amount", "paid_amount", "rent_amount", "total_amount", "water_bill",
+      ],
+    );
+  });
+});
+
+describe("summarizePointsLedger", () => {
+  it("keeps earned, redeemed (net of reversals) and baht discount apart", () => {
+    const s = summarizePointsLedger([
+      { reason: "rent_on_time", points: 500, baht_equivalent: 50 },
+      { reason: "milestone_3mo", points: 500, baht_equivalent: 50 },
+      { reason: "redemption", points: -1500, baht_equivalent: 150 },
+      { reason: "redemption", points: -300, baht_equivalent: 30 },
+      { reason: "redemption_reversal", points: 300, baht_equivalent: 30 },
+      { reason: "manual_adjustment", points: -20, baht_equivalent: -2 },
+    ]);
+    expect(s).toEqual({ pointsEarned: 1000, pointsRedeemedNet: 1500, pointsReturned: 300, manualAdjustments: -20, bahtDiscountNet: 150 });
+  });
+  it("reversedRedemptionIds lists redemptions that already have a reversal", () => {
+    expect([...reversedRedemptionIds([
+      { reason: "redemption", reverses_entry_id: null },
+      { reason: "redemption_reversal", reverses_entry_id: "r1" },
+    ])]).toEqual(["r1"]);
+  });
+});
+
+describe("redeemPoints input guards", () => {
+  it("requires a redemption key before touching the database", async () => {
+    const supabase = new Proxy({}, { get: () => { throw new Error("DB touched"); } }) as any;
+    await expect(
+      redeemPoints(supabase, { tenantId: "t", invoiceId: "i", target: "rent", pointsToRedeem: 100, idempotencyKey: "  " }, cfg),
+    ).rejects.toThrow(/key is required/);
+  });
+});
 
 const cfg = DEFAULT_REWARDS_CONFIG;
 

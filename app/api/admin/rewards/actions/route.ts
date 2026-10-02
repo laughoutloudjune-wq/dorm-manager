@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/admin-api-auth";
 import {
   approveReferral,
-  deleteRedemption,
   getRewardsConfig,
   getTenantPointBalance,
   listTenantLedger,
@@ -10,6 +9,7 @@ import {
   normalizeRewardsConfig,
   redeemPoints,
   rejectReferral,
+  reverseRedemption,
   syncPointsForTenant,
 } from "@/lib/points-ledger";
 
@@ -107,16 +107,27 @@ export async function POST(req: Request) {
       }
     }
 
-    if (action === "delete_redemption") {
+    // "delete_redemption" is kept as an alias for old clients: nothing is deleted
+    // any more; a paired reversal (points back + discount removed) is posted.
+    if (action === "reverse_redemption" || action === "delete_redemption") {
       const auth = await requireAdminPermission(req, "rewards.manage");
       if ("error" in auth) return auth.error;
       const entryId = String(body?.entryId ?? "");
+      const reason = String(body?.reason ?? "").trim();
       if (!entryId) return NextResponse.json({ error: "Missing entryId." }, { status: 400 });
+      if (!reason) {
+        return NextResponse.json({ error: "กรุณาระบุเหตุผลในการยกเลิกการแลกคะแนน" }, { status: 400 });
+      }
       try {
-        const entry = await deleteRedemption(auth.supabase, entryId);
-        return NextResponse.json({ success: true, entry });
+        const result = await reverseRedemption(auth.supabase, {
+          entryId,
+          reason,
+          createdBy: auth.user.id,
+          actor: auth.user.id,
+        });
+        return NextResponse.json({ success: true, entry: result.originalEntry, ...result });
       } catch (err: any) {
-        return NextResponse.json({ error: err?.message ?? "Failed to delete redemption." }, { status: 400 });
+        return NextResponse.json({ error: err?.message ?? "Failed to reverse redemption." }, { status: 400 });
       }
     }
 
@@ -127,11 +138,23 @@ export async function POST(req: Request) {
       const invoiceId = String(body?.invoiceId ?? "");
       const target = body?.target === "utility" ? "utility" : "rent";
       const pointsToRedeem = Number(body?.pointsToRedeem ?? 0);
-      if (!tenantId || !invoiceId || !pointsToRedeem) {
-        return NextResponse.json({ error: "Missing redemption fields." }, { status: 400 });
+      const idempotencyKey = String(body?.idempotencyKey ?? "").trim();
+      if (!tenantId || !invoiceId || !pointsToRedeem || !idempotencyKey) {
+        return NextResponse.json(
+          { error: "Missing redemption fields (idempotencyKey is required)." },
+          { status: 400 },
+        );
       }
       try {
-        const result = await redeemPoints(auth.supabase, { tenantId, invoiceId, target, pointsToRedeem });
+        const result = await redeemPoints(auth.supabase, {
+          tenantId,
+          invoiceId,
+          target,
+          pointsToRedeem,
+          idempotencyKey,
+          createdBy: auth.user.id,
+          actor: auth.user.id,
+        });
         return NextResponse.json({ success: true, ...result });
       } catch (err: any) {
         return NextResponse.json({ error: err?.message ?? "Failed to redeem points." }, { status: 400 });

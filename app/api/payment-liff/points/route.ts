@@ -7,6 +7,7 @@ import {
   getTenantPointBalance,
   listTenantLedger,
   redeemPoints,
+  redemptionsUsedThisMonth,
   resolveTier,
   syncPointsForTenant,
 } from "@/lib/points-ledger";
@@ -68,11 +69,9 @@ export async function POST(req: Request) {
           : Promise.resolve(null),
       ]);
 
-      const now = new Date();
-      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-      const redemptionsThisMonth = history.filter(
-        (row) => row.reason === "redemption" && row.created_at >= monthStart,
-      ).length;
+      // Same rule as redeem_points_atomic: Bangkok calendar month, reversed
+      // redemptions still count.
+      const redemptionsThisMonth = redemptionsUsedThisMonth(history);
 
       const invoiceEligible =
         !!invoiceRow &&
@@ -93,13 +92,23 @@ export async function POST(req: Request) {
       const invoiceId = String(body?.invoiceId ?? "");
       const target = body?.target === "utility" ? "utility" : "rent";
       const pointsToRedeem = Number(body?.pointsToRedeem ?? 0);
-      if (!invoiceId || !pointsToRedeem) {
+      const idempotencyKey = String(body?.idempotencyKey ?? "").trim();
+      if (!invoiceId || !pointsToRedeem || !idempotencyKey) {
         return NextResponse.json({ error: "Missing redemption fields." }, { status: 400 });
       }
       try {
+        // Namespaced by tenant so one tenant's client key can never collide
+        // with (and replay) another tenant's redemption.
         const result = await redeemPoints(
           supabase,
-          { tenantId: tenant.id, invoiceId, target, pointsToRedeem },
+          {
+            tenantId: tenant.id,
+            invoiceId,
+            target,
+            pointsToRedeem,
+            idempotencyKey: `liff:${tenant.id}:${idempotencyKey}`,
+            actor: `line:${tenant.id}`,
+          },
           config,
         );
         const balance = await getTenantPointBalance(supabase, tenant.id);
@@ -128,11 +137,7 @@ export async function POST(req: Request) {
 
     const roomRel = Array.isArray((tenant as any).rooms) ? (tenant as any).rooms[0] : (tenant as any).rooms;
 
-    const now = new Date();
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-    const redemptionsThisMonth = history.filter(
-      (row) => row.reason === "redemption" && row.created_at >= monthStart,
-    ).length;
+    const redemptionsThisMonth = redemptionsUsedThisMonth(history);
 
     return NextResponse.json({
       tenant: {
