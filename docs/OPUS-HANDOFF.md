@@ -17,3 +17,6 @@ Planner/spec inputs: `lib/money/settlement.ts`, `lib/money/points-redemption.ts`
 
 ## Still Sonnet-safe (not reserved)
 Screens, CSV/report labels, tenant/admin displays, permission wiring, non-atomic route logging, operator guide, audit brief.
+
+## Added open item (from docs review)
+- `void_payment_batch` must also reverse the `tenant_credits` 'overpayment' row created by `record_payment_batch` for the same batch (finding 44), otherwise voiding an overpaid receipt leaves orphan credit.
