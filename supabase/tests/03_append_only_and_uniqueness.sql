@@ -2,7 +2,7 @@
 -- money_events, adjustments, tenant_credits, refund_payouts (void-once), late_fee_charges / late_fee_policies.
 -- Run ONLY on the dummy project dorm-test (rghxelkifdrpvabyxopb). Never on production.
 -- Nothing persists: the DO block ends with RAISE EXCEPTION 'RESULT: ...'.
--- Case statuses: PASS | FAIL | PROBE (see 01_record_payment_batch.sql).
+-- Case statuses: PASS | FAIL (see 01_record_payment_batch.sql). The former whitespace probes are now W assertions.
 
 -- Helper: run a statement that MUST fail with a message containing p_pattern (inside a savepoint).
 CREATE OR REPLACE FUNCTION pg_temp.expect_err(p_label text, p_sql text, p_pattern text)
@@ -127,21 +127,24 @@ BEGIN
   v_out := v_out || E'\n' || pg_temp.expect_err('L10 duplicate policy version rejected',
     'INSERT INTO late_fee_policies(version, effective_from, rate_kind, rate_value) VALUES (990001, current_date, ''flat_once'', 1)', 'late_fee_policies_version_unique');
 
-  ------------------------------------------------------------ Probes
-  -- P1/P2: btrim() only strips spaces. A reason made of tab/newline passes every "not blank" CHECK.
-  BEGIN
-    INSERT INTO adjustments(type,amount,reason) VALUES ('discount',7,E'\t\n');
-    v_out := v_out || E'\n' || 'PROBE  P1 adjustments.reason = tab+newline only was ACCEPTED (btrim strips spaces only; blank-reason CHECK bypassed)';
-  EXCEPTION WHEN OTHERS THEN
-    v_out := v_out || E'\n' || 'PROBE  P1 tab+newline reason rejected: '||SQLERRM;
-  END;
+  ------------------------------------------------------------ W: whitespace-only text is blank (finding 105)
+  v_out := v_out || E'\n' || pg_temp.expect_err('W1 adjustments.reason tab+newline only rejected',
+    'INSERT INTO adjustments(type,amount,reason) VALUES (''discount'',7,E''\t\n'')', 'adjustments_reason_not_blank');
   INSERT INTO refund_payouts(tenant_id, amount, paid_at, idempotency_key) VALUES (v_t, 50, now(), 'rp-key-p2') RETURNING id INTO v_rp;
-  BEGIN
-    UPDATE refund_payouts SET voided_at=now(), void_reason=E'\t' WHERE id = v_rp;
-    v_out := v_out || E'\n' || 'PROBE  P2 refund_payouts void_reason = tab only was ACCEPTED (same btrim weakness)';
-  EXCEPTION WHEN OTHERS THEN
-    v_out := v_out || E'\n' || 'PROBE  P2 tab-only void_reason rejected: '||SQLERRM;
-  END;
+  v_out := v_out || E'\n' || pg_temp.expect_err('W2 refund_payouts void_reason tab only rejected',
+    format('UPDATE refund_payouts SET voided_at=now(), void_reason=E''\t'' WHERE id=%L', v_rp), 'refund_payouts_void_consistent');
+  v_out := v_out || E'\n' || pg_temp.expect_err('W3 tenant_credits forfeited with CR/LF-only reason rejected',
+    format('INSERT INTO tenant_credits(tenant_id,kind,bucket,amount,reason) VALUES (%L,''forfeited'',''deposit'',-5,E''\r\n'')', v_t), 'tenant_credits_reason_check');
+  v_out := v_out || E'\n' || pg_temp.expect_err('W4 late_fee_charges formula tab only rejected',
+    format('INSERT INTO late_fee_charges(source_invoice_id,covered_from,covered_to,eligible_balance,rate_kind,rate_value,formula,policy_version,amount,posted_by) VALUES (%L,''2026-11-01'',''2026-11-02'',1,''x'',1,E''\t'',990001,1,''t'')', v_inv), 'late_fee_charges_formula_check');
+  v_out := v_out || E'\n' || pg_temp.expect_err('W5 late_fee_charges posted_by newline only rejected',
+    format('INSERT INTO late_fee_charges(source_invoice_id,covered_from,covered_to,eligible_balance,rate_kind,rate_value,formula,policy_version,amount,posted_by) VALUES (%L,''2026-11-03'',''2026-11-04'',1,''x'',1,''f'',990001,1,E''\n'')', v_inv), 'late_fee_charges_posted_by_check');
+  v_out := v_out || E'\n' || pg_temp.expect_ok('W6 reason with surrounding whitespace but real text accepted',
+    'INSERT INTO adjustments(type,amount,reason) VALUES (''discount'',7,E''\t goodwill \n'')');
+
+  ------------------------------------------------------------ tenant_credits reversal link
+  v_out := v_out || E'\n' || pg_temp.expect_err('T10 reverses_credit_id on a non-reversal row rejected',
+    format('INSERT INTO tenant_credits(tenant_id,kind,bucket,amount,reverses_credit_id) VALUES (%L,''overpayment'',''unapplied'',5,gen_random_uuid())', v_t), 'tenant_credits_reverses_kind_check');
 
   RAISE EXCEPTION 'RESULT:%', v_out;
 END

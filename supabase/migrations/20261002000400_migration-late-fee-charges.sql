@@ -49,16 +49,23 @@ CREATE TABLE IF NOT EXISTS public.late_fee_charges (
     rate_kind TEXT NOT NULL,
     rate_value NUMERIC(12,4) NOT NULL,
     -- Human-readable working, e.g. '4,490 x 1% x 12 days = 538'.
-    formula TEXT NOT NULL CONSTRAINT late_fee_charges_formula_check CHECK (btrim(formula) <> ''),
+    formula TEXT NOT NULL CONSTRAINT late_fee_charges_formula_check CHECK (formula ~ '[^[:space:]]'),
     policy_version INTEGER NOT NULL,
     amount NUMERIC(12,2) NOT NULL CONSTRAINT late_fee_charges_amount_check CHECK (amount >= 0),
     -- A user id, or 'automation:<name>'.
-    posted_by TEXT NOT NULL CONSTRAINT late_fee_charges_posted_by_check CHECK (btrim(posted_by) <> ''),
+    posted_by TEXT NOT NULL CONSTRAINT late_fee_charges_posted_by_check CHECK (posted_by ~ '[^[:space:]]'),
     posted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT late_fee_charges_period_check CHECK (covered_to >= covered_from),
     CONSTRAINT uq_late_fee_charge_period
         UNIQUE (source_invoice_id, covered_from, covered_to, policy_version)
 );
+
+-- Re-assert on databases where an earlier draft (btrim, spaces only) exists.
+-- Whitespace-only (spaces, tabs, newlines) counts as blank. Idempotent.
+ALTER TABLE public.late_fee_charges DROP CONSTRAINT IF EXISTS late_fee_charges_formula_check;
+ALTER TABLE public.late_fee_charges ADD CONSTRAINT late_fee_charges_formula_check CHECK (formula ~ '[^[:space:]]');
+ALTER TABLE public.late_fee_charges DROP CONSTRAINT IF EXISTS late_fee_charges_posted_by_check;
+ALTER TABLE public.late_fee_charges ADD CONSTRAINT late_fee_charges_posted_by_check CHECK (posted_by ~ '[^[:space:]]');
 
 CREATE INDEX IF NOT EXISTS idx_late_fee_charges_source ON public.late_fee_charges(source_invoice_id);
 CREATE INDEX IF NOT EXISTS idx_late_fee_charges_target ON public.late_fee_charges(target_invoice_id);

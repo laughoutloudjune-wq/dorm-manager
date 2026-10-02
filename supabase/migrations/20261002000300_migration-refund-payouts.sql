@@ -40,8 +40,16 @@ CREATE TABLE IF NOT EXISTS public.refund_payouts (
     CONSTRAINT refund_payouts_idempotency_key_unique UNIQUE (idempotency_key),
     CONSTRAINT refund_payouts_void_consistent CHECK (
         (voided_at IS NULL AND void_reason IS NULL)
-        OR (voided_at IS NOT NULL AND void_reason IS NOT NULL AND btrim(void_reason) <> '')
+        OR (voided_at IS NOT NULL AND void_reason IS NOT NULL AND void_reason ~ '[^[:space:]]')
     )
+);
+
+-- Re-assert on databases where an earlier draft (btrim, spaces only) exists.
+-- Whitespace-only (spaces, tabs, newlines) counts as blank. Idempotent.
+ALTER TABLE public.refund_payouts DROP CONSTRAINT IF EXISTS refund_payouts_void_consistent;
+ALTER TABLE public.refund_payouts ADD CONSTRAINT refund_payouts_void_consistent CHECK (
+    (voided_at IS NULL AND void_reason IS NULL)
+    OR (voided_at IS NOT NULL AND void_reason IS NOT NULL AND void_reason ~ '[^[:space:]]')
 );
 
 CREATE INDEX IF NOT EXISTS idx_refund_payouts_tenant ON public.refund_payouts(tenant_id, paid_at);

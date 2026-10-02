@@ -48,11 +48,30 @@ CREATE TABLE IF NOT EXISTS public.tenant_credits (
         (kind NOT IN ('applied_to_invoice', 'forfeited', 'refunded') OR amount < 0)
     ),
     -- Anything that is not a plain receipt must explain itself.
+    -- Whitespace-only (spaces, tabs, newlines) counts as blank.
     CONSTRAINT tenant_credits_reason_check CHECK (
         kind IN ('deposit_received', 'advance_rent_received', 'overpayment', 'applied_to_invoice')
-        OR (reason IS NOT NULL AND btrim(reason) <> '')
+        OR (reason IS NOT NULL AND reason ~ '[^[:space:]]')
     )
 );
+
+-- Re-assert the reason rule on databases where an earlier draft of this table
+-- (btrim, spaces only) already exists. Idempotent.
+ALTER TABLE public.tenant_credits DROP CONSTRAINT IF EXISTS tenant_credits_reason_check;
+ALTER TABLE public.tenant_credits ADD CONSTRAINT tenant_credits_reason_check CHECK (
+    kind IN ('deposit_received', 'advance_rent_received', 'overpayment', 'applied_to_invoice')
+    OR (reason IS NOT NULL AND reason ~ '[^[:space:]]')
+);
+
+-- A 'reversal' row may point at the exact row it undoes (void_payment_batch
+-- always sets it). Each row can be reversed at most once.
+ALTER TABLE public.tenant_credits ADD COLUMN IF NOT EXISTS reverses_credit_id UUID;
+ALTER TABLE public.tenant_credits DROP CONSTRAINT IF EXISTS tenant_credits_reverses_kind_check;
+ALTER TABLE public.tenant_credits ADD CONSTRAINT tenant_credits_reverses_kind_check
+    CHECK (reverses_credit_id IS NULL OR kind = 'reversal');
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tenant_credits_single_reversal
+    ON public.tenant_credits(reverses_credit_id)
+    WHERE reverses_credit_id IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_tenant_credits_tenant ON public.tenant_credits(tenant_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_tenant_credits_invoice ON public.tenant_credits(invoice_id);

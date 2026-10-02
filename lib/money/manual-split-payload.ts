@@ -47,7 +47,7 @@ const num = (v: unknown) => {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
 };
-const round2 = (n: number) => Math.round(n * 100) / 100;
+const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
 
 export function buildManualSplitPayload(input: ManualSplitInput) {
   const now = input.now ?? (() => new Date().toISOString());
@@ -60,7 +60,18 @@ export function buildManualSplitPayload(input: ManualSplitInput) {
     if (!invoice) throw new Error(`invoice ${entry.invoiceId} missing`);
     const allocated = round2(entry.amount);
     const currentPaid = num(invoice.paid_amount);
-    const nextPaid = Math.min(num(invoice.total_amount), currentPaid + allocated);
+    // record_payment_batch requires paid_amount == current + allocation exactly
+    // and never above total. Silently capping paid_amount (as this used to)
+    // would record an allocation larger than the balance actually moved, so
+    // an amount that does not fit is an error, never truncated.
+    const outstanding = Math.max(0, round2(num(invoice.total_amount) - currentPaid));
+    if (allocated <= 0) throw new Error(`allocation for invoice ${entry.invoiceId} must be greater than 0`);
+    if (allocated > outstanding) {
+      throw new Error(
+        `allocation ${allocated.toFixed(2)} for invoice ${entry.invoiceId} exceeds its outstanding ${outstanding.toFixed(2)}`,
+      );
+    }
+    const nextPaid = round2(currentPaid + allocated);
     const history = Array.isArray(invoice.payment_history) ? invoice.payment_history : [];
     const paymentEntry: Record<string, unknown> = {
       amount: allocated,
@@ -96,6 +107,8 @@ export function buildManualSplitPayload(input: ManualSplitInput) {
     const row: Record<string, unknown> = {
       id: entry.invoiceId,
       expected_paid_amount: currentPaid,
+      // Stale guard over payment_history too (finding 36).
+      expected_history_length: history.length,
       paid_amount: nextPaid,
       status,
       payment_history: nextHistory,

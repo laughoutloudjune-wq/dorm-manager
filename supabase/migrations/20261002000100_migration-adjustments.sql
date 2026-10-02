@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS public.adjustments (
     amount NUMERIC(12,2) NOT NULL CONSTRAINT adjustments_amount_nonzero CHECK (amount <> 0),
     invoice_id UUID,
     tenant_id UUID,
-    reason TEXT NOT NULL CONSTRAINT adjustments_reason_not_blank CHECK (btrim(reason) <> ''),
+    -- Whitespace-only (spaces, tabs, newlines) counts as blank.
+    reason TEXT NOT NULL CONSTRAINT adjustments_reason_not_blank CHECK (reason ~ '[^[:space:]]'),
     actor TEXT,
     source TEXT,
     -- Set only on type = 'reversal'; an adjustment can be reversed at most once.
@@ -37,6 +38,10 @@ CREATE TABLE IF NOT EXISTS public.adjustments (
     CONSTRAINT adjustments_reversal_link_check
         CHECK ((type = 'reversal') = (reverses_adjustment_id IS NOT NULL))
 );
+
+-- Re-assert on databases where an earlier draft (btrim, spaces only) exists. Idempotent.
+ALTER TABLE public.adjustments DROP CONSTRAINT IF EXISTS adjustments_reason_not_blank;
+ALTER TABLE public.adjustments ADD CONSTRAINT adjustments_reason_not_blank CHECK (reason ~ '[^[:space:]]');
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_adjustments_single_reversal
     ON public.adjustments(reverses_adjustment_id)
