@@ -1,6 +1,8 @@
 import { buildManualSplitPayload } from "@/lib/money/manual-split-payload";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { computeInvoiceTotal } from "./invoice-total";
+import { bangkokToday } from "@/lib/money/action-queue";
+import { autoPostLateFees, resolveLateFeeMode } from "@/lib/money/late-fee-posting";
 import {
   buildLateFeeLineDetail,
   isCarryForwardBreakdownRow,
@@ -908,6 +910,10 @@ export async function refreshCarryForwardTargets(
       .map((item: any) => {
         const sourceId = String(item.source_invoice_id ?? "");
         if (!sourceId || !paidSourceInvoiceIds.includes(sourceId)) return item;
+        // A line posted through the approval flow mirrors a late_fee_charges row
+        // and its waivers; it is never recomputed here (that would silently
+        // re-price an approved fee and drop its waived_amount).
+        if (item.late_fee_charge_id) return item;
         changed = true;
         const fresh = freshBySource.get(sourceId);
         const feeAmount = fresh ? toNumber(fresh.late_fee_snapshot_amount) : 0;
@@ -1013,6 +1019,25 @@ export async function autoBillUnbilledLateFees(
 ): Promise<{ billedSourceIds: string[]; updatedTargetIds: string[] }> {
   const empty = { billedSourceIds: [], updatedTargetIds: [] };
   if (!tenantId || paidInvoiceIds.length === 0) return empty;
+
+  // Late-fee approval rule (migration 20261002000800). With NO late_fee_policies
+  // row (or no table) this function behaves exactly as before. Once the owner
+  // creates a policy, a fee is no longer added silently: it waits on the
+  // late-fee page for an admin, unless the governing policy opted in with
+  // auto_post, in which case it is posted through post_late_fee_charge under
+  // the identity "automation:auto_bill_on_paid".
+  const { mode, policies } = await resolveLateFeeMode(supabase);
+  if (mode === "approval") {
+    const result = await autoPostLateFees(supabase, {
+      tenantId,
+      sourceInvoiceIds: paidInvoiceIds,
+      policies,
+      automationName: "auto_bill_on_paid",
+      today: bangkokToday(),
+      onlyPaid: true,
+    });
+    return { billedSourceIds: result.postedSourceIds, updatedTargetIds: [] };
+  }
 
   const { data: sourceRows, error: sourceError } = await supabase
     .from("invoices")

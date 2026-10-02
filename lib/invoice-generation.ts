@@ -3,6 +3,7 @@ import { recordMoneyEvents, type MoneyEventInput } from "@/lib/money-events";
 import { INVOICE_MONEY_COLUMNS } from "@/lib/money/money-diff";
 import { toLocalDateString, toNumber, formatMoney } from "@/lib/format";
 import { computeLateFeeSnapshot, syncInvoiceLedger } from "@/lib/invoice-ledger";
+import { autoPostLateFees, resolveLateFeeMode } from "@/lib/money/late-fee-posting";
 import {
   clampDay,
   buildRuleBreakdown,
@@ -289,6 +290,13 @@ export async function generateInvoicesForPeriod(
     carryForwardByTenant.set(tenantId, currentRows);
   }
 
+  // Late-fee approval rule (migration 20261002000800). No late_fee_policies row
+  // => "legacy": carried late-fee lines are generated and frozen exactly as
+  // before. Once a policy exists => "approval": the generator adds NO late-fee
+  // line and freezes nothing; fees wait on the late-fee page for an admin, or
+  // are posted after insert by the automation where the policy has auto_post.
+  const lateFeeFlow = await resolveLateFeeMode(supabase);
+
   const { data: readings } = await supabase
     .from("meter_readings")
     .select("room_id,electricity_usage,water_usage,usage,current_electricity,current_water")
@@ -375,7 +383,7 @@ export async function generateInvoicesForPeriod(
     // or keep growing on the source. No invoice_carry_forwards link is
     // written for this.
     const carryForwardRows = carryForwardByTenant.get(String(tenant.id)) ?? [];
-    const lateFeeBreakdown = carryForwardRows
+    const lateFeeBreakdown = (lateFeeFlow.mode === "approval" ? [] : carryForwardRows)
       .filter((row: any) => toNumber(row.snapshot_late_fee_amount) > 0 && row.late_fee_billed_at == null)
       .map((row: any) => {
         const daysOverdue = toNumber(row.snapshot_days_overdue);
@@ -517,7 +525,28 @@ export async function generateInvoicesForPeriod(
       ),
       source: auditSource,
     }));
-    if ((insertedInvoices ?? []).length > 0) {
+    if ((insertedInvoices ?? []).length > 0 && lateFeeFlow.mode === "approval") {
+      // No freeze, no late_fee_billed_at: nothing was billed. Only a policy with
+      // auto_post lets the automation post (logged as automation:invoice_generation).
+      for (const row of insertedInvoices ?? []) {
+        const tenantId = String((row as any).tenant_id ?? "");
+        const sourceIds = (carryForwardByTenant.get(tenantId) ?? [])
+          .filter((carryRow: any) => carryRow.late_fee_billed_at == null)
+          .map((carryRow: any) => String(carryRow.id));
+        if (!tenantId || sourceIds.length === 0) continue;
+        try {
+          await autoPostLateFees(supabase, {
+            tenantId,
+            sourceInvoiceIds: sourceIds,
+            policies: lateFeeFlow.policies,
+            automationName: "invoice_generation",
+            today: issueDateText,
+          });
+        } catch (e: any) {
+          bookkeepingFailures.push(`ลงค่าปรับอัตโนมัติไม่สำเร็จ: ${e?.message ?? e}`);
+        }
+      }
+    } else if ((insertedInvoices ?? []).length > 0) {
       const allSourceRows = (insertedInvoices ?? []).flatMap((row: any) =>
         (carryForwardByTenant.get(String(row.tenant_id ?? "")) ?? []).filter(
           (carryRow: any) => toNumber(carryRow.snapshot_late_fee_amount) > 0 && carryRow.late_fee_billed_at == null
