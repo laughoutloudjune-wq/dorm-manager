@@ -1,20 +1,25 @@
 import { NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/admin-api-auth";
 import { dailyRentRate } from "@/lib/invoice-utils";
-import { computeInvoiceTotal } from "@/lib/invoice-total";
 import { pickFields } from "@/lib/pick-fields";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { recordMoneyEvent } from "@/lib/money-events";
+import { planMoveOutSettlement, type MoveOutSettlementPlan } from "@/lib/money/settlement";
 import {
-  applyInvoicePaymentAllocation,
-  planAbandonCredit,
-} from "@/lib/invoice-ledger";
+  MOVE_OUT_DEBT_STATUSES,
+  buildFinalSettlementRpcPayload,
+  buildMoveOutPlanInput,
+  computeMoveOutRentPeriod,
+  resolveHeldCredit,
+  type HeldCredit,
+  type OpenInvoiceRow,
+} from "@/lib/money/move-out-settlement-input";
 
 const toNumber = (value: unknown) => {
   const parsed = typeof value === "number" ? value : Number(value ?? 0);
   return Number.isNaN(parsed) ? 0 : parsed;
 };
 
-const roundTo2 = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
 
 const calculateTransferRentProration = (
   transferDate: string,
@@ -54,6 +59,166 @@ const calculateTransferRentProration = (
     newRoomAmount: dailyNewRate * newRoomDays,
   };
 };
+
+// ── Move-out settlement helpers (final_move_out + abandon_room) ─────────────
+// Both actions plan with lib/money/settlement.ts and write through the one
+// atomic, idempotent database function public.final_settle_move_out
+// (migration 20261002000600). Nothing here writes to the database directly.
+
+type SettlementContext = {
+  held: HeldCredit;
+  openInvoices: OpenInvoiceRow[];
+  lastBilledEndDate: string | null;
+  billingDay: number;
+  monthlyRent: number;
+  electricityRate: number;
+  waterRate: number;
+  previousElectricity: number;
+  previousWater: number;
+};
+
+async function loadSettlementContext(
+  supabase: SupabaseClient,
+  tenantId: string,
+  roomId: string
+): Promise<SettlementContext | { error: string; status: number }> {
+  const [tenantRes, roomRes, settingsRes, lastInvoiceRes, openRes, ledgerRes, meterRes] = await Promise.all([
+    supabase
+      .from("tenants")
+      .select("id,room_id,security_deposit_amount,advance_rent_amount,initial_electricity_reading,initial_water_reading")
+      .eq("id", tenantId)
+      .maybeSingle(),
+    supabase.from("rooms").select("id,price_month").eq("id", roomId).maybeSingle(),
+    supabase.from("settings").select("*").maybeSingle(),
+    supabase
+      .from("invoices")
+      .select("end_date")
+      .eq("tenant_id", tenantId)
+      .neq("status", "draft")
+      .order("start_date", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    supabase
+      .from("invoices")
+      .select("id,start_date,status,total_amount,paid_amount,carry_forward_amount")
+      .eq("tenant_id", tenantId)
+      .in("status", [...MOVE_OUT_DEBT_STATUSES]),
+    supabase.from("tenant_credits").select("bucket,amount").eq("tenant_id", tenantId),
+    // Read-only: meter_readings is written only by the two meter routes.
+    supabase
+      .from("meter_readings")
+      .select("current_electricity,current_water")
+      .eq("room_id", roomId)
+      .order("reading_month", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+  ]);
+  for (const res of [tenantRes, roomRes, lastInvoiceRes, openRes, ledgerRes, meterRes]) {
+    if (res.error) return { error: res.error.message, status: 500 };
+  }
+  const tenant = tenantRes.data as any;
+  if (!tenant?.id) return { error: "Tenant not found.", status: 404 };
+  if (!roomRes.data?.id) return { error: "Room not found.", status: 404 };
+
+  const openInvoices = (openRes.data ?? []) as OpenInvoiceRow[];
+  if (openInvoices.some((inv) => inv.status === "verifying")) {
+    return {
+      error: "มีใบแจ้งหนี้ที่รอตรวจสลิป กรุณาอนุมัติหรือปฏิเสธสลิปก่อนสรุปยอดย้ายออก",
+      status: 409,
+    };
+  }
+  const settings = settingsRes.data as any;
+  const meter = meterRes.data as any;
+  return {
+    held: resolveHeldCredit(tenant, (ledgerRes.data ?? []) as any[]),
+    openInvoices,
+    lastBilledEndDate: (lastInvoiceRes.data as any)?.end_date ?? null,
+    billingDay: Math.max(1, Math.min(28, Number(settings?.billing_day) || 25)),
+    monthlyRent: toNumber((roomRes.data as any)?.price_month),
+    electricityRate: toNumber(settings?.electricity_rate),
+    waterRate: toNumber(settings?.water_rate),
+    previousElectricity: toNumber(meter?.current_electricity ?? tenant.initial_electricity_reading ?? 0),
+    previousWater: toNumber(meter?.current_water ?? tenant.initial_water_reading ?? 0),
+  };
+}
+
+/**
+ * Forfeiture from a request: `forfeitAmount` + `forfeitReason`. The legacy
+ * boolean (`forfeitDeposit` / `forfeit_security_deposit`) means the whole
+ * deposit. Either way a reason is required.
+ */
+function resolveForfeitInput(
+  src: any,
+  depositHeld: number
+): { amount: number; reason: string | null } | { error: string } {
+  const legacy = Boolean(src?.forfeitDeposit ?? src?.forfeit_security_deposit);
+  const amount = src?.forfeitAmount != null ? toNumber(src.forfeitAmount) : legacy ? depositHeld : 0;
+  const reason = String(src?.forfeitReason ?? "").trim() || null;
+  if (amount < 0) return { error: "จำนวนเงินประกันที่ริบต้องไม่ติดลบ" };
+  if (amount > 0 && !reason) return { error: "กรุณาระบุเหตุผลการริบเงินประกัน" };
+  return { amount, reason };
+}
+
+async function findSettlementReplay(supabase: SupabaseClient, tenantId: string, key: string) {
+  const { data } = await supabase
+    .from("move_out_settlements")
+    .select("id,final_invoice_id,settlement")
+    .eq("tenant_id", tenantId)
+    .eq("idempotency_key", key)
+    .maybeSingle();
+  if (!data?.id) return null;
+  return {
+    success: true,
+    replayed: true,
+    settlementId: data.id as string,
+    finalInvoiceId: (data.final_invoice_id as string | null) ?? null,
+    settlement: data.settlement as MoveOutSettlementPlan,
+  };
+}
+
+function settlementRpcError(message: string) {
+  const conflict = /^(ALREADY_SETTLED|STALE_|HELD_MISMATCH|VERIFYING_INVOICE|ROOM_MISMATCH|INVOICE_NOT_OPEN|OVERPAY)/;
+  const invalid = /^(FORFEIT_REASON_REQUIRED|PLAN_|ENGINE_MISMATCH|INVOICE_TENANT_MISMATCH)/;
+  const status = conflict.test(message) ? 409 : invalid.test(message) ? 400 : 500;
+  const friendly = message.startsWith("ALREADY_SETTLED")
+    ? "ผู้เช่ารายนี้สรุปยอดย้ายออกไปแล้ว"
+    : /^(STALE_|HELD_MISMATCH)/.test(message)
+      ? `ข้อมูลยอดเงินเปลี่ยนไประหว่างทำรายการ กรุณาโหลดหน้าใหม่ (${message})`
+      : message;
+  return NextResponse.json({ error: friendly }, { status });
+}
+
+/** Keeps the response shape MoveOutProcessingModal already reads for abandon_room. */
+function abandonResponse(settlement: MoveOutSettlementPlan, replayed: boolean) {
+  const lines = (settlement?.debtPayments ?? []).map((d) => ({
+    invoiceId: d.invoiceId,
+    owed: d.outstandingBefore,
+    applied: d.paidFromCredit,
+    // Still owed on the invoice — NOT written off.
+    writtenOff: d.outstandingAfter,
+    outcome:
+      d.outstandingAfter <= 0 ? "paid" : d.paidFromCredit > 0 ? "partial" : "unpaid",
+  }));
+  return {
+    success: true,
+    replayed,
+    settlement,
+    summary: {
+      creditPool: settlement.creditAvailable,
+      totalOwed: settlement.totalOwed,
+      creditApplied: settlement.creditApplied,
+      // Kept for older clients; the debt remains owed, it is not written off.
+      writtenOff: settlement.balanceStillOwed,
+      balanceStillOwed: settlement.balanceStillOwed,
+      advanceRentAbsorbed: settlement.advanceRentAbsorbed,
+      depositForfeited: settlement.depositForfeited,
+      refundableCredit: settlement.refundDue,
+      lines,
+    },
+    creditApplied: settlement.creditApplied,
+    refundableCredit: settlement.refundDue,
+  };
+}
 
 export async function POST(req: Request) {
   try {
@@ -527,8 +692,23 @@ export async function POST(req: Request) {
         .limit(1)
         .maybeSingle();
 
+      // Same held-credit rule the settlement uses (ledger per bucket once it
+      // has rows, else the tenant columns), so the preview matches the write.
+      const { data: ledgerRows } = await auth.supabase
+        .from("tenant_credits")
+        .select("bucket,amount")
+        .eq("tenant_id", tenantId);
+      const { data: settledRow } = await auth.supabase
+        .from("move_out_settlements")
+        .select("id,final_invoice_id,settlement,created_at")
+        .eq("tenant_id", tenantId)
+        .is("voided_at", null)
+        .maybeSingle();
+
       return NextResponse.json({
         tenant,
+        heldCredit: resolveHeldCredit(tenant, (ledgerRows ?? []) as any[]),
+        existingSettlement: settledRow ?? null,
         unpaidInvoices: invoicesRes.data || [],
         rates: ratesRes.data || { electricity_rate: 0, water_rate: 0 },
         moveOutRequests: requestsRes.data || [],
@@ -683,226 +863,113 @@ export async function POST(req: Request) {
       const tenantId = String(body?.tenantId ?? "");
       const roomId = String(body?.roomId ?? "");
       const payload = body?.payload ?? {};
-      const {
-        forfeitDeposit,
-        forfeit_security_deposit,
-        useProrate = true,
-        meterData: extractedMeterData,
-        moveOutFeeLines: extractedMoveOutFeeLines,
-        ...restPayload
-      } = payload;
-      
-      const isForfeit = forfeitDeposit ?? forfeit_security_deposit ?? false;
+      if (!tenantId || !roomId) {
+        return NextResponse.json({ error: "Missing tenantId or roomId." }, { status: 400 });
+      }
       const moveOutDate =
         payload?.move_out_date ? String(payload.move_out_date) : new Date().toISOString().slice(0, 10);
+      const idempotencyKey =
+        String(payload?.idempotencyKey ?? body?.idempotencyKey ?? "").trim() || `final:${tenantId}:${moveOutDate}`;
 
-      // Fetch tenant + room data and compute the whole settlement BEFORE touching
-      // the tenant/room/logs below. The invoice insert used to happen last, so a
-      // failure there (e.g. a missing column) still left the tenant marked
-      // inactive and the room freed with no settlement invoice ever created —
-      // an orphaned record with no way to recover the numbers that were entered.
-      // Now nothing is mutated until the invoice is safely in the database.
-      const { data: tenant, error: tenantFetchError } = await auth.supabase
-        .from("tenants")
-        .select("id,room_id,advance_rent_amount,security_deposit_amount,rooms(id,price_month,room_number)")
-        .eq("id", tenantId)
-        .maybeSingle();
-      if (tenantFetchError) {
-        return NextResponse.json({ error: tenantFetchError.message }, { status: 500 });
-      }
-      if (!tenant?.id) {
-        return NextResponse.json({ error: "Tenant not found." }, { status: 404 });
-      }
+      // A retried request (double click, network retry) replays the original
+      // settlement instead of computing a second one from changed state.
+      const replay = await findSettlementReplay(auth.supabase, tenantId, idempotencyKey);
+      if (replay) return NextResponse.json(replay);
 
-      const { data: settings } = await auth.supabase.from("settings").select("*").maybeSingle();
-      const billingDay = Math.max(1, Math.min(28, Number(settings?.billing_day) || 25));
-      const dueDay = Math.max(1, Math.min(28, Number(settings?.due_day) || 10));
+      const ctx = await loadSettlementContext(auth.supabase, tenantId, roomId);
+      if ("error" in ctx) return NextResponse.json({ error: ctx.error }, { status: ctx.status });
 
-      const { data: lastInvoice } = await auth.supabase
-        .from("invoices")
-        .select("end_date")
-        .eq("tenant_id", tenantId)
-        .neq("status", "draft")
-        .order("start_date", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      const moveOutDateObj = new Date(moveOutDate);
-      let masterStartDateObj = lastInvoice?.end_date ? new Date(lastInvoice.end_date) : new Date(moveOutDateObj.getFullYear(), moveOutDateObj.getMonth() - 1, billingDay);
-      
-      // Calculate full months and prorate days
-      // E.g., start: May 25, moveOut: June 28 -> 1 full month + 3 days
-      // or start: June 25, moveOut: June 28 -> 0 full month + 3 days
-      let currentEnd = new Date(masterStartDateObj);
-      currentEnd.setMonth(currentEnd.getMonth() + 1);
-      
-      let fullMonths = 0;
-      let tempStart = new Date(masterStartDateObj);
-      while (currentEnd <= moveOutDateObj) {
-        fullMonths++;
-        tempStart = new Date(currentEnd);
-        currentEnd.setMonth(currentEnd.getMonth() + 1);
-      }
-      
-      // Calculate remaining prorate days
-      const msPerDay = 86400000;
-      const tempStartUtc = Date.UTC(tempStart.getFullYear(), tempStart.getMonth(), tempStart.getDate());
-      const moveOutUtc = Date.UTC(moveOutDateObj.getFullYear(), moveOutDateObj.getMonth(), moveOutDateObj.getDate());
-      const prorateDays = Math.floor((moveOutUtc - tempStartUtc) / msPerDay); // Exclusive of start date
-
-      const roomRel = Array.isArray(tenant?.rooms) ? tenant?.rooms[0] : tenant?.rooms;
-      const priceMonth = toNumber(roomRel?.price_month ?? 0);
-      const dailyRate = dailyRentRate(priceMonth);
-
-      const baseRent = useProrate ? (priceMonth * fullMonths) : 0;
-      const proratedRent = useProrate ? dailyRate * prorateDays : 0;
-      const totalRent = baseRent + proratedRent;
-
-      // Utilities
+      // Previous readings come ONLY from meter_readings (CLAUDE.md: the two
+      // writers own that table; everyone else reads the latest row). The
+      // screen shows the same value; if it changed since the admin looked, stop
+      // rather than bill against a number they never saw.
       const meterData = payload?.meterData ?? {};
-      const electricityUsage = Math.max(toNumber(meterData.final_electricity) - toNumber(meterData.initial_electricity), 0);
-      const waterUsage = Math.max(toNumber(meterData.final_water) - toNumber(meterData.initial_water), 0);
-      
-      const elecRate = toNumber(settings?.electricity_rate ?? 0);
-      const waterRate = toNumber(settings?.water_rate ?? 0);
-      const electricityBill = electricityUsage * elecRate;
-      const waterBill = waterUsage * waterRate;
-
-      // Additional Fees
-      const moveOutFeeLines = Array.isArray(payload?.moveOutFeeLines) ? payload.moveOutFeeLines : [];
-      let additionalFeesTotal = 0;
-      const additionalBreakdown = moveOutFeeLines.map((line: any) => {
-        const amt = toNumber(line.amount);
-        additionalFeesTotal += amt;
-        return {
-          item_type: "custom",
-          label: line.label || "ค่าใช้จ่ายเพิ่มเติม",
-          amount: amt,
-        };
-      });
-
-      if (proratedRent > 0) {
-        additionalBreakdown.unshift({
-          item_type: "prorate_rent",
-          label: `ค่าเช่าส่วนเกิน ${prorateDays} วัน (Pro-rate)`,
-          amount: proratedRent,
-        });
-        additionalFeesTotal += proratedRent;
+      const sentPrevElec = meterData.initial_electricity;
+      const sentPrevWater = meterData.initial_water;
+      if (
+        (sentPrevElec != null && toNumber(sentPrevElec) !== ctx.previousElectricity) ||
+        (sentPrevWater != null && toNumber(sentPrevWater) !== ctx.previousWater)
+      ) {
+        return NextResponse.json(
+          {
+            error: `เลขมิเตอร์ครั้งก่อนเปลี่ยนไป (ไฟ ${ctx.previousElectricity}, น้ำ ${ctx.previousWater}) กรุณาโหลดหน้าใหม่แล้วตรวจสอบอีกครั้ง`,
+          },
+          { status: 409 }
+        );
       }
 
-      // Deductions
-      const checkForfeit = Boolean(payload?.forfeitDeposit ?? payload?.forfeit_security_deposit);
-      const depositRefund = checkForfeit ? 0 : toNumber(tenant?.security_deposit_amount ?? 0);
-      const advanceRentRefund = toNumber(tenant?.advance_rent_amount ?? 0);
-      const totalDiscount = depositRefund + advanceRentRefund;
+      const forfeit = resolveForfeitInput(payload, ctx.held.deposit);
+      if ("error" in forfeit) return NextResponse.json({ error: forfeit.error }, { status: 400 });
 
-      // Numerically identical to the hand-rolled sum this replaces
-      // (baseRent + waterBill + electricityBill + additionalFeesTotal -
-      // totalDiscount) — commonFee/lateFee/carryForward are explicitly zero
-      // here, matching the same zeros already hardcoded below in the insert,
-      // so a future move-out settlement that adds one of those won't have
-      // its total silently omit it the way three other hand-rolled sums in
-      // this codebase already did.
-      const totalAmount = computeInvoiceTotal({
-        rent: baseRent,
-        water: waterBill,
-        electricity: electricityBill,
-        commonFee: 0,
-        nativeLateFee: 0,
-        lateFeeItems: 0,
-        fees: additionalFeesTotal,
-        carryForward: 0,
-        discount: totalDiscount,
+      const period = computeMoveOutRentPeriod({
+        lastBilledEndDate: ctx.lastBilledEndDate,
+        moveOutDate,
+        billingDay: ctx.billingDay,
+        monthlyRent: ctx.monthlyRent,
+        useProrate: payload?.useProrate !== false,
       });
-
-      const toYmd = (d: Date) => d.toISOString().slice(0, 10);
-      const dueDateObj = new Date(moveOutDateObj.getFullYear(), moveOutDateObj.getMonth(), moveOutDateObj.getDate() + 7);
-
-      // Save the Master Final Invoice
-      const { error: finalInvoiceError } = await auth.supabase.from("invoices").insert({
-        id: crypto.randomUUID(),
-        tenant_id: tenantId,
-        room_id: roomId,
-        status: "pending",
-        start_date: toYmd(masterStartDateObj),
-        end_date: moveOutDate,
-        issue_date: new Date().toISOString().slice(0, 10),
-        due_date: toYmd(dueDateObj),
-        rent_amount: baseRent,
-        water_bill: waterBill,
-        electricity_bill: electricityBill,
-        common_fee: 0,
-        discount_amount: totalDiscount,
-        late_fee_amount: 0,
-        carry_forward_amount: 0,
-        additional_fees_total: additionalFeesTotal,
-        additional_fees_breakdown: additionalBreakdown,
-        total_amount: totalAmount,
-        paid_amount: 0,
-        electricity_reading_start: toNumber(meterData.initial_electricity),
-        electricity_reading_end: toNumber(meterData.final_electricity),
-        water_reading_start: toNumber(meterData.initial_water),
-        water_reading_end: toNumber(meterData.final_water),
-        notes: checkForfeit ? "ย้ายออก (ริบเงินประกัน)" : "ย้ายออก (Final Statement)",
-        created_at: new Date().toISOString(),
-      });
-      if (finalInvoiceError) {
-        return NextResponse.json({ error: finalInvoiceError.message }, { status: 500 });
+      const plan = planMoveOutSettlement(
+        buildMoveOutPlanInput({
+          period,
+          previousElectricity: ctx.previousElectricity,
+          currentElectricity: toNumber(meterData.final_electricity),
+          previousWater: ctx.previousWater,
+          currentWater: toNumber(meterData.final_water),
+          electricityRate: ctx.electricityRate,
+          waterRate: ctx.waterRate,
+          feeLines: (Array.isArray(payload?.moveOutFeeLines) ? payload.moveOutFeeLines : []).map((l: any) => ({
+            label: String(l?.label ?? ""),
+            amount: toNumber(l?.amount),
+          })),
+          openInvoices: ctx.openInvoices,
+          held: ctx.held,
+          forfeitAmount: forfeit.amount,
+          forfeitReason: forfeit.reason,
+        })
+      );
+      if (plan.errors.length > 0) {
+        return NextResponse.json({ error: plan.errors.join("; "), settlement: plan }, { status: 400 });
       }
 
-      // The settlement invoice exists now — safe to mutate tenant/room state.
-      const updatePayload = {
-        ...restPayload,
-        forfeit_security_deposit: isForfeit,
-        status: "inactive",
-        room_id: null,
-      };
-      const { error: tenantUpdateError } = await auth.supabase
-        .from("tenants")
-        .update(updatePayload)
-        .eq("id", tenantId);
-      if (tenantUpdateError) return NextResponse.json({ error: tenantUpdateError.message }, { status: 500 });
-
-      const { data: openLog, error: openLogError } = await auth.supabase
-        .from("room_tenant_logs")
-        .select("id")
-        .eq("room_id", roomId)
-        .eq("tenant_id", tenantId)
-        .is("move_out_date", null)
-        .order("move_in_date", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (openLogError) return NextResponse.json({ error: openLogError.message }, { status: 500 });
-      if (openLog?.id) {
-        const { error: closeLogError } = await auth.supabase
-          .from("room_tenant_logs")
-          .update({ move_out_date: moveOutDate, updated_at: new Date().toISOString() })
-          .eq("id", openLog.id);
-        if (closeLogError) return NextResponse.json({ error: closeLogError.message }, { status: 500 });
-      }
-
-      const { error: roomStatusError } = await auth.supabase
-        .from("rooms")
-        .update({ status: "available" })
-        .eq("id", roomId);
-      if (roomStatusError) return NextResponse.json({ error: roomStatusError.message }, { status: 500 });
-
-      const { error: roomLogError } = await auth.supabase.from("room_logs").insert({
-        room_id: roomId,
-        event_type: "move_out",
-        created_at: new Date().toISOString(),
+      const today = new Date().toISOString().slice(0, 10);
+      const moveOutDateObj = new Date(moveOutDate);
+      const dueDate = new Date(moveOutDateObj.getFullYear(), moveOutDateObj.getMonth(), moveOutDateObj.getDate() + 7);
+      const p = buildFinalSettlementRpcPayload({
+        tenantId,
+        roomId,
+        idempotencyKey,
+        moveOutDate,
+        createdBy: auth.user.id,
+        paidAt: new Date().toISOString(),
+        plan,
+        period,
+        openInvoices: ctx.openInvoices,
+        source: "credit",
+        finalInvoice: {
+          id: crypto.randomUUID(),
+          issueDate: today,
+          dueDate: `${dueDate.getFullYear()}-${String(dueDate.getMonth() + 1).padStart(2, "0")}-${String(dueDate.getDate()).padStart(2, "0")}`,
+          notes: plan.depositForfeited > 0
+            ? `ย้ายออก (ริบเงินประกัน ฿${plan.depositForfeited}: ${plan.forfeitReason})`
+            : "ย้ายออก (Final Statement)",
+          meter: {
+            electricityStart: ctx.previousElectricity,
+            electricityEnd: toNumber(meterData.final_electricity),
+            waterStart: ctx.previousWater,
+            waterEnd: toNumber(meterData.final_water),
+          },
+        },
       });
-      if (roomLogError) {
-        console.warn("room_logs insert failed:", roomLogError.message);
-      }
 
-      const { error: requestsError } = await auth.supabase
-        .from("move_out_requests")
-        .update({ status: "completed", updated_at: new Date().toISOString(), actual_move_out_date: moveOutDate })
-        .eq("tenant_id", tenantId)
-        .in("status", ["requested", "approved"]);
-      if (requestsError) return NextResponse.json({ error: requestsError.message }, { status: 500 });
-      return NextResponse.json({ success: true });
+      const { data: rpcResult, error: rpcError } = await auth.supabase.rpc("final_settle_move_out", { p });
+      if (rpcError) return settlementRpcError(rpcError.message);
+      return NextResponse.json({
+        success: true,
+        replayed: Boolean((rpcResult as any)?.replayed),
+        settlementId: (rpcResult as any)?.settlement_id ?? null,
+        finalInvoiceId: (rpcResult as any)?.final_invoice_id ?? null,
+        settlement: (rpcResult as any)?.settlement ?? plan,
+      });
     }
 
     if (action === "cancel_move_out_process") {
@@ -963,7 +1030,6 @@ export async function POST(req: Request) {
       if ("error" in auth) return auth.error;
 
       const tenantId = String(body?.tenantId ?? "");
-      const forfeitDeposit = Boolean(body?.forfeitDeposit);
       const moveOutDate = body?.moveOutDate
         ? String(body.moveOutDate)
         : new Date().toISOString().slice(0, 10);
@@ -971,208 +1037,84 @@ export async function POST(req: Request) {
       if (!tenantId) {
         return NextResponse.json({ error: "Missing tenantId." }, { status: 400 });
       }
+      const idempotencyKey = String(body?.idempotencyKey ?? "").trim() || `abandon:${tenantId}:${moveOutDate}`;
+      const replay = await findSettlementReplay(auth.supabase, tenantId, idempotencyKey);
+      if (replay) return NextResponse.json(abandonResponse(replay.settlement, true));
 
-      // Fetch tenant with room info
-      const { data: tenant, error: tenantErr } = await auth.supabase
+      const { data: tenantRow, error: tenantErr } = await auth.supabase
         .from("tenants")
-        .select("id,room_id,advance_rent_amount,security_deposit_amount,status,rooms(id,price_month,room_number)")
+        .select("id,room_id,status")
         .eq("id", tenantId)
         .maybeSingle();
-
       if (tenantErr) return NextResponse.json({ error: tenantErr.message }, { status: 500 });
-      if (!tenant?.id) return NextResponse.json({ error: "Tenant not found." }, { status: 404 });
-      if (String(tenant.status) !== "active") {
+      if (!tenantRow?.id) return NextResponse.json({ error: "Tenant not found." }, { status: 404 });
+      if (String(tenantRow.status) !== "active") {
         return NextResponse.json({ error: "ผู้เช่าไม่ได้อยู่ในสถานะ active" }, { status: 400 });
       }
-
-      const nowIso = new Date().toISOString();
-
-      // Build available credit pool
-      let remainingCredit = toNumber(tenant.advance_rent_amount ?? 0);
-      if (!forfeitDeposit) {
-        remainingCredit += toNumber(tenant.security_deposit_amount ?? 0);
+      if (!tenantRow.room_id) {
+        return NextResponse.json({ error: "ผู้เช่าไม่มีห้องที่ผูกอยู่" }, { status: 400 });
       }
+      const roomId = String(tenantRow.room_id);
 
-      // Fetch every open invoice for this tenant, FINAL PERIOD FIRST. A tenant
-      // moving out has their closing bill settled before anything else; only
-      // credit left over after that reaches earlier periods.
-      const { data: unpaidInvoices, error: invErr } = await auth.supabase
-        .from("invoices")
-        .select("id,total_amount,paid_amount,carry_forward_amount,status,start_date")
-        .eq("tenant_id", tenantId)
-        .in("status", ["pending", "overdue", "partial", "verifying", "draft"])
-        .order("start_date", { ascending: false });
+      const ctx = await loadSettlementContext(auth.supabase, tenantId, roomId);
+      if ("error" in ctx) return NextResponse.json({ error: ctx.error }, { status: ctx.status });
 
-      if (invErr) return NextResponse.json({ error: invErr.message }, { status: 500 });
+      const forfeit = resolveForfeitInput(body, ctx.held.deposit);
+      if ("error" in forfeit) return NextResponse.json({ error: forfeit.error }, { status: 400 });
 
-      const openInvoices = unpaidInvoices ?? [];
-
-      // Spend the credit against each invoice's OWN charge, never its bundled
-      // total. An invoice that carried an earlier bill forward already contains
-      // that bill's amount in `total_amount`, so measuring both by
-      // `total_amount - paid_amount` counts the carried debt twice and burns
-      // credit the tenant never owed. `getInvoiceOwnOutstanding` is the same
-      // figure the move-out screens show the admin.
-      //
-      // Allocation itself goes through applyInvoicePaymentAllocation so the
-      // credit lands in `payment_history` and `invoice_payment_allocations`
-      // like every other payment, instead of a bare `paid_amount` write.
-      const plan = planAbandonCredit(openInvoices as any, remainingCredit);
-
-      // Stays true while every invoice so far has been settled in full. Once the
-      // credit falls short, nothing later in the chain can be considered clear —
-      // a pure carry-forward invoice with no own charge of its own is clear only
-      // if everything it carried was cleared.
-      let chainFunded = true;
-      for (const line of plan.lines) {
-        if (line.applied > 0) {
-          try {
-            await applyInvoicePaymentAllocation(auth.supabase, {
-              invoiceId: line.invoiceId,
-              amount: line.applied,
-              paidAt: nowIso,
-              mode: "credit",
-              source: "abandon_room",
-              // No bank account received this — it is the tenant's own deposit
-              // being spent. Recording their transfer account here would put
-              // money in a cash-basis report that never hit the bank.
-              paymentMethod: {
-                id: null,
-                snapshot: {
-                  type: "credit",
-                  label: "เครดิตจากการทิ้งห้อง (Abandon Room)",
-                },
-              },
-              // A retried request replays the original allocation instead of
-              // spending the deposit a second time.
-              idempotencyKey: `abandon:${tenantId}:${moveOutDate}:${line.invoiceId}`,
-              createdBy: auth.user.id,
-            });
-          } catch (allocationError: any) {
-            return NextResponse.json(
-              { error: allocationError?.message ?? "Failed to apply abandon credit." },
-              { status: 500 }
-            );
-          }
-        }
-
-        const covered = line.writtenOff <= 0 && chainFunded;
-        if (!covered) chainFunded = false;
-
-        // No credit reached this invoice at all — it KEEPS its debt and its
-        // current status (overdue stays overdue, so it keeps showing up in
-        // arrears). Only an invoice the credit actually touched gets relabelled.
-        if (line.applied <= 0) {
-          continue;
-        }
-
-        // Label from what the plan applied, not from a re-read of paid_amount.
-        // When a chain settles, the carried portion's cash sits on the SOURCE
-        // invoice's row, so the target's own paid_amount stays short of its
-        // bundled total for good — re-deriving "still owed" from the row would
-        // cancel an invoice the credit had in fact covered in full.
-        //
-        // Status "abandoned" (not "paid"/"partial") on ANY invoice the credit
-        // touched — fully covered or not — so a deposit/advance-rent write-off
-        // never reads as if real cash was collected. `writtenOff` tells you
-        // whether real debt still remains.
-        //
-        // `invoices` has no updated_at column — writing one makes PostgREST
-        // reject the whole update.
-        const payload = {
-          status: "abandoned",
-          notes: covered
-            ? "ชำระโดยเครดิตจากการทิ้งห้อง (Abandon Room)"
-            : "ชำระบางส่วนโดยเครดิตจากการทิ้งห้อง (Abandon Room) — ยังมียอดค้างชำระ",
-        };
-
-        const { error: labelError } = await auth.supabase
-          .from("invoices")
-          .update(payload)
-          .eq("id", line.invoiceId);
-        if (labelError) {
-          return NextResponse.json({ error: labelError.message }, { status: 500 });
-        }
-      }
-
-      // Mark tenant inactive and clear room
-      const { error: abandonTenantError } = await auth.supabase
-        .from("tenants")
-        .update({
-          status: "inactive",
-          move_out_date: moveOutDate,
-          forfeit_security_deposit: forfeitDeposit,
-          room_id: null,
-          updated_at: nowIso,
-        })
-        .eq("id", tenantId);
-      if (abandonTenantError) {
-        return NextResponse.json({ error: abandonTenantError.message }, { status: 500 });
-      }
-
-      // Close the open room_tenant_log
-      const roomId = String(tenant.room_id ?? "");
-      if (roomId) {
-        const { data: openLog, error: openLogError } = await auth.supabase
-          .from("room_tenant_logs")
-          .select("id")
-          .eq("room_id", roomId)
-          .eq("tenant_id", tenantId)
-          .is("move_out_date", null)
-          .order("move_in_date", { ascending: false })
-          .limit(1)
-          .maybeSingle();
-        if (openLogError) return NextResponse.json({ error: openLogError.message }, { status: 500 });
-        if (openLog?.id) {
-          const { error: closeLogError } = await auth.supabase
-            .from("room_tenant_logs")
-            .update({ move_out_date: moveOutDate, updated_at: nowIso })
-            .eq("id", openLog.id);
-          if (closeLogError) return NextResponse.json({ error: closeLogError.message }, { status: 500 });
-        }
-
-        // Free the room and log the event
-        const { error: roomStatusError } = await auth.supabase
-          .from("rooms")
-          .update({ status: "available" })
-          .eq("id", roomId);
-        if (roomStatusError) return NextResponse.json({ error: roomStatusError.message }, { status: 500 });
-
-        const { error: roomLogError } = await auth.supabase.from("room_logs").insert({
-          room_id: roomId,
-          event_type: "move_out",
-          created_at: nowIso,
-        });
-        if (roomLogError) {
-          console.warn("room_logs insert failed:", roomLogError.message);
-        }
-      }
-
-      // Mark any pending move-out requests as completed
-      const { error: closeRequestsError } = await auth.supabase
-        .from("move_out_requests")
-        .update({ status: "completed", updated_at: nowIso, actual_move_out_date: moveOutDate })
-        .eq("tenant_id", tenantId)
-        .in("status", ["requested", "approved"]);
-      if (closeRequestsError) {
-        return NextResponse.json({ error: closeRequestsError.message }, { status: 500 });
-      }
-
-      // Credit left after the real debt is covered belongs to the tenant. The
-      // old loop silently discarded it; surface it so the admin can refund.
-      return NextResponse.json({
-        success: true,
-        summary: {
-          creditPool: roundTo2(plan.creditPool),
-          totalOwed: roundTo2(plan.totalOwed),
-          creditApplied: roundTo2(plan.creditApplied),
-          writtenOff: roundTo2(plan.writtenOff),
-          refundableCredit: roundTo2(plan.refundableCredit),
-          lines: plan.lines,
-        },
-        creditApplied: roundTo2(plan.creditApplied),
-        refundableCredit: roundTo2(plan.refundableCredit),
+      // Same planner and the same atomic write as a normal final settlement, with
+      // no final bill: held credit (advance rent first, then deposit) is applied
+      // to the existing debt oldest-first as a NON-CASH receipt (source
+      // 'abandon_room'). Debt the credit cannot reach stays owed on its invoice
+      // with its status unchanged — nothing is written off here; a write-off is
+      // a separate, explicit decision. Leftover advance rent is absorbed (not
+      // refundable); only leftover deposit is refund due.
+      const period = computeMoveOutRentPeriod({
+        lastBilledEndDate: ctx.lastBilledEndDate,
+        moveOutDate,
+        billingDay: ctx.billingDay,
+        monthlyRent: 0,
+        useProrate: false,
       });
+      const plan = planMoveOutSettlement(
+        buildMoveOutPlanInput({
+          period,
+          previousElectricity: 0,
+          currentElectricity: 0,
+          previousWater: 0,
+          currentWater: 0,
+          electricityRate: 0,
+          waterRate: 0,
+          feeLines: [],
+          openInvoices: ctx.openInvoices,
+          held: ctx.held,
+          forfeitAmount: forfeit.amount,
+          forfeitReason: forfeit.reason,
+          debtOnly: true,
+        })
+      );
+      if (plan.errors.length > 0) {
+        return NextResponse.json({ error: plan.errors.join("; "), settlement: plan }, { status: 400 });
+      }
+
+      const p = buildFinalSettlementRpcPayload({
+        tenantId,
+        roomId,
+        idempotencyKey,
+        moveOutDate,
+        createdBy: auth.user.id,
+        paidAt: new Date().toISOString(),
+        plan,
+        period,
+        openInvoices: ctx.openInvoices,
+        source: "abandon_room",
+        finalInvoice: null,
+      });
+      const { data: rpcResult, error: rpcError } = await auth.supabase.rpc("final_settle_move_out", { p });
+      if (rpcError) return settlementRpcError(rpcError.message);
+      return NextResponse.json(
+        abandonResponse((rpcResult as any)?.settlement ?? plan, Boolean((rpcResult as any)?.replayed))
+      );
     }
 
     return NextResponse.json({ error: "Unknown action." }, { status: 400 });
