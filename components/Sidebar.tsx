@@ -5,7 +5,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Building, Menu, X } from "lucide-react";
 import { useEffect, useState } from "react";
-import { getAdminNav } from "./admin-nav";
+import { filterNavByPermission, getAdminNav } from "./admin-nav";
+import { usePermissions } from "@/lib/use-permissions";
 import { t } from "@/lib/i18n";
 import { useUiLanguage } from "@/lib/use-ui-language";
 
@@ -27,7 +28,8 @@ function NavList({
 }) {
   const pathname = usePathname();
   const locale = useUiLanguage();
-  const adminNav = getAdminNav(locale);
+  const { can, loading } = usePermissions();
+  const adminNav = filterNavByPermission(getAdminNav(locale), can, loading);
 
   return (
     <nav className={`space-y-0.5 ${className}`}>

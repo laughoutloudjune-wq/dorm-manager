@@ -8,6 +8,7 @@ import { Button, buttonClasses } from "@/components/ui/Button";
 import { Card, SectionCard } from "@/components/ui/Card";
 import { EmptyState, Notice, PageHeader, Skeleton } from "@/components/ui/Page";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/Table";
+import { invoiceDeepLink, tenantDeepLink } from "@/lib/deep-links";
 import { createClient } from "@/lib/supabase-client";
 import type { LateFeeQueueRow } from "@/lib/money/action-queue";
 import { SEVERITY_LABELS, SEVERITY_ORDER } from "@/lib/money/reconciliation-view";
@@ -75,9 +76,17 @@ const NotEnabled = () => (
   <EmptyState title="ยังไม่เปิดใช้งาน" description="ยังไม่ได้สร้างตารางข้อมูลส่วนนี้ในฐานข้อมูล" className="py-10" />
 );
 
-const who = (name: string | null, room: string | null) => (
+const who = (name: string | null, room: string | null, href?: string) => (
   <>
-    <TD className="whitespace-nowrap">{name ?? "-"}</TD>
+    <TD className="whitespace-nowrap">
+      {href && name ? (
+        <Link href={href} className="text-primary-600 hover:underline">
+          {name}
+        </Link>
+      ) : (
+        name ?? "-"
+      )}
+    </TD>
     <TD className="whitespace-nowrap">{room ?? "-"}</TD>
   </>
 );
@@ -164,7 +173,7 @@ export default function ActionQueuePage() {
                 <TBody>
                   {data.slips.map((s) => (
                     <TR key={s.invoiceId}>
-                      {who(s.tenantName, s.roomNumber)}
+                      {who(s.tenantName, s.roomNumber, invoiceDeepLink(s.invoiceId))}
                       <TD className="whitespace-nowrap text-right tabular-nums">{formatBaht(s.amount)}</TD>
                       <TD className="whitespace-nowrap text-slate-500">
                         {s.uploadedAt ? new Date(s.uploadedAt).toLocaleString("th-TH") : "-"}
@@ -199,7 +208,7 @@ export default function ActionQueuePage() {
                 <TBody>
                   {data.lateFees.map((r) => (
                     <TR key={r.invoiceId}>
-                      {who(r.tenantName, r.roomNumber)}
+                      {who(r.tenantName, r.roomNumber, invoiceDeepLink(r.invoiceId))}
                       <TD className="whitespace-nowrap">{r.dueDate}</TD>
                       <TD className="whitespace-nowrap text-right tabular-nums">{formatBaht(r.outstanding)}</TD>
                       <TD className="whitespace-nowrap text-right tabular-nums">{formatBaht(r.estimate.amount)}</TD>
@@ -233,7 +242,7 @@ export default function ActionQueuePage() {
                 <TBody>
                   {data.refunds.rows.map((r) => (
                     <TR key={r.tenant_id}>
-                      {who(r.tenantName, r.roomNumber)}
+                      {who(r.tenantName, r.roomNumber, tenantDeepLink(r.tenant_id))}
                       <TD className="whitespace-nowrap text-right tabular-nums">{formatBaht(Number(r.refund_due))}</TD>
                       <TD className="whitespace-nowrap text-right tabular-nums">{formatBaht(Number(r.refund_paid))}</TD>
                       <TD className="whitespace-nowrap text-right tabular-nums">{formatBaht(Number(r.refund_outstanding))}</TD>
@@ -261,7 +270,7 @@ export default function ActionQueuePage() {
                 <TBody>
                   {data.credits.rows.map((r) => (
                     <TR key={r.tenant_id}>
-                      {who(r.tenantName, r.roomNumber)}
+                      {who(r.tenantName, r.roomNumber, tenantDeepLink(r.tenant_id))}
                       <TD className="whitespace-nowrap text-right tabular-nums">{formatBaht(Number(r.unapplied_credit))}</TD>
                     </TR>
                   ))}
