@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 import { toast } from "sonner";
 import { Modal } from "@/components/ui/Modal";
@@ -12,8 +12,14 @@ import { MoveOutWizard } from "./MoveOutWizard";
 import type { MoveOutWizardForm } from "./MoveOutWizard";
 import type { MoveOutFeeLine } from "@/types";
 import { toNumber } from "@/lib/format";
-import { dailyRentRate } from "@/lib/invoice-utils";
 import { getInvoiceOwnOutstanding } from "@/lib/invoice-ledger";
+import { planMoveOutSettlement } from "@/lib/money/settlement";
+import {
+  buildMoveOutPlanInput,
+  computeMoveOutRentPeriod,
+  resolveHeldCredit,
+} from "@/lib/money/move-out-settlement-input";
+import { forfeitReasonMissing, type ForfeitState } from "./MoveOutSettlementBreakdown";
 
 type MoveOutProcessingModalProps = {
   isOpen: boolean;
@@ -38,7 +44,11 @@ export function MoveOutProcessingModal({
     final_move_out_date: new Date().toISOString().slice(0, 10),
   });
 
-  const [forfeitDeposit, setForfeitDeposit] = useState(false);
+  const [forfeit, setForfeit] = useState<ForfeitState>({ enabled: false, amount: 0, reason: "" });
+  const forfeitDeposit = forfeit.enabled && forfeit.amount > 0;
+  // One key per opened settlement: a double click or retried request replays
+  // the original settlement instead of settling twice.
+  const idempotencyKeyRef = useRef<string>("");
   const [useProrate, setUseProrate] = useState(true);
   const [moveOutFeeLines, setMoveOutFeeLines] = useState<MoveOutFeeLine[]>([]);
   const [isMovingOut, setIsMovingOut] = useState(false);
@@ -92,7 +102,11 @@ export function MoveOutProcessingModal({
         tenant.final_electricity_reading ?? (prev.final_electricity_reading || prevElec),
       final_water_reading: tenant.final_water_reading ?? (prev.final_water_reading || prevWater),
     }));
-    setForfeitDeposit(tenant.forfeit_security_deposit || false);
+    setForfeit((prev) => ({
+      enabled: Boolean(tenant.forfeit_security_deposit),
+      amount: prev.amount || Number(result.heldCredit?.deposit ?? tenant.security_deposit_amount ?? 0),
+      reason: prev.reason,
+    }));
     draftHydratedRef.current = {
       final_electricity_reading:
         tenant.final_electricity_reading ?? (prevElec || 0),
@@ -108,6 +122,8 @@ export function MoveOutProcessingModal({
       rates: result.rates || { electricity_rate: 0, water_rate: 0 },
       moveOutRequests: result.moveOutRequests || [],
       invoiceHistory: result.invoiceHistory || [],
+      heldCredit: result.heldCredit ?? resolveHeldCredit(tenant, []),
+      existingSettlement: result.existingSettlement ?? null,
       prevElec,
       prevWater,
     };
@@ -148,6 +164,8 @@ export function MoveOutProcessingModal({
   useEffect(() => {
     draftHydratedRef.current = null;
     setAutosaveStatus("idle");
+    idempotencyKeyRef.current = crypto.randomUUID();
+    setForfeit({ enabled: false, amount: 0, reason: "" });
   }, [isOpen, tenantId]);
 
   useEffect(() => {
@@ -260,6 +278,14 @@ export function MoveOutProcessingModal({
   };
 
   const confirmMoveOut = async () => {
+    if (forfeitReasonMissing(forfeit)) {
+      toast.error("กรุณาระบุเหตุผลการริบเงินประกัน");
+      return;
+    }
+    if (settlementPlan && settlementPlan.errors.length > 0) {
+      toast.error(settlementPlan.errors.join("; "));
+      return;
+    }
     setIsMovingOut(true);
     const moveOutDate =
       form.final_move_out_date || new Date().toISOString().slice(0, 10);
@@ -281,7 +307,9 @@ export function MoveOutProcessingModal({
         tenantId,
         roomId: data?.tenant?.room_id,
         payload: {
-          forfeitDeposit,
+          forfeitAmount: forfeitDeposit ? forfeit.amount : 0,
+          forfeitReason: forfeitDeposit ? forfeit.reason : null,
+          idempotencyKey: idempotencyKeyRef.current,
           useProrate,
           move_out_date: moveOutDate,
           meterData: {
@@ -303,20 +331,31 @@ export function MoveOutProcessingModal({
     }
   };
 
-  const abandonRoom = async (isForfeit: boolean, moveOutDate: string) => {
+  const abandonRoom = async (_isForfeit: boolean, moveOutDate: string) => {
+    if (forfeitReasonMissing(forfeit)) {
+      toast.error("กรุณาระบุเหตุผลการริบเงินประกัน");
+      return;
+    }
     try {
       const result = await callTenantsAction("abandon_room", {
         tenantId,
-        forfeitDeposit: isForfeit,
+        forfeitAmount: forfeitDeposit ? forfeit.amount : 0,
+        forfeitReason: forfeitDeposit ? forfeit.reason : null,
+        idempotencyKey: idempotencyKeyRef.current,
         moveOutDate,
       });
       const summary = result?.summary ?? {};
       const baht = (value: unknown) => Number(value ?? 0).toLocaleString("th-TH");
       const parts = [
         `ตัดชำระ ฿${baht(summary.creditApplied)}`,
-        Number(summary.writtenOff ?? 0) > 0 ? `ตัดหนี้สูญ ฿${baht(summary.writtenOff)}` : "",
+        Number(summary.balanceStillOwed ?? summary.writtenOff ?? 0) > 0
+          ? `ยังค้างชำระ ฿${baht(summary.balanceStillOwed ?? summary.writtenOff)} (ไม่ตัดหนี้สูญ)`
+          : "",
+        Number(summary.advanceRentAbsorbed ?? 0) > 0
+          ? `ค่าเช่าล่วงหน้าไม่คืน ฿${baht(summary.advanceRentAbsorbed)}`
+          : "",
         Number(summary.refundableCredit ?? 0) > 0
-          ? `เหลือเครดิตคืนผู้เช่า ฿${baht(summary.refundableCredit)}`
+          ? `ยอดคืนผู้เช่า (ค้างจ่าย) ฿${baht(summary.refundableCredit)}`
           : "",
       ].filter(Boolean);
       toast.success(
@@ -330,87 +369,83 @@ export function MoveOutProcessingModal({
     }
   };
 
+  // ── Settlement preview: the same planner + inputs the server uses ─────────
+  const lastBilledEndYmd = (() => {
+    // Same rule as the server: the latest NON-draft invoice ends the billed period.
+    const lastBilled = (data?.invoiceHistory ?? []).find((inv: any) => inv.status !== "draft");
+    return lastBilled?.end_date ? String(lastBilled.end_date).slice(0, 10) : null;
+  })();
+  const roomPrice = Array.isArray(data?.tenant?.rooms)
+    ? toNumber(data?.tenant?.rooms[0]?.price_month)
+    : toNumber(data?.tenant?.rooms?.price_month);
+  const moveOutYmd = form.final_move_out_date || new Date().toISOString().slice(0, 10);
+
+  const rentPeriod = useMemo(
+    () =>
+      computeMoveOutRentPeriod({
+        lastBilledEndDate: lastBilledEndYmd,
+        moveOutDate: moveOutYmd,
+        billingDay: Number(data?.rates?.billing_day) || 25,
+        monthlyRent: roomPrice,
+        useProrate,
+      }),
+    [lastBilledEndYmd, moveOutYmd, data?.rates?.billing_day, roomPrice, useProrate]
+  );
+
+  const held = useMemo(
+    () => data?.heldCredit ?? { deposit: 0, advance: 0, unapplied: 0 },
+    [data?.heldCredit]
+  );
+  const forfeitAmount = forfeitDeposit ? forfeit.amount : 0;
+
+  const settlementPlan = useMemo(() => {
+    if (!data) return null;
+    return planMoveOutSettlement(
+      buildMoveOutPlanInput({
+        period: rentPeriod,
+        previousElectricity: data.prevElec ?? 0,
+        currentElectricity: toNumber(form.final_electricity_reading),
+        previousWater: data.prevWater ?? 0,
+        currentWater: toNumber(form.final_water_reading),
+        electricityRate: toNumber(data.rates?.electricity_rate),
+        waterRate: toNumber(data.rates?.water_rate),
+        feeLines: moveOutFeeLines.map((l) => ({ label: l.label, amount: toNumber(l.amount) })),
+        openInvoices: data.unpaidInvoices ?? [],
+        held,
+        forfeitAmount,
+        forfeitReason: forfeit.reason,
+      })
+    );
+  }, [data, rentPeriod, form.final_electricity_reading, form.final_water_reading, moveOutFeeLines, held, forfeitAmount, forfeit.reason]);
+
+  const abandonPlan = useMemo(() => {
+    if (!data) return null;
+    return planMoveOutSettlement(
+      buildMoveOutPlanInput({
+        period: rentPeriod,
+        previousElectricity: 0,
+        currentElectricity: 0,
+        previousWater: 0,
+        currentWater: 0,
+        electricityRate: 0,
+        waterRate: 0,
+        feeLines: [],
+        openInvoices: data.unpaidInvoices ?? [],
+        held,
+        forfeitAmount,
+        forfeitReason: forfeit.reason,
+        debtOnly: true,
+      })
+    );
+  }, [data, rentPeriod, held, forfeitAmount, forfeit.reason]);
+
   if (!isOpen) return null;
 
   const prevElec = data?.prevElec ?? 0;
   const prevWater = data?.prevWater ?? 0;
-
-  const billingDay = Math.max(
-    1,
-    Math.min(28, Number(data?.rates?.billing_day) || 25)
-  );
-
-  const tailDaysAfterBilledPeriod = (() => {
-    const moveOutDateObj = form.final_move_out_date
-      ? new Date(form.final_move_out_date)
-      : new Date();
-    const lastNormal = data?.invoiceHistory?.[0];
-    const masterStartDateObj = lastNormal?.end_date
-      ? new Date(lastNormal.end_date)
-      : new Date(
-          moveOutDateObj.getFullYear(),
-          moveOutDateObj.getMonth() - 1,
-          billingDay
-        );
-
-    let currentEnd = new Date(masterStartDateObj);
-    currentEnd.setMonth(currentEnd.getMonth() + 1);
-    let tempStart = new Date(masterStartDateObj);
-    while (currentEnd <= moveOutDateObj) {
-      tempStart = new Date(currentEnd);
-      currentEnd.setMonth(currentEnd.getMonth() + 1);
-    }
-    const msPerDay = 86400000;
-    const tempStartUtc = Date.UTC(
-      tempStart.getFullYear(),
-      tempStart.getMonth(),
-      tempStart.getDate()
-    );
-    const moveOutUtc = Date.UTC(
-      moveOutDateObj.getFullYear(),
-      moveOutDateObj.getMonth(),
-      moveOutDateObj.getDate()
-    );
-    return Math.floor((moveOutUtc - tempStartUtc) / msPerDay);
-  })();
-
-  const appliedMoveOutRentBase = (() => {
-    const moveOutDateObj = form.final_move_out_date
-      ? new Date(form.final_move_out_date)
-      : new Date();
-    const lastNormal = data?.invoiceHistory?.[0];
-    const masterStartDateObj = lastNormal?.end_date
-      ? new Date(lastNormal.end_date)
-      : new Date(
-          moveOutDateObj.getFullYear(),
-          moveOutDateObj.getMonth() - 1,
-          billingDay
-        );
-
-    let currentEnd = new Date(masterStartDateObj);
-    currentEnd.setMonth(currentEnd.getMonth() + 1);
-    let fullMonths = 0;
-    while (currentEnd <= moveOutDateObj) {
-      fullMonths++;
-      currentEnd.setMonth(currentEnd.getMonth() + 1);
-    }
-    const roomPrice = Array.isArray(data?.tenant?.rooms)
-      ? toNumber(data?.tenant?.rooms[0]?.price_month)
-      : toNumber(data?.tenant?.rooms?.price_month);
-    
-    let base = roomPrice * fullMonths;
-    if (useProrate && tailDaysAfterBilledPeriod > 0) {
-      base += dailyRentRate(roomPrice) * tailDaysAfterBilledPeriod;
-    }
-    return base;
-  })();
-
-  const latestBilledEndYmd = (() => {
-    const lastNormal = data?.invoiceHistory?.[0];
-    return lastNormal?.end_date
-      ? String(lastNormal.end_date).slice(0, 10)
-      : null;
-  })();
+  const tailDaysAfterBilledPeriod = rentPeriod.prorateDays;
+  const appliedMoveOutRentBase = rentPeriod.fullMonthRent + rentPeriod.proratedRent;
+  const latestBilledEndYmd = lastBilledEndYmd;
 
   const roomNumber = Array.isArray(data?.tenant?.rooms)
     ? data?.tenant?.rooms[0]?.room_number
@@ -468,7 +503,13 @@ export function MoveOutProcessingModal({
             form={form}
             setForm={setForm}
             forfeitDeposit={forfeitDeposit}
-            setForfeitDeposit={setForfeitDeposit}
+            forfeit={forfeit}
+            setForfeit={setForfeit}
+            heldCredit={held}
+            settlementPlan={settlementPlan}
+            abandonPlan={abandonPlan}
+            rentPeriod={rentPeriod}
+            existingSettlement={data.existingSettlement}
             useProrate={useProrate}
             setUseProrate={setUseProrate}
             moveOutFeeLines={moveOutFeeLines}
