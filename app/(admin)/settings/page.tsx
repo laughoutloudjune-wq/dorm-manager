@@ -151,6 +151,7 @@ const permissionLabelThai = (permission: (typeof PERMISSION_KEYS)[number]) => {
     "settings.permissions": "แก้ไขสิทธิ์และบทบาท",
     "rewards.view": "ดูคะแนนสะสมผู้เช่า",
     "rewards.manage": "จัดการคะแนนสะสม/อนุมัติ",
+    "reconciliation.view": "ดูรายงานตรวจสอบยอดเงิน",
   };
   return labels[permission] ?? PERMISSION_LABELS[permission];
 };
