@@ -118,6 +118,16 @@ describe("buildTenantStatement", () => {
     expect(charged.lateFee).toMatchObject({ state: "charged", amount: 150, locked: true });
   });
 
+  it("late fee: an approved (posted) charge replaces the estimate, net of waivers, without touching this invoice's total", () => {
+    const open = { ...base, status: "overdue", late_fee_per_day: 50, late_fee_start_date: "2026-08-06" };
+    const s = buildTenantStatement(open, [], [], {
+      asOf: "2026-08-10",
+      postedLateFees: [{ amount: 150, waived: 100, targetInvoiceId: "next" }],
+    });
+    expect(s.lateFee).toMatchObject({ state: "charged", amount: 50, locked: true, postedOnInvoiceId: "next" });
+    expect(s.total).toBe(5500);
+  });
+
   it("carried debt and carried late fee not double counted", () => {
     const row = {
       ...base,

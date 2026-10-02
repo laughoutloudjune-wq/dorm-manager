@@ -189,6 +189,11 @@ export default function ActionQueuePage() {
             title="ค่าปรับรออนุมัติ"
             description={`บิลเกินกำหนด ณ ${data.today}: ประมาณการเทียบกับยอดที่ล็อกไว้แล้ว (อ่านอย่างเดียว)`}
             count={data.lateFees.length}
+            action={
+              <Link href="/late-fees" className={buttonClasses({ variant: "secondary", size: "sm" })}>
+                อนุมัติ / ยกเว้นค่าปรับ
+              </Link>
+            }
           >
             {data.lateFees.length === 0 ? (
               <Empty title="ไม่มีบิลเกินกำหนด" description="ไม่มีบิลค้างชำระที่เลยกำหนดชำระ" />

@@ -65,6 +65,47 @@ export async function resolveLateFeeMode(
   }
 }
 
+/**
+ * Posted late fees per SOURCE invoice, net of waivers, for the tenant
+ * statement. Read-only and tolerant: any error (tables not created yet) gives
+ * an empty map, so the statement falls back to its existing behaviour.
+ */
+export async function loadPostedLateFeesBySource(
+  supabase: SupabaseClient,
+  sourceInvoiceIds: string[],
+): Promise<Map<string, Array<{ amount: number; waived: number; targetInvoiceId: string | null }>>> {
+  const out = new Map<string, Array<{ amount: number; waived: number; targetInvoiceId: string | null }>>();
+  const ids = [...new Set(sourceInvoiceIds.filter(Boolean))];
+  if (ids.length === 0) return out;
+  try {
+    const { data: charges, error } = await supabase
+      .from("late_fee_charges")
+      .select("id,source_invoice_id,target_invoice_id,amount")
+      .in("source_invoice_id", ids);
+    if (error || !charges || charges.length === 0) return out;
+    const sources = charges.map((c: any) => `late_fee_charge:${c.id}`);
+    const { data: adjs, error: adjError } = await supabase.from("adjustments").select("amount,source").in("source", sources);
+    if (adjError) return out;
+    const waivedBySource = new Map<string, number>();
+    for (const a of adjs ?? []) {
+      const key = String((a as any).source);
+      waivedBySource.set(key, (waivedBySource.get(key) ?? 0) + Number((a as any).amount ?? 0));
+    }
+    for (const c of charges as any[]) {
+      const list = out.get(String(c.source_invoice_id)) ?? [];
+      list.push({
+        amount: Number(c.amount ?? 0),
+        waived: waivedBySource.get(`late_fee_charge:${c.id}`) ?? 0,
+        targetInvoiceId: c.target_invoice_id ?? null,
+      });
+      out.set(String(c.source_invoice_id), list);
+    }
+  } catch {
+    return new Map();
+  }
+  return out;
+}
+
 export type PostLateFeeArgs = {
   source: FlowInvoice;
   target: FlowInvoice;

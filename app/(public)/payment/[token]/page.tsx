@@ -648,6 +648,7 @@ export default function PaymentTokenPage() {
             {statement.lateFee.state === "charged" && (
               <p className="mt-3 text-xs text-slate-600">
                 ค่าปรับล่าช้าที่เรียกเก็บแล้ว: ฿{formatBaht(statement.lateFee.amount)}
+                {statement.lateFee.postedOnInvoiceId ? " (เรียกเก็บในบิลถัดไป)" : ""}
               </p>
             )}
             {statement.refund && (
