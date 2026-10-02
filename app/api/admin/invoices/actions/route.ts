@@ -10,7 +10,8 @@ import {
 } from "@/lib/invoice-ledger";
 import { isLateFeeBreakdownRow, isInvoiceDetailEditable, buildRuleBreakdown } from "@/lib/invoice-utils";
 import { chargesFromInvoiceRow, computeInvoiceTotal } from "@/lib/invoice-total";
-import { recordMoneyEvent } from "@/lib/money-events";
+import { recordMoneyEvent, recordMoneyEvents, type MoneyEventInput } from "@/lib/money-events";
+import { clearSlipUrlsFromHistory } from "@/lib/money/clear-slip-history";
 import { guardSaveDetailsPayload } from "@/lib/money/save-details-guard";
 import { INVOICE_MONEY_COLUMNS, diffMoneyColumns, invoicesBlockedFromDelete } from "@/lib/money/money-diff";
 import { toLocalDateString, toNumber } from "@/lib/format";
@@ -303,10 +304,11 @@ export async function POST(req: Request) {
         await syncPointsAfterPayment(auth.supabase, invoiceId);
         return NextResponse.json({ success: true, ...result });
       }
-      // Raw payloads may only touch slip evidence / the display cache. Money
-      // fields (paid_amount, totals, status, fees) must go through the payment
-      // and void actions so every change is allocated and logged.
-      const EVIDENCE_FIELDS = new Set(["slip_url", "slip_uploaded_at", "payment_history"]);
+      // Raw payloads may only touch slip evidence. Money fields (paid_amount,
+      // totals, status, fees) must go through the payment and void actions so
+      // every change is allocated and logged. payment_history is not allowed
+      // here: clearing slips goes through clear_slip_references.
+      const EVIDENCE_FIELDS = new Set(["slip_url", "slip_uploaded_at"]);
       const blocked = Object.keys(payload ?? {}).filter((key) => !EVIDENCE_FIELDS.has(key));
       if (blocked.length > 0) {
         return NextResponse.json(
@@ -314,9 +316,63 @@ export async function POST(req: Request) {
           { status: 400 },
         );
       }
+      const { data: evidenceBefore } = await auth.supabase
+        .from("invoices")
+        .select("tenant_id,room_id,slip_url,slip_uploaded_at")
+        .eq("id", invoiceId)
+        .maybeSingle();
       const { error } = await auth.supabase.from("invoices").update(payload).eq("id", invoiceId);
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      await recordMoneyEvent(auth.supabase, {
+        action: "invoice.slip_evidence_update",
+        actorUserId: auth.user.id,
+        tenantId: (evidenceBefore as any)?.tenant_id ?? null,
+        invoiceId,
+        roomId: (evidenceBefore as any)?.room_id ?? null,
+        before: {
+          slip_url: (evidenceBefore as any)?.slip_url ?? null,
+          slip_uploaded_at: (evidenceBefore as any)?.slip_uploaded_at ?? null,
+        },
+        after: payload,
+        source: "admin_webapp:record_payment_raw",
+      });
       return NextResponse.json({ success: true });
+    }
+
+    if (action === "clear_slip_references") {
+      const auth = await requireAdminPermission(req, "invoice.payment.record");
+      if ("error" in auth) return auth.error;
+      const invoiceId = String(body?.invoiceId ?? "");
+      if (!invoiceId) return NextResponse.json({ error: "Missing invoiceId." }, { status: 400 });
+      const { data: row, error: readError } = await auth.supabase
+        .from("invoices")
+        .select("tenant_id,room_id,slip_url,slip_uploaded_at,payment_history")
+        .eq("id", invoiceId)
+        .maybeSingle();
+      if (readError) return NextResponse.json({ error: readError.message }, { status: 500 });
+      if (!row) return NextResponse.json({ error: "Invoice not found." }, { status: 404 });
+      const history = Array.isArray((row as any).payment_history) ? (row as any).payment_history : [];
+      const clearedHistory = clearSlipUrlsFromHistory(history);
+      const { error } = await auth.supabase
+        .from("invoices")
+        .update({ slip_url: null, slip_uploaded_at: null, payment_history: clearedHistory })
+        .eq("id", invoiceId);
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      await recordMoneyEvent(auth.supabase, {
+        action: "invoice.slip_references_cleared",
+        actorUserId: auth.user.id,
+        tenantId: (row as any).tenant_id ?? null,
+        invoiceId,
+        roomId: (row as any).room_id ?? null,
+        before: {
+          slip_url: (row as any).slip_url ?? null,
+          slip_uploaded_at: (row as any).slip_uploaded_at ?? null,
+          history_slip_urls: history.map((e: any) => e?.slip_url ?? null),
+        },
+        after: { slip_url: null, slip_uploaded_at: null, history_slip_urls: clearedHistory.map(() => null) },
+        source: "admin_webapp",
+      });
+      return NextResponse.json({ success: true, payment_history: clearedHistory });
     }
 
     if (action === "record_split_payment") {
@@ -442,25 +498,71 @@ export async function POST(req: Request) {
       // by this move.
       const today = toLocalDateString(new Date());
 
-      const { error: overdueError } = await auth.supabase
+      const statusEvents: MoneyEventInput[] = [];
+      const logTransitions = (
+        beforeRows: any[] | null,
+        updatedRows: any[] | null,
+        nextStatus: string,
+        reason: string,
+      ) => {
+        const updatedIds = new Set((updatedRows ?? []).map((row: any) => String(row.id)));
+        for (const row of beforeRows ?? []) {
+          if (!updatedIds.has(String(row.id))) continue;
+          statusEvents.push({
+            action: "invoice.status_sync",
+            actorUserId: auth.user.id,
+            tenantId: row.tenant_id ?? null,
+            invoiceId: row.id,
+            roomId: row.room_id ?? null,
+            before: { status: row.status },
+            after: { status: nextStatus },
+            reason,
+            source: "admin_webapp:sync_period_statuses",
+          });
+        }
+      };
+
+      const { data: overdueBefore } = await auth.supabase
+        .from("invoices")
+        .select("id,tenant_id,room_id,status")
+        .eq("status", "pending")
+        .eq("start_date", periodStart)
+        .eq("end_date", periodEnd)
+        .is("slip_url", null)
+        .lt("due_date", today);
+      const { data: overdueUpdated, error: overdueError } = await auth.supabase
         .from("invoices")
         .update({ status: "overdue" })
         .eq("status", "pending")
         .eq("start_date", periodStart)
         .eq("end_date", periodEnd)
         .is("slip_url", null)
-        .lt("due_date", today);
+        .lt("due_date", today)
+        .select("id");
       if (overdueError) return NextResponse.json({ error: overdueError.message }, { status: 500 });
+      logTransitions(overdueBefore as any[] | null, overdueUpdated as any[] | null, "overdue", "past due date, no slip");
 
-      const { error: verifyingError } = await auth.supabase
+      const { data: verifyingBefore } = await auth.supabase
+        .from("invoices")
+        .select("id,tenant_id,room_id,status")
+        .in("status", ["pending", "overdue"])
+        .eq("start_date", periodStart)
+        .eq("end_date", periodEnd)
+        .eq("paid_amount", 0)
+        .not("slip_url", "is", null);
+      const { data: verifyingUpdated, error: verifyingError } = await auth.supabase
         .from("invoices")
         .update({ status: "verifying" })
         .in("status", ["pending", "overdue"])
         .eq("start_date", periodStart)
         .eq("end_date", periodEnd)
         .eq("paid_amount", 0)
-        .not("slip_url", "is", null);
+        .not("slip_url", "is", null)
+        .select("id");
       if (verifyingError) return NextResponse.json({ error: verifyingError.message }, { status: 500 });
+      logTransitions(verifyingBefore as any[] | null, verifyingUpdated as any[] | null, "verifying", "slip uploaded, awaiting confirmation");
+
+      await recordMoneyEvents(auth.supabase, statusEvents);
 
       return NextResponse.json({ success: true });
     }
@@ -1027,6 +1129,8 @@ export async function POST(req: Request) {
           month,
           dryRun: Boolean(body?.dryRun),
           dryRunIncludeExisting: Boolean(body?.dryRunIncludeExisting),
+          actorUserId: auth.user.id,
+          source: "admin_webapp",
         });
         return NextResponse.json(result);
       } catch (error: any) {

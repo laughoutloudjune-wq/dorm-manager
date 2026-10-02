@@ -1160,21 +1160,14 @@ export function useInvoicesState() {
       // left that embedded copy behind, so `extractAllSlipUrls` — which
       // unions the column with every history entry's slip_url — kept
       // resurrecting the "deleted" slip on the next refresh.
-      const history = Array.isArray(activeInvoice.payment_history)
-        ? activeInvoice.payment_history
-        : [];
-      const clearedHistory = history.map((entry: any) =>
-        entry?.slip_url ? { ...entry, slip_url: null } : entry,
-      );
-
-      await callInvoiceAdminAction("record_payment", {
+      const cleared = await callInvoiceAdminAction("clear_slip_references", {
         invoiceId: activeInvoice.id,
-        payload: {
-          slip_url: null,
-          slip_uploaded_at: null,
-          payment_history: clearedHistory,
-        },
       });
+      const clearedHistory = Array.isArray(cleared?.payment_history)
+        ? cleared.payment_history
+        : (Array.isArray(activeInvoice.payment_history) ? activeInvoice.payment_history : []).map(
+            (entry: any) => (entry?.slip_url ? { ...entry, slip_url: null } : entry),
+          );
       setSlipPreview(null);
       setActiveInvoice((prev) =>
         prev ? { ...prev, slip_url: null, payment_history: clearedHistory } : prev,

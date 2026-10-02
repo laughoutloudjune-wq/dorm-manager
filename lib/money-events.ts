@@ -26,6 +26,22 @@ export function composeMoneySource(source?: string | null, actorLabel?: string |
   return source ?? (actorLabel ? actorLabel : null);
 }
 
+/** Pure: the money_events row for one event. */
+export function toMoneyEventRow(event: MoneyEventInput) {
+  return {
+    action: event.action,
+    actor_user_id: event.actorUserId ?? null,
+    tenant_id: event.tenantId ?? null,
+    invoice_id: event.invoiceId ?? null,
+    payment_batch_id: event.paymentBatchId ?? null,
+    room_id: event.roomId ?? null,
+    before: event.before ?? null,
+    after: event.after ?? null,
+    reason: event.reason ?? null,
+    source: composeMoneySource(event.source, event.actorLabel),
+  };
+}
+
 /**
  * Append one row to money_events (the audit log). Best-effort: a logging
  * failure is reported to the server console but never fails or reverses the
@@ -36,20 +52,26 @@ export async function recordMoneyEvent(
   event: MoneyEventInput,
 ): Promise<void> {
   try {
-    const { error } = await supabase.from("money_events").insert({
-      action: event.action,
-      actor_user_id: event.actorUserId ?? null,
-      tenant_id: event.tenantId ?? null,
-      invoice_id: event.invoiceId ?? null,
-      payment_batch_id: event.paymentBatchId ?? null,
-      room_id: event.roomId ?? null,
-      before: event.before ?? null,
-      after: event.after ?? null,
-      reason: event.reason ?? null,
-      source: composeMoneySource(event.source, event.actorLabel),
-    });
+    const { error } = await supabase.from("money_events").insert(toMoneyEventRow(event));
     if (error) console.error("[money_events] insert failed:", event.action, error.message);
   } catch (err) {
     console.error("[money_events] insert threw:", event.action, err);
+  }
+}
+
+/**
+ * Batched recordMoneyEvent: one insert for many events (bulk status syncs,
+ * invoice generation). Same best-effort contract. Empty list is a no-op.
+ */
+export async function recordMoneyEvents(
+  supabase: SupabaseClient,
+  events: MoneyEventInput[],
+): Promise<void> {
+  if (events.length === 0) return;
+  try {
+    const { error } = await supabase.from("money_events").insert(events.map(toMoneyEventRow));
+    if (error) console.error("[money_events] batch insert failed:", events.length, error.message);
+  } catch (err) {
+    console.error("[money_events] batch insert threw:", events.length, err);
   }
 }
