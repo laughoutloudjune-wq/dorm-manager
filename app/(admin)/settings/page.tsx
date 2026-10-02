@@ -155,6 +155,9 @@ const PERMISSION_LABELS_THAI: Partial<Record<PermissionKey, string>> = {
     "reconciliation.view": "ดูรายงานตรวจสอบยอดเงิน",
     "action_queue.view": "ดูคิวงานที่ต้องจัดการ",
     "credits.view": "ดูรายงานเครดิตและการคืนเงิน",
+    "late_fee.view": "ดูค่าปรับล่าช้า (ประมาณการ/เรียกเก็บแล้ว)",
+    "late_fee.approve": "อนุมัติ/ยกเว้น/ยกเลิกการยกเว้นค่าปรับล่าช้า",
+    "late_fee.policy": "ตั้งนโยบายค่าปรับล่าช้าเวอร์ชันใหม่",
 };
 
 const permissionLabelThai = (permission: PermissionKey) =>
