@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { ApproveSlipFields } from "./ApproveSlipFields";
 import { ChevronDown, ChevronUp, Loader2 } from "lucide-react";
 import { meets30DayMoveOutNotice } from "@/lib/move-out-notice";
 
@@ -566,11 +567,11 @@ export default function AdminLiffPage() {
                         </div>
                       );
                     })()}
-                    <input
-                      type="date"
-                      value={paymentDate}
-                      onChange={(e) => setPaymentDate(e.target.value)}
-                      className="box-border w-full rounded-lg border border-slate-300 px-2 py-2 text-sm"
+                    <ApproveSlipFields
+                      outstanding={remaining}
+                      disabled={!!savingAction}
+                      working={workingApprove}
+                      onApprove={(payload) => void runInvoiceAction("approve_paid", payload)}
                     />
                     <div className="grid grid-cols-2 gap-2">
                       <button
@@ -581,15 +582,6 @@ export default function AdminLiffPage() {
                       >
                         {workingResend && <Loader2 size={14} className="animate-spin" />}
                         {workingResend ? "กำลังส่ง..." : "ส่งใบแจ้งหนี้ใหม่"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void runInvoiceAction("approve_paid", { paymentDate })}
-                        disabled={!!savingAction}
-                        className="inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-60"
-                      >
-                        {workingApprove && <Loader2 size={14} className="animate-spin" />}
-                        {workingApprove ? "กำลังอนุมัติ..." : "อนุมัติชำระเต็ม"}
                       </button>
                       <button
                         type="button"
