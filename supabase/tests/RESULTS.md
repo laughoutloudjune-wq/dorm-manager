@@ -70,3 +70,35 @@ PROBE  P2 refund_payouts void_reason = tab only was ACCEPTED (same btrim weaknes
 2. `record_payment_batch` with NULL `tenant_id` and `amount_received > amount_allocated` drops the excess (no credit row) while the event still logs `credit`.
 3. `record_payment_batch` does not validate allocations: negative allocation amounts are accepted if they net to `amount_allocated`, and allocations are not required to match `invoices[]` or `paid_amount` deltas; caller `paid_amount` (e.g. 99999 on a 100 invoice) is stored unchecked.
 4. `void_payment_batch` can drive `invoices.paid_amount` negative when it was changed after the receipt (no floor / drift check), and leaves status `verifying` untouched.
+
+## 05_points_redemption.sql (run 2026-10-03 on dorm-test, migration 20261002000700 applied)
+Tests `redeem_points_atomic` / `reverse_points_redemption`. Fixtures: 3 tenants (A 5000 pts, B 100 pts, C 20000 pts), 8 invoices; rate 10 pts/baht, cap 300 baht.
+```
+PASS  P1  redeem 1500 pts -> 150 baht: ledger -1500 + adjustment points_redemption 150 (same key) + invoice 3500->3350, discount 150, 1 breakdown line with key, 1 money_event; paid_amount 0, no payment_batches; balance 5000->3500
+PASS  P2  same key replays (even with the monthly limit used); no new rows
+PASS  P2b same key on a different invoice -> IDEMPOTENCY_KEY_REUSED
+PASS  P2c key already used by an unrelated adjustment -> IDEMPOTENCY_KEY_REUSED (key unique across both writes)
+PASS  P3  blank/whitespace key rejected
+PASS  P4  second redemption in the same Bangkok month at limit 1 -> MONTHLY_LIMIT;  P4b allowed at limit 2
+PASS  P5  1500 pts with balance 100 -> INSUFFICIENT_POINTS, nothing written
+PASS  P6a 300 baht on rent 100 + late fee 500 + carry 1000 + common 50 -> DISCOUNT_CAP (redeemable 100)
+PASS  P6b exactly the rent (100) accepted;  P6c rent already fully discounted -> DISCOUNT_CAP
+PASS  P6d partly paid invoice whose remainder is only a late fee -> DISCOUNT_CAP (redeemable 0)
+PASS  P6e utility coupon 150 on water+electricity 100 -> DISCOUNT_CAP;  P6f 301 baht over cap 300 -> DISCOUNT_CAP
+PASS  P7a points/baht ratio mismatch -> RATIO_MISMATCH
+PASS  P7b new total != expected - discount -> INCONSISTENT_COLUMNS;  P7c redemption also changing carry_forward_amount -> INCONSISTENT_COLUMNS
+PASS  P7d invoice of another tenant rejected;  P7e paid invoice rejected
+PASS  C1a two requests computed from the same read: first applies, second STALE_INVOICE (total_amount)
+PASS  C1b paid_amount changed between read and redeem -> STALE_INVOICE;  C1c reversal from a stale row (water_bill) -> STALE_INVOICE
+PASS  R1  reversal: +1500 'redemption_reversal' (reverses_entry_id -> original, key '<k>:reversal') + adjustment 'reversal' -150 (reverses_adjustment_id -> original, same key); originals kept; invoice 3350->3500, discount 0, line removed; 1 money_event; balance 3400->4900
+PASS  R2  second reversal -> ALREADY_REVERSED
+PASS  R3  reversed redemption still counts toward the monthly limit (limit 2, 2 redemptions this month incl. the reversed one -> MONTHLY_LIMIT)
+PASS  R4a tab/newline-only reason rejected;  R4b reversing an earn row rejected;  R4c reversing a reversal rejected
+PASS  R5  reversal on a paid invoice -> INVOICE_CLOSED
+PASS  R6  legacy redemption (no key, no adjustment) reversed with a 'correction' -150 under 'redemption:<id>:reversal'; only its own breakdown line removed
+PASS  A1a redemption adjustment cannot be deleted (append-only);  A1b reversed redemption row cannot be deleted (FK RESTRICT);  A1c reverses_entry_id only allowed on redemption_reversal rows
+PASS  D1  every redemption/reversal row has an opposite-signed adjustment of equal baht under the same key
+```
+Summary: 34 PASS, 0 FAIL.
+Limits: true two-session races cannot run in one transaction; C1 simulates them with stale `expected` values. The row-lock path (invoice FOR UPDATE, then the tenant's point rows ORDER BY id FOR UPDATE) and the unique-violation replay branch are not exercised by a real concurrent session.
+Not covered by design: a redemption that has NOT been reversed can still be hard-deleted from point_ledger_entries (no append-only trigger on that table, because syncPointsForTenant still updates/deletes earn rows).

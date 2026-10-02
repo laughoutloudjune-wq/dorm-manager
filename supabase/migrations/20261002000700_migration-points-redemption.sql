@@ -121,8 +121,16 @@ BEGIN
     SELECT pg_get_constraintdef(oid) INTO v_def
     FROM pg_constraint
     WHERE conrelid = 'public.adjustments'::regclass AND conname = 'adjustments_type_check';
-    IF v_def IS NOT NULL AND position('''points_redemption''' in v_def) = 0 THEN
-        SELECT array_agg(m[1]) INTO v_vals FROM regexp_matches(v_def, '''([a-z_]+)''', 'g') AS m;
+    IF v_def IS NOT NULL AND v_def !~ '\mpoints_redemption\M' THEN
+        -- Two printed forms exist: ARRAY['a'::text, ...] and '{a,b}'::text[].
+        IF v_def ~ '''\{' THEN
+            v_vals := string_to_array(substring(v_def from '''\{([^}]*)\}'''), ',');
+        ELSE
+            SELECT array_agg(m[1]) INTO v_vals FROM regexp_matches(v_def, '''([a-z_]+)''', 'g') AS m;
+        END IF;
+        IF v_vals IS NULL OR cardinality(v_vals) = 0 THEN
+            RAISE EXCEPTION 'Could not parse adjustments_type_check: %', v_def;
+        END IF;
         v_vals := v_vals || ARRAY['points_redemption'];
         ALTER TABLE public.adjustments DROP CONSTRAINT adjustments_type_check;
         EXECUTE format(
