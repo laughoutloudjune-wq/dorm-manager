@@ -75,7 +75,7 @@ DECLARE
     v_alloc public.invoice_payment_allocations%ROWTYPE;
     v_inv public.invoices%ROWTYPE;
     v_new_paid NUMERIC;
-    v_new_status TEXT;
+    v_new_status public.invoice_status;
     v_touched JSONB := '[]'::jsonb;
     v_count INT := 0;
 BEGIN
@@ -113,8 +113,8 @@ BEGIN
         v_new_paid := COALESCE(v_inv.paid_amount, 0) - v_alloc.amount;
         v_new_status := v_inv.status;
         -- A void must not leave an invoice labelled paid with money missing.
-        IF v_inv.status = 'paid' AND v_new_paid < COALESCE(v_inv.total_amount, 0) THEN
-            v_new_status := CASE WHEN v_new_paid > 0 THEN 'partial' ELSE 'pending' END;
+        IF v_inv.status IN ('paid', 'partial') AND v_new_paid < COALESCE(v_inv.total_amount, 0) THEN
+            v_new_status := CASE WHEN v_new_paid > 0 THEN 'partial'::public.invoice_status ELSE 'pending'::public.invoice_status END;
         END IF;
 
         UPDATE public.invoices
