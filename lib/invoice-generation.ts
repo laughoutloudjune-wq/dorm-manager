@@ -1,4 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { recordMoneyEvents, type MoneyEventInput } from "@/lib/money-events";
+import { INVOICE_MONEY_COLUMNS } from "@/lib/money/money-diff";
 import { toLocalDateString, toNumber, formatMoney } from "@/lib/format";
 import { computeLateFeeSnapshot, syncInvoiceLedger } from "@/lib/invoice-ledger";
 import {
@@ -30,6 +32,9 @@ export type GenerateInvoicesParams = {
    * stored. Never allowed to affect a real, writing run.
    */
   dryRunIncludeExisting?: boolean;
+  /** Audit attribution for money_events written by a real run. */
+  actorUserId?: string | null;
+  source?: string | null;
 };
 
 export type GenerateInvoicesDryRunResult = {
@@ -495,8 +500,23 @@ export async function generateInvoicesForPeriod(
     const { data: insertedInvoices, error: insertError } = await supabase
       .from("invoices")
       .insert(insertPayload)
-      .select("id,tenant_id");
+      .select("id,tenant_id,room_id,total_amount,rent_amount,water_bill,electricity_bill,common_fee,discount_amount,late_fee_amount,additional_fees_total,carry_forward_amount,status,start_date,end_date");
     if (insertError) throw new Error(insertError.message);
+    const auditSource = params.source ?? "invoice_generation";
+    const auditEvents: MoneyEventInput[] = (insertedInvoices ?? []).map((row: any) => ({
+      action: "invoice.generated",
+      actorUserId: params.actorUserId ?? null,
+      tenantId: row.tenant_id ?? null,
+      invoiceId: row.id,
+      roomId: row.room_id ?? null,
+      before: null,
+      after: Object.fromEntries(
+        [...INVOICE_MONEY_COLUMNS, "rent_amount", "water_bill", "electricity_bill", "common_fee", "start_date", "end_date"].map(
+          (col) => [col, row[col] ?? null]
+        )
+      ),
+      source: auditSource,
+    }));
     if ((insertedInvoices ?? []).length > 0) {
       const allSourceRows = (insertedInvoices ?? []).flatMap((row: any) =>
         (carryForwardByTenant.get(String(row.tenant_id ?? "")) ?? []).filter(
@@ -513,9 +533,21 @@ export async function generateInvoicesForPeriod(
         const { error: freezeError } = await supabase.from("invoices").update(freezeUpdate).eq("id", carryRow.id);
         if (freezeError) {
           bookkeepingFailures.push(`ล็อก/บันทึกสถานะค่าปรับล่าช้าของบิลเดิมไม่สำเร็จ: ${freezeError.message}`);
+        } else if (carryRow.locked_late_fee_amount == null) {
+          auditEvents.push({
+            action: "invoice.late_fee_frozen",
+            actorUserId: params.actorUserId ?? null,
+            tenantId: carryRow.tenant_id ?? null,
+            invoiceId: carryRow.id,
+            before: { locked_late_fee_amount: null },
+            after: { locked_late_fee_amount: freezeAmount },
+            reason: "frozen when billed onto a newly generated invoice",
+            source: auditSource,
+          });
         }
       }
     }
+    await recordMoneyEvents(supabase, auditEvents);
   } else {
     // Matches the original's behaviour exactly: this does NOT stop the
     // function — it still runs the audit below (missing-tenant rooms, rooms
