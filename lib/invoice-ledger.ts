@@ -136,6 +136,21 @@ export type ChainAllocationInput = {
   id: string;
   total_amount: number | null | undefined;
   paid_amount: number | null | undefined;
+  /** Debt bundled into total_amount from an earlier invoice; not this row's own charge. */
+  carry_forward_amount?: number | null;
+};
+
+/**
+ * What a payment can still put onto THIS row: its own charge minus what the row
+ * has received. paid_amount only ever grows by own-share allocations, so the
+ * carried-in portion is excluded from the cap (total - carry - paid), never
+ * double counted. Rounded to satang.
+ */
+export const getChainOwnOutstanding = (invoice: ChainAllocationInput) => {
+  const total = toNumber(invoice.total_amount);
+  const paid = roundMoney(toNumber(invoice.paid_amount));
+  const carry = Math.max(0, toNumber(invoice.carry_forward_amount));
+  return Math.max(0, roundMoney(total - carry - paid));
 };
 
 export type ChainAllocationResult = {
@@ -174,10 +189,7 @@ export const allocatePaymentAcrossChain = (
   const results: ChainAllocationResult[] = [];
   for (const invoice of invoices) {
     const paid = roundMoney(toNumber(invoice.paid_amount));
-    const outstanding = Math.max(
-      0,
-      roundMoney(toNumber(invoice.total_amount) - paid),
-    );
+    const outstanding = getChainOwnOutstanding(invoice);
     if (outstanding <= 0 || remaining <= 0) continue;
     const allocated = roundMoney(Math.min(outstanding, remaining));
     const nextPaidAmount = roundMoney(paid + allocated);
@@ -1734,7 +1746,7 @@ export async function applyInvoicePaymentAllocation(
     const { data: sourceInvoices, error: sourceError } = await supabase
       .from("invoices")
       .select(
-        "id,tenant_id,total_amount,paid_amount,status,payment_history,slip_url,slip_uploaded_at,late_fee_amount,late_fee_per_day,late_fee_start_date,due_date,start_date,waived_late_fee_amount,locked_late_fee_amount",
+        "id,tenant_id,total_amount,paid_amount,status,payment_history,slip_url,slip_uploaded_at,late_fee_amount,late_fee_per_day,late_fee_start_date,due_date,start_date,waived_late_fee_amount,locked_late_fee_amount,carry_forward_amount",
       )
       .in("id", sourceInvoiceIds)
       .order("start_date", { ascending: true });
@@ -1745,7 +1757,7 @@ export async function applyInvoicePaymentAllocation(
   const { data: freshTargetInvoice, error: refreshError } = await supabase
     .from("invoices")
     .select(
-      "id,tenant_id,total_amount,paid_amount,status,payment_history,slip_url,slip_uploaded_at,late_fee_amount,late_fee_per_day,late_fee_start_date,due_date,start_date,waived_late_fee_amount,locked_late_fee_amount",
+      "id,tenant_id,total_amount,paid_amount,status,payment_history,slip_url,slip_uploaded_at,late_fee_amount,late_fee_per_day,late_fee_start_date,due_date,start_date,waived_late_fee_amount,locked_late_fee_amount,carry_forward_amount",
     )
     .eq("id", invoiceId)
     .single();
@@ -1775,7 +1787,7 @@ export async function applyInvoicePaymentAllocation(
 
   const totalOutstanding = roundMoney(
     payableTargets.reduce(
-      (sum, invoice) => sum + getInvoiceOutstanding(invoice as InvoiceLike),
+      (sum, invoice) => sum + getChainOwnOutstanding(invoice as ChainAllocationInput),
       0,
     ),
   );

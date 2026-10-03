@@ -4,6 +4,7 @@ import {
   calculateLateFeeAmount,
   computeLateFeeSnapshot,
   excludeAlreadyChargedLateFees,
+  getChainOwnOutstanding,
   getInvoiceOutstanding,
   getInvoiceOwnOutstanding,
   planAbandonCredit,
@@ -563,5 +564,68 @@ describe("planPaymentReplay — phantom-receipt detection", () => {
       [{ id: "b1", amount_received: 6481, paid_at: "2026-06-07T05:00:00Z" }],
     );
     expect(unallocated).toBe(0);
+  });
+});
+
+describe("allocatePaymentAcrossChain by own outstanding (finding 160)", () => {
+  // April owes 1,400; May's 7,594 total bundles those 1,400 (own charge 6,194).
+  const chain = () => [
+    { id: "apr", total_amount: 1400, paid_amount: 0, carry_forward_amount: 0 },
+    { id: "may", total_amount: 7594, paid_amount: 0, carry_forward_amount: 1400 },
+  ];
+  const ownTotal = (rows: ReturnType<typeof chain>) =>
+    roundMoney(rows.reduce((s, r) => s + getChainOwnOutstanding(r), 0));
+
+  it("true debt is 7,594, not 8,994", () => {
+    expect(ownTotal(chain())).toBe(7594);
+  });
+
+  it("an 8,994 payment is capped at the true debt; the 1,400 excess is not allocated", () => {
+    const res = allocatePaymentAcrossChain(chain(), Math.min(8994, ownTotal(chain())));
+    expect(res).toEqual([
+      { id: "apr", allocated: 1400, nextPaidAmount: 1400 },
+      { id: "may", allocated: 6194, nextPaidAmount: 6194 },
+    ]);
+    expect(sumAllocated(res)).toBe(7594);
+    expect(sumAllocated(allocatePaymentAcrossChain(chain(), 8994))).toBe(7594);
+  });
+
+  it("a 7,594 payment settles every invoice's own charge", () => {
+    const res = allocatePaymentAcrossChain(chain(), 7594);
+    expect(sumAllocated(res)).toBe(7594);
+    const after = chain().map((r, i) => ({ ...r, paid_amount: res[i].nextPaidAmount }));
+    expect(ownTotal(after)).toBe(0);
+    for (const r of after) expect(r.paid_amount).toBeLessThanOrEqual(r.total_amount);
+  });
+
+  it("1,400 settles April only", () => {
+    expect(allocatePaymentAcrossChain(chain(), 1400)).toEqual([
+      { id: "apr", allocated: 1400, nextPaidAmount: 1400 },
+    ]);
+  });
+
+  it("3,000 goes oldest first: April 1,400 then May 1,600", () => {
+    expect(allocatePaymentAcrossChain(chain(), 3000)).toEqual([
+      { id: "apr", allocated: 1400, nextPaidAmount: 1400 },
+      { id: "may", allocated: 1600, nextPaidAmount: 1600 },
+    ]);
+  });
+
+  it("a further payment after the chain is settled finds nothing owed", () => {
+    const settled = [
+      { id: "apr", total_amount: 1400, paid_amount: 1400, carry_forward_amount: 0 },
+      { id: "may", total_amount: 7594, paid_amount: 6194, carry_forward_amount: 1400 },
+    ];
+    expect(allocatePaymentAcrossChain(settled, 500)).toEqual([]);
+  });
+
+  it("legacy May reading 7,594/7,594 while April owes 1,400: only April absorbs", () => {
+    const legacy = [
+      { id: "apr", total_amount: 1400, paid_amount: 0, carry_forward_amount: 0 },
+      { id: "may", total_amount: 7594, paid_amount: 7594, carry_forward_amount: 1400 },
+    ];
+    expect(allocatePaymentAcrossChain(legacy, 5000)).toEqual([
+      { id: "apr", allocated: 1400, nextPaidAmount: 1400 },
+    ]);
   });
 });
