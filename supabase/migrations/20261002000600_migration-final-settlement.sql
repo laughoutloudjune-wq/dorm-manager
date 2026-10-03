@@ -5,13 +5,42 @@
 -- automatically: run it deliberately in the Supabase SQL editor.
 -- Requires 20261002000000 (money_events), 20261002000200 (tenant_credits).
 --
--- Rollback (in this order):
---   DROP FUNCTION IF EXISTS public.final_settle_move_out(jsonb);
+-- Idempotent: CREATE ... IF NOT EXISTS / OR REPLACE / DROP TRIGGER IF EXISTS,
+-- REVOKE/GRANT can be re-run safely.
+--
+-- ROLLBACK, only while move_out_settlements is EMPTY (no tenant settled through it):
+--   DROP FUNCTION IF EXISTS public.final_settle_move_out(jsonb);   -- also drops its grants
 --   DROP TRIGGER IF EXISTS trg_move_out_settlements_guard ON public.move_out_settlements;
 --   DROP TABLE IF EXISTS public.move_out_settlements;
 --   DROP FUNCTION IF EXISTS public.move_out_settlements_guard();
---   (tenant_credits / payment_batches / money_events rows written by the function
---    are append-only records; post reversals rather than deleting them.)
+-- Once any settlement exists, DO NOT roll back by dropping: the table is the only
+-- record linking the final invoice, the non-cash credit receipt (payment_batches
+-- + allocations with key 'settle:<key>'), the tenant_credits rows and the freed
+-- room. Dropping it destroys that audit trail while the money rows stay. Restore
+-- from the backup taken before go-live instead (or redeploy older code and leave
+-- the objects in place - they are inert without the calling code).
+--
+-- Security (finding 138): SET search_path = public, pg_temp; EXECUTE is revoked
+-- from PUBLIC/anon/authenticated and granted to service_role only (bottom of file).
+--
+-- LOCK ORDER (global order, see 20261002000000): tenant -> room -> every invoice
+-- of the tenant (ascending id) -> inserts (invoice, payment_batches, allocations,
+-- tenant_credits, move_out_settlements, money_events). The held-credit balances
+-- are read only AFTER all three locks are held (finding 145): record_payment_batch
+-- and void_payment_batch also lock the tenant first, so no credit row for this
+-- tenant can be written or reversed between that read and this settlement's writes.
+--
+-- Status rule (finding 146): an invoice the credit pays is set by
+-- money_derive_invoice_status - 'paid' iff paid_amount >= total_amount, else
+-- 'partial'. The planner pays an invoice's OWN outstanding only
+-- (min(total - carry_forward, total - paid)); the carried-in portion is paid on
+-- its source invoice. So a carry-forward TARGET whose own charges are cleared
+-- but whose paid_amount is still below its total stays 'partial' (by design, the
+-- same reading the rest of the app gives it). The final invoice starts 'paid'
+-- when its total is 0 after credit, else 'pending' / 'overdue' by its due date.
+--
+-- Dates (finding 154): the default move_out_date and issue_date are today in
+-- Asia/Bangkok, never the server's UTC current_date.
 --
 -- Why: final_move_out used to be a chain of separate writes (invoice, tenant,
 -- room, logs, requests). A failure part-way left a tenant half-settled, and a
@@ -20,7 +49,8 @@
 -- write in ONE transaction:
 --   1. replay: a repeated (tenant_id, idempotency_key) returns the original result
 --   2. refuse a second live settlement of the same tenant
---   3. lock tenant -> room -> invoices (by id) in that fixed order
+--   3. lock tenant -> room -> invoices (by id) in that fixed order, then read
+--      the held credit balances
 --   4. validate the caller's plan (lib/money/settlement.ts planMoveOutSettlement):
 --      held balances, bucket identities, refund rule, forfeiture reason, every
 --      open invoice accounted for, final invoice columns == engine columns
@@ -105,12 +135,15 @@ ALTER TABLE public.move_out_settlements ENABLE ROW LEVEL SECURITY;  -- service r
 CREATE OR REPLACE FUNCTION public.final_settle_move_out(p jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
+SET search_path = public, pg_temp
 AS $$
+-- LOCK ORDER: tenant -> room -> invoices of the tenant (ascending id) -> inserts.
 DECLARE
     v_tenant uuid := NULLIF(p->>'tenant_id', '')::uuid;
     v_room uuid := NULLIF(p->>'room_id', '')::uuid;
     v_key text := NULLIF(btrim(COALESCE(p->>'idempotency_key', '')), '');
-    v_date date := COALESCE(NULLIF(p->>'move_out_date', '')::date, current_date);
+    v_today date := (now() AT TIME ZONE 'Asia/Bangkok')::date;
+    v_date date := COALESCE(NULLIF(p->>'move_out_date', '')::date, (now() AT TIME ZONE 'Asia/Bangkok')::date);
     v_by text := p->>'created_by';
     v_paid_at timestamptz := COALESCE(NULLIF(p->>'paid_at', '')::timestamptz, now());
     v_source text := COALESCE(NULLIF(p->>'source', ''), 'credit');
@@ -187,6 +220,10 @@ BEGIN
         RAISE EXCEPTION 'room % not found', v_room;
     END IF;
 
+    -- Third level of the global order: every invoice of the tenant, by id.
+    -- Everything below (held balances, open debts) is read under all three locks.
+    PERFORM 1 FROM public.invoices WHERE tenant_id = v_tenant ORDER BY id FOR UPDATE;
+
     ---------------------------------------------------------------- plan figures
     IF jsonb_array_length(COALESCE(v_s->'errors', '[]'::jsonb)) > 0 THEN
         RAISE EXCEPTION 'PLAN_HAS_ERRORS: %', v_s->'errors';
@@ -252,6 +289,7 @@ BEGIN
     END IF;
 
     ---------------------------------------------------------------- held balances
+    -- Read under the tenant/room/invoice locks (finding 145).
     -- The ledger is authoritative once it has rows for a bucket; before that the
     -- tenant columns are, and an opening-balance row is written so the ledger
     -- balances after this settlement.
@@ -285,9 +323,7 @@ BEGIN
         RAISE EXCEPTION 'HELD_MISMATCH: unapplied credit held % <> ledger balance %', s_un_held, v_bal;
     END IF;
 
-    ---------------------------------------------------------------- lock + check open invoices
-    PERFORM 1 FROM public.invoices WHERE tenant_id = v_tenant ORDER BY id FOR UPDATE;
-
+    ---------------------------------------------------------------- check open invoices (locked above)
     IF EXISTS (SELECT 1 FROM public.invoices WHERE tenant_id = v_tenant AND status = 'verifying') THEN
         RAISE EXCEPTION 'VERIFYING_INVOICE: approve or reject the pending payment slip before settling';
     END IF;
@@ -358,9 +394,9 @@ BEGIN
             water_reading_start, water_reading_end, notes
         ) VALUES (
             v_inv_id, v_tenant, v_room,
-            (CASE WHEN v_engine_total = 0 THEN 'paid' ELSE 'pending' END)::public.invoice_status,
+            public.money_derive_invoice_status(v_engine_total, 0, NULLIF(v_inv->>'due_date', '')::date, v_today),
             (v_inv->>'start_date')::date, (v_inv->>'end_date')::date,
-            COALESCE(NULLIF(v_inv->>'issue_date', '')::date, current_date),
+            COALESCE(NULLIF(v_inv->>'issue_date', '')::date, v_today),
             (v_inv->>'due_date')::date,
             (v_inv->>'rent_amount')::numeric, (v_inv->>'water_bill')::numeric,
             (v_inv->>'electricity_bill')::numeric, (v_inv->>'common_fee')::numeric,
@@ -432,9 +468,10 @@ BEGIN
             IF v_new_paid > COALESCE(v_row.total_amount, 0) THEN
                 RAISE EXCEPTION 'OVERPAY: credit % would exceed invoice % total', v_amt, v_row.id;
             END IF;
-            v_own := GREATEST(0, LEAST(COALESCE(v_row.total_amount, 0) - COALESCE(v_row.carry_forward_amount, 0),
-                                       COALESCE(v_row.total_amount, 0) - v_new_paid));
-            v_new_status := CASE WHEN v_own = 0 THEN 'paid' ELSE 'partial' END;
+            -- One status rule (finding 146): paid iff paid_amount >= total_amount.
+            -- A carry-forward target whose own charges are now cleared but whose
+            -- carried-in portion was paid on its source stays 'partial'.
+            v_new_status := public.money_derive_invoice_status(v_row.total_amount, v_new_paid, v_row.due_date, v_today);
 
             INSERT INTO public.invoice_payment_allocations (
                 payment_batch_id, trigger_invoice_id, invoice_id, amount, paid_at, slip_url,
@@ -600,5 +637,10 @@ BEGIN
 END;
 $$;
 
-COMMENT ON FUNCTION public.final_settle_move_out IS
+COMMENT ON FUNCTION public.final_settle_move_out(jsonb) IS
     'Atomic, idempotent final move-out settlement: final invoice, non-cash credit receipt for older debt, tenant_credits (apply/forfeit/absorb advance), settlement row, then frees tenant and room. Never writes refund_payouts.';
+
+-- Server-only (finding 138): never reachable by anon/authenticated via PostgREST /rpc.
+REVOKE ALL ON FUNCTION public.final_settle_move_out(jsonb) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.final_settle_move_out(jsonb) TO service_role;
+REVOKE ALL ON FUNCTION public.move_out_settlements_guard() FROM PUBLIC, anon, authenticated;

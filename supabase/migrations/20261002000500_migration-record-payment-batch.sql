@@ -1,19 +1,41 @@
 -- Atomic payment recording
 --
--- Additive: one new function. NOT applied automatically.
--- Requires 20261002000000 (money_events) and 20261002000200 (tenant_credits).
--- Idempotent: CREATE OR REPLACE + REVOKE/GRANT can be re-run safely.
--- Rollback: DROP FUNCTION public.record_payment_batch(jsonb);
+-- Additive: one new function and one new nullable column
+-- (payment_batches.payload_hash). NOT applied automatically.
+-- Requires 20261002000000 (money_events, money_derive_invoice_status) and
+-- 20261002000200 (tenant_credits).
+-- Idempotent: ADD COLUMN IF NOT EXISTS + CREATE OR REPLACE + REVOKE/GRANT can be re-run safely.
+-- Rollback (only before payments were recorded through it):
+--   DROP FUNCTION IF EXISTS public.record_payment_batch(jsonb);
+--   ALTER TABLE public.payment_batches DROP COLUMN IF EXISTS payload_hash;
+-- Once real payments exist, restore from the pre-go-live backup instead.
 --
--- The application still does the calculation (allocation split, status,
--- late-fee freeze, payment_history entry). This function WRITES it, all or
--- nothing, and refuses any payload that does not add up, so a buggy or forged
--- caller cannot write arbitrary balances.
+-- The application still does the calculation (allocation split, late-fee
+-- freeze, payment_history entry). This function WRITES it, all or nothing, and
+-- refuses any payload that does not add up, so a buggy or forged caller cannot
+-- write arbitrary balances.
 --
 -- Guarantees:
---  * Lock order: every touched invoice (plus the trigger invoice) is locked
---    FOR UPDATE in ascending id order before anything is read or written, so
---    two concurrent multi-invoice payments cannot deadlock each other.
+--  * Lock order (global order, see 20261002000000): the tenant row
+--    (batch.tenant_id, else the trigger invoice's tenant) -> every touched
+--    invoice (plus the trigger invoice) in ascending id order -> then the
+--    batch/allocation/credit inserts. The tenant lock serialises this function
+--    with void_payment_batch and final_settle_move_out for the same tenant, so
+--    an overpayment credit can never be written while a settlement is reading
+--    the tenant's held credit (finding 145), and two concurrent multi-invoice
+--    payments cannot deadlock each other.
+--  * Status is derived here, not trusted (findings 146, 153): every invoice's
+--    status must equal money_derive_invoice_status(total, new paid_amount, ...),
+--    i.e. 'paid' iff paid_amount >= total_amount, else 'partial' (a payment
+--    always leaves paid_amount > 0). A payload saying 'partial'/'pending' on a
+--    fully paid balance, or 'paid' below the total, is INVALID_PAYLOAD.
+--  * Slip (finding 153, CLAUDE.md): slip_url / slip_uploaded_at may only be
+--    given for the trigger invoice (INVALID_PAYLOAD otherwise), and a blank
+--    value never clears a slip already stored.
+--  * Payload hash (finding 153): batch.payload_hash (optional text, a stable
+--    hash of the caller's request intent) is stored on the batch. A replay with
+--    the same key but a DIFFERENT non-null hash is refused with
+--    IDEMPOTENCY_CONFLICT instead of silently returning the other payment.
 --  * Idempotency: checked AFTER the locks. Two requests with the same
 --    (trigger_invoice_id, idempotency_key) always share the trigger-invoice
 --    lock, so the second one waits, then sees the first one's committed batch
@@ -31,9 +53,8 @@
 --  * Arithmetic: amounts must be 2-decimal; each allocation > 0 and names an
 --    invoice in invoices[]; each invoice in invoices[] receives an allocation;
 --    allocations sum to amount_allocated; new paid_amount = old paid_amount +
---    that invoice's allocations and never exceeds total_amount; status is a
---    payment status consistent with the new balance; cancelled invoices cannot
---    receive money.
+--    that invoice's allocations and never exceeds total_amount; status equals
+--    the derived status; cancelled invoices cannot receive money.
 --  * Overpayment: amount_received - amount_allocated is kept as exactly one
 --    tenant_credits 'overpayment' row. An excess without a tenant_id is refused
 --    (it would otherwise be dropped).
@@ -42,7 +63,7 @@
 -- Input shape (p):
 --  { "batch": {id, tenant_id, trigger_invoice_id, amount_received, amount_allocated,
 --              paid_at, mode, source, slip_url, payment_method_id,
---              payment_method_snapshot, idempotency_key, created_by},
+--              payment_method_snapshot, idempotency_key, created_by, payload_hash},
 --    "invoices": [{id, expected_paid_amount, expected_history_length, paid_amount,
 --                  status, payment_history (optional, full array: current entries
 --                  followed by the new ones), locked_late_fee_amount (optional),
@@ -52,13 +73,19 @@
 --
 -- Error prefixes (stable, callers may match on them): INVALID_PAYLOAD,
 -- TENANT_REQUIRED, TENANT_MISMATCH, INVOICE_NOT_FOUND, INVOICE_NOT_PAYABLE,
--- STALE_INVOICE, OVERPAID_INVOICE.
+-- STALE_INVOICE, OVERPAID_INVOICE, IDEMPOTENCY_CONFLICT.
+
+-- The ADD COLUMN takes a brief exclusive lock on payment_batches: fail fast.
+SET lock_timeout = '5s';
+ALTER TABLE public.payment_batches ADD COLUMN IF NOT EXISTS payload_hash TEXT;
+RESET lock_timeout;
 
 CREATE OR REPLACE FUNCTION public.record_payment_batch(p jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
 SET search_path = public, pg_temp
 AS $$
+-- LOCK ORDER: tenant -> invoices (ascending id) -> payment_batches / allocations / tenant_credits inserts.
 DECLARE
     v_batch jsonb;
     v_invoices jsonb;
@@ -91,6 +118,11 @@ DECLARE
     v_new_hist jsonb;
     v_before jsonb := '[]'::jsonb;
     v_after jsonb := '[]'::jsonb;
+    v_hash text;
+    v_existing_hash text;
+    v_lock_tenant uuid;
+    v_derived public.invoice_status;
+    v_slip text;
 BEGIN
     ------------------------------------------------------------------ shape
     IF p IS NULL OR jsonb_typeof(p->'batch') IS DISTINCT FROM 'object' THEN
@@ -110,6 +142,7 @@ BEGIN
     v_received := (v_batch->>'amount_received')::numeric;
     v_allocated := (v_batch->>'amount_allocated')::numeric;
     v_paid_at := (v_batch->>'paid_at')::timestamptz;
+    v_hash := NULLIF(btrim(COALESCE(v_batch->>'payload_hash', ''), E' \t\r\n'), '');
 
     IF v_batch_id IS NULL THEN
         RAISE EXCEPTION 'INVALID_PAYLOAD batch.id is required';
@@ -183,6 +216,11 @@ BEGIN
         IF v_inv ? 'payment_history' AND jsonb_typeof(v_inv->'payment_history') <> 'array' THEN
             RAISE EXCEPTION 'INVALID_PAYLOAD invoice % payment_history must be an array', v_inv->>'id';
         END IF;
+        -- A slip belongs to the invoice it was submitted against only.
+        IF (v_inv ? 'slip_url' OR v_inv ? 'slip_uploaded_at') AND (v_inv->>'id')::uuid <> v_trigger THEN
+            RAISE EXCEPTION 'INVALID_PAYLOAD invoice % is not the trigger invoice; slip_url may only be written on the trigger invoice %',
+                v_inv->>'id', v_trigger;
+        END IF;
     END LOOP;
 
     IF (SELECT count(*) FROM jsonb_array_elements(v_invoices))
@@ -190,7 +228,15 @@ BEGIN
         RAISE EXCEPTION 'INVALID_PAYLOAD invoices[] lists the same invoice more than once';
     END IF;
 
-    ------------------------------------------------------------------ lock (deterministic order)
+    ------------------------------------------------------------------ lock (global order: tenant -> invoices by id)
+    -- 1. tenant. Unlocked read of the trigger's tenant only to know what to lock;
+    --    verified again under the invoice lock below.
+    v_lock_tenant := COALESCE(v_tenant, (SELECT tenant_id FROM public.invoices WHERE id = v_trigger));
+    IF v_lock_tenant IS NOT NULL THEN
+        PERFORM 1 FROM public.tenants WHERE id = v_lock_tenant FOR UPDATE;
+    END IF;
+
+    -- 2. invoices, ascending id.
     SELECT array_agg(x ORDER BY x) INTO v_ids FROM (
         SELECT (i->>'id')::uuid AS x FROM jsonb_array_elements(v_invoices) i
         UNION
@@ -208,9 +254,14 @@ BEGIN
 
     ------------------------------------------------------------------ idempotent replay (after locks)
     IF v_key IS NOT NULL THEN
-        SELECT id, voided_at IS NOT NULL INTO v_existing, v_existing_voided FROM public.payment_batches
+        SELECT id, voided_at IS NOT NULL, payload_hash INTO v_existing, v_existing_voided, v_existing_hash
+        FROM public.payment_batches
         WHERE trigger_invoice_id = v_trigger AND idempotency_key = v_key;
         IF FOUND THEN
+            IF v_hash IS NOT NULL AND v_existing_hash IS NOT NULL AND v_hash <> v_existing_hash THEN
+                RAISE EXCEPTION 'IDEMPOTENCY_CONFLICT key % on invoice % was already used for a different payment (batch %); use a new key',
+                    v_key, v_trigger, v_existing;
+            END IF;
             RETURN jsonb_build_object('replayed', true, 'payment_batch_id', v_existing, 'voided', v_existing_voided);
         END IF;
     END IF;
@@ -219,6 +270,9 @@ BEGIN
     SELECT tenant_id INTO v_owner FROM public.invoices WHERE id = v_trigger;
     IF v_tenant IS NOT NULL AND v_owner IS DISTINCT FROM v_tenant THEN
         RAISE EXCEPTION 'TENANT_MISMATCH trigger invoice % belongs to tenant %, not batch tenant %', v_trigger, v_owner, v_tenant;
+    END IF;
+    IF v_tenant IS NULL AND v_owner IS DISTINCT FROM v_lock_tenant THEN
+        RAISE EXCEPTION 'STALE_INVOICE % (tenant changed from % to % while locking)', v_trigger, v_lock_tenant, v_owner;
     END IF;
     v_owner := COALESCE(v_tenant, v_owner);
 
@@ -261,10 +315,19 @@ BEGIN
             RAISE EXCEPTION 'OVERPAID_INVOICE invoice % would reach paid_amount % above its total %; keep the excess as credit instead',
                 v_row.id, v_new_paid, COALESCE(v_row.total_amount, 0);
         END IF;
+        -- Finding 146/153: one status rule, derived here. The caller's status
+        -- must agree with it (a disagreement means the caller computed from a
+        -- different rule or a different balance).
         v_status := v_inv->>'status';
-        IF v_status = 'paid' AND v_new_paid < COALESCE(v_row.total_amount, 0) THEN
+        v_derived := public.money_derive_invoice_status(v_row.total_amount, v_new_paid, v_row.due_date,
+                                                        (v_paid_at AT TIME ZONE 'Asia/Bangkok')::date);
+        IF v_status = 'paid' AND v_derived <> 'paid' THEN
             RAISE EXCEPTION 'INVALID_PAYLOAD invoice % cannot be marked paid with paid_amount % below total %',
                 v_row.id, v_new_paid, COALESCE(v_row.total_amount, 0);
+        END IF;
+        IF v_status <> v_derived::text THEN
+            RAISE EXCEPTION 'INVALID_PAYLOAD invoice % status % does not match the balance (paid_amount % of total % is %)',
+                v_row.id, v_status, v_new_paid, COALESCE(v_row.total_amount, 0), v_derived;
         END IF;
         IF v_inv ? 'payment_history' AND jsonb_array_length(v_inv->'payment_history') < v_cur_len THEN
             RAISE EXCEPTION 'INVALID_PAYLOAD invoice % payment_history would drop existing entries', v_row.id;
@@ -279,20 +342,25 @@ BEGIN
         INSERT INTO public.payment_batches (
             id, tenant_id, trigger_invoice_id, amount_received, amount_allocated, paid_at,
             mode, source, slip_url, payment_method_id, payment_method_snapshot,
-            idempotency_key, created_by
+            idempotency_key, created_by, payload_hash
         ) VALUES (
             v_batch_id, v_tenant, v_trigger, v_received, v_allocated, v_paid_at,
             v_batch->>'mode', v_batch->>'source',
             v_batch->>'slip_url', NULLIF(v_batch->>'payment_method_id', '')::uuid,
-            v_batch->'payment_method_snapshot', v_key, v_batch->>'created_by'
+            v_batch->'payment_method_snapshot', v_key, v_batch->>'created_by', v_hash
         );
     EXCEPTION WHEN unique_violation THEN
         -- Backstop: a concurrent request with the same key won. Nothing else has
         -- been written yet by this call, so returning here is clean.
         IF v_key IS NOT NULL THEN
-            SELECT id, voided_at IS NOT NULL INTO v_existing, v_existing_voided FROM public.payment_batches
+            SELECT id, voided_at IS NOT NULL, payload_hash INTO v_existing, v_existing_voided, v_existing_hash
+            FROM public.payment_batches
             WHERE trigger_invoice_id = v_trigger AND idempotency_key = v_key;
             IF FOUND THEN
+                IF v_hash IS NOT NULL AND v_existing_hash IS NOT NULL AND v_hash <> v_existing_hash THEN
+                    RAISE EXCEPTION 'IDEMPOTENCY_CONFLICT key % on invoice % was already used for a different payment (batch %); use a new key',
+                        v_key, v_trigger, v_existing;
+                END IF;
                 RETURN jsonb_build_object('replayed', true, 'payment_batch_id', v_existing, 'voided', v_existing_voided);
             END IF;
         END IF;
@@ -317,15 +385,20 @@ BEGIN
             v_new_hist := v_row.payment_history;
         END IF;
 
+        v_derived := public.money_derive_invoice_status(v_row.total_amount, (v_inv->>'paid_amount')::numeric,
+                                                        v_row.due_date, (v_paid_at AT TIME ZONE 'Asia/Bangkok')::date);
+        -- Slip: trigger invoice only (validated above); a blank value never clears a stored slip.
+        v_slip := NULLIF(btrim(COALESCE(v_inv->>'slip_url', ''), E' \t\r\n'), '');
+
         UPDATE public.invoices SET
             paid_amount = (v_inv->>'paid_amount')::numeric,
-            status = (v_inv->>'status')::public.invoice_status,
+            status = v_derived,
             payment_history = v_new_hist,
             locked_late_fee_amount = CASE WHEN v_inv ? 'locked_late_fee_amount'
                 THEN (v_inv->>'locked_late_fee_amount')::numeric ELSE locked_late_fee_amount END,
-            slip_url = CASE WHEN v_inv ? 'slip_url' THEN v_inv->>'slip_url' ELSE slip_url END,
-            slip_uploaded_at = CASE WHEN v_inv ? 'slip_uploaded_at'
-                THEN (v_inv->>'slip_uploaded_at')::timestamptz ELSE slip_uploaded_at END
+            slip_url = CASE WHEN v_row.id = v_trigger AND v_slip IS NOT NULL THEN v_slip ELSE slip_url END,
+            slip_uploaded_at = CASE WHEN v_row.id = v_trigger AND v_slip IS NOT NULL AND v_inv ? 'slip_uploaded_at'
+                THEN COALESCE((v_inv->>'slip_uploaded_at')::timestamptz, slip_uploaded_at) ELSE slip_uploaded_at END
         WHERE id = v_row.id;
 
         v_before := v_before || jsonb_build_array(jsonb_build_object(
@@ -333,7 +406,7 @@ BEGIN
             'history_length', v_cur_len));
         v_after := v_after || jsonb_build_array(jsonb_build_object(
             'invoice_id', v_row.id, 'paid_amount', (v_inv->>'paid_amount')::numeric,
-            'status', v_inv->>'status', 'history_length', jsonb_array_length(COALESCE(v_new_hist, '[]'::jsonb))));
+            'status', v_derived, 'history_length', jsonb_array_length(COALESCE(v_new_hist, '[]'::jsonb))));
     END LOOP;
 
     ------------------------------------------------------------------ write: allocations, credit, event
@@ -347,6 +420,8 @@ BEGIN
            COALESCE(a->'payment_method_snapshot', v_batch->'payment_method_snapshot')
     FROM jsonb_array_elements(v_allocs) a;
 
+    -- The tenant row is locked (step 1), so a settlement reading this tenant's
+    -- held credit cannot run concurrently with this insert (finding 145).
     IF v_excess > 0 THEN
         INSERT INTO public.tenant_credits (tenant_id, kind, bucket, amount, payment_batch_id, reason, actor)
         VALUES (v_tenant, 'overpayment', 'unapplied', v_excess,
@@ -358,7 +433,7 @@ BEGIN
             jsonb_build_object('invoices', v_before),
             jsonb_build_object('amount_received', v_received, 'amount_allocated', v_allocated,
                                'credit', v_excess, 'paid_at', v_paid_at,
-                               'idempotency_key', v_key,
+                               'idempotency_key', v_key, 'payload_hash', v_hash,
                                'allocations', v_allocs, 'invoices', v_after),
             v_batch->>'source');
 

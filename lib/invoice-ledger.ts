@@ -1,4 +1,5 @@
 import { buildManualSplitPayload } from "@/lib/money/manual-split-payload";
+import { paymentPayloadHash } from "@/lib/money/payment-payload-hash";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { computeInvoiceTotal } from "./invoice-total";
 import { bangkokToday } from "@/lib/money/action-queue";
@@ -587,6 +588,7 @@ async function findIdempotentPaymentResult(
   supabase: SupabaseClient,
   triggerInvoiceId: string,
   idempotencyKey: string,
+  payloadHash: string | null = null,
 ): Promise<ApplyPaymentResult | null> {
   const batchId = await findIdempotentBatchId(
     supabase,
@@ -594,6 +596,22 @@ async function findIdempotentPaymentResult(
     idempotencyKey,
   );
   if (!batchId) return null;
+
+  // Same key, different request: refuse instead of replaying someone else's
+  // receipt (record_payment_batch applies the same rule under its locks).
+  if (payloadHash) {
+    const { data: batchRow, error: batchError } = await supabase
+      .from("payment_batches")
+      .select("payload_hash")
+      .eq("id", batchId)
+      .maybeSingle();
+    const storedHash = batchError ? null : ((batchRow as any)?.payload_hash ?? null);
+    if (storedHash && storedHash !== payloadHash) {
+      throw new Error(
+        `IDEMPOTENCY_CONFLICT key ${idempotencyKey} on invoice ${triggerInvoiceId} was already used for a different payment (batch ${batchId}); use a new key`,
+      );
+    }
+  }
 
   const { data: allocRows, error: allocError } = await supabase
     .from("invoice_payment_allocations")
@@ -1660,11 +1678,25 @@ export async function applyInvoicePaymentAllocation(
   }
 
   const trimmedIdem = idempotencyKey?.trim() || null;
+  // Hash of what was asked for (not of the computed split), so a real retry
+  // replays and a reused key for a different payment is refused.
+  const payloadHash = await paymentPayloadHash({
+    kind: "auto",
+    triggerInvoiceId: invoiceId,
+    amount: safeAmount,
+    keepExcessAsCredit,
+    paidAt,
+    mode,
+    source,
+    slipUrl: slipUrl ?? null,
+    paymentMethodId: paymentMethod?.id ?? null,
+  });
   if (trimmedIdem) {
     const existing = await findIdempotentPaymentResult(
       supabase,
       invoiceId,
       trimmedIdem,
+      payloadHash,
     );
     if (existing) return existing;
   }
@@ -1893,6 +1925,7 @@ export async function applyInvoicePaymentAllocation(
           payment_method_snapshot: resolvedMethod.snapshot,
           idempotency_key: trimmedIdem,
           created_by: createdBy,
+          payload_hash: payloadHash,
         },
         invoices: updates.map((update) => {
           const seen = revertSnapshots.get(update.invoiceId)!;
@@ -1923,7 +1956,7 @@ export async function applyInvoicePaymentAllocation(
   );
   if (rpcError) throw new Error(rpcError.message);
   if ((rpcResult as any)?.replayed) {
-    const replay = await findIdempotentPaymentResult(supabase, invoiceId, trimmedIdem ?? "");
+    const replay = await findIdempotentPaymentResult(supabase, invoiceId, trimmedIdem ?? "", payloadHash);
     if (replay) return replay;
   }
 
@@ -2035,11 +2068,23 @@ export async function applyManualInvoicePaymentAllocation(
   const triggerInvoiceId = invoiceIds[0];
 
   const trimmedIdem = idempotencyKey?.trim() || null;
+  const payloadHash = await paymentPayloadHash({
+    kind: "manual",
+    tenantId,
+    triggerInvoiceId,
+    allocations: cleanAllocations,
+    paidAt,
+    mode,
+    source,
+    slipUrl: slipUrl ?? null,
+    paymentMethodId: paymentMethod?.id ?? null,
+  });
   if (trimmedIdem) {
     const existing = await findIdempotentPaymentResult(
       supabase,
       triggerInvoiceId,
       trimmedIdem,
+      payloadHash,
     );
     if (existing) return existing;
   }
@@ -2094,6 +2139,7 @@ export async function applyManualInvoicePaymentAllocation(
     mode,
     source,
     idempotencyKey: trimmedIdem,
+    payloadHash,
     method: resolvedMethod,
     createdBy,
     statusFor: (invoice: any, nextPaid) =>
@@ -2122,6 +2168,7 @@ export async function applyManualInvoicePaymentAllocation(
       supabase,
       triggerInvoiceId,
       trimmedIdem ?? "",
+      payloadHash,
     );
     if (replay) return replay;
   }

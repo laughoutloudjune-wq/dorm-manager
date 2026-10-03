@@ -5,13 +5,32 @@
 -- Requires 20261002000000 (money_events), 20261002000100 (adjustments),
 -- 20261002000400 (late_fee_charges, late_fee_policies).
 --
--- Rollback:
+-- Idempotent: ADD COLUMN IF NOT EXISTS, CREATE OR REPLACE, REVOKE/GRANT re-runnable.
+--
+-- ROLLBACK (dropping a function also drops its grants; nothing else to revoke):
 --   DROP FUNCTION IF EXISTS public.post_late_fee_charge(jsonb);
 --   DROP FUNCTION IF EXISTS public.waive_late_fee(jsonb);
 --   DROP FUNCTION IF EXISTS public.reverse_late_fee_waiver(jsonb);
 --   DROP FUNCTION IF EXISTS public.create_late_fee_policy(jsonb);
 --   DROP FUNCTION IF EXISTS public.late_fee_engine_check(jsonb, public.invoices, jsonb);
 --   ALTER TABLE public.late_fee_policies DROP COLUMN IF EXISTS created_by, DROP COLUMN IF EXISTS note;
+-- The two DROP COLUMNs destroy who created each policy version: run them only
+-- while late_fee_policies has no rows created through this flow. Once fees have
+-- been posted or waived (late_fee_charges / adjustments rows, late_fee_line
+-- entries on invoices), dropping the functions is still safe, but undoing the
+-- money is not a rollback: restore from the pre-go-live backup instead.
+--
+-- Security (finding 138): every function here has SET search_path = public,
+-- pg_temp; EXECUTE is revoked from PUBLIC/anon/authenticated and granted to
+-- service_role only (bottom of file).
+--
+-- LOCK ORDER (global order, see 20261002000000): no tenant or room lock; invoice
+-- rows only, ascending id, then inserts. post_late_fee_charge locks the SOURCE
+-- and the TARGET invoice together in ascending id order (finding 143): every
+-- post for one source - whatever its target, period or policy version -
+-- serialises on the source row, so the overlap/cap checks cannot both pass for
+-- two concurrent posts. waive/reverse lock only the target invoice.
+-- create_late_fee_policy takes a table lock on late_fee_policies only.
 --
 -- Division of labour: the application calculates (the estimate in
 -- lib/money/late-fee.ts, the recomputed money columns in lib/invoice-total.ts);
@@ -44,7 +63,9 @@ ALTER TABLE public.late_fee_policies ADD COLUMN IF NOT EXISTS note TEXT;
 CREATE OR REPLACE FUNCTION public.late_fee_engine_check(cols jsonb, r public.invoices, breakdown jsonb)
 RETURNS void
 LANGUAGE plpgsql
+SET search_path = public, pg_temp
 AS $$
+-- LOCK ORDER: takes no locks (pure check; callers hold the invoice lock).
 DECLARE
     v_lines numeric;
     v_engine numeric;
@@ -85,7 +106,9 @@ $$;
 CREATE OR REPLACE FUNCTION public.post_late_fee_charge(p jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
+SET search_path = public, pg_temp
 AS $$
+-- LOCK ORDER: source + target invoices together (ascending id) -> late_fee_charges / money_events inserts.
 DECLARE
     c jsonb := p->'charge';
     cols jsonb := p->'target'->'columns';
@@ -137,8 +160,12 @@ BEGIN
         RAISE EXCEPTION 'UNKNOWN_POLICY_VERSION %', v_version;
     END IF;
 
-    -- Lock the target first: concurrent posts/waivers on it serialise here.
-    SELECT * INTO v_row FROM public.invoices WHERE id = v_target FOR UPDATE;
+    -- Lock source AND target in ascending id order (finding 143). Concurrent
+    -- posts/waivers on the target serialise here, and so does every post for
+    -- the same source even onto a different target/period/policy version, so
+    -- the duplicate, overlap and cap checks below always see the winner's row.
+    PERFORM 1 FROM public.invoices WHERE id IN (v_source, v_target) ORDER BY id FOR UPDATE;
+    SELECT * INTO v_row FROM public.invoices WHERE id = v_target;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'INVOICE_NOT_FOUND target %', v_target;
     END IF;
@@ -304,7 +331,9 @@ COMMENT ON FUNCTION public.post_late_fee_charge(jsonb) IS
 CREATE OR REPLACE FUNCTION public.waive_late_fee(p jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
+SET search_path = public, pg_temp
 AS $$
+-- LOCK ORDER: target invoice -> adjustments / money_events inserts.
 DECLARE
     w jsonb := p->'waiver';
     cols jsonb := p->'target'->'columns';
@@ -450,7 +479,9 @@ COMMENT ON FUNCTION public.waive_late_fee(jsonb) IS
 CREATE OR REPLACE FUNCTION public.reverse_late_fee_waiver(p jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
+SET search_path = public, pg_temp
 AS $$
+-- LOCK ORDER: target invoice -> adjustments / money_events inserts.
 DECLARE
     r jsonb := p->'reversal';
     cols jsonb := p->'target'->'columns';
@@ -571,7 +602,9 @@ COMMENT ON FUNCTION public.reverse_late_fee_waiver(jsonb) IS
 CREATE OR REPLACE FUNCTION public.create_late_fee_policy(p jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
+SET search_path = public, pg_temp
 AS $$
+-- LOCK ORDER: late_fee_policies table lock only (no tenant/room/invoice rows).
 DECLARE
     v_by text := NULLIF(btrim(COALESCE(p->>'created_by', ''), E' \t\r\n'), '');
     v_version integer;
@@ -606,3 +639,16 @@ $$;
 
 COMMENT ON FUNCTION public.create_late_fee_policy(jsonb) IS
     'Appends a new late-fee policy version (next integer) with its author; never edits an older version and never touches invoices.';
+
+-- Server-only (finding 138): the app calls these with the service-role key.
+-- Never let anon/authenticated reach them through PostgREST /rpc.
+REVOKE ALL ON FUNCTION public.late_fee_engine_check(jsonb, public.invoices, jsonb) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.post_late_fee_charge(jsonb) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.waive_late_fee(jsonb) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.reverse_late_fee_waiver(jsonb) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.create_late_fee_policy(jsonb) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.late_fee_engine_check(jsonb, public.invoices, jsonb) TO service_role;
+GRANT EXECUTE ON FUNCTION public.post_late_fee_charge(jsonb) TO service_role;
+GRANT EXECUTE ON FUNCTION public.waive_late_fee(jsonb) TO service_role;
+GRANT EXECUTE ON FUNCTION public.reverse_late_fee_waiver(jsonb) TO service_role;
+GRANT EXECUTE ON FUNCTION public.create_late_fee_policy(jsonb) TO service_role;

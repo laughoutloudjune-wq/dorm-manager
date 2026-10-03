@@ -12,6 +12,43 @@
 --    original receipt and allocations stay visible next to their reversal.
 -- 3. void_payment_batch(): does the whole void in one transaction, with the
 --    batch row locked so two admins (or a double click) cannot void it twice.
+-- 4. money_derive_invoice_status(): THE one rule for an invoice's status after
+--    money moves, shared by record_payment_batch, void_payment_batch and
+--    final_settle_move_out (finding 146):
+--      paid    iff paid_amount >= total_amount
+--      partial iff 0 < paid_amount < total_amount
+--      overdue iff nothing paid and due_date < today (Asia/Bangkok)
+--      pending otherwise
+--    Same rule as resolveInvoiceStatus in lib/invoice-ledger.ts.
+--
+-- GLOBAL LOCK ORDER (every money function in 0000-0800 follows it, finding 144):
+--      tenant row -> room row -> invoice rows (ascending id) -> every other row
+--      (payment_batches, tenant_credits, point_ledger_entries, ...)
+-- A function may skip a level it does not need, never reorder two levels.
+--
+-- Idempotent: safe to re-run (IF NOT EXISTS / DROP ... IF EXISTS / OR REPLACE).
+--
+-- ROLLBACK (only before any money has been recorded through the new code):
+--   DROP FUNCTION IF EXISTS public.void_payment_batch(uuid, text, text);
+--   DROP FUNCTION IF EXISTS public.money_derive_invoice_status(numeric, numeric, date, date);
+--   ALTER TABLE public.payment_batches DROP CONSTRAINT IF EXISTS payment_batches_void_reason_check;
+--   DROP INDEX IF EXISTS public.uq_allocation_single_reversal;
+--   ALTER TABLE public.invoice_payment_allocations
+--       DROP COLUMN IF EXISTS reverses_allocation_id, DROP COLUMN IF EXISTS reversed_at,
+--       DROP COLUMN IF EXISTS reversal_reason;
+--   ALTER TABLE public.payment_batches
+--       DROP COLUMN IF EXISTS voided_at, DROP COLUMN IF EXISTS voided_by, DROP COLUMN IF EXISTS void_reason;
+--   DROP TRIGGER IF EXISTS trg_money_events_append_only ON public.money_events;
+--   DROP TABLE IF EXISTS public.money_events;
+--   DROP FUNCTION IF EXISTS public.money_events_block_mutation();
+-- Dropping the void columns or money_events once a void or an event exists
+-- DESTROYS audit data (the negative reversal allocations would remain but lose
+-- their link). After real data exists, do not run these: restore from the
+-- backup taken before go-live instead.
+
+-- Fail fast instead of queueing behind live traffic (ALTER TABLE on
+-- payment_batches, CREATE UNIQUE INDEX on allocations). Re-run off-hours if hit.
+SET lock_timeout = '5s';
 
 CREATE TABLE IF NOT EXISTS public.money_events (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -68,32 +105,64 @@ ALTER TABLE public.payment_batches DROP CONSTRAINT IF EXISTS payment_batches_voi
 ALTER TABLE public.payment_batches ADD CONSTRAINT payment_batches_void_reason_check
     CHECK (voided_at IS NULL OR (void_reason IS NOT NULL AND void_reason ~ '[^[:space:]]'));
 
+-- money_derive_invoice_status(): the single paid/partial/overdue/pending rule.
+CREATE OR REPLACE FUNCTION public.money_derive_invoice_status(
+    p_total NUMERIC, p_paid NUMERIC, p_due DATE, p_today DATE
+) RETURNS public.invoice_status
+LANGUAGE sql
+IMMUTABLE
+SET search_path = public, pg_temp
+AS $$
+    SELECT (CASE
+        WHEN COALESCE(p_paid, 0) >= COALESCE(p_total, 0) THEN 'paid'
+        WHEN COALESCE(p_paid, 0) > 0 THEN 'partial'
+        WHEN p_due IS NOT NULL AND p_due < p_today THEN 'overdue'
+        ELSE 'pending'
+    END)::public.invoice_status
+$$;
+
+COMMENT ON FUNCTION public.money_derive_invoice_status(NUMERIC, NUMERIC, DATE, DATE) IS
+    'The one invoice-status rule after money moves: paid iff paid_amount >= total_amount; partial iff 0 < paid < total; else overdue (due_date < p_today) or pending. Mirrors resolveInvoiceStatus (lib/invoice-ledger.ts).';
+
+REVOKE ALL ON FUNCTION public.money_derive_invoice_status(NUMERIC, NUMERIC, DATE, DATE) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.money_derive_invoice_status(NUMERIC, NUMERIC, DATE, DATE) TO service_role;
+
 -- void_payment_batch()
 --
--- Runtime requirement: 20261002000200 (tenant_credits, incl. reverses_credit_id).
--- plpgsql resolves tables at call time, so creating this function before that
--- migration is fine; calling it before is not.
+-- Runtime requirement: 20261002000200 (tenant_credits, incl. reverses_credit_id)
+-- and 20261002000300 (refund_payouts). plpgsql resolves tables at call time, so
+-- creating this function before those migrations is fine; calling it before is not.
 --
 -- Rules:
 --  * Reason required; whitespace-only (spaces, tabs, newlines) is blank.
---  * Lock order: batch row, then every touched invoice in ascending id order,
---    then (only when an overpayment credit is reversed) the tenant row. Same
---    invoice order as record_payment_batch, so record/void cannot deadlock.
+--  * Lock order (global order, see top of file): tenant row (batch.tenant_id,
+--    else the trigger invoice's tenant) -> every touched invoice in ascending id
+--    order -> the batch row. The batch row is re-read under its lock, so two
+--    concurrent voids of the same batch still serialise and the second sees
+--    'already voided'.
+--  * Settlement / credit receipts cannot be voided here (finding 141): a batch
+--    with mode 'credit', an idempotency key starting 'settle:', or any
+--    tenant_credits 'applied_to_invoice' row pointing at it was written by
+--    final_settle_move_out; reversing only its allocations would reopen the
+--    debts while the credit stays spent (double charge). Error VOID_NOT_ALLOWED.
 --  * All checks run before any write. Refuses (naming the invoice) when the
 --    void would take an invoice's paid_amount below 0, i.e. paid_amount was
 --    edited down after this receipt.
---  * Status after void:
+--  * Status after void (finding 146, money_derive_invoice_status):
 --      cancelled / draft  -> unchanged (never silently reopened)
 --      verifying          -> unchanged while a slip is awaiting review (slip_url
 --                            set and not the slip this receipt was recorded
 --                            from); otherwise treated like paid/partial
---      paid / partial     -> paid if still fully paid, partial if money
---                            remains, else overdue (due_date before today in
---                            Asia/Bangkok) or pending
+--      paid / partial     -> money_derive_invoice_status(total, new paid, due, today Bangkok)
 --      pending / overdue  -> unchanged
+--  * Leaving 'paid' clears locked_late_fee_amount (finding 147, same rule as the
+--    admin status change): the frozen fee is re-frozen when it is paid again.
 --  * The batch's tenant_credits 'overpayment' rows are reversed by paired
---    'reversal' rows (reverses_credit_id, unique). If that credit was already
---    spent the void is refused rather than leaving a negative held balance.
+--    'reversal' rows (reverses_credit_id, unique). Refused (VOID_CREDIT_ALREADY_USED)
+--    if that credit was already spent from the unapplied bucket, OR already paid
+--    out: refundable credit (deposit + unapplied, excluding 'refunded' rows, as
+--    refund_due_vs_paid counts it) minus live refund_payouts must still cover
+--    the credit being reversed (finding 142).
 --  * One 'payment.void' money_events row per invoice, one 'credit.reversal'
 --    per reversed credit row.
 CREATE OR REPLACE FUNCTION public.void_payment_batch(
@@ -104,6 +173,7 @@ CREATE OR REPLACE FUNCTION public.void_payment_batch(
 LANGUAGE plpgsql
 SET search_path = public, pg_temp
 AS $$
+-- LOCK ORDER: tenant -> invoices (ascending id) -> payment_batches row.
 DECLARE
     v_reason TEXT;
     v_batch public.payment_batches%ROWTYPE;
@@ -121,26 +191,49 @@ DECLARE
     v_count INT := 0;
     v_credit_total NUMERIC := 0;
     v_unapplied NUMERIC;
+    v_refundable NUMERIC;
+    v_payouts NUMERIC;
     v_credit_tenant UUID;
+    v_lock_tenant UUID;
 BEGIN
     IF p_reason IS NULL OR p_reason !~ '[^[:space:]]' THEN
         RAISE EXCEPTION 'A reason is required to void a payment';
     END IF;
     v_reason := regexp_replace(p_reason, '^[[:space:]]+|[[:space:]]+$', '', 'g');
 
-    SELECT * INTO v_batch FROM public.payment_batches WHERE id = p_batch_id FOR UPDATE;
+    -- Unlocked read only to learn which tenant/invoices to lock.
+    SELECT * INTO v_batch FROM public.payment_batches WHERE id = p_batch_id;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'Payment batch not found';
     END IF;
-    IF v_batch.voided_at IS NOT NULL THEN
-        RAISE EXCEPTION 'Payment batch already voided';
+
+    -- 1. tenant
+    v_lock_tenant := COALESCE(v_batch.tenant_id,
+        (SELECT tenant_id FROM public.invoices WHERE id = v_batch.trigger_invoice_id));
+    IF v_lock_tenant IS NOT NULL THEN
+        PERFORM 1 FROM public.tenants WHERE id = v_lock_tenant FOR UPDATE;
     END IF;
 
-    -- Lock every invoice this batch paid, in id order, before reading balances.
+    -- 2. invoices this batch paid, ascending id, before reading balances.
     SELECT array_agg(DISTINCT invoice_id ORDER BY invoice_id) INTO v_ids
     FROM public.invoice_payment_allocations
     WHERE payment_batch_id = p_batch_id AND reverses_allocation_id IS NULL AND amount > 0;
     PERFORM 1 FROM public.invoices WHERE id = ANY(COALESCE(v_ids, '{}')) ORDER BY id FOR UPDATE;
+
+    -- 3. the batch row itself; re-read under the lock.
+    SELECT * INTO v_batch FROM public.payment_batches WHERE id = p_batch_id FOR UPDATE;
+    IF v_batch.voided_at IS NOT NULL THEN
+        RAISE EXCEPTION 'Payment batch already voided';
+    END IF;
+
+    -- Settlement / non-cash credit receipts are not voidable here (finding 141).
+    IF COALESCE(v_batch.mode, '') = 'credit'
+       OR COALESCE(v_batch.idempotency_key, '') LIKE 'settle:%'
+       OR EXISTS (SELECT 1 FROM public.tenant_credits c
+                  WHERE c.payment_batch_id = p_batch_id AND c.kind = 'applied_to_invoice') THEN
+        RAISE EXCEPTION 'VOID_NOT_ALLOWED payment batch % is a move-out settlement / credit receipt (mode %, key %); it cannot be voided on its own because the held credit it applied would stay spent',
+            p_batch_id, COALESCE(v_batch.mode, 'NULL'), COALESCE(v_batch.idempotency_key, 'NULL');
+    END IF;
 
     -- Check phase: nothing below may go negative.
     FOR v_rec IN
@@ -161,12 +254,28 @@ BEGIN
     WHERE c.payment_batch_id = p_batch_id AND c.kind = 'overpayment'
       AND NOT EXISTS (SELECT 1 FROM public.tenant_credits r WHERE r.reverses_credit_id = c.id);
     IF v_credit_total > 0 THEN
-        PERFORM 1 FROM public.tenants WHERE id = v_credit_tenant FOR UPDATE;
+        -- The tenant was locked first; a credit row for another tenant would
+        -- need a second tenant lock after the invoices (order violation) and
+        -- cannot come from record_payment_batch, so refuse it.
+        IF v_credit_tenant IS DISTINCT FROM v_lock_tenant THEN
+            RAISE EXCEPTION 'VOID_NOT_ALLOWED overpayment credit of batch % belongs to tenant %, not the batch tenant %',
+                p_batch_id, v_credit_tenant, v_lock_tenant;
+        END IF;
         SELECT COALESCE(SUM(amount), 0) INTO v_unapplied
         FROM public.tenant_credits WHERE tenant_id = v_credit_tenant AND bucket = 'unapplied';
         IF v_unapplied - v_credit_total < 0 THEN
             RAISE EXCEPTION 'VOID_CREDIT_ALREADY_USED this receipt left % as tenant credit but only % unapplied credit remains; reverse the credit use first',
                 v_credit_total, v_unapplied;
+        END IF;
+        -- Finding 142: credit already paid out as a refund is spent too.
+        SELECT COALESCE(SUM(amount), 0) INTO v_refundable
+        FROM public.tenant_credits
+        WHERE tenant_id = v_credit_tenant AND bucket IN ('deposit', 'unapplied') AND kind <> 'refunded';
+        SELECT COALESCE(SUM(amount), 0) INTO v_payouts
+        FROM public.refund_payouts WHERE tenant_id = v_credit_tenant AND voided_at IS NULL;
+        IF v_refundable - v_payouts - v_credit_total < 0 THEN
+            RAISE EXCEPTION 'VOID_CREDIT_ALREADY_USED this receipt left % as tenant credit but % has already been refunded (refundable credit %); void the refund payout first',
+                v_credit_total, v_payouts, v_refundable;
         END IF;
     END IF;
 
@@ -199,12 +308,7 @@ BEGIN
     LOOP
         SELECT * INTO v_inv FROM public.invoices WHERE id = v_rec.invoice_id;
         v_new_paid := COALESCE(v_inv.paid_amount, 0) - v_rec.amount;
-        v_derived := CASE
-            WHEN v_new_paid >= COALESCE(v_inv.total_amount, 0) THEN 'paid'
-            WHEN v_new_paid > 0 THEN 'partial'
-            WHEN v_inv.due_date IS NOT NULL AND v_inv.due_date < v_today THEN 'overdue'
-            ELSE 'pending'
-        END::public.invoice_status;
+        v_derived := public.money_derive_invoice_status(v_inv.total_amount, v_new_paid, v_inv.due_date, v_today);
         v_awaiting := v_inv.status = 'verifying'
             AND COALESCE(btrim(v_inv.slip_url), '') <> ''
             AND (v_batch.slip_url IS NULL OR v_inv.slip_url <> v_batch.slip_url);
@@ -219,6 +323,9 @@ BEGIN
         UPDATE public.invoices
         SET paid_amount = v_new_paid,
             status = v_new_status,
+            -- Finding 147: leaving 'paid' clears the late-fee freeze.
+            locked_late_fee_amount = CASE WHEN v_inv.status = 'paid' AND v_new_status <> 'paid'
+                                          THEN NULL ELSE locked_late_fee_amount END,
             payment_history = COALESCE(payment_history, '[]'::jsonb) || jsonb_build_array(
                 jsonb_build_object(
                     'type', 'void',
@@ -235,8 +342,10 @@ BEGIN
             before, after, reason, source
         ) VALUES (
             'payment.void', p_actor, COALESCE(v_inv.tenant_id, v_batch.tenant_id), v_rec.invoice_id, p_batch_id,
-            jsonb_build_object('paid_amount', v_inv.paid_amount, 'status', v_inv.status, 'allocation_amount', v_rec.amount),
+            jsonb_build_object('paid_amount', v_inv.paid_amount, 'status', v_inv.status, 'allocation_amount', v_rec.amount,
+                               'locked_late_fee_amount', v_inv.locked_late_fee_amount),
             jsonb_build_object('paid_amount', v_new_paid, 'status', v_new_status,
+                               'locked_late_fee_cleared', v_inv.status = 'paid' AND v_new_status <> 'paid',
                                'status_kept', v_new_status = v_inv.status AND v_inv.status IN ('cancelled', 'draft', 'verifying')),
             v_reason, 'void_payment_batch'
         );
@@ -282,3 +391,5 @@ COMMENT ON FUNCTION public.void_payment_batch(UUID, TEXT, TEXT) IS
 REVOKE ALL ON FUNCTION public.void_payment_batch(UUID, TEXT, TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.void_payment_batch(UUID, TEXT, TEXT) FROM anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.void_payment_batch(UUID, TEXT, TEXT) TO service_role;
+
+RESET lock_timeout;

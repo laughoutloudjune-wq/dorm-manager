@@ -5,11 +5,45 @@
 -- NOT applied automatically. Apply BEFORE deploying the app code that calls these
 -- functions (lib/points-ledger.ts redeemPoints / reverseRedemption).
 --
--- Rollback:
+-- Idempotent: every statement is IF [NOT] EXISTS / OR REPLACE / guarded DO block.
+--
+-- ROLLBACK (functions only; dropping them also drops their grants):
 --   DROP FUNCTION IF EXISTS public.redeem_points_atomic(jsonb);
 --   DROP FUNCTION IF EXISTS public.reverse_points_redemption(jsonb);
---   The schema additions below are harmless to leave. To remove them, first make sure
---   no 'redemption_reversal' ledger rows / 'points_redemption' adjustments exist.
+--   DROP FUNCTION IF EXISTS public.points_assert_invoice_unchanged(public.invoices, jsonb);
+--   DROP FUNCTION IF EXISTS public.points_assert_new_columns(jsonb, jsonb, numeric);
+-- Schema rollback, ONLY while no 'redemption_reversal' ledger row and no
+-- 'points_redemption' adjustment exists:
+--   DROP INDEX IF EXISTS public.uq_point_ledger_single_reversal;
+--   ALTER TABLE public.point_ledger_entries DROP CONSTRAINT IF EXISTS point_ledger_reversal_link_check;
+--   ALTER TABLE public.point_ledger_entries DROP COLUMN IF EXISTS reverses_entry_id;  -- drops its FK too
+--   -- restore the ORIGINAL reason list from 20260730000000:
+--   ALTER TABLE public.point_ledger_entries DROP CONSTRAINT IF EXISTS point_ledger_entries_reason_check;
+--   ALTER TABLE public.point_ledger_entries ADD CONSTRAINT point_ledger_entries_reason_check CHECK (
+--       reason IN ('rent_on_time','streak_bonus','referral_bonus','milestone_3mo',
+--                  'milestone_1yr','redemption','manual_adjustment'));
+--   -- restore adjustments_type_check WITHOUT 'points_redemption': re-run the
+--   -- constraint statement of 20261002000100 (plus any type later migrations added).
+-- Once redemptions or reversals exist, a schema rollback DESTROYS the pairing
+-- between the point and invoice sides: restore from the pre-go-live backup instead.
+--
+-- Apply-time safety:
+--   * SET lock_timeout = '5s' (finding 150): ALTER TABLE / CREATE UNIQUE INDEX
+--     on point_ledger_entries fail fast instead of queueing behind traffic.
+--   * point_ledger_entries_reason_check is added NOT VALID, then VALIDATEd only
+--     if no existing row violates it (finding 148). If production holds any
+--     reason outside the list, the migration still applies, a NOTICE names the
+--     offending values, and the constraint enforces new/updated rows only until
+--     those rows are fixed and `ALTER TABLE ... VALIDATE CONSTRAINT
+--     point_ledger_entries_reason_check` is run by hand. Read-only pre-check:
+--     SELECT DISTINCT reason FROM public.point_ledger_entries;
+--   * reverses_entry_id uses ON DELETE NO ACTION (finding 151): deleting a single
+--     reversed redemption is still refused (checked at end of statement), but a
+--     tenant delete cascading over BOTH the redemption and its reversal succeeds.
+--
+-- LOCK ORDER (global order, see 20261002000000): these functions take no
+-- tenant or room lock; they lock the invoice row, then the tenant's
+-- point_ledger_entries rows (ascending id) - "invoices -> other rows".
 --
 -- What this replaces (findings 20-25): redeemPoints wrote the invoice discount, then
 -- the ledger row, and hand-reverted the invoice if the second write failed; balance
@@ -84,6 +118,8 @@
 
 -- ---------------------------------------------------------------- schema
 
+SET lock_timeout = '5s';
+
 ALTER TABLE public.point_ledger_entries
     DROP CONSTRAINT IF EXISTS point_ledger_entries_reason_check;
 ALTER TABLE public.point_ledger_entries
@@ -92,11 +128,33 @@ ALTER TABLE public.point_ledger_entries
             'rent_on_time', 'streak_bonus', 'referral_bonus', 'milestone_3mo',
             'milestone_1yr', 'redemption', 'redemption_reversal', 'manual_adjustment'
         )
-    );
+    ) NOT VALID;
+
+DO $$
+DECLARE
+    v_bad text;
+BEGIN
+    SELECT string_agg(DISTINCT quote_literal(reason), ', ') INTO v_bad
+    FROM public.point_ledger_entries
+    WHERE reason IS NULL OR reason NOT IN (
+        'rent_on_time', 'streak_bonus', 'referral_bonus', 'milestone_3mo',
+        'milestone_1yr', 'redemption', 'redemption_reversal', 'manual_adjustment');
+    IF v_bad IS NULL THEN
+        ALTER TABLE public.point_ledger_entries VALIDATE CONSTRAINT point_ledger_entries_reason_check;
+    ELSE
+        RAISE NOTICE 'point_ledger_entries_reason_check left NOT VALID: existing rows use reason(s) %. Fix them, then VALIDATE CONSTRAINT by hand.', v_bad;
+    END IF;
+END $$;
 
 ALTER TABLE public.point_ledger_entries
-    ADD COLUMN IF NOT EXISTS reverses_entry_id UUID
-        REFERENCES public.point_ledger_entries(id) ON DELETE RESTRICT;
+    ADD COLUMN IF NOT EXISTS reverses_entry_id UUID;
+-- (Re)create the self-FK as NO ACTION. Earlier drafts created it ON DELETE RESTRICT,
+-- which blocked deleting a tenant whose redemption had been reversed (finding 151).
+ALTER TABLE public.point_ledger_entries
+    DROP CONSTRAINT IF EXISTS point_ledger_entries_reverses_entry_id_fkey;
+ALTER TABLE public.point_ledger_entries
+    ADD CONSTRAINT point_ledger_entries_reverses_entry_id_fkey
+        FOREIGN KEY (reverses_entry_id) REFERENCES public.point_ledger_entries(id) ON DELETE NO ACTION;
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_point_ledger_single_reversal
     ON public.point_ledger_entries(reverses_entry_id)
@@ -145,7 +203,7 @@ END $$;
 CREATE OR REPLACE FUNCTION public.points_assert_invoice_unchanged(v_inv public.invoices, p_expected jsonb)
 RETURNS void
 LANGUAGE plpgsql
-SET search_path = public
+SET search_path = public, pg_temp
 AS $$
 DECLARE
     v_key text;
@@ -175,7 +233,7 @@ $$;
 CREATE OR REPLACE FUNCTION public.points_assert_new_columns(p_expected jsonb, p_new jsonb, p_discount_delta numeric)
 RETURNS void
 LANGUAGE plpgsql
-SET search_path = public
+SET search_path = public, pg_temp
 AS $$
 DECLARE
     v_key text;
@@ -209,8 +267,9 @@ $$;
 CREATE OR REPLACE FUNCTION public.redeem_points_atomic(p jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
-SET search_path = public
+SET search_path = public, pg_temp
 AS $$
+-- LOCK ORDER: invoice -> tenant's point_ledger_entries rows (ascending id) -> inserts.
 DECLARE
     v_tenant uuid := NULLIF(p->>'tenant_id', '')::uuid;
     v_invoice uuid := NULLIF(p->>'invoice_id', '')::uuid;
@@ -420,8 +479,9 @@ $$;
 CREATE OR REPLACE FUNCTION public.reverse_points_redemption(p jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
-SET search_path = public
+SET search_path = public, pg_temp
 AS $$
+-- LOCK ORDER: invoice -> tenant's point_ledger_entries rows (ascending id) -> inserts.
 DECLARE
     v_entry_id uuid := NULLIF(p->>'entry_id', '')::uuid;
     v_reason text := NULLIF(btrim(COALESCE(p->>'reason', ''), E' \t\r\n'), '');
@@ -597,3 +657,5 @@ GRANT EXECUTE ON FUNCTION public.redeem_points_atomic(jsonb) TO service_role;
 GRANT EXECUTE ON FUNCTION public.reverse_points_redemption(jsonb) TO service_role;
 GRANT EXECUTE ON FUNCTION public.points_assert_invoice_unchanged(public.invoices, jsonb) TO service_role;
 GRANT EXECUTE ON FUNCTION public.points_assert_new_columns(jsonb, jsonb, numeric) TO service_role;
+
+RESET lock_timeout;

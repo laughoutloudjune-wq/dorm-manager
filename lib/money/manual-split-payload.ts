@@ -27,6 +27,8 @@ export type ManualSplitInput = {
   mode: string;
   source: string;
   idempotencyKey: string | null;
+  /** Stable hash of the request intent (lib/money/payment-payload-hash.ts); stored on the batch. */
+  payloadHash?: string | null;
   method: ManualSplitMethod;
   createdBy: string | null;
   statusFor: (invoice: ManualSplitInvoice, nextPaidAmount: number) => string;
@@ -146,6 +148,7 @@ export function buildManualSplitPayload(input: ManualSplitInput) {
       payment_method_snapshot: input.method.snapshot,
       idempotency_key: input.idempotencyKey,
       created_by: input.createdBy,
+      payload_hash: input.payloadHash ?? null,
     },
     invoices: invoiceRows,
     allocations: allocationRows,

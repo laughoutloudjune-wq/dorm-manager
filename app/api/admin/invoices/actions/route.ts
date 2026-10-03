@@ -435,8 +435,30 @@ export async function POST(req: Request) {
         p_actor: auth.user.id,
       });
       if (error) {
-        // VOID_WOULD_MAKE_NEGATIVE / VOID_CREDIT_ALREADY_USED are business refusals, not server errors.
-        const status = /not found|already voided|VOID_WOULD_MAKE_NEGATIVE|VOID_CREDIT_ALREADY_USED/i.test(error.message) ? 409 : 500;
+        // Business refusals from void_payment_batch are 409, not server errors.
+        if (/VOID_NOT_ALLOWED/.test(error.message)) {
+          return NextResponse.json(
+            {
+              error:
+                "ยกเลิกรายการนี้ไม่ได้: เป็นรายการหักเครดิต/เงินประกันตอนย้ายออก (ไม่ใช่เงินที่รับจริง) การยกเลิกจะทำให้หนี้กลับมาแต่เครดิตยังถูกใช้ไปแล้ว กรุณาติดต่อผู้ดูแลระบบเพื่อแก้ไขการคิดเงินย้ายออก",
+              code: "VOID_NOT_ALLOWED",
+              detail: error.message,
+            },
+            { status: 409 },
+          );
+        }
+        if (/VOID_CREDIT_ALREADY_USED/.test(error.message)) {
+          return NextResponse.json(
+            {
+              error:
+                "ยกเลิกไม่ได้: เงินส่วนเกินจากรายการนี้ถูกใช้หรือคืนให้ผู้เช่าไปแล้ว กรุณายกเลิกการใช้เครดิตหรือการคืนเงินก่อน",
+              code: "VOID_CREDIT_ALREADY_USED",
+              detail: error.message,
+            },
+            { status: 409 },
+          );
+        }
+        const status = /not found|already voided|VOID_WOULD_MAKE_NEGATIVE/i.test(error.message) ? 409 : 500;
         return NextResponse.json({ error: error.message }, { status });
       }
 
