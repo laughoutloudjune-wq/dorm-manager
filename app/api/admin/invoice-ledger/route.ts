@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/admin-api-auth";
+import { getSettledCarriedInByInvoice } from "@/lib/invoice-ledger";
 
 /**
  * Read-only data for the invoice Payments tab. Unlike get_payment_chains it
@@ -33,7 +34,11 @@ export async function POST(req: Request) {
   if (mineErr) return NextResponse.json({ error: mineErr.message }, { status: 500 });
   const batchIds = [...new Set((mine ?? []).map((r: any) => String(r.payment_batch_id ?? "")).filter(Boolean))];
   if (batchIds.length === 0) {
-    return NextResponse.json({ invoice, allocations: [], batches: [], invoiceTotals: {} });
+    const carriedEarly = await getSettledCarriedInByInvoice(auth.supabase, [invoiceId]);
+    return NextResponse.json({
+      invoice, allocations: [], batches: [], invoiceTotals: {},
+      carriedInSettled: carriedEarly.get(invoiceId) ?? 0,
+    });
   }
 
   const [batchAllocs, batches] = await Promise.all([
@@ -84,5 +89,9 @@ export async function POST(req: Request) {
       .map((r: any) => ({ ...r, context_only: true })),
   ];
 
-  return NextResponse.json({ invoice, allocations, batches: batches.data ?? [], invoiceTotals });
+  const carriedIn = await getSettledCarriedInByInvoice(auth.supabase, [invoiceId]);
+  return NextResponse.json({
+    invoice, allocations, batches: batches.data ?? [], invoiceTotals,
+    carriedInSettled: carriedIn.get(invoiceId) ?? 0,
+  });
 }

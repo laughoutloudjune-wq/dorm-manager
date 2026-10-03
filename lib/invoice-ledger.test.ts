@@ -10,6 +10,8 @@ import {
   planAbandonCredit,
   planPaymentReplay,
   resolveInvoiceStatus,
+  resolveInvoiceStatusWithCarry,
+  settledCarriedInAmount,
   roundMoney,
   sumAllocated,
   sumOwnOutstanding,
@@ -627,5 +629,30 @@ describe("allocatePaymentAcrossChain by own outstanding (finding 160)", () => {
     expect(allocatePaymentAcrossChain(legacy, 5000)).toEqual([
       { id: "apr", allocated: 1400, nextPaidAmount: 1400 },
     ]);
+  });
+});
+
+describe("carry-forward target paid rule (finding 174)", () => {
+  const apr = { id: "apr", total_amount: 1400, paid_amount: 0, status: "overdue" };
+  const links = [{ source_invoice_id: "apr", amount: 1400 }];
+  const may = { total_amount: 7594, paid_amount: 6194, due_date: "2026-06-05" };
+
+  it("counts carried-in only once the source is fully settled", () => {
+    const sources = new Map([["apr", apr]]);
+    expect(settledCarriedInAmount(links, sources)).toBe(0);
+    expect(settledCarriedInAmount(links, sources, new Map([["apr", 1400]]))).toBe(1400);
+  });
+  it("May is paid after the own-share payment (April 1,400 + May 6,194)", () => {
+    expect(resolveInvoiceStatusWithCarry(may, "2026-06-10", 1400)).toBe("paid");
+  });
+  it("stays partial while the source is still open", () => {
+    expect(resolveInvoiceStatusWithCarry(may, "2026-06-10", 0)).toBe("partial");
+  });
+  it("carried-in alone never makes an unpaid invoice paid", () => {
+    expect(resolveInvoiceStatusWithCarry({ ...may, paid_amount: 0 }, "2026-06-10", 7594)).toBe("overdue");
+  });
+  it("ignores cancelled sources", () => {
+    const sources = new Map([["apr", { ...apr, paid_amount: 1400, status: "cancelled" }]]);
+    expect(settledCarriedInAmount(links, sources)).toBe(0);
   });
 });

@@ -14,7 +14,7 @@ import {
   isNonCashPaymentSource,
 } from "@/lib/invoice-utils";
 import { chargesFromInvoiceRow, computeInvoiceTotal } from "@/lib/invoice-total";
-import { getInvoiceOwnOutstanding, sumOwnOutstanding } from "@/lib/invoice-ledger";
+import { getChainOwnOutstanding, getInvoiceOwnOutstanding, sumOwnOutstanding } from "@/lib/invoice-ledger";
 import {
   BASIS_LABELS,
   BILLING_PERIOD_ALLOCATION_LABEL,
@@ -989,7 +989,7 @@ export default function ReportsPageView() {
             });
           }
           const data = tenantDebts.get(tenantId)!;
-          data.outstanding += getInvoiceOwnOutstanding(invoice);
+          data.outstanding += getChainOwnOutstanding(invoice as any);
           data.invoice_count += 1;
           if (invoice.due_date && (!data.oldest_due_date || new Date(invoice.due_date) < new Date(data.oldest_due_date))) {
             data.oldest_due_date = invoice.due_date;

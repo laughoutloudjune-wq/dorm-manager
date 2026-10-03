@@ -1,5 +1,11 @@
 import { buildManualSplitPayload } from "@/lib/money/manual-split-payload";
 import { paymentPayloadHash } from "@/lib/money/payment-payload-hash";
+import {
+  settledCarriedInAmount,
+  isPaidWithCarriedIn,
+  type CarryInLink,
+  type CarryInSource,
+} from "@/lib/money/carry-in";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { computeInvoiceTotal } from "./invoice-total";
 import { bangkokToday } from "@/lib/money/action-queue";
@@ -233,7 +239,24 @@ export const getInvoiceOwnOutstanding = (
  */
 export const sumOwnOutstanding = (
   invoices: Array<Pick<InvoiceLike, "total_amount" | "paid_amount" | "carry_forward_amount">>,
-) => invoices.reduce((sum, invoice) => sum + getInvoiceOwnOutstanding(invoice), 0);
+) =>
+  // DISPLAY total (dashboards, digest, reports). Uses getChainOwnOutstanding
+  // (total - carry - paid), the same formula the payment allocation uses, so a
+  // carry-forward target that has received its own share reads 0, not the carried
+  // amount again. getInvoiceOwnOutstanding (min(total-carry, total-paid)) is kept
+  // unchanged ONLY because final_settle_move_out (migration 0600) validates the
+  // debts the settlement sends with that older formula; align both together.
+  invoices.reduce(
+    (sum, invoice) =>
+      sum +
+      getChainOwnOutstanding({
+        id: "",
+        total_amount: invoice.total_amount,
+        paid_amount: invoice.paid_amount,
+        carry_forward_amount: invoice.carry_forward_amount,
+      } as ChainAllocationInput),
+    0,
+  );
 
 export type AbandonCreditLine = {
   invoiceId: string;
@@ -491,6 +514,99 @@ export const resolveInvoiceStatus = (
   return paidAmount > 0 ? "partial" : "pending";
 };
 
+export { settledCarriedInAmount };
+export type { CarryInLink, CarryInSource };
+
+/** resolveInvoiceStatus plus the carried-in rule (own paid > 0 and own paid + settled carried-in >= total). */
+export const resolveInvoiceStatusWithCarry = (
+  invoice: Pick<InvoiceLike, "total_amount" | "paid_amount" | "due_date">,
+  asOfDateText: string,
+  carriedInSettled: number,
+) => {
+  if (
+    toNumber(invoice.paid_amount) < toNumber(invoice.total_amount) &&
+    isPaidWithCarriedIn(invoice.total_amount, invoice.paid_amount, carriedInSettled)
+  ) {
+    return "paid";
+  }
+  return resolveInvoiceStatus(invoice, asOfDateText);
+};
+
+/** Loads carry-forward links into the given targets and their source invoices. */
+const loadCarryInContext = async (supabase: SupabaseClient, targetIds: string[]) => {
+  const linksByTarget = new Map<string, CarryInLink[]>();
+  const sources = new Map<string, CarryInSource>();
+  if (targetIds.length === 0) return { linksByTarget, sources };
+  const { data: links, error } = await supabase
+    .from("invoice_carry_forwards")
+    .select("source_invoice_id,target_invoice_id,amount")
+    .in("target_invoice_id", targetIds);
+  if (error) throw new Error(error.message);
+  const sourceIds = [...new Set((links ?? []).map((l: any) => String(l.source_invoice_id)))];
+  for (const l of (links ?? []) as any[]) {
+    const key = String(l.target_invoice_id);
+    const list = linksByTarget.get(key) ?? [];
+    list.push({ source_invoice_id: String(l.source_invoice_id), amount: toNumber(l.amount) });
+    linksByTarget.set(key, list);
+  }
+  if (sourceIds.length > 0) {
+    const { data: rows, error: srcError } = await supabase
+      .from("invoices")
+      .select("id,total_amount,paid_amount,status")
+      .in("id", sourceIds);
+    if (srcError) throw new Error(srcError.message);
+    for (const r of (rows ?? []) as any[]) sources.set(String(r.id), r);
+  }
+  return { linksByTarget, sources };
+};
+
+/** Settled carried-in amount per invoice id (0 when none). */
+export async function getSettledCarriedInByInvoice(
+  supabase: SupabaseClient,
+  invoiceIds: string[],
+  overrides: Map<string, number> = new Map(),
+): Promise<Map<string, number>> {
+  const ctx = await loadCarryInContext(supabase, invoiceIds);
+  const out = new Map<string, number>();
+  for (const id of invoiceIds) {
+    out.set(
+      id,
+      settledCarriedInAmount(ctx.linksByTarget.get(id) ?? [], ctx.sources, overrides),
+    );
+  }
+  return out;
+}
+
+/**
+ * Status for existing invoices under the same rule record_payment_batch uses
+ * (resolveInvoiceStatusWithCarry). Used by syncInvoiceLedger and slip decline so
+ * a later sync cannot undo, or fail to reach, the status a valid payment produced.
+ */
+export async function resolveStatusesWithCarry(
+  supabase: SupabaseClient,
+  invoices: Array<{ id: unknown; total_amount: unknown; paid_amount: unknown; due_date?: unknown }>,
+  todayText: string,
+): Promise<Map<string, string>> {
+  const ids = invoices.map((i) => String(i.id));
+  const carried = await getSettledCarriedInByInvoice(supabase, ids);
+  const out = new Map<string, string>();
+  for (const inv of invoices) {
+    out.set(
+      String(inv.id),
+      resolveInvoiceStatusWithCarry(
+        {
+          total_amount: inv.total_amount as any,
+          paid_amount: inv.paid_amount as any,
+          due_date: (inv.due_date as any) ?? null,
+        },
+        todayText,
+        carried.get(String(inv.id)) ?? 0,
+      ),
+    );
+  }
+  return out;
+}
+
 type InvoiceRowSnapshot = {
   paid_amount: number;
   payment_history: any[];
@@ -712,6 +828,7 @@ export async function syncInvoiceLedger(
   const todayText = new Date().toISOString().slice(0, 10);
   const rows = (data ?? []) as (InvoiceLike & { start_date?: string | null })[];
   const updatedIds: string[] = [];
+  const carryAwareStatus = await resolveStatusesWithCarry(supabase, rows, todayText);
 
   for (const invoice of rows) {
     /** Do not auto-change status while a slip is awaiting admin verification. */
@@ -724,14 +841,18 @@ export async function syncInvoiceLedger(
     // Therefore, we do not update `late_fee_amount` here.
 
     // For status resolution, use the stored total_amount as-is.
-    const nextStatus = resolveInvoiceStatus(
-      {
-        total_amount: invoice.total_amount,
-        paid_amount: invoice.paid_amount,
-        due_date: invoice.due_date ?? null,
-      },
-      todayText,
-    );
+    // Same rule as record_payment_batch (carried-in debt settled on its source counts
+    // as paid), so a sync neither undoes nor misses the status a payment produced.
+    const nextStatus =
+      carryAwareStatus.get(String(invoice.id)) ??
+      resolveInvoiceStatus(
+        {
+          total_amount: invoice.total_amount,
+          paid_amount: invoice.paid_amount,
+          due_date: invoice.due_date ?? null,
+        },
+        todayText,
+      );
 
     const updatePayload: any = {};
     if (nextStatus !== String(invoice.status ?? "")) {
@@ -1870,6 +1991,13 @@ export async function applyInvoicePaymentAllocation(
   // The exact sum of the (rounded) rows, so amount_allocated always equals the
   // allocation rows to the satang, as record_payment_batch requires.
   const amountToAllocate = sumAllocated(chainResults);
+  const carryCtx = await loadCarryInContext(
+    supabase,
+    payableTargets.map((t: any) => String(t.id)),
+  );
+  const chainPaidOverrides = new Map<string, number>(
+    chainResults.map((r) => [r.id, r.nextPaidAmount] as [string, number]),
+  );
 
   for (const invoice of payableTargets) {
     const chainAllocation = chainAllocations.get(String(invoice.id));
@@ -1897,13 +2025,18 @@ export async function applyInvoicePaymentAllocation(
     if (trimmedIdem) {
       paymentEntry.idempotency_key = trimmedIdem;
     }
-    const nextStatus = resolveInvoiceStatus(
+    const nextStatus = resolveInvoiceStatusWithCarry(
       {
         total_amount: invoice.total_amount,
         paid_amount: nextPaidAmount,
         due_date: invoice.due_date,
       },
       paidAt.slice(0, 10),
+      settledCarriedInAmount(
+        carryCtx.linksByTarget.get(String(invoice.id)) ?? [],
+        carryCtx.sources,
+        chainPaidOverrides,
+      ),
     );
 
     // Freeze the late fee right here, at the REAL payment date, the moment
@@ -2174,6 +2307,14 @@ export async function applyManualInvoicePaymentAllocation(
   const resolvedMethod: ResolvedPaymentMethod =
     paymentMethod ?? (await resolvePaymentMethodForTenant(supabase, tenantId));
 
+  const manualCarry = await loadCarryInContext(supabase, invoiceIds);
+  const manualPaidOverrides = new Map<string, number>(
+    cleanAllocations.map((a) => [
+      a.invoiceId,
+      roundMoney(toNumber(byId.get(a.invoiceId)?.paid_amount) + a.amount),
+    ] as [string, number]),
+  );
+
   const { payload, updates, amountToAllocate } = buildManualSplitPayload({
     batchId: paymentBatchId,
     tenantId,
@@ -2189,13 +2330,18 @@ export async function applyManualInvoicePaymentAllocation(
     method: resolvedMethod,
     createdBy,
     statusFor: (invoice: any, nextPaid) =>
-      resolveInvoiceStatus(
+      resolveInvoiceStatusWithCarry(
         {
           total_amount: invoice.total_amount,
           paid_amount: nextPaid,
           due_date: invoice.due_date,
         },
         paidAt.slice(0, 10),
+        settledCarriedInAmount(
+          manualCarry.linksByTarget.get(String(invoice.id)) ?? [],
+          manualCarry.sources,
+          manualPaidOverrides,
+        ),
       ),
     lateFeeFor: (invoice) =>
       calculateLateFeeAmount(invoice as any, paidAt.slice(0, 10)),

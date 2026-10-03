@@ -66,6 +66,13 @@ export type StatementOptions = {
    * waivers. When present they are the charged figure and no estimate is shown.
    */
   postedLateFees?: PostedLateFee[];
+  /**
+   * Carried-in debt (included in this invoice's total) whose SOURCE invoice is
+   * fully settled, so it was paid on that invoice's allocations, not this one's.
+   * Without it a carry-forward target keeps showing the carried amount as owed.
+   * See lib/money/carry-in.ts.
+   */
+  carriedInSettled?: number;
 };
 
 export type PostedLateFee = { amount: number; waived: number; targetInvoiceId: string | null };
@@ -131,6 +138,8 @@ export type TenantStatement = {
   totalMatchesRow: boolean;
   confirmedPaid: number;
   balance: number;
+  /** Carried-in debt already settled on its source invoice (counted in total, not in balance). */
+  carriedInSettled: number;
   payments: StatementPayment[];
   underReview: { active: boolean; slipUrl: string | null; uploadedAt: string | null; note: string } | null;
   lateFee: StatementLateFee;
@@ -285,7 +294,8 @@ export function buildTenantStatement(
   const confirmedPaid = payments
     .filter((p) => p.state === "confirmed")
     .reduce((s, p) => s + p.amountToThisInvoice, 0);
-  const balance = Math.max(0, total - confirmedPaid);
+  const carriedInSettled = Math.max(0, options.carriedInSettled ?? 0);
+  const balance = Math.max(0, Math.round((total - confirmedPaid - carriedInSettled) * 100) / 100);
 
   const isCancelled = status === "cancelled";
   const isPaid = status === "paid" || (balance <= 0 && total > 0 && !isCancelled);
@@ -382,6 +392,7 @@ export function buildTenantStatement(
     totalMatchesRow: invoiceRow.total_amount == null || toNumber(invoiceRow.total_amount) === total,
     confirmedPaid,
     balance,
+    carriedInSettled,
     payments,
     underReview,
     lateFee,

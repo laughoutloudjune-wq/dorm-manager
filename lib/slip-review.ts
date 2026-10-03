@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { resolveInvoiceStatus } from "@/lib/invoice-ledger";
+import { resolveStatusesWithCarry } from "@/lib/invoice-ledger";
 import { recordMoneyEvent } from "@/lib/money-events";
 
 /**
@@ -72,14 +72,21 @@ export async function declinePaymentSlip(
   // far — an invoice with a partial payment returns to `partial`, an unpaid one
   // past its due date returns to `overdue`, not a blanket `pending`.
   const todayText = new Date().toISOString().slice(0, 10);
-  const nextStatus = resolveInvoiceStatus(
-    {
-      total_amount: toNumber((invoice as any).total_amount),
-      paid_amount: toNumber((invoice as any).paid_amount),
-      due_date: (invoice as any).due_date,
-    },
-    todayText,
-  );
+  const nextStatus =
+    (
+      await resolveStatusesWithCarry(
+        supabase,
+        [
+          {
+            id: invoiceId,
+            total_amount: toNumber((invoice as any).total_amount),
+            paid_amount: toNumber((invoice as any).paid_amount),
+            due_date: (invoice as any).due_date,
+          },
+        ],
+        todayText,
+      )
+    ).get(String(invoiceId)) ?? "pending";
 
   const existingRejections = Array.isArray((invoice as any).slip_rejections)
     ? (invoice as any).slip_rejections

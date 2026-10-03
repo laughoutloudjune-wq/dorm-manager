@@ -25,8 +25,9 @@
 --    the tenant's held credit (finding 145), and two concurrent multi-invoice
 --    payments cannot deadlock each other.
 --  * Status is derived here, not trusted (findings 146, 153): every invoice's
---    status must equal money_derive_invoice_status(total, new paid_amount, ...),
---    i.e. 'paid' iff paid_amount >= total_amount, else 'partial' (a payment
+--    status must equal money_derive_invoice_status_cf(total, new paid_amount, ...),
+--    i.e. 'paid' iff paid_amount >= total_amount OR (finding 174) paid_amount > 0 and
+--    paid_amount + settled carried-in >= total_amount, else 'partial' (a payment
 --    always leaves paid_amount > 0). A payload saying 'partial'/'pending' on a
 --    fully paid balance, or 'paid' below the total, is INVALID_PAYLOAD.
 --  * Slip (finding 153, CLAUDE.md): slip_url / slip_uploaded_at may only be
@@ -122,6 +123,7 @@ DECLARE
     v_existing_hash text;
     v_lock_tenant uuid;
     v_derived public.invoice_status;
+    v_overrides JSONB := '{}'::jsonb;
     v_slip text;
 BEGIN
     ------------------------------------------------------------------ shape
@@ -130,6 +132,13 @@ BEGIN
     END IF;
     v_batch := p->'batch';
     v_invoices := COALESCE(p->'invoices', '[]'::jsonb);
+    -- Post-payment paid amounts of every invoice in the payload (finding 174); each is
+    -- re-checked against current + allocations below before it is used.
+    IF jsonb_typeof(v_invoices) = 'array' THEN
+        SELECT COALESCE(jsonb_object_agg(i->>'id', (i->>'paid_amount')::numeric), '{}'::jsonb)
+          INTO v_overrides FROM jsonb_array_elements(v_invoices) i
+         WHERE jsonb_typeof(i->'paid_amount') = 'number' AND jsonb_typeof(i->'id') = 'string';
+    END IF;
     v_allocs := COALESCE(p->'allocations', '[]'::jsonb);
     IF jsonb_typeof(v_invoices) <> 'array' OR jsonb_typeof(v_allocs) <> 'array' THEN
         RAISE EXCEPTION 'INVALID_PAYLOAD invoices and allocations must be arrays';
@@ -319,8 +328,8 @@ BEGIN
         -- must agree with it (a disagreement means the caller computed from a
         -- different rule or a different balance).
         v_status := v_inv->>'status';
-        v_derived := public.money_derive_invoice_status(v_row.total_amount, v_new_paid, v_row.due_date,
-                                                        (v_paid_at AT TIME ZONE 'Asia/Bangkok')::date);
+        v_derived := public.money_derive_invoice_status_cf(v_row.id, v_row.total_amount, v_new_paid, v_row.due_date,
+                                                           (v_paid_at AT TIME ZONE 'Asia/Bangkok')::date, v_overrides);
         IF v_status = 'paid' AND v_derived <> 'paid' THEN
             RAISE EXCEPTION 'INVALID_PAYLOAD invoice % cannot be marked paid with paid_amount % below total %',
                 v_row.id, v_new_paid, COALESCE(v_row.total_amount, 0);
@@ -385,8 +394,8 @@ BEGIN
             v_new_hist := v_row.payment_history;
         END IF;
 
-        v_derived := public.money_derive_invoice_status(v_row.total_amount, (v_inv->>'paid_amount')::numeric,
-                                                        v_row.due_date, (v_paid_at AT TIME ZONE 'Asia/Bangkok')::date);
+        v_derived := public.money_derive_invoice_status_cf(v_row.id, v_row.total_amount, (v_inv->>'paid_amount')::numeric,
+                                                           v_row.due_date, (v_paid_at AT TIME ZONE 'Asia/Bangkok')::date, v_overrides);
         -- Slip: trigger invoice only (validated above); a blank value never clears a stored slip.
         v_slip := NULLIF(btrim(COALESCE(v_inv->>'slip_url', ''), E' \t\r\n'), '');
 

@@ -125,6 +125,8 @@ export type InvoiceLedgerView = {
   waived: number;
   writtenOff: number;
   invoiceBalance: number;
+  /** Carried-in debt already settled on its source invoice (inside billed, not in the balances). */
+  carriedInSettled: number;
   ledgerBalance: number;
   /** invoiceBalance - ledgerBalance; null unless state is "discrepancy". */
   discrepancy: number | null;
@@ -138,6 +140,12 @@ export function buildInvoiceLedgerView(input: {
   batches: LedgerBatchInput[];
   /** total_amount of every invoice that appears in `allocations`, keyed by id. */
   invoiceTotals?: Record<string, number | string | null>;
+  /**
+   * Carried-in debt (inside total_amount) whose SOURCE invoice is fully settled; it was
+   * paid on that invoice's allocations. Reduces both balances equally, so it never
+   * creates or hides a discrepancy (lib/money/carry-in.ts).
+   */
+  carriedInSettled?: number;
 }): InvoiceLedgerView {
   const { invoice, allocations, batches } = input;
   const totals = new Map<string, number>(
@@ -238,9 +246,10 @@ export function buildInvoiceLedgerView(input: {
 
   const total = num(invoice.total_amount);
   const paid = num(invoice.paid_amount);
-  const invoiceBalance = round2(total - paid);
-  const ledgerBalance = round2(total - signedHere);
-  const diff = round2(invoiceBalance - ledgerBalance);
+  const carriedIn = Math.max(0, num(input.carriedInSettled));
+  const invoiceBalance = Math.max(0, round2(total - paid - carriedIn));
+  const ledgerBalance = Math.max(0, round2(total - signedHere - carriedIn));
+  const diff = round2(signedHere - paid);
 
   let state: BalanceState = "consistent";
   if (!anyHere && paid > 0) state = "legacy_no_allocations";
@@ -254,6 +263,7 @@ export function buildInvoiceLedgerView(input: {
     writtenOff: round2(sums.written_off),
     invoiceBalance,
     ledgerBalance,
+    carriedInSettled: carriedIn,
     discrepancy: state === "discrepancy" ? diff : null,
     state,
     receipts,

@@ -207,3 +207,12 @@ PASS  A2 automation posts under an auto_post policy and is logged as automation:
 ```
 Summary: 32 PASS, 0 FAIL. Not exercisable single-session: two concurrent posts racing on the same key (the target-row
 lock and the unique key are the arbiters; needs two connections).
+
+## Carry-forward status pass (dorm-test, rghxelkifdrpvabyxopb only)
+Run after the carry-forward paid-rule edits (`money_derive_invoice_status_cf`, TS `lib/money/carry-in.ts`).
+- 01_record_payment_batch.sql: complete script, 40 PASS / 0 FAIL (incl. R23a own-share payment accepted as paid, R23b 'partial' rejected, R23c paid rejected while the source is open).
+- 02_void_payment_batch.sql: NOT the full script. Re-run only V1, V5a-c, V12a-b, V13, V14, V15 (all PASS) plus probe V16. V2-V4, V6-V11 were not re-run in this pass (code unchanged by it).
+- 04_final_settle_move_out.sql: complete script, 21 PASS / 0 FAIL.
+- 03, 05, 06: NOT re-run in this pass.
+- PROBE V16: April paid by a separate later batch leaves May 'partial' until the TS sync runs; voiding that April batch reopens April (0/pending) and leaves May 'partial'. See findings 178.
+All test data was rolled back (each script ends with RAISE EXCEPTION).

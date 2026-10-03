@@ -98,6 +98,9 @@ BEGIN
   v_out := v_out || E'\n' || CASE WHEN v_msg = 'cols=3350.00/150.00/350.00 line=1 charge=1 event=1 engine=true' AND (v_res->>'replayed')::boolean = false
     THEN 'PASS  L1 post: distinct linked late_fee_line, columns +150, charge row, audit event ('||v_msg||')'
     ELSE 'FAIL  L1 '||v_msg||' res='||v_res::text END;
+  SELECT count(*) INTO v_n FROM invoices WHERE id = v_src AND late_fee_billed_at IS NOT NULL;
+  v_out := v_out || E'\n' || CASE WHEN v_n = 1 THEN 'PASS  L1b (finding 143) posting sets late_fee_billed_at on the SOURCE invoice'
+    ELSE 'FAIL  L1b source late_fee_billed_at not set' END;
 
   ---------------------------------------------------------------- L2 duplicate replays (stale screen values are irrelevant to a replay)
   v_res2 := post_late_fee_charge(jsonb_build_object('charge', pg_temp.charge(v_src, v_tgt, '2026-09-06', '2026-09-08', 150, v_ver, 'admin-1'),

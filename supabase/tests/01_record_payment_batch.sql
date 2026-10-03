@@ -246,6 +246,49 @@ BEGIN
   v_out := v_out || E'\n' || CASE WHEN v_n = v_num AND v_n > 0 THEN 'PASS  R21 every recorded batch has one payment.record event with before/after invoices and allocations ('||v_n||')'
     ELSE 'FAIL  R21 events='||v_n||' batches='||v_num END;
 
+  ---------------------------------------------------------------- R23 carry-forward target paid rule (finding 174)
+  -- April owes 1,400; May total 7,594 includes it. Payment 7,594 -> April 1,400 + May 6,194; May counts as paid.
+  DECLARE v_apr uuid; v_may uuid; v_bid2 uuid; v_apr2 uuid; v_may2 uuid;
+  BEGIN
+    INSERT INTO invoices(tenant_id, room_id, issue_date, due_date, start_date, end_date, total_amount, status)
+      VALUES (v_ta, v_room, current_date, v_due, current_date, current_date, 1400, 'pending') RETURNING id INTO v_apr;
+    INSERT INTO invoices(tenant_id, room_id, issue_date, due_date, start_date, end_date, total_amount, status)
+      VALUES (v_ta, v_room, current_date, v_due, current_date, current_date, 7594, 'pending') RETURNING id INTO v_may;
+    INSERT INTO invoice_carry_forwards(source_invoice_id, target_invoice_id, amount) VALUES (v_apr, v_may, 1400);
+    -- b: status 'partial' for May is rejected (it is paid under the single rule), nothing written
+    v_out := v_out || E'\n' || pg_temp.expect_rpb_err('R23b target reported partial although source settled in same batch', jsonb_build_object(
+      'batch', jsonb_build_object('id', gen_random_uuid(), 'tenant_id', v_ta, 'trigger_invoice_id', v_may, 'amount_received', 7594,
+                'amount_allocated', 7594, 'paid_at', now(), 'mode','manual','source','cash','idempotency_key','r23b','created_by','tester'),
+      'invoices', jsonb_build_array(
+        jsonb_build_object('id', v_apr, 'expected_paid_amount', 0, 'expected_history_length', 0, 'paid_amount', 1400, 'status','paid'),
+        jsonb_build_object('id', v_may, 'expected_paid_amount', 0, 'expected_history_length', 0, 'paid_amount', 6194, 'status','partial')),
+      'allocations', jsonb_build_array(
+        jsonb_build_object('invoice_id', v_apr, 'amount', 1400, 'source','cash'),
+        jsonb_build_object('invoice_id', v_may, 'amount', 6194, 'source','cash'))), 'INVALID_PAYLOAD');
+    -- c: source NOT settled -> May cannot be paid
+    INSERT INTO invoices(tenant_id, room_id, issue_date, due_date, start_date, end_date, total_amount, status)
+      VALUES (v_ta, v_room, current_date, v_due, current_date, current_date, 1400, 'pending') RETURNING id INTO v_apr2;
+    INSERT INTO invoices(tenant_id, room_id, issue_date, due_date, start_date, end_date, total_amount, status)
+      VALUES (v_ta, v_room, current_date, v_due, current_date, current_date, 7594, 'pending') RETURNING id INTO v_may2;
+    INSERT INTO invoice_carry_forwards(source_invoice_id, target_invoice_id, amount) VALUES (v_apr2, v_may2, 1400);
+    v_out := v_out || E'\n' || pg_temp.expect_rpb_err('R23c target cannot be paid while its carried source is still open',
+      pg_temp.pl(v_ta, v_may2, 6194, 6194, 0, 0, 6194, 'paid', 'r23c'), 'INVALID_PAYLOAD');
+    -- a: accepted as paid
+    v_bid2 := gen_random_uuid();
+    PERFORM record_payment_batch(jsonb_build_object(
+      'batch', jsonb_build_object('id', v_bid2, 'tenant_id', v_ta, 'trigger_invoice_id', v_may, 'amount_received', 7594,
+                'amount_allocated', 7594, 'paid_at', now(), 'mode','manual','source','cash','idempotency_key','r23a','created_by','tester'),
+      'invoices', jsonb_build_array(
+        jsonb_build_object('id', v_may, 'expected_paid_amount', 0, 'expected_history_length', 0, 'paid_amount', 6194, 'status','paid'),
+        jsonb_build_object('id', v_apr, 'expected_paid_amount', 0, 'expected_history_length', 0, 'paid_amount', 1400, 'status','paid')),
+      'allocations', jsonb_build_array(
+        jsonb_build_object('invoice_id', v_apr, 'amount', 1400, 'source','cash'),
+        jsonb_build_object('invoice_id', v_may, 'amount', 6194, 'source','cash'))));
+    SELECT string_agg(paid_amount::numeric(12,2)||'/'||status, ' ' ORDER BY total_amount) INTO v_st FROM invoices WHERE id IN (v_apr, v_may);
+    v_out := v_out || E'\n' || CASE WHEN v_st = '1400.00/paid 6194.00/paid'
+      THEN 'PASS  R23a own-share payment: April 1,400 and May 6,194 both accepted as paid ('||v_st||')' ELSE 'FAIL  R23a '||v_st END;
+  END;
+
   ---------------------------------------------------------------- R22 grants
   SELECT string_agg(r, ',') INTO v_st FROM unnest(ARRAY['anon','authenticated']) r
    WHERE has_function_privilege(r, 'public.record_payment_batch(jsonb)', 'EXECUTE');

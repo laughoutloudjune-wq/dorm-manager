@@ -302,6 +302,9 @@ BEGIN
         additional_fees_breakdown = v_breakdown
     WHERE id = v_row.id;
 
+    -- The source's late fee is now billed on the target: mark it so no sweep bills it again.
+    UPDATE public.invoices SET late_fee_billed_at = COALESCE(late_fee_billed_at, now()) WHERE id = v_source;
+
     INSERT INTO public.money_events (action, actor_user_id, tenant_id, invoice_id, room_id, before, after, reason, source)
     VALUES ('late_fee.post', v_by, v_row.tenant_id, v_target, v_row.room_id,
             jsonb_build_object('total_amount', v_row.total_amount, 'late_fee_amount', v_row.late_fee_amount,

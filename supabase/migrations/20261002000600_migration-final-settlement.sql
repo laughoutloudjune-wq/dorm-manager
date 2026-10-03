@@ -469,9 +469,9 @@ BEGIN
                 RAISE EXCEPTION 'OVERPAY: credit % would exceed invoice % total', v_amt, v_row.id;
             END IF;
             -- One status rule (finding 146): paid iff paid_amount >= total_amount.
-            -- A carry-forward target whose own charges are now cleared but whose
-            -- carried-in portion was paid on its source stays 'partial'.
-            v_new_status := public.money_derive_invoice_status(v_row.total_amount, v_new_paid, v_row.due_date, v_today);
+            -- A carry-forward target whose own charges are cleared and whose
+            -- carried-in portion is settled on its source counts as paid (finding 174).
+            v_new_status := public.money_derive_invoice_status_cf(v_row.id, v_row.total_amount, v_new_paid, v_row.due_date, v_today);
 
             INSERT INTO public.invoice_payment_allocations (
                 payment_batch_id, trigger_invoice_id, invoice_id, amount, paid_at, slip_url,

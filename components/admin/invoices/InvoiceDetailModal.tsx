@@ -363,6 +363,7 @@ const loadChains = async () => {
             allocations,
             batches: result.batches ?? [],
             invoiceTotals: result.invoiceTotals ?? {},
+            carriedInSettled: result.carriedInSettled ?? 0,
           }),
         );
       } catch {

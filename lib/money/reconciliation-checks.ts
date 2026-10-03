@@ -1,3 +1,4 @@
+import { isPaidWithCarriedIn, settledCarriedInAmount, type CarryInLink } from "@/lib/money/carry-in";
 /**
  * Money reconciliation checks - pure functions over plain row arrays.
  *
@@ -288,15 +289,34 @@ export function runReconciliation(input: ReconciliationInput): ReconciliationFin
   }
 
   // (5) status vs balance
+  // A carry-forward target counts as paid when its own paid amount plus the carried-in
+  // amount whose SOURCE invoice is fully settled covers the total (same rule as
+  // record_payment_batch / money_derive_invoice_status_cf; see lib/money/carry-in.ts).
+  const carryLinksByTarget = new Map<string, CarryInLink[]>();
+  for (const c of carryForwards) {
+    const list = carryLinksByTarget.get(c.target_invoice_id) ?? [];
+    list.push({ source_invoice_id: c.source_invoice_id, amount: Number(c.amount ?? c.carried_amount ?? 0) });
+    carryLinksByTarget.set(c.target_invoice_id, list);
+  }
+  const carrySources = new Map(
+    invoices.map((i) => [i.id, { id: i.id, total_amount: i.total_amount, paid_amount: i.paid_amount, status: i.status }]),
+  );
   for (const inv of invoices) {
     const status = String(inv.status ?? "").toLowerCase();
     const total = toSatang(inv.total_amount);
     const paid = toSatang(inv.paid_amount);
+    const carriedIn = settledCarriedInAmount(carryLinksByTarget.get(inv.id) ?? [], carrySources);
+    const paidByCarry = paid < total && isPaidWithCarriedIn(inv.total_amount, inv.paid_amount, carriedIn);
     let problem: { sev: Severity; text: string } | null = null;
-    if (status === "paid" && paid < total) {
+    if (status === "paid" && paid < total && !paidByCarry) {
       problem = { sev: "high", text: `Status is paid but only ${fmt(paid)} of ${fmt(total)} is recorded as paid.` };
     } else if (status === "partial" && paid <= 0) {
       problem = { sev: "medium", text: `Status is partial but nothing (${fmt(paid)}) has been paid.` };
+    } else if (paidByCarry && ["pending", "overdue", "partial"].includes(status)) {
+      problem = {
+        sev: "medium",
+        text: `Status is ${status} but paid ${fmt(paid)} plus ${fmt(toSatang(carriedIn))} carried in from settled invoices already covers the total ${fmt(total)}.`,
+      };
     } else if ((status === "pending" || status === "overdue") && total > 0 && paid >= total) {
       problem = { sev: "medium", text: `Status is ${status} but paid ${fmt(paid)} already covers the total ${fmt(total)}.` };
     }

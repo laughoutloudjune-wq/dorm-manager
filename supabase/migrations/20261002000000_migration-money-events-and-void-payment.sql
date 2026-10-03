@@ -15,7 +15,10 @@
 -- 4. money_derive_invoice_status(): THE one rule for an invoice's status after
 --    money moves, shared by record_payment_batch, void_payment_batch and
 --    final_settle_move_out (finding 146):
---      paid    iff paid_amount >= total_amount
+--      paid    iff paid_amount >= total_amount, OR (carry-forward target, finding 174)
+--              paid_amount > 0 and paid_amount + settled carried-in >= total_amount
+--              (money_derive_invoice_status_cf; carried-in = invoice_carry_forwards
+--              amounts whose source invoice is fully settled)
 --      partial iff 0 < paid_amount < total_amount
 --      overdue iff nothing paid and due_date < today (Asia/Bangkok)
 --      pending otherwise
@@ -30,6 +33,7 @@
 --
 -- ROLLBACK (only before any money has been recorded through the new code):
 --   DROP FUNCTION IF EXISTS public.void_payment_batch(uuid, text, text);
+--   DROP FUNCTION IF EXISTS public.money_derive_invoice_status_cf(UUID, NUMERIC, NUMERIC, DATE, DATE, JSONB);
 --   DROP FUNCTION IF EXISTS public.money_derive_invoice_status(numeric, numeric, date, date);
 --   ALTER TABLE public.payment_batches DROP CONSTRAINT IF EXISTS payment_batches_void_reason_check;
 --   DROP INDEX IF EXISTS public.uq_allocation_single_reversal;
@@ -127,6 +131,48 @@ COMMENT ON FUNCTION public.money_derive_invoice_status(NUMERIC, NUMERIC, DATE, D
 REVOKE ALL ON FUNCTION public.money_derive_invoice_status(NUMERIC, NUMERIC, DATE, DATE) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.money_derive_invoice_status(NUMERIC, NUMERIC, DATE, DATE) TO service_role;
 
+-- money_derive_invoice_status_cf(): the SAME rule plus carried-in debt (finding 174).
+-- A carry-forward target (May total 7,594 includes April's 1,400) counts as paid
+-- when its OWN paid_amount > 0 and paid_amount + the amounts carried into it from
+-- SOURCE invoices that are fully settled (paid_amount >= total_amount, total > 0,
+-- not cancelled; per invoice_carry_forwards) >= total_amount. p_overrides is a jsonb
+-- object {invoice_id: paid_amount} giving source paid amounts as they will be after
+-- the statement in flight (so order of updates inside a batch does not matter).
+-- Everything else falls through to money_derive_invoice_status.
+CREATE OR REPLACE FUNCTION public.money_derive_invoice_status_cf(
+    p_invoice_id UUID, p_total NUMERIC, p_paid NUMERIC, p_due DATE, p_today DATE,
+    p_overrides JSONB DEFAULT '{}'::jsonb
+) RETURNS public.invoice_status
+LANGUAGE plpgsql
+STABLE
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    v_carried NUMERIC;
+BEGIN
+    IF COALESCE(p_paid, 0) > 0 AND COALESCE(p_paid, 0) < COALESCE(p_total, 0) THEN
+        SELECT COALESCE(SUM(cf.amount), 0) INTO v_carried
+        FROM public.invoice_carry_forwards cf
+        JOIN public.invoices s ON s.id = cf.source_invoice_id
+        WHERE cf.target_invoice_id = p_invoice_id
+          AND s.status::text <> 'cancelled'
+          AND COALESCE(s.total_amount, 0) > 0
+          AND COALESCE(CASE WHEN p_overrides ? s.id::text THEN (p_overrides->>s.id::text)::numeric END,
+                           s.paid_amount, 0) >= s.total_amount;
+        IF COALESCE(p_paid, 0) + v_carried >= COALESCE(p_total, 0) THEN
+            RETURN 'paid'::public.invoice_status;
+        END IF;
+    END IF;
+    RETURN public.money_derive_invoice_status(p_total, p_paid, p_due, p_today);
+END;
+$$;
+
+COMMENT ON FUNCTION public.money_derive_invoice_status_cf(UUID, NUMERIC, NUMERIC, DATE, DATE, JSONB) IS
+    'money_derive_invoice_status plus carried-in: paid when own paid > 0 and paid + settled carried-in >= total (finding 174). Mirrors resolveInvoiceStatusWithCarry (lib/invoice-ledger.ts).';
+
+REVOKE ALL ON FUNCTION public.money_derive_invoice_status_cf(UUID, NUMERIC, NUMERIC, DATE, DATE, JSONB) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.money_derive_invoice_status_cf(UUID, NUMERIC, NUMERIC, DATE, DATE, JSONB) TO service_role;
+
 -- void_payment_batch()
 --
 -- Runtime requirement: 20261002000200 (tenant_credits, incl. reverses_credit_id)
@@ -195,6 +241,7 @@ DECLARE
     v_payouts NUMERIC;
     v_credit_tenant UUID;
     v_lock_tenant UUID;
+    v_overrides JSONB := '{}'::jsonb;
 BEGIN
     IF p_reason IS NULL OR p_reason !~ '[^[:space:]]' THEN
         RAISE EXCEPTION 'A reason is required to void a payment';
@@ -248,6 +295,14 @@ BEGIN
                 v_rec.invoice_id, COALESCE(v_inv.paid_amount, 0), v_rec.amount;
         END IF;
     END LOOP;
+
+    -- New paid amounts of every touched invoice, so carried-in status checks see the post-void state.
+    SELECT COALESCE(jsonb_object_agg(i.id::text, COALESCE(i.paid_amount, 0) - x.amount), '{}'::jsonb)
+      INTO v_overrides
+    FROM (SELECT invoice_id, SUM(amount) AS amount FROM public.invoice_payment_allocations
+          WHERE payment_batch_id = p_batch_id AND reverses_allocation_id IS NULL AND amount > 0
+          GROUP BY invoice_id) x
+    JOIN public.invoices i ON i.id = x.invoice_id;
 
     SELECT COALESCE(SUM(c.amount), 0), MIN(c.tenant_id::text)::uuid INTO v_credit_total, v_credit_tenant
     FROM public.tenant_credits c
@@ -308,7 +363,7 @@ BEGIN
     LOOP
         SELECT * INTO v_inv FROM public.invoices WHERE id = v_rec.invoice_id;
         v_new_paid := COALESCE(v_inv.paid_amount, 0) - v_rec.amount;
-        v_derived := public.money_derive_invoice_status(v_inv.total_amount, v_new_paid, v_inv.due_date, v_today);
+        v_derived := public.money_derive_invoice_status_cf(v_inv.id, v_inv.total_amount, v_new_paid, v_inv.due_date, v_today, v_overrides);
         v_awaiting := v_inv.status = 'verifying'
             AND COALESCE(btrim(v_inv.slip_url), '') <> ''
             AND (v_batch.slip_url IS NULL OR v_inv.slip_url <> v_batch.slip_url);

@@ -3,6 +3,7 @@ import { createAdminClient } from "@/lib/supabase-admin";
 import { verifyLineAccessToken } from "@/lib/line-admin-auth";
 import { isLateFeeBreakdownRow } from "@/lib/invoice-utils";
 import { buildTenantStatement } from "@/lib/money/tenant-statement";
+import { getSettledCarriedInByInvoice } from "@/lib/invoice-ledger";
 import { loadPostedLateFeesBySource } from "@/lib/money/late-fee-posting";
 
 export async function POST(req: Request) {
@@ -129,11 +130,15 @@ export async function POST(req: Request) {
         }
       }
       const postedBySource = await loadPostedLateFeesBySource(supabase, [String((invoice as any).id)]);
+      const carriedIn = await getSettledCarriedInByInvoice(supabase, [String((invoice as any).id)]);
       statement = buildTenantStatement(
         invoice as any,
         allocations,
         Array.isArray((invoice as any).payment_history) ? (invoice as any).payment_history : [],
-        { postedLateFees: postedBySource.get(String((invoice as any).id)) }
+        {
+          postedLateFees: postedBySource.get(String((invoice as any).id)),
+          carriedInSettled: carriedIn.get(String((invoice as any).id)) ?? 0,
+        }
       );
     } catch {
       statement = null;

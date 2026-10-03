@@ -218,6 +218,85 @@ BEGIN
   SELECT count(*) INTO v_n FROM money_events WHERE payment_batch_id = v_b1 AND action='payment.void' AND (after->>'status_kept')::boolean;
   v_out := v_out || E'\n' || CASE WHEN v_st='0.00/cancelled' AND v_n = 1 THEN 'PASS  V10 cancelled invoice stays cancelled after void, flagged status_kept in the event ('||v_st||')' ELSE 'FAIL  V10 got '||v_st||' kept_events='||v_n END;
 
+  ---------------------------------------------------------------- V12 settlement / credit receipts are not voidable (finding 141)
+  v_c := pg_temp.ni(v_ta, v_room, 500, v_due);
+  v_b1 := pg_temp.rp(v_ta, v_c, 500, 500, 500, 'paid', 0, 'v12a');
+  INSERT INTO tenant_credits(tenant_id, kind, bucket, amount, invoice_id, payment_batch_id, reason)
+    VALUES (v_ta, 'applied_to_invoice', 'deposit', -50, v_c, v_b1, 'settlement credit');
+  BEGIN
+    PERFORM void_payment_batch(v_b1, 'oops', 'tester');
+    v_out := v_out || E'\n' || 'FAIL  V12a batch with applied_to_invoice credit rows was voided';
+  EXCEPTION WHEN OTHERS THEN
+    SELECT count(*) INTO v_n FROM invoice_payment_allocations WHERE payment_batch_id = v_b1;
+    v_out := v_out || E'\n' || CASE WHEN SQLERRM LIKE 'VOID_NOT_ALLOWED%' AND v_n = 1
+      THEN 'PASS  V12a void refused for a batch that applied held credit ('||left(SQLERRM,60)||'...)' ELSE 'FAIL  V12a '||SQLERRM||' allocs='||v_n END;
+  END;
+  v_c := pg_temp.ni(v_ta, v_room, 500, v_due);
+  v_b1 := gen_random_uuid();
+  INSERT INTO payment_batches(id, tenant_id, trigger_invoice_id, amount_received, amount_allocated, paid_at, mode, source, idempotency_key)
+    VALUES (v_b1, v_ta, v_c, 500, 500, now(), 'credit', 'credit', 'settle:v12b');
+  INSERT INTO invoice_payment_allocations(payment_batch_id, trigger_invoice_id, invoice_id, amount, paid_at, source)
+    VALUES (v_b1, v_c, v_c, 500, now(), 'credit');
+  UPDATE invoices SET paid_amount = 500, status = 'paid' WHERE id = v_c;
+  BEGIN
+    PERFORM void_payment_batch(v_b1, 'oops', 'tester');
+    v_out := v_out || E'\n' || 'FAIL  V12b settle:/credit batch was voided';
+  EXCEPTION WHEN OTHERS THEN
+    SELECT paid_amount::numeric(12,2)||'/'||status INTO v_st FROM invoices WHERE id = v_c;
+    v_out := v_out || E'\n' || CASE WHEN SQLERRM LIKE 'VOID_NOT_ALLOWED%' AND v_st = '500.00/paid'
+      THEN 'PASS  V12b void refused for mode credit / settle: key, invoice untouched' ELSE 'FAIL  V12b '||SQLERRM||' '||v_st END;
+  END;
+
+  ---------------------------------------------------------------- V13 leaving paid clears the late-fee freeze (finding 147)
+  v_c := pg_temp.ni(v_ta, v_room, 500, v_due);
+  v_b1 := pg_temp.rp(v_ta, v_c, 500, 500, 500, 'paid', 0, 'v13');
+  UPDATE invoices SET locked_late_fee_amount = 75 WHERE id = v_c;
+  PERFORM void_payment_batch(v_b1, 'wrong amount', 'tester');
+  SELECT status||'/'||COALESCE(locked_late_fee_amount::text,'NULL') INTO v_st FROM invoices WHERE id = v_c;
+  v_out := v_out || E'\n' || CASE WHEN v_st = 'pending/NULL' THEN 'PASS  V13 void of a paid invoice clears locked_late_fee_amount ('||v_st||')' ELSE 'FAIL  V13 '||v_st END;
+
+  ---------------------------------------------------------------- V14 live refund payout blocks void of the overpayment (finding 142)
+  DECLARE v_tr uuid; v_ci uuid;
+  BEGIN
+    INSERT INTO tenants(full_name, move_in_date, room_id) VALUES ('Void Refund Test', current_date, v_room) RETURNING id INTO v_tr;
+    v_ci := pg_temp.ni(v_tr, v_room, 700, v_due);
+    v_b1 := pg_temp.rp(v_tr, v_ci, 1000, 700, 700, 'paid', 0, 'v14');
+    INSERT INTO refund_payouts(tenant_id, amount, paid_at, idempotency_key) VALUES (v_tr, 300, now(), 'v14-payout-'||gen_random_uuid());
+    BEGIN
+      PERFORM void_payment_batch(v_b1, 'bounced', 'tester');
+      v_out := v_out || E'\n' || 'FAIL  V14 void accepted although its overpayment was already refunded';
+    EXCEPTION WHEN OTHERS THEN
+      SELECT paid_amount INTO v_num FROM invoices WHERE id = v_ci;
+      v_out := v_out || E'\n' || CASE WHEN SQLERRM LIKE 'VOID_CREDIT_ALREADY_USED%' AND SQLERRM LIKE '%refunded%' AND v_num = 700
+        THEN 'PASS  V14 void refused: credit already paid out as refund ('||left(SQLERRM,80)||'...)' ELSE 'FAIL  V14 '||SQLERRM||' paid='||v_num END;
+    END;
+    UPDATE refund_payouts SET voided_at = now(), voided_by = 'tester', void_reason = 'test' WHERE tenant_id = v_tr;
+    PERFORM void_payment_batch(v_b1, 'bounced', 'tester');
+    SELECT paid_amount::numeric(12,2)||'/'||status INTO v_st FROM invoices WHERE id = v_ci;
+    v_out := v_out || E'\n' || CASE WHEN v_st = '0.00/pending' THEN 'PASS  V14b void allowed once the payout is voided ('||v_st||')' ELSE 'FAIL  V14b '||v_st END;
+  END;
+
+  ---------------------------------------------------------------- V15 void of an own-share payment reopens April and May (finding 174)
+  DECLARE v_apr uuid; v_may uuid; v_bid uuid;
+  BEGIN
+    v_apr := pg_temp.ni(v_ta, v_room, 1400, v_due);
+    v_may := pg_temp.ni(v_ta, v_room, 7594, v_due);
+    INSERT INTO invoice_carry_forwards(source_invoice_id, target_invoice_id, amount) VALUES (v_apr, v_may, 1400);
+    v_bid := gen_random_uuid();
+    PERFORM record_payment_batch(jsonb_build_object(
+      'batch', jsonb_build_object('id', v_bid, 'tenant_id', v_ta, 'trigger_invoice_id', v_may, 'amount_received', 7594,
+                'amount_allocated', 7594, 'paid_at', now(), 'mode','manual','source','cash','idempotency_key','v15','created_by','tester'),
+      'invoices', jsonb_build_array(
+        jsonb_build_object('id', v_may, 'expected_paid_amount', 0, 'expected_history_length', 0, 'paid_amount', 6194, 'status','paid'),
+        jsonb_build_object('id', v_apr, 'expected_paid_amount', 0, 'expected_history_length', 0, 'paid_amount', 1400, 'status','paid')),
+      'allocations', jsonb_build_array(
+        jsonb_build_object('invoice_id', v_apr, 'amount', 1400, 'source','cash'),
+        jsonb_build_object('invoice_id', v_may, 'amount', 6194, 'source','cash'))));
+    PERFORM void_payment_batch(v_bid, 'wrong slip', 'tester');
+    SELECT string_agg(paid_amount::numeric(12,2)||'/'||status, ' ' ORDER BY total_amount) INTO v_st FROM invoices WHERE id IN (v_apr, v_may);
+    v_out := v_out || E'\n' || CASE WHEN v_st = '0.00/pending 0.00/pending' THEN 'PASS  V15 void of an own-share payment reopens both invoices ('||v_st||')' ELSE 'FAIL  V15 '||v_st END;
+  END;
+
   ---------------------------------------------------------------- V11 grants
   SELECT string_agg(r, ',') INTO v_st FROM unnest(ARRAY['anon','authenticated']) r
    WHERE has_function_privilege(r, 'public.void_payment_batch(uuid,text,text)', 'EXECUTE');
