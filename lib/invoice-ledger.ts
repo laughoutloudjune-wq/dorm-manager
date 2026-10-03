@@ -810,8 +810,42 @@ export async function getCarryForwardCandidatesForTarget(
     };
   });
 
-  return candidates.filter(
+  // Late-fee approval mode (a late_fee_policies row exists): a source whose fee
+  // has already gone through the approval flow (any late_fee_charges row) must
+  // not ALSO be offered as a legacy late-fee candidate, or the manual
+  // recalculate / carry-forward checkbox adds a second fee line for the same
+  // lateness. If the charges cannot be read, offer no late fee at all rather
+  // than risk billing one twice; the principal is still offered.
+  const { mode } = await resolveLateFeeMode(supabase);
+  let chargedSourceIds: Set<string> | "all" = new Set();
+  if (mode === "approval") {
+    const { data: chargeRows, error: chargeError } = await supabase
+      .from("late_fee_charges")
+      .select("source_invoice_id")
+      .in("source_invoice_id", candidateIds);
+    chargedSourceIds = chargeError
+      ? "all"
+      : new Set((chargeRows ?? []).map((c: any) => String(c.source_invoice_id)));
+  }
+
+  return excludeAlreadyChargedLateFees(candidates, chargedSourceIds).filter(
     (row: any) => row.outstanding_amount > 0 || row.late_fee_snapshot_amount > 0,
+  );
+}
+
+/**
+ * Zero the late-fee snapshot of every candidate whose source already has a
+ * `late_fee_charges` row (approval mode), so the legacy candidate path cannot
+ * bill a second fee for it. `"all"` zeroes every candidate's late fee.
+ * Principal (`outstanding_amount`) is untouched.
+ */
+export function excludeAlreadyChargedLateFees<
+  T extends { id: string; late_fee_snapshot_amount: number; late_fee_snapshot_days?: number },
+>(candidates: T[], chargedSourceIds: Set<string> | "all"): T[] {
+  return candidates.map((row) =>
+    chargedSourceIds === "all" || chargedSourceIds.has(String(row.id))
+      ? { ...row, late_fee_snapshot_amount: 0, late_fee_snapshot_days: 0 }
+      : row,
   );
 }
 

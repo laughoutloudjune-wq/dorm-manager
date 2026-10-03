@@ -1875,8 +1875,22 @@ export function useInvoicesState() {
       );
       setEditableCarryForwardItems([...nextCarryItems, ...preservedCarryItems]);
 
+      // An approved late-fee line (it carries late_fee_charge_id in the stored
+      // breakdown) is never recalculated away: in approval mode its source
+      // offers no late-fee candidate, and save_details would restore it anyway.
+      const approvedLateFeeSources = new Set(
+        (Array.isArray(activeInvoice?.additional_fees_breakdown)
+          ? (activeInvoice!.additional_fees_breakdown as any[])
+          : []
+        )
+          .filter((row: any) => row?.late_fee_charge_id && row?.source_invoice_id)
+          .map((row: any) => String(row.source_invoice_id)),
+      );
       const preservedLateFeeItems = late.filter(
-        (item) => !item.source_invoice_id || !candidateIds.has(item.source_invoice_id),
+        (item) =>
+          !item.source_invoice_id ||
+          !candidateIds.has(item.source_invoice_id) ||
+          approvedLateFeeSources.has(item.source_invoice_id),
       );
       setEditableLateFeeItems([...nextLateFeeItems, ...preservedLateFeeItems]);
 

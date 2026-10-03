@@ -3,6 +3,7 @@ import {
   allocatePaymentAcrossChain,
   calculateLateFeeAmount,
   computeLateFeeSnapshot,
+  excludeAlreadyChargedLateFees,
   getInvoiceOutstanding,
   getInvoiceOwnOutstanding,
   planAbandonCredit,
@@ -12,6 +13,26 @@ import {
   sumAllocated,
   sumOwnOutstanding,
 } from "./invoice-ledger";
+
+describe("excludeAlreadyChargedLateFees (finding 159)", () => {
+  const cands = [
+    { id: "apr", outstanding_amount: 1400, late_fee_snapshot_amount: 300, late_fee_snapshot_days: 6 },
+    { id: "may", outstanding_amount: 0, late_fee_snapshot_amount: 150, late_fee_snapshot_days: 3 },
+  ];
+  it("drops the late fee of a source that already has a late_fee_charges row, keeps principal", () => {
+    const out = excludeAlreadyChargedLateFees(cands, new Set(["apr"]));
+    expect(out[0]).toMatchObject({ id: "apr", outstanding_amount: 1400, late_fee_snapshot_amount: 0 });
+    expect(out[1]).toMatchObject({ id: "may", late_fee_snapshot_amount: 150 });
+  });
+  it("drops every late fee when charges could not be read", () => {
+    const out = excludeAlreadyChargedLateFees(cands, "all");
+    expect(out.map((c) => c.late_fee_snapshot_amount)).toEqual([0, 0]);
+    expect(out[0].outstanding_amount).toBe(1400);
+  });
+  it("is a no-op in legacy mode (empty set)", () => {
+    expect(excludeAlreadyChargedLateFees(cands, new Set())).toEqual(cands);
+  });
+});
 
 describe("getInvoiceOutstanding", () => {
   it("returns zero when paid meets total", () => {
