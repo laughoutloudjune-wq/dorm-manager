@@ -12,7 +12,13 @@ import { isLateFeeBreakdownRow, isInvoiceDetailEditable, buildRuleBreakdown } fr
 import { chargesFromInvoiceRow, computeInvoiceTotal } from "@/lib/invoice-total";
 import { recordMoneyEvent, recordMoneyEvents, type MoneyEventInput } from "@/lib/money-events";
 import { clearSlipUrlsFromHistory } from "@/lib/money/clear-slip-history";
-import { guardSaveDetailsPayload } from "@/lib/money/save-details-guard";
+import {
+  guardSaveDetailsPayload,
+  isSaveDetailsLockedStatus,
+  recomputeSaveDetailsPayload,
+  SAVE_DETAILS_LOCKED_MESSAGE,
+  type SaveDetailsBeforeRow,
+} from "@/lib/money/save-details-guard";
 import { INVOICE_MONEY_COLUMNS, diffMoneyColumns, invoicesBlockedFromDelete } from "@/lib/money/money-diff";
 import { toLocalDateString, toNumber } from "@/lib/format";
 import { generateInvoicesForPeriod } from "@/lib/invoice-generation";
@@ -133,24 +139,58 @@ export async function POST(req: Request) {
           { status: 400 },
         );
       }
-      const payload = guarded.payload;
       const strippedFields = guarded.stripped;
       let wasPaidBeforeSave = false;
-      if ("status" in payload) {
+      if ("status" in guarded.payload) {
         const authStatus = await requireAdminPermission(req, "invoice.status.update");
         if ("error" in authStatus) return authStatus.error;
-        if (!["paid", "verifying", "cancelled"].includes(String(payload.status))) {
-          payload.locked_late_fee_amount = null;
+        if (!["paid", "verifying", "cancelled"].includes(String(guarded.payload.status))) {
+          guarded.payload.locked_late_fee_amount = null;
         }
       }
-      const { data: beforeMoneyRow } = await authEdit.supabase
+      const { data: beforeMoneyRow, error: beforeError } = await authEdit.supabase
         .from("invoices")
-        .select(`tenant_id,room_id,${INVOICE_MONEY_COLUMNS.join(",")}`)
+        .select(
+          `tenant_id,room_id,rent_amount,water_bill,electricity_bill,common_fee,additional_fees_breakdown,discount_breakdown,${INVOICE_MONEY_COLUMNS.join(",")}`,
+        )
         .eq("id", invoiceId)
         .maybeSingle();
+      if (beforeError) return NextResponse.json({ error: beforeError.message }, { status: 500 });
+      if (!beforeMoneyRow) return NextResponse.json({ error: "Invoice not found." }, { status: 404 });
+      // A paid, verifying or cancelled invoice is closed to detail edits: its
+      // charges are what money was (or is being) matched against.
+      if (isSaveDetailsLockedStatus((beforeMoneyRow as any).status)) {
+        return NextResponse.json(
+          { error: SAVE_DETAILS_LOCKED_MESSAGE, status: (beforeMoneyRow as any).status },
+          { status: 409 },
+        );
+      }
       wasPaidBeforeSave = String((beforeMoneyRow as any)?.status ?? "") === "paid";
+      // Protected lines (approved late-fee charges, points redemption, move-out
+      // credit) are re-inserted exactly as stored, and every money column is
+      // recomputed by the invoice-total engine on the merged row — the client's
+      // totals are never stored as sent.
+      const recomputed = recomputeSaveDetailsPayload(
+        beforeMoneyRow as unknown as SaveDetailsBeforeRow,
+        guarded.payload,
+      );
+      const payload = recomputed.payload;
       const { error } = await authEdit.supabase.from("invoices").update(payload).eq("id", invoiceId);
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+      if (recomputed.ignored.length > 0) {
+        await recordMoneyEvent(authEdit.supabase, {
+          action: "invoice.save_details_protected_lines_kept",
+          actorUserId: authEdit.user.id,
+          tenantId: (beforeMoneyRow as any)?.tenant_id ?? null,
+          roomId: (beforeMoneyRow as any)?.room_id ?? null,
+          invoiceId,
+          before: null,
+          after: { ignored_edits: recomputed.ignored },
+          reason: "client edited/removed an approved late-fee line or a protected discount; kept unchanged server-side",
+          source: "admin_webapp",
+        });
+      }
 
       if (Object.keys(strippedFields).length > 0) {
         await recordMoneyEvent(authEdit.supabase, {
@@ -275,7 +315,19 @@ export async function POST(req: Request) {
       // Enabling this needs the capacity model switched to each invoice's own
       // charge — and `paid_amount` is not consistent about which of the two it
       // means across existing rows, so that has to be settled first.
-      return NextResponse.json({ success: true });
+      // Echo what was actually stored so the editor shows the server's figures,
+      // not the ones it sent.
+      return NextResponse.json({
+        success: true,
+        invoice: {
+          ...recomputed.columns,
+          ...("additional_fees_breakdown" in payload
+            ? { additional_fees_breakdown: payload.additional_fees_breakdown }
+            : {}),
+          ...("discount_breakdown" in payload ? { discount_breakdown: payload.discount_breakdown } : {}),
+        },
+        protectedEditsIgnored: recomputed.ignored,
+      });
     }
 
     if (action === "record_payment") {

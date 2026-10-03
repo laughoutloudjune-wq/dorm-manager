@@ -11,6 +11,7 @@ import {
   chargesFromInvoiceRow,
 } from "@/lib/invoice-total";
 import { usePermissions } from "@/lib/use-permissions";
+import { recomputeSaveDetailsPayload } from "@/lib/money/save-details-guard";
 import {
   toNumber,
   roundTo2,
@@ -2098,23 +2099,15 @@ export function useInvoicesState() {
     }
     setSaving(true);
 
-    // One total, used for both the stored amount and the paid_amount cap.
-    const savedTotal = computeInvoiceTotal({
-      rent: toNumber(form.rent_amount),
-      water: toNumber(form.water_bill),
-      electricity: toNumber(form.electricity_bill),
-      commonFee: toNumber(form.common_fee),
-      // `form.late_fee_amount` is already own penalty + carried lines, so it is
-      // passed whole with the line component at zero — the engine must never be
-      // handed the same figure twice.
-      nativeLateFee: toNumber(form.late_fee_amount),
-      lateFeeItems: 0,
-      fees: feeItemsTotal(editableFeeItems),
-      carryForward: feeItemsTotal(editableCarryForwardItems),
-      discount: feeItemsTotal(editableDiscountItems),
-    });
-
-    const payload = {
+    // The lines below are rebuilt from the editor's lossy item lists. Any
+    // protected line (an approved late-fee charge, a points-redemption or
+    // move-out-credit discount) is then swapped back for the stored original
+    // by `recomputeSaveDetailsPayload` — the SAME merge the server applies —
+    // so `late_fee_charge_id`, `covered_from/to`, `policy_version`, `posted_by`
+    // and redemption fields survive, and every money column is recomputed by
+    // the invoice-total engine. paid_amount is not sent: save_details never
+    // records money.
+    const rawPayload = {
       issue_date: form.issue_date,
       due_date: form.due_date,
       start_date: form.start_date,
@@ -2191,21 +2184,23 @@ export function useInvoicesState() {
         })),
         ...serializeTransferBreakdownRows(transferBreakdownItems),
       ],
-      total_amount: savedTotal,
-      // Capped by the SAME total, not a second hand-rolled copy of it. The old
-      // cap added `form.late_fee_amount` (already own penalty + carried lines)
-      // and then the carried lines a second time, so it sat one late fee above
-      // the real total and could let paid_amount exceed what was owed.
-      paid_amount: Math.min(toNumber(form.paid_amount), savedTotal),
       status: form.status,
       notes: form.notes,
     };
+    let payload: Record<string, unknown> = recomputeSaveDetailsPayload(
+      activeInvoice as any,
+      rawPayload,
+    ).payload;
 
     try {
-      await callInvoiceAdminAction("save_details", {
+      const result = await callInvoiceAdminAction("save_details", {
         invoiceId: activeInvoice.id,
         payload,
       });
+      // The server is the authority on what was stored.
+      if (result?.invoice && typeof result.invoice === "object") {
+        payload = { ...payload, ...result.invoice };
+      }
     } catch (error: any) {
       setSaving(false);
       setConfirmSaveOpen(false);
