@@ -137,6 +137,21 @@ export type ChainAllocationInput = {
   id: string;
   total_amount: number | null | undefined;
   paid_amount: number | null | undefined;
+  /** Debt bundled into total_amount from an earlier invoice; not this row's own charge. */
+  carry_forward_amount?: number | null;
+};
+
+/**
+ * What a payment can still put onto THIS row: its own charge minus what the row
+ * has received. paid_amount only ever grows by own-share allocations, so the
+ * carried-in portion is excluded from the cap (total - carry - paid), never
+ * double counted. Rounded to satang.
+ */
+export const getChainOwnOutstanding = (invoice: ChainAllocationInput) => {
+  const total = toNumber(invoice.total_amount);
+  const paid = roundMoney(toNumber(invoice.paid_amount));
+  const carry = Math.max(0, toNumber(invoice.carry_forward_amount));
+  return Math.max(0, roundMoney(total - carry - paid));
 };
 
 export type ChainAllocationResult = {
@@ -175,10 +190,7 @@ export const allocatePaymentAcrossChain = (
   const results: ChainAllocationResult[] = [];
   for (const invoice of invoices) {
     const paid = roundMoney(toNumber(invoice.paid_amount));
-    const outstanding = Math.max(
-      0,
-      roundMoney(toNumber(invoice.total_amount) - paid),
-    );
+    const outstanding = getChainOwnOutstanding(invoice);
     if (outstanding <= 0 || remaining <= 0) continue;
     const allocated = roundMoney(Math.min(outstanding, remaining));
     const nextPaidAmount = roundMoney(paid + allocated);
@@ -828,8 +840,42 @@ export async function getCarryForwardCandidatesForTarget(
     };
   });
 
-  return candidates.filter(
+  // Late-fee approval mode (a late_fee_policies row exists): a source whose fee
+  // has already gone through the approval flow (any late_fee_charges row) must
+  // not ALSO be offered as a legacy late-fee candidate, or the manual
+  // recalculate / carry-forward checkbox adds a second fee line for the same
+  // lateness. If the charges cannot be read, offer no late fee at all rather
+  // than risk billing one twice; the principal is still offered.
+  const { mode } = await resolveLateFeeMode(supabase);
+  let chargedSourceIds: Set<string> | "all" = new Set();
+  if (mode === "approval") {
+    const { data: chargeRows, error: chargeError } = await supabase
+      .from("late_fee_charges")
+      .select("source_invoice_id")
+      .in("source_invoice_id", candidateIds);
+    chargedSourceIds = chargeError
+      ? "all"
+      : new Set((chargeRows ?? []).map((c: any) => String(c.source_invoice_id)));
+  }
+
+  return excludeAlreadyChargedLateFees(candidates, chargedSourceIds).filter(
     (row: any) => row.outstanding_amount > 0 || row.late_fee_snapshot_amount > 0,
+  );
+}
+
+/**
+ * Zero the late-fee snapshot of every candidate whose source already has a
+ * `late_fee_charges` row (approval mode), so the legacy candidate path cannot
+ * bill a second fee for it. `"all"` zeroes every candidate's late fee.
+ * Principal (`outstanding_amount`) is untouched.
+ */
+export function excludeAlreadyChargedLateFees<
+  T extends { id: string; late_fee_snapshot_amount: number; late_fee_snapshot_days?: number },
+>(candidates: T[], chargedSourceIds: Set<string> | "all"): T[] {
+  return candidates.map((row) =>
+    chargedSourceIds === "all" || chargedSourceIds.has(String(row.id))
+      ? { ...row, late_fee_snapshot_amount: 0, late_fee_snapshot_days: 0 }
+      : row,
   );
 }
 
@@ -1732,7 +1778,7 @@ export async function applyInvoicePaymentAllocation(
     const { data: sourceInvoices, error: sourceError } = await supabase
       .from("invoices")
       .select(
-        "id,tenant_id,total_amount,paid_amount,status,payment_history,slip_url,slip_uploaded_at,late_fee_amount,late_fee_per_day,late_fee_start_date,due_date,start_date,waived_late_fee_amount,locked_late_fee_amount",
+        "id,tenant_id,total_amount,paid_amount,status,payment_history,slip_url,slip_uploaded_at,late_fee_amount,late_fee_per_day,late_fee_start_date,due_date,start_date,waived_late_fee_amount,locked_late_fee_amount,carry_forward_amount",
       )
       .in("id", sourceInvoiceIds)
       .order("start_date", { ascending: true });
@@ -1743,7 +1789,7 @@ export async function applyInvoicePaymentAllocation(
   const { data: freshTargetInvoice, error: refreshError } = await supabase
     .from("invoices")
     .select(
-      "id,tenant_id,total_amount,paid_amount,status,payment_history,slip_url,slip_uploaded_at,late_fee_amount,late_fee_per_day,late_fee_start_date,due_date,start_date,waived_late_fee_amount,locked_late_fee_amount",
+      "id,tenant_id,total_amount,paid_amount,status,payment_history,slip_url,slip_uploaded_at,late_fee_amount,late_fee_per_day,late_fee_start_date,due_date,start_date,waived_late_fee_amount,locked_late_fee_amount,carry_forward_amount",
     )
     .eq("id", invoiceId)
     .single();
@@ -1773,7 +1819,7 @@ export async function applyInvoicePaymentAllocation(
 
   const totalOutstanding = roundMoney(
     payableTargets.reduce(
-      (sum, invoice) => sum + getInvoiceOutstanding(invoice as InvoiceLike),
+      (sum, invoice) => sum + getChainOwnOutstanding(invoice as ChainAllocationInput),
       0,
     ),
   );
