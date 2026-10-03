@@ -31,3 +31,8 @@ Findings 105-108 are defects in the atomic functions found by the rollback-wrapp
 
 ## Owner decision (2026-10-03)
 Advance rent is NOT refundable. At move-out it is applied as credit; it never becomes refund due. Check `lib/money/settlement.ts` (`planMoveOutSettlement`) honours this: refund due may come only from the security deposit (and unapplied overpayment credit).
+
+## Status of the SQL review fixes (stopped early by the owner to save usage, 2026-10-03)
+Merged on main (commit 906ffbd): REVOKE/GRANT + search_path on 0600/0800, payload-hash replay conflict, lock-order and void-guard changes in 0000/0500/0600/0700/0800, TS payload hash (`lib/money/payment-payload-hash.ts`).
+NOT verified: the merged SQL has not been re-applied to dorm-test and the full `supabase/tests` suite has not been re-run since these edits. The agent was mid-way through restructuring `record_payment_batch`'s lock set and pre-checks; its uncommitted edits to migrations 0000, 0500, 0600 are only in worktree `.claude/worktrees/agent-a78fa26f4f033000a` (reference only, may be half done).
+Remaining from findings 138-156 and 174: (a) re-apply 0000-0800 to dorm-test and run all test scripts incl. privilege tests as anon/authenticated; (b) 0500 paid-status rule counting carried-in amounts for carry-forward targets (finding 174); (c) the single 'paid' rule across record/void/settle; (d) void clears `locked_late_fee_amount`, refuses settlement/credit batches, accounts for refund payouts; (e) `post_late_fee_charge` lock on the source invoice and setting `late_fee_billed_at`; (f) rollback notes; (g) the README go-live list for 0000-0800 (docs/README-money.md still lists only 0000-0500).
