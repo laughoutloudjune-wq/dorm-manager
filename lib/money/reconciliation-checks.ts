@@ -305,8 +305,9 @@ export function runReconciliation(input: ReconciliationInput): ReconciliationFin
     const status = String(inv.status ?? "").toLowerCase();
     const total = toSatang(inv.total_amount);
     const paid = toSatang(inv.paid_amount);
-    const carriedIn = settledCarriedInAmount(carryLinksByTarget.get(inv.id) ?? [], carrySources);
-    const paidByCarry = paid < total && isPaidWithCarriedIn(inv.total_amount, inv.paid_amount, carriedIn);
+    const carriedIn = settledCarriedInAmount(carryLinksByTarget.get(inv.id) ?? [], carrySources, undefined, carryLinksByTarget);
+    const carryTotal = (carryLinksByTarget.get(inv.id) ?? []).reduce((sum, l) => sum + l.amount, 0);
+    const paidByCarry = paid < total && isPaidWithCarriedIn(inv.total_amount, inv.paid_amount, carriedIn, carryTotal);
     let problem: { sev: Severity; text: string } | null = null;
     if (status === "paid" && paid < total && !paidByCarry) {
       problem = { sev: "high", text: `Status is paid but only ${fmt(paid)} of ${fmt(total)} is recorded as paid.` };

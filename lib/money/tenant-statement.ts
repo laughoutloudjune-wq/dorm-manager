@@ -298,7 +298,9 @@ export function buildTenantStatement(
   const balance = Math.max(0, Math.round((total - confirmedPaid - carriedInSettled) * 100) / 100);
 
   const isCancelled = status === "cancelled";
-  const isPaid = status === "paid" || (balance <= 0 && total > 0 && !isCancelled);
+  // Decided by the amount, not the label: a row still marked paid whose carried-in source was
+  // voided owes money and must not read "fully paid" (finding 178, M1).
+  const isPaid = balance <= 0 && total > 0 && !isCancelled;
   const underReviewActive = status === "verifying";
   const underReview = underReviewActive
     ? {

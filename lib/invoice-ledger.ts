@@ -3,6 +3,7 @@ import { paymentPayloadHash } from "@/lib/money/payment-payload-hash";
 import {
   settledCarriedInAmount,
   isPaidWithCarriedIn,
+  isLegacyInflatedPaid,
   type CarryInLink,
   type CarryInSource,
 } from "@/lib/money/carry-in";
@@ -157,6 +158,9 @@ export const getChainOwnOutstanding = (invoice: ChainAllocationInput) => {
   const total = toNumber(invoice.total_amount);
   const paid = roundMoney(toNumber(invoice.paid_amount));
   const carry = Math.max(0, toNumber(invoice.carry_forward_amount));
+  // Row written before the own-share fix: paid_amount already includes the carried part,
+  // so plain total - paid is what is left (see isLegacyInflatedPaid in lib/money/carry-in.ts).
+  if (carry > 0 && paid > roundMoney(total - carry)) return Math.max(0, roundMoney(total - paid));
   return Math.max(0, roundMoney(total - carry - paid));
 };
 
@@ -219,14 +223,17 @@ export const sumAllocated = (rows: Array<{ allocated: number }>) =>
  */
 export const getInvoiceOwnOutstanding = (
   invoice: Pick<InvoiceLike, "total_amount" | "paid_amount" | "carry_forward_amount">,
-) => {
-  const currentOutstanding = getInvoiceOutstanding(invoice);
-  const ownAmount = Math.max(
-    0,
-    toNumber(invoice.total_amount) - toNumber(invoice.carry_forward_amount),
-  );
-  return Math.max(0, Math.min(ownAmount, currentOutstanding));
-};
+) =>
+  // One rule everywhere (payment allocator, dashboards, move-out settlement and the
+  // final_settle_move_out SQL): max(0, total - carry - paid). paid_amount is the
+  // invoice's OWN share; the old min(total - carry, total - paid) re-counted the
+  // carried amount after the own share was paid (finding 177).
+  getChainOwnOutstanding({
+    id: "",
+    total_amount: invoice.total_amount,
+    paid_amount: invoice.paid_amount,
+    carry_forward_amount: invoice.carry_forward_amount,
+  } as ChainAllocationInput);
 
 /**
  * The true amount still owed across a set of invoices — e.g. every open
@@ -239,24 +246,7 @@ export const getInvoiceOwnOutstanding = (
  */
 export const sumOwnOutstanding = (
   invoices: Array<Pick<InvoiceLike, "total_amount" | "paid_amount" | "carry_forward_amount">>,
-) =>
-  // DISPLAY total (dashboards, digest, reports). Uses getChainOwnOutstanding
-  // (total - carry - paid), the same formula the payment allocation uses, so a
-  // carry-forward target that has received its own share reads 0, not the carried
-  // amount again. getInvoiceOwnOutstanding (min(total-carry, total-paid)) is kept
-  // unchanged ONLY because final_settle_move_out (migration 0600) validates the
-  // debts the settlement sends with that older formula; align both together.
-  invoices.reduce(
-    (sum, invoice) =>
-      sum +
-      getChainOwnOutstanding({
-        id: "",
-        total_amount: invoice.total_amount,
-        paid_amount: invoice.paid_amount,
-        carry_forward_amount: invoice.carry_forward_amount,
-      } as ChainAllocationInput),
-    0,
-  );
+) => invoices.reduce((sum, invoice) => sum + getInvoiceOwnOutstanding(invoice), 0);
 
 export type AbandonCreditLine = {
   invoiceId: string;
@@ -519,45 +509,74 @@ export type { CarryInLink, CarryInSource };
 
 /** resolveInvoiceStatus plus the carried-in rule (own paid > 0 and own paid + settled carried-in >= total). */
 export const resolveInvoiceStatusWithCarry = (
-  invoice: Pick<InvoiceLike, "total_amount" | "paid_amount" | "due_date">,
+  invoice: Pick<InvoiceLike, "total_amount" | "paid_amount" | "due_date"> & {
+    carry_forward_amount?: number | string | null;
+  },
   asOfDateText: string,
   carriedInSettled: number,
 ) => {
   if (
     toNumber(invoice.paid_amount) < toNumber(invoice.total_amount) &&
-    isPaidWithCarriedIn(invoice.total_amount, invoice.paid_amount, carriedInSettled)
+    isPaidWithCarriedIn(invoice.total_amount, invoice.paid_amount, carriedInSettled, invoice.carry_forward_amount ?? undefined)
   ) {
     return "paid";
   }
   return resolveInvoiceStatus(invoice, asOfDateText);
 };
 
-/** Loads carry-forward links into the given targets and their source invoices. */
+/**
+ * Loads carry-forward links into the given targets AND, transitively, into their sources
+ * (so the recursive "settled" rule can see a whole chain A -> B -> C), plus every source row.
+ */
 const loadCarryInContext = async (supabase: SupabaseClient, targetIds: string[]) => {
   const linksByTarget = new Map<string, CarryInLink[]>();
   const sources = new Map<string, CarryInSource>();
-  if (targetIds.length === 0) return { linksByTarget, sources };
-  const { data: links, error } = await supabase
-    .from("invoice_carry_forwards")
-    .select("source_invoice_id,target_invoice_id,amount")
-    .in("target_invoice_id", targetIds);
-  if (error) throw new Error(error.message);
-  const sourceIds = [...new Set((links ?? []).map((l: any) => String(l.source_invoice_id)))];
-  for (const l of (links ?? []) as any[]) {
-    const key = String(l.target_invoice_id);
-    const list = linksByTarget.get(key) ?? [];
-    list.push({ source_invoice_id: String(l.source_invoice_id), amount: toNumber(l.amount) });
-    linksByTarget.set(key, list);
+  const targets = new Map<string, { total: number; paid: number; carry: number }>();
+  if (targetIds.length === 0) return { linksByTarget, sources, targets };
+  {
+    const { data: trows, error: terr } = await supabase
+      .from("invoices")
+      .select("id,total_amount,paid_amount,carry_forward_amount")
+      .in("id", [...new Set(targetIds)]);
+    if (terr) throw new Error(terr.message);
+    for (const r of (trows ?? []) as any[]) {
+      targets.set(String(r.id), {
+        total: toNumber(r.total_amount),
+        paid: toNumber(r.paid_amount),
+        carry: toNumber(r.carry_forward_amount),
+      });
+    }
   }
-  if (sourceIds.length > 0) {
+  const seenTargets = new Set<string>();
+  let frontier = [...new Set(targetIds)];
+  const allSourceIds = new Set<string>();
+  for (let round = 0; round < 12 && frontier.length > 0; round++) {
+    frontier.forEach((id) => seenTargets.add(id));
+    const { data: links, error } = await supabase
+      .from("invoice_carry_forwards")
+      .select("source_invoice_id,target_invoice_id,amount")
+      .in("target_invoice_id", frontier);
+    if (error) throw new Error(error.message);
+    const next = new Set<string>();
+    for (const l of (links ?? []) as any[]) {
+      const key = String(l.target_invoice_id);
+      const list = linksByTarget.get(key) ?? [];
+      list.push({ source_invoice_id: String(l.source_invoice_id), amount: toNumber(l.amount) });
+      linksByTarget.set(key, list);
+      allSourceIds.add(String(l.source_invoice_id));
+      if (!seenTargets.has(String(l.source_invoice_id))) next.add(String(l.source_invoice_id));
+    }
+    frontier = [...next];
+  }
+  if (allSourceIds.size > 0) {
     const { data: rows, error: srcError } = await supabase
       .from("invoices")
       .select("id,total_amount,paid_amount,status")
-      .in("id", sourceIds);
+      .in("id", [...allSourceIds]);
     if (srcError) throw new Error(srcError.message);
     for (const r of (rows ?? []) as any[]) sources.set(String(r.id), r);
   }
-  return { linksByTarget, sources };
+  return { linksByTarget, sources, targets };
 };
 
 /** Settled carried-in amount per invoice id (0 when none). */
@@ -569,9 +588,15 @@ export async function getSettledCarriedInByInvoice(
   const ctx = await loadCarryInContext(supabase, invoiceIds);
   const out = new Map<string, number>();
   for (const id of invoiceIds) {
+    const row = ctx.targets.get(id);
+    // Legacy-inflated row: its paid_amount already includes the carried part; never add it again.
+    if (row && isLegacyInflatedPaid(row.total, row.paid, row.carry)) {
+      out.set(id, 0);
+      continue;
+    }
     out.set(
       id,
-      settledCarriedInAmount(ctx.linksByTarget.get(id) ?? [], ctx.sources, overrides),
+      settledCarriedInAmount(ctx.linksByTarget.get(id) ?? [], ctx.sources, overrides, ctx.linksByTarget),
     );
   }
   return out;
@@ -2030,12 +2055,14 @@ export async function applyInvoicePaymentAllocation(
         total_amount: invoice.total_amount,
         paid_amount: nextPaidAmount,
         due_date: invoice.due_date,
+        carry_forward_amount: (invoice as any).carry_forward_amount,
       },
       paidAt.slice(0, 10),
       settledCarriedInAmount(
         carryCtx.linksByTarget.get(String(invoice.id)) ?? [],
         carryCtx.sources,
         chainPaidOverrides,
+        carryCtx.linksByTarget,
       ),
     );
 
@@ -2335,12 +2362,14 @@ export async function applyManualInvoicePaymentAllocation(
           total_amount: invoice.total_amount,
           paid_amount: nextPaid,
           due_date: invoice.due_date,
+          carry_forward_amount: (invoice as any).carry_forward_amount,
         },
         paidAt.slice(0, 10),
         settledCarriedInAmount(
           manualCarry.linksByTarget.get(String(invoice.id)) ?? [],
           manualCarry.sources,
           manualPaidOverrides,
+          manualCarry.linksByTarget,
         ),
       ),
     lateFeeFor: (invoice) =>

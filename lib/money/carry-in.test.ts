@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { isPaidWithCarriedIn, owedAfterCarriedIn, settledCarriedInAmount } from "./carry-in";
+import { isLegacyInflatedPaid, isPaidWithCarriedIn, owedAfterCarriedIn, settledCarriedInAmount } from "./carry-in";
 import { runReconciliation, type ReconciliationInput } from "./reconciliation-checks";
 import { buildTenantStatement } from "./tenant-statement";
 import { buildInvoiceLedgerView } from "./invoice-ledger-view";
-import { allocatePaymentAcrossChain, resolveInvoiceStatusWithCarry, sumOwnOutstanding } from "../invoice-ledger";
+import { allocatePaymentAcrossChain, getChainOwnOutstanding, getInvoiceOwnOutstanding, resolveInvoiceStatusWithCarry, sumOwnOutstanding } from "../invoice-ledger";
 
 // April owes 1,400. May's total 7,594 already includes those 1,400 (carried in),
 // so May's own charge is 6,194.
@@ -172,5 +172,78 @@ describe("dashboard / overdue totals count carried debt once", () => {
   });
   it("legacy row shape (May reads 7,594/7,594) does not create a negative or extra debt", () => {
     expect(sumOwnOutstanding([apr(1400), may(7594)])).toBe(0);
+  });
+});
+
+describe("three-invoice chain propagates (recursive settled rule)", () => {
+  // A 1,000 -> B total 2,500 (carries A's 1,000) -> C total 6,000 (carries B's 2,500)
+  const row = (id: string, total: number, paid: number) => ({ id, total_amount: total, paid_amount: paid, status: "pending" });
+  const all = (a: number, b: number, c: number) =>
+    new Map<string, any>([["A", row("A", 1000, a)], ["B", row("B", 2500, b)], ["C", row("C", 6000, c)]]);
+  const linksByTarget = new Map([
+    ["B", [{ source_invoice_id: "A", amount: 1000 }]],
+    ["C", [{ source_invoice_id: "B", amount: 2500 }]],
+  ]);
+  const carriedFor = (target: "B" | "C", a: number, b: number, c: number, overrides = new Map<string, number>()) =>
+    settledCarriedInAmount(linksByTarget.get(target)!, all(a, b, c), overrides, linksByTarget);
+
+  it("A paid -> B is paid by its own 1,500 + 1,000 carried; and C sees B as settled", () => {
+    expect(carriedFor("B", 1000, 1500, 3500)).toBe(1000);
+    expect(isPaidWithCarriedIn(2500, 1500, 1000, 1000)).toBe(true);
+    expect(carriedFor("C", 1000, 1500, 3500)).toBe(2500); // recursive: B settled via A
+    expect(isPaidWithCarriedIn(6000, 3500, 2500, 2500)).toBe(true);
+  });
+  it("A NOT paid -> neither B nor C counts as settled (voiding A reopens both)", () => {
+    expect(carriedFor("B", 0, 1500, 3500)).toBe(0);
+    expect(carriedFor("C", 0, 1500, 3500)).toBe(0);
+    expect(isPaidWithCarriedIn(6000, 3500, 0, 2500)).toBe(false);
+  });
+  it("same batch: overrides make A settled for B and C before A is written", () => {
+    expect(carriedFor("C", 0, 1500, 3500, new Map([["A", 1000]]))).toBe(2500);
+  });
+  it("without the link map the rule stays conservative (one level only)", () => {
+    expect(settledCarriedInAmount(linksByTarget.get("C")!, all(1000, 1500, 3500))).toBe(0);
+  });
+  it("a cycle cannot loop forever", () => {
+    const cyc = new Map([["A", [{ source_invoice_id: "B", amount: 1 }]], ["B", [{ source_invoice_id: "A", amount: 1 }]]]);
+    const rows = new Map<string, any>([["A", row("A", 10, 5)], ["B", row("B", 10, 5)]]);
+    expect(settledCarriedInAmount(cyc.get("A")!, rows, new Map(), cyc)).toBe(0);
+  });
+});
+
+describe("legacy-inflated rows are not double counted (finding 177 guard)", () => {
+  it("own outstanding: new shape 0, partial 3,194, legacy 7,594/7,594 = 0, 114/1 = 244", () => {
+    expect(getChainOwnOutstanding({ id: "x", total_amount: 7594, paid_amount: 6194, carry_forward_amount: 1400 })).toBe(0);
+    expect(getChainOwnOutstanding({ id: "x", total_amount: 7594, paid_amount: 3000, carry_forward_amount: 1400 })).toBe(3194);
+    expect(getChainOwnOutstanding({ id: "x", total_amount: 7594, paid_amount: 7594, carry_forward_amount: 1400 })).toBe(0);
+    expect(getChainOwnOutstanding({ id: "x", total_amount: 6244, paid_amount: 6000, carry_forward_amount: 1446 })).toBe(244);
+    expect(getInvoiceOwnOutstanding({ total_amount: 1500, paid_amount: 0, carry_forward_amount: 0 })).toBe(1500);
+  });
+  it("legacy row never becomes paid through carried-in credit", () => {
+    expect(isLegacyInflatedPaid(6244, 6000, 1446)).toBe(true);
+    expect(isLegacyInflatedPaid(7594, 6194, 1400)).toBe(false);
+    expect(isPaidWithCarriedIn(6244, 6000, 1446, 1446)).toBe(false); // still owes 244
+    expect(owedAfterCarriedIn(6244, 6000, 1446, 1446)).toBe(244);
+    expect(resolveInvoiceStatusWithCarry({ total_amount: 6244, paid_amount: 6000, carry_forward_amount: 1446, due_date: "2099-01-01" }, "2026-07-01", 1446)).toBe("partial");
+  });
+});
+
+describe("tenant statement never contradicts itself", () => {
+  const may = {
+    id: "may", status: "paid", start_date: "2026-05-25", due_date: "2026-06-05",
+    rent_amount: 6194, water_bill: 0, electricity_bill: 0, common_fee: 0,
+    total_amount: 7594, paid_amount: 6194, late_fee_amount: 0, additional_fees_total: 0,
+    carry_forward_amount: 1400, discount_amount: 0,
+  };
+  const alloc = [{ id: "a1", invoice_id: "may", payment_batch_id: "b1", amount: 6194, paid_at: "2026-06-03T10:00:00Z", invoice_period: "2026-05-25" }];
+  it("row still labelled paid but its carried-in source was voided: shows the 1,400 owed, not 'fully paid'", () => {
+    const s = buildTenantStatement(may, alloc, [], { asOf: "2026-06-10", carriedInSettled: 0 });
+    expect(s.balance).toBe(1400);
+    expect(s.explanationTh).not.toBe("ชำระครบแล้ว");
+  });
+  it("source settled: balance 0 and it reads fully paid", () => {
+    const s = buildTenantStatement(may, alloc, [], { asOf: "2026-06-10", carriedInSettled: 1400 });
+    expect(s.balance).toBe(0);
+    expect(s.explanationTh).toBe("ชำระครบแล้ว");
   });
 });

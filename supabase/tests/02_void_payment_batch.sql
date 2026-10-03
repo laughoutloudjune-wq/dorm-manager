@@ -258,7 +258,7 @@ BEGIN
   ---------------------------------------------------------------- V14 live refund payout blocks void of the overpayment (finding 142)
   DECLARE v_tr uuid; v_ci uuid;
   BEGIN
-    INSERT INTO tenants(full_name, move_in_date, room_id) VALUES ('Void Refund Test', current_date, v_room) RETURNING id INTO v_tr;
+    INSERT INTO tenants(full_name, move_in_date, room_id, status) VALUES ('Void Refund Test', current_date, v_room, 'inactive') RETURNING id INTO v_tr;
     v_ci := pg_temp.ni(v_tr, v_room, 700, v_due);
     v_b1 := pg_temp.rp(v_tr, v_ci, 1000, 700, 700, 'paid', 0, 'v14');
     INSERT INTO refund_payouts(tenant_id, amount, paid_at, idempotency_key) VALUES (v_tr, 300, now(), 'v14-payout-'||gen_random_uuid());

@@ -208,11 +208,28 @@ PASS  A2 automation posts under an auto_post policy and is logged as automation:
 Summary: 32 PASS, 0 FAIL. Not exercisable single-session: two concurrent posts racing on the same key (the target-row
 lock and the unique key are the arbiters; needs two connections).
 
-## Carry-forward status pass (dorm-test, rghxelkifdrpvabyxopb only)
-Run after the carry-forward paid-rule edits (`money_derive_invoice_status_cf`, TS `lib/money/carry-in.ts`).
-- 01_record_payment_batch.sql: complete script, 40 PASS / 0 FAIL (incl. R23a own-share payment accepted as paid, R23b 'partial' rejected, R23c paid rejected while the source is open).
-- 02_void_payment_batch.sql: NOT the full script. Re-run only V1, V5a-c, V12a-b, V13, V14, V15 (all PASS) plus probe V16. V2-V4, V6-V11 were not re-run in this pass (code unchanged by it).
-- 04_final_settle_move_out.sql: complete script, 21 PASS / 0 FAIL.
-- 03, 05, 06: NOT re-run in this pass.
-- PROBE V16: April paid by a separate later batch leaves May 'partial' until the TS sync runs; voiding that April batch reopens April (0/pending) and leaves May 'partial'. See findings 178.
-All test data was rolled back (each script ends with RAISE EXCEPTION).
+## Fresh full run after findings 177 / 178 (dorm-test, project_id rghxelkifdrpvabyxopb only)
+Run on 2026-10-04 by two runners that executed each script verbatim (only pure `--` comment lines dropped),
+after the final function edits. Every script is rollback-wrapped; nothing persisted.
+
+Functions under test (deployed on dorm-test; normalized body hash and length identical to the migration files):
+record_payment_batch 03467a10..(13854), void_payment_batch f714c882..(8114), final_settle_move_out b2f2731f..(20970),
+money_derive_invoice_status_cf 2b72b097..(534), money_carried_in_settled a7db9b25..(649),
+money_downstream_ids 74a515cf..(498), money_rederive_downstream 805f3c33..(1199).
+Migration files: 20261002000000, 0100, 0200, 0300, 0400, 0500, 0600, 0700, 0800 (0900 = test-only, not used).
+
+| Script | PASS | FAIL | Other |
+|---|---|---|---|
+| 01_record_payment_batch.sql | 39 | 0 | 0 |
+| 02_void_payment_batch.sql | 31 | 0 | 0 (first attempt BLOCKED by a test-setup bug in V14, a second active tenant in the same room; fixed in the script and re-run) |
+| 03_append_only_and_uniqueness.sql | 51 | 0 | 0 |
+| 04_final_settle_move_out.sql | 21 | 0 | 0 |
+| 05_points_redemption.sql | 34 | 0 | 0 |
+| 06_late_fee_actions.sql | 33 | 0 | 0 |
+| 07_carry_forward_downstream.sql (new) | 13 | 0 | 0 |
+
+07 covers: K1 paying a source settles its target in the same call; K2 voiding it reopens the target and clears its frozen fee;
+K3 three-invoice chain A->B->C propagates both ways; K4 a failing downstream step (target of another tenant) rolls back a record AND a void completely;
+K5 verifying / cancelled / draft targets untouched; K6 legacy-shaped target (6,244 / 1,446 / 6,000) not flipped to paid; K7 replay writes no further events;
+G2a-c settlement with own outstanding = max(0, total - carry - paid) (7,594 / 1,400 / 6,194 owes nothing; legacy 6,244 / 1,446 / 6,000 still owes 244).
+Not covered by any script: true two-connection concurrency (lock order, same-key races) - correct by construction only.

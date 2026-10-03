@@ -122,6 +122,8 @@ DECLARE
     v_hash text;
     v_existing_hash text;
     v_lock_tenant uuid;
+    v_src_ids uuid[];
+    v_downstream uuid[] := '{}';
     v_derived public.invoice_status;
     v_overrides JSONB := '{}'::jsonb;
     v_slip text;
@@ -251,6 +253,10 @@ BEGIN
         UNION
         SELECT v_trigger
     ) s;
+    v_src_ids := v_ids;
+    SELECT array_agg(x ORDER BY x) INTO v_ids FROM (
+        SELECT unnest(v_src_ids) AS x UNION SELECT unnest(public.money_downstream_ids(v_src_ids))
+    ) q;
 
     SELECT count(*) INTO v_locked FROM (
         SELECT id FROM public.invoices WHERE id = ANY(v_ids) ORDER BY id FOR UPDATE
@@ -259,6 +265,9 @@ BEGIN
         SELECT x INTO v_missing FROM unnest(v_ids) x
         WHERE NOT EXISTS (SELECT 1 FROM public.invoices WHERE id = x) LIMIT 1;
         RAISE EXCEPTION 'INVOICE_NOT_FOUND %', v_missing;
+    END IF;
+    IF NOT (public.money_downstream_ids(v_src_ids) <@ v_ids) THEN
+        RAISE EXCEPTION 'STALE_CHAIN carry-forward links changed while locking; retry';
     END IF;
 
     ------------------------------------------------------------------ idempotent replay (after locks)
@@ -419,6 +428,9 @@ BEGIN
     END LOOP;
 
     ------------------------------------------------------------------ write: allocations, credit, event
+    v_downstream := public.money_rederive_downstream(v_src_ids, v_overrides,
+        (v_paid_at AT TIME ZONE 'Asia/Bangkok')::date, v_batch_id, v_batch->>'created_by', v_lock_tenant, 'record_payment_batch');
+
     INSERT INTO public.invoice_payment_allocations (
         payment_batch_id, trigger_invoice_id, invoice_id, amount, paid_at, slip_url,
         source, payment_method_id, payment_method_snapshot
@@ -447,7 +459,7 @@ BEGIN
             v_batch->>'source');
 
     RETURN jsonb_build_object('replayed', false, 'payment_batch_id', v_batch_id,
-                              'unapplied_credit', v_excess);
+                              'unapplied_credit', v_excess, 'downstream_updated', to_jsonb(v_downstream));
 END;
 $$;
 

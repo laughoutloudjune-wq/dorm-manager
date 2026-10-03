@@ -149,16 +149,14 @@ SET search_path = public, pg_temp
 AS $$
 DECLARE
     v_carried NUMERIC;
+    v_carry NUMERIC;
 BEGIN
-    IF COALESCE(p_paid, 0) > 0 AND COALESCE(p_paid, 0) < COALESCE(p_total, 0) THEN
-        SELECT COALESCE(SUM(cf.amount), 0) INTO v_carried
-        FROM public.invoice_carry_forwards cf
-        JOIN public.invoices s ON s.id = cf.source_invoice_id
-        WHERE cf.target_invoice_id = p_invoice_id
-          AND s.status::text <> 'cancelled'
-          AND COALESCE(s.total_amount, 0) > 0
-          AND COALESCE(CASE WHEN p_overrides ? s.id::text THEN (p_overrides->>s.id::text)::numeric END,
-                           s.paid_amount, 0) >= s.total_amount;
+    SELECT COALESCE(carry_forward_amount, 0) INTO v_carry FROM public.invoices WHERE id = p_invoice_id;
+    -- A row whose paid_amount exceeds its own charge (total - carry) was written before the own-share
+    -- model and already includes the carried part: never add the carried-in credit on top of it.
+    IF COALESCE(p_paid, 0) > 0 AND COALESCE(p_paid, 0) < COALESCE(p_total, 0)
+       AND NOT (COALESCE(v_carry, 0) > 0 AND COALESCE(p_paid, 0) > round(COALESCE(p_total, 0) - v_carry, 2)) THEN
+        v_carried := public.money_carried_in_settled(p_invoice_id, p_overrides);
         IF COALESCE(p_paid, 0) + v_carried >= COALESCE(p_total, 0) THEN
             RETURN 'paid'::public.invoice_status;
         END IF;
@@ -166,6 +164,108 @@ BEGIN
     RETURN public.money_derive_invoice_status(p_total, p_paid, p_due, p_today);
 END;
 $$;
+
+-- Carry-forward helpers (findings 178, 174): recursive 'settled' test, downstream closure,
+-- and the downstream status re-derive used by record_payment_batch / void_payment_batch.
+-- A source counts as settled when paid_amount >= total, or (recursive) own paid > 0 and
+-- own paid + ITS settled carried-in >= total, so a chain A->B->C propagates.
+
+CREATE OR REPLACE FUNCTION public.money_carried_in_settled(
+    p_invoice_id UUID, p_overrides JSONB DEFAULT '{}'::jsonb, p_depth INT DEFAULT 0
+) RETURNS NUMERIC
+LANGUAGE plpgsql
+STABLE
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    r RECORD;
+    v_sum NUMERIC := 0;
+BEGIN
+    IF p_depth > 12 THEN
+        RETURN 0;  -- cycle / absurd depth: treat as not settled (conservative)
+    END IF;
+    FOR r IN
+        SELECT cf.amount AS amount, s.id AS sid, s.status::text AS status,
+               COALESCE(s.total_amount, 0) AS total,
+               COALESCE(CASE WHEN p_overrides ? s.id::text THEN (p_overrides->>s.id::text)::numeric END,
+                        s.paid_amount, 0) AS paid
+        FROM public.invoice_carry_forwards cf
+        JOIN public.invoices s ON s.id = cf.source_invoice_id
+        WHERE cf.target_invoice_id = p_invoice_id AND cf.source_invoice_id <> p_invoice_id
+    LOOP
+        CONTINUE WHEN r.status = 'cancelled' OR r.total <= 0;
+        IF r.paid >= r.total
+           OR (r.paid > 0 AND r.paid + public.money_carried_in_settled(r.sid, p_overrides, p_depth + 1) >= r.total) THEN
+            v_sum := v_sum + COALESCE(r.amount, 0);
+        END IF;
+    END LOOP;
+    RETURN v_sum;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.money_downstream_ids(p_ids UUID[]) RETURNS UUID[]
+LANGUAGE sql
+STABLE
+SET search_path = public, pg_temp
+AS $$
+    WITH RECURSIVE d(id, depth, path) AS (
+        SELECT cf.target_invoice_id, 1, ARRAY[cf.source_invoice_id, cf.target_invoice_id]
+        FROM public.invoice_carry_forwards cf
+        WHERE cf.source_invoice_id = ANY(COALESCE(p_ids, '{}')) AND cf.target_invoice_id <> cf.source_invoice_id
+        UNION ALL
+        SELECT cf.target_invoice_id, d.depth + 1, d.path || cf.target_invoice_id
+        FROM d JOIN public.invoice_carry_forwards cf ON cf.source_invoice_id = d.id
+        WHERE NOT cf.target_invoice_id = ANY(d.path) AND d.depth < 12
+    )
+    SELECT COALESCE(array_agg(DISTINCT id ORDER BY id), '{}'::uuid[]) FROM d
+$$;
+
+CREATE OR REPLACE FUNCTION public.money_rederive_downstream(
+    p_source_ids UUID[], p_overrides JSONB, p_today DATE, p_batch_id UUID,
+    p_actor TEXT, p_tenant UUID, p_source TEXT
+) RETURNS UUID[]
+LANGUAGE plpgsql
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    t public.invoices%ROWTYPE;
+    v_new public.invoice_status;
+    v_flipped UUID[] := '{}';
+BEGIN
+    FOR t IN
+        SELECT * FROM public.invoices WHERE id = ANY(public.money_downstream_ids(p_source_ids)) ORDER BY id
+    LOOP
+        IF p_tenant IS NOT NULL AND t.tenant_id IS DISTINCT FROM p_tenant THEN
+            RAISE EXCEPTION 'CROSS_TENANT_CARRY invoice % belongs to another tenant than the payment', t.id;
+        END IF;
+        CONTINUE WHEN t.status::text IN ('cancelled', 'draft');
+        CONTINUE WHEN t.status::text = 'verifying' AND NULLIF(btrim(COALESCE(t.slip_url, ''), E' \t\r\n'), '') IS NOT NULL;
+        v_new := public.money_derive_invoice_status_cf(t.id, t.total_amount, t.paid_amount, t.due_date, p_today, p_overrides);
+        IF v_new IS DISTINCT FROM t.status THEN
+            UPDATE public.invoices
+            SET status = v_new,
+                locked_late_fee_amount = CASE WHEN t.status::text = 'paid' AND v_new::text <> 'paid'
+                                              THEN NULL ELSE locked_late_fee_amount END
+            WHERE id = t.id;
+            INSERT INTO public.money_events (action, actor_user_id, tenant_id, invoice_id, payment_batch_id,
+                                             before, after, reason, source)
+            VALUES ('invoice.status_rederive', p_actor, t.tenant_id, t.id, p_batch_id,
+                    jsonb_build_object('status', t.status, 'locked_late_fee_amount', t.locked_late_fee_amount),
+                    jsonb_build_object('status', v_new),
+                    'carry-forward source changed', p_source);
+            v_flipped := v_flipped || t.id;
+        END IF;
+    END LOOP;
+    RETURN v_flipped;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.money_carried_in_settled(UUID, JSONB, INT) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.money_carried_in_settled(UUID, JSONB, INT) TO service_role;
+REVOKE ALL ON FUNCTION public.money_downstream_ids(UUID[]) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.money_downstream_ids(UUID[]) TO service_role;
+REVOKE ALL ON FUNCTION public.money_rederive_downstream(UUID[], JSONB, DATE, UUID, TEXT, UUID, TEXT) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.money_rederive_downstream(UUID[], JSONB, DATE, UUID, TEXT, UUID, TEXT) TO service_role;
 
 COMMENT ON FUNCTION public.money_derive_invoice_status_cf(UUID, NUMERIC, NUMERIC, DATE, DATE, JSONB) IS
     'money_derive_invoice_status plus carried-in: paid when own paid > 0 and paid + settled carried-in >= total (finding 174). Mirrors resolveInvoiceStatusWithCarry (lib/invoice-ledger.ts).';
@@ -234,6 +334,8 @@ DECLARE
     v_awaiting BOOLEAN;
     v_today DATE := (now() AT TIME ZONE 'Asia/Bangkok')::date;
     v_touched JSONB := '[]'::jsonb;
+    v_src_ids UUID[];
+    v_downstream UUID[] := '{}';
     v_count INT := 0;
     v_credit_total NUMERIC := 0;
     v_unapplied NUMERIC;
@@ -265,7 +367,14 @@ BEGIN
     SELECT array_agg(DISTINCT invoice_id ORDER BY invoice_id) INTO v_ids
     FROM public.invoice_payment_allocations
     WHERE payment_batch_id = p_batch_id AND reverses_allocation_id IS NULL AND amount > 0;
+    v_src_ids := COALESCE(v_ids, '{}');
+    SELECT array_agg(x ORDER BY x) INTO v_ids FROM (
+        SELECT unnest(v_src_ids) AS x UNION SELECT unnest(public.money_downstream_ids(v_src_ids))
+    ) q;
     PERFORM 1 FROM public.invoices WHERE id = ANY(COALESCE(v_ids, '{}')) ORDER BY id FOR UPDATE;
+    IF NOT (public.money_downstream_ids(v_src_ids) <@ COALESCE(v_ids, '{}')) THEN
+        RAISE EXCEPTION 'STALE_CHAIN carry-forward links changed while locking; retry';
+    END IF;
 
     -- 3. the batch row itself; re-read under the lock.
     SELECT * INTO v_batch FROM public.payment_batches WHERE id = p_batch_id FOR UPDATE;
@@ -407,6 +516,7 @@ BEGIN
 
         v_touched := v_touched || to_jsonb(v_rec.invoice_id);
     END LOOP;
+    v_downstream := public.money_rederive_downstream(v_src_ids, v_overrides, v_today, p_batch_id, p_actor, v_lock_tenant, 'void_payment_batch');
 
     FOR v_credit IN
         SELECT c.* FROM public.tenant_credits c
@@ -435,7 +545,8 @@ BEGIN
     WHERE id = p_batch_id;
 
     RETURN jsonb_build_object('voided', true, 'reversed_allocations', v_count,
-                              'touched_invoice_ids', v_touched, 'credit_reversed', v_credit_total);
+                              'touched_invoice_ids', v_touched, 'credit_reversed', v_credit_total,
+                              'downstream_updated', to_jsonb(v_downstream));
 END;
 $$;
 

@@ -31,26 +31,61 @@ const num = (v: unknown) => {
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
 /**
- * Sum of carried-in amounts whose source invoices are fully settled.
- * `overrides` = source paid amounts after a payment that is being recorded in
- * the same batch (so a source settled in the same batch counts).
+ * Sum of carried-in amounts whose SOURCE invoices are settled.
+ *
+ * A source is settled when it is not cancelled, has total > 0 and either
+ *   - paid_amount >= total_amount, or
+ *   - (recursive, needs `linksByTarget`) own paid > 0 and own paid + ITS settled
+ *     carried-in >= total, so a chain A -> B -> C propagates: B counts as settled for
+ *     C once A is settled and B's own share is paid.
+ * Without `linksByTarget` only the first rule applies (non-recursive, conservative).
+ * `overrides` = source paid amounts after a payment being recorded in the same batch.
+ * Twin of SQL public.money_carried_in_settled (depth cap 12 -> 0).
  */
 export const settledCarriedInAmount = (
   links: CarryInLink[],
   sources: Map<string, CarryInSource>,
   overrides: Map<string, number> = new Map(),
+  linksByTarget?: Map<string, CarryInLink[]>,
+  depth = 0,
 ): number => {
+  if (depth > 12) return 0;
   let sum = 0;
   for (const link of links) {
     const src = sources.get(String(link.source_invoice_id));
     if (!src || String(src.status ?? "") === "cancelled") continue;
     const total = num(src.total_amount);
+    if (total <= 0) continue;
     const paid = overrides.has(String(src.id))
       ? (overrides.get(String(src.id)) as number)
       : num(src.paid_amount);
-    if (total > 0 && paid >= total) sum += num(link.amount);
+    let settled = paid >= total;
+    if (!settled && linksByTarget && paid > 0) {
+      const upstream = settledCarriedInAmount(
+        linksByTarget.get(String(src.id)) ?? [],
+        sources,
+        overrides,
+        linksByTarget,
+        depth + 1,
+      );
+      settled = paid + upstream >= total;
+    }
+    if (settled) sum += num(link.amount);
   }
   return round2(sum);
+};
+
+/**
+ * Legacy-shaped row: paid_amount is MORE than the invoice's own charge (total - carry).
+ * Under the own-share model that can never happen (the allocator caps each row at its own
+ * outstanding), so such a row was written before that fix and its paid_amount already
+ * includes the carried part. For those rows the carried-in credit must NOT be added again,
+ * and what is owed is plain total - paid (room 114/1: 6,244 total, 1,446 carried, 6,000
+ * paid -> 244 still owed).
+ */
+export const isLegacyInflatedPaid = (total: unknown, ownPaid: unknown, carry: unknown): boolean => {
+  const c = Math.max(0, num(carry));
+  return c > 0 && num(ownPaid) > round2(num(total) - c);
 };
 
 /** Amount still owed on an invoice once settled carried-in debt is counted. */
@@ -58,17 +93,25 @@ export const owedAfterCarriedIn = (
   total: unknown,
   ownPaid: unknown,
   settledCarriedIn: number,
-): number => Math.max(0, round2(num(total) - num(ownPaid) - settledCarriedIn));
+  carry?: unknown,
+): number => {
+  if (carry !== undefined && isLegacyInflatedPaid(total, ownPaid, carry)) {
+    return Math.max(0, round2(num(total) - num(ownPaid)));
+  }
+  return Math.max(0, round2(num(total) - num(ownPaid) - settledCarriedIn));
+};
 
 /** True when the invoice counts as paid under the carried-in rule. */
 export const isPaidWithCarriedIn = (
   total: unknown,
   ownPaid: unknown,
   settledCarriedIn: number,
+  carry?: unknown,
 ): boolean => {
   const t = num(total);
   const own = num(ownPaid);
   if (t <= 0) return false;
   if (own >= t) return true;
+  if (carry !== undefined && isLegacyInflatedPaid(total, ownPaid, carry)) return false;
   return own > 0 && settledCarriedIn > 0 && own + settledCarriedIn >= t;
 };

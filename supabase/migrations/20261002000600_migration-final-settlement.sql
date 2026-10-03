@@ -329,20 +329,31 @@ BEGIN
     END IF;
 
     -- Every open invoice with money still owed must be in the plan, with the
-    -- same own-outstanding the planner used. Otherwise a refund could be paid
+    -- same own-outstanding the planner used. Own outstanding = max(0, total - carry - paid):
+    -- paid_amount is the invoice's OWN share, so a carry-forward target that has received
+    -- its own share (7,594 total, 1,400 carried, 6,194 paid) owes nothing here; the carried
+    -- 1,400 is owed on its source invoice. Same rule as TS getChainOwnOutstanding
+    -- (lib/invoice-ledger.ts) and the payment allocator. A legacy row whose paid_amount exceeds its
+    -- own charge (total - carry) already includes the carried part, so it owes plain total - paid. Otherwise a refund could be paid
     -- out while a debt was quietly left out.
     SELECT count(*) INTO v_unaccounted
     FROM public.invoices i
     WHERE i.tenant_id = v_tenant
       AND i.status IN ('draft', 'pending', 'partial', 'overdue')
-      AND GREATEST(0, LEAST(COALESCE(i.total_amount, 0) - COALESCE(i.carry_forward_amount, 0),
-                            COALESCE(i.total_amount, 0) - COALESCE(i.paid_amount, 0))) > 0
+      AND GREATEST(0, round(CASE WHEN COALESCE(i.carry_forward_amount, 0) > 0
+                                 AND COALESCE(i.paid_amount, 0) > COALESCE(i.total_amount, 0) - i.carry_forward_amount
+                                 THEN COALESCE(i.total_amount, 0) - COALESCE(i.paid_amount, 0)
+                                 ELSE COALESCE(i.total_amount, 0) - GREATEST(0, COALESCE(i.carry_forward_amount, 0))
+                                      - COALESCE(i.paid_amount, 0) END, 2)) > 0
       AND NOT EXISTS (
           SELECT 1 FROM jsonb_array_elements(COALESCE(v_s->'debtPayments', '[]'::jsonb)) d
           WHERE (d->>'invoiceId')::uuid = i.id
-            AND round((d->>'outstandingBefore')::numeric, 2) = round(GREATEST(0, LEAST(
-                    COALESCE(i.total_amount, 0) - COALESCE(i.carry_forward_amount, 0),
-                    COALESCE(i.total_amount, 0) - COALESCE(i.paid_amount, 0))), 2));
+            AND round((d->>'outstandingBefore')::numeric, 2) = GREATEST(0, round(
+                    CASE WHEN COALESCE(i.carry_forward_amount, 0) > 0
+                              AND COALESCE(i.paid_amount, 0) > COALESCE(i.total_amount, 0) - i.carry_forward_amount
+                         THEN COALESCE(i.total_amount, 0) - COALESCE(i.paid_amount, 0)
+                         ELSE COALESCE(i.total_amount, 0) - GREATEST(0, COALESCE(i.carry_forward_amount, 0))
+                              - COALESCE(i.paid_amount, 0) END, 2)));
     IF v_unaccounted > 0 THEN
         RAISE EXCEPTION 'STALE_DEBTS: % open invoice(s) are missing from the plan or changed since it was made', v_unaccounted;
     END IF;
