@@ -60,6 +60,9 @@ ALTER TABLE public.late_fee_policies ADD COLUMN IF NOT EXISTS note TEXT;
 
 -- Raises unless the proposed columns satisfy the totals-engine identity, given
 -- the breakdown they will be stored with.
+-- post_late_fee_charge stamps this column. The app already reads it; a fresh database built from the repo migrations does not have it.
+ALTER TABLE public.invoices ADD COLUMN IF NOT EXISTS late_fee_billed_at TIMESTAMPTZ;
+
 CREATE OR REPLACE FUNCTION public.late_fee_engine_check(cols jsonb, r public.invoices, breakdown jsonb)
 RETURNS void
 LANGUAGE plpgsql
