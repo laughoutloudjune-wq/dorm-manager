@@ -198,3 +198,19 @@ No production data has been changed for any of these.
 | 191 | FIXED (item 3, finding 184): when propagation marks a downstream invoice paid and nothing has frozen its late fee, `money_rederive_downstream` freezes `money_late_fee_amount(...)` as of the payment's own date string (the same `paidAt.slice(0, 10)` the normal payment path uses); an existing frozen fee is never overwritten; leaving paid clears it. `money_late_fee_amount` is a SQL twin of `calculateLateFeeAmount` pinned to shared fixtures in `lib/money/late-fee-freeze.test.ts` and `supabase/tests/09_late_fee_freeze.sql` | migration 0000, 0500, 0600 | Verified by script 09 and the unit fixtures | Keep both implementations in step: any change to `calculateLateFeeAmount` needs the SQL twin and both fixture tables updated |
 | 192 | FIXED (found while doing item 3): `final_settle_move_out` paid older invoices by credit without freezing their late fee at all; it now freezes at the settlement date with the same rule. The settlement uses `left(p->>'paid_at', 10)` as the effective date | migration 0600 | Verified by U4 | None |
 | 193 | The freeze is legacy-mode bookkeeping and charges nothing; in policy mode (a `late_fee_policies` row exists) fees come from the posting flow instead. No change there | late-fee flow | Unchanged by this item | None |
+
+## Final disposition (2026-10-05, items 4–6)
+
+| # | Disposition |
+|---|---|
+| 186 | FIXED (item 4): every surface (admin list, overdue, detail, LIFF total, dashboard stats, reports debtor gate, action queue) uses own-outstanding; paid/cancelled show 0. Unit tests cover it; not seen in a browser. |
+| 140, 157 | FIXED: go-live docs rewritten (`README-money.md`, `OPERATOR-GUIDE.md`, `AUDIT-BRIEF.md`) |
+| 141–148, 158–160, 162, 165, 166, 167, 169, 185 | FIXED, evidence in `supabase/tests/RESULTS.md` (scripts 01–10) and unit tests |
+| 139 | OPEN, owner action: run `docs/PRODUCTION-PRECHECKS.sql` blocks 2–4 on production to see whether anon can write money tables |
+| 149 | OPEN, owner action: production schema diff (blocks 5–8 of the same file) |
+| 161, 163, 164, 168, 170 | OPEN, accepted for go-live: not money-losing; listed for the auditor. 170 (billing report totals include carried amounts) needs a business decision on the report basis. |
+| 172 | FIXED: CLAUDE.md now has "Money rules as implemented (October 2026)" |
+| 194 | NEW: `list_settlements` is requested on page load even for users without `credits.view`; the API refuses it (403), the page shows an error. Cosmetic. |
+| 195 | NEW: a tenant with several settlements shows the same refund due/paid on each row (the view is per tenant). |
+| 196 | NEW: `void_move_out_settlement` restores `tenants.move_out_date` from the latest move-out request; the exact original value is not stored. |
+| 197 | Refund payout and settlement correction implemented (migration 0650, API `app/api/admin/refunds/actions`, UI `credits-refunds`), owner-only permissions `refund.record` / `settlement.void`; advance rent stays non-refundable. Tested by script 10 (22 PASS) and unit tests. |

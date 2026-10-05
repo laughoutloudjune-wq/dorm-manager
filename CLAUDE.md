@@ -248,3 +248,41 @@ these without auditing every caller's null-handling first.
 `npx vitest run` — proration and invoice-ledger math have test coverage in `lib/*.test.ts`.
 There is no test coverage for the API routes themselves; changes there should be verified
 manually against the actual admin UI / LIFF flows.
+
+## Money rules as implemented (October 2026)
+
+Corrections to older statements above. Feature branch; nothing applied to production; UI not run in a
+browser; two-session concurrency untested. Details: `docs/MONEY-LIFECYCLE.md`.
+
+- **Migrations** in filename order: `20261002000000` (money_events, void, carry-forward helpers
+  `money_carried_in_settled`, `money_downstream_ids`, `money_rederive_downstream`, `money_late_fee_amount`,
+  `money_derive_invoice_status_cf`), `0100` adjustments, `0200` tenant_credits, `0300` refund_payouts + view,
+  `0400` late-fee tables, `0500` record_payment_batch, `0600` final_settle_move_out + move_out_settlements,
+  `0650` record/void refund payout + void_move_out_settlement, `0700` points, `0800` late-fee actions.
+  `0900` is test-only, never for production. Go-live: backup, read-only prechecks
+  (`docs/PRODUCTION-PRECHECKS.sql`), migrations one at a time with `SET lock_timeout`, verify function
+  permissions, then deploy code.
+- **Carry-forward** (supersedes "source invoice's own paid_amount is authoritative"): an invoice is paid iff own
+  paid > 0 and own paid + carried-in from SETTLED sources >= total. A source is settled when paid >= total, or
+  recursively own paid > 0, not legacy-shaped (`paid_amount > total - carry`) and own paid + its settled
+  carried-in >= total. Owed on a row = max(0, total - carry - paid); legacy-shaped rows owe total - paid.
+  TS twin `lib/money/carry-in.ts`, SQL `money_carried_in_settled`. Payments, voids and move-out settlement
+  re-derive every downstream carry-forward invoice in the same transaction (`invoice.status_rederive`); a late
+  fee is frozen on a downstream invoice that becomes paid with the same rule and date as the normal path
+  (`money_late_fee_amount` mirrors `calculateLateFeeAmount`).
+- **Display**: per-invoice remaining is 0 when paid/cancelled, else total - paid; any sum across invoices uses
+  the own-outstanding rule so a carried debt counts once.
+- **Refunds**: advance rent is never refundable (applied as credit at move-out, the rest absorbed); refund due =
+  deposit left + unapplied credit. `record_refund_payout` only after a live settlement, capped at refund due,
+  needs method, recipient and reference/evidence, idempotent per key, owner-only `refund.record`.
+  `void_refund_payout` needs a reason. `void_move_out_settlement` (`settlement.void`, owner-only) reverses a
+  wrong settlement atomically and refuses if a payout is live, the room is re-let, the final invoice was paid,
+  or an invoice would go negative. UI `app/(admin)/credits-refunds/page.tsx`, `components/admin/refunds/*`;
+  API `app/api/admin/refunds/actions/route.ts`.
+- **Edits and errors**: move-out credit on the final bill is a protected `discount_breakdown` line (source
+  `move_out_credit`); invoice edits cannot erase approved late-fee lines or protected discount lines
+  (`lib/money/save-details-guard.ts`); post-commit steps cannot turn a recorded payment into a 500; expected
+  refusals map to 409/400 (`lib/money/payment-errors.ts`); a typed amount above the invoice's remaining asks
+  for confirmation.
+- **Tests**: SQL `supabase/tests/01-10` run rollback-wrapped on dorm-test only (`supabase/tests/RESULTS.md`);
+  unit tests `npx vitest run`; types `npx tsc --noEmit -p .`. The "no test coverage for API routes" note still holds.

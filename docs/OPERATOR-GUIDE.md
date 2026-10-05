@@ -1,8 +1,8 @@
 # Operator guide: money in the dorm manager
 
-For the owner. Plain English. Describes what is built in the code on `main` (as of 2026-10-03, after commit `d9923d7`). Anything marked **planned** is not built yet.
+For the owner. Plain English. Describes the feature branch as of October 2026.
 
-**Nothing described here has been applied to production.** The code is on `main`, but the database changes (the `20261002*` migrations) have not been run on the live `ApartmentFlow` database. Several screens degrade or change behaviour until they are: void and the Payments tab ledger need `20261002000000`, recording a payment needs `20261002000500` (and `...000200`), and the action-queue refund/credit sections show "not enabled yet" without `...000200` / `...000300`. Do not deploy the code before the migrations; follow the order in `docs/README-money.md`.
+**Implemented in code, not yet in production.** Nothing here has been applied to the live database or deployed. The migrations (`20261002*`) must be run first, in the order in `docs/README-money.md`, then the code. **Not verified:** the screens have not been run in a browser, two people acting at the same moment has not been tested, and the real production data has not been checked. Test results are on a dummy project only.
 
 ## 1. Words used
 
@@ -37,14 +37,14 @@ This tab is a ledger view built from receipts and allocations, not from the invo
 - A status badge on invoices with a slip shows the slip state (waiting review, approved, partly applied, declined).
 
 ### Record a payment
-Enter the amount, date and slip if there is one. The system spreads the money over the oldest unpaid invoices linked to this one (carried-forward debt) first. If you enter more than is owed, the extra is kept as tenant credit, not lost. Pressing the button twice, or a slow network retry, will not record it twice. If someone else changed the invoice a moment before you, you get a "stale" error: reload and try again.
+Enter the amount, date and slip if there is one. The system spreads the money over the oldest unpaid invoices linked to this one (carried-forward debt) first. If you enter more than is owed, the extra is kept as tenant credit, not lost. Pressing the button twice, or a slow network retry, will not record it twice. If someone else changed the invoice a moment before you, you get a "stale" error: reload and try again. If the amount you type is **above the invoice remaining**, a confirmation prompt appears (a typo of 50,000 for 5,000 would otherwise be kept as tenant credit); the part above all debt is kept as credit, not income.
 
 ### Split a payment
 Use when a tenant pays several invoices with one transfer. Pick the invoices and amounts; one receipt is recorded with one allocation per invoice.
 
 ### Void a payment
 On the receipt card press void. A confirmation explains what will happen (computed on screen, so reload if another admin may have touched it), then type a reason (required). The original receipt remains, reversing entries are added on every invoice it paid, paid amounts go down, and an invoice that no longer covers its total returns from paid to partial or pending. Needs permission `invoice.payment.record`.
-Limitations today: voiding does not remove an overpayment credit that same receipt created (check the tenant credit afterwards; flagged for Opus); very old payment entries with no receipt behind them cannot be voided here (an adjustment is **planned**).
+Limitations today: voiding also reverses the overpayment credit that receipt created, but is refused if that credit was already used or refunded (reverse the use or void the refund first); very old payment entries with no receipt behind them cannot be voided here (an adjustment is **planned**).
 
 ### Change status
 The status dropdown only changes the label. It does not create a payment or freeze a late fee. In the LINE admin app, setting "paid" by hand is now rejected outright. In the web admin it is still allowed; reconciliation will flag a "paid" invoice that has no money behind it. Moving an invoice into or out of paid re-syncs reward points.
@@ -53,7 +53,7 @@ The status dropdown only changes the label. It does not create a payment or free
 Editing invoice details accepts only a fixed list of fields; amounts for money already received cannot be typed over. Deleting invoices that have recorded payments is refused. Both are written to the audit log.
 
 ### Late fee (tab "ค่าปรับและอื่นๆ")
-The current month's invoice never accrues a running late fee. The fee is calculated once when the invoice is fully paid or carried forward, then appears as a line on the next invoice. Posting and waiving late fees with a reason and approval is **planned**.
+The current month's invoice never accrues a running late fee. The fee is calculated once when the invoice is fully paid or carried forward, then appears as a line on the next invoice. Posting, waiving and reversing late fees with approval exist (owner decides the policy); until a late-fee policy row exists the old automatic behaviour applies.
 
 ### Discounts, write-offs, corrections
 A dedicated discount/write-off/correction action with a reason is **planned**. Today only the existing discount and fee fields exist.
@@ -83,7 +83,7 @@ How to review:
 A read-only to-do list with five sections and a count for each:
 1. **Slips waiting for review** (status verifying with a slip attached), linking to the invoice.
 2. **Late fees waiting for approval**: overdue invoices with a rough estimate of the fee. Estimate only; it is not posted and may differ from the fee the invoice will actually carry (finding 49). Posting/approving a fee here is **planned**.
-3. **Refunds still to pay**: refund due minus refund paid. Needs `20261002000200` and `...000300`; shows "not enabled yet" until then. Recording a refund payout is **planned**.
+3. **Refunds still to pay**: refund due minus refund paid. Needs `20261002000200` and `...000300`; shows "not enabled yet" until then. Refund payouts are recorded on the credits-refunds page (section 9).
 4. **Tenant credits not yet applied**: overpayments held. Needs `...000200`.
 5. **Reconciliation results**: the same findings as section 5, summarised.
 The page changes nothing.
@@ -103,7 +103,22 @@ The page changes nothing.
 
 ## 9. Move-out money
 
-Vacating a room and settling the final bill are two steps. The settlement planner exists but is **not connected** to the move-out screens, and the atomic settlement function is reserved for Opus review. Refund due, forfeiture with reason and refund payouts as separate recorded facts are **planned**. Abandoned-room deposit use is still recorded as a non-cash credit receipt.
+Vacating a room and settling the final bill are two steps. Settlement is now atomic (one database transaction). Advance rent is never refundable: it is applied as credit at move-out and any rest is absorbed. A refund can only come from the deposit left plus unapplied credit. Credit applied to the final bill appears as a protected discount line that invoice edits cannot remove. Abandoned-room deposit use is a non-cash credit.
+
+### Record a refund payout (page credits-refunds, owner only, permission `refund.record`)
+1. Open the settlement on the credits-refunds page. A payout is only possible after a live (not reversed) settlement.
+2. Enter amount, method, recipient, and a reference number or evidence (slip image). The amount cannot exceed the refund due. Pressing twice will not pay twice.
+
+### Void a refund payout
+Same page, owner only. A written reason is required. The payout stays visible as cancelled.
+
+### Reverse a move-out settlement (owner only, permission `settlement.void`)
+Use when a settlement was wrong. It reverses, in one step: credit payments on older invoices, deposit and advance entries, cancels the final invoice, and restores the tenant and the room. It **refuses** (so nothing is half undone) when:
+- a refund payout is still live (void the payout first: money already left);
+- the room has been re-let (the room cannot be given back);
+- the final invoice has already been paid (real money would be stranded);
+- an invoice would go negative.
+A reason is required. After reversing, settle again correctly.
 
 ## 10. Discrepancy report tool (for the owner, run on your own computer)
 
@@ -113,6 +128,6 @@ Vacating a room and settling the final bill are two steps. The settlement planne
 
 Do not edit numbers. Note the room, month and what you expected. Open the Payments tab (original and void entries are both visible and the discrepancy notice explains differences). Run the reconciliation page. Record anything unexplained for the developer.
 
-## 12. Still planned (not built)
+## 12. Not built or not verified
 
-Adjustments (discount, waiver, write-off, correction) with reasons; posting and waiving late fees with approval; refund payout recording; tenant credit and refund display; atomic move-out settlement and atomic points redemption (Opus); the LINE admin dashboard on the new basis labels; and applying any of this to production.
+Not built: adjustments (discount, waiver, write-off, correction) with reasons; LINE admin dashboard on the new basis labels; tenant display of credit and refund status. Not verified: UI in a browser, two-session concurrency, production data and permissions, and applying any of this to production.

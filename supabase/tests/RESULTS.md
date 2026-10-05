@@ -1,256 +1,28 @@
-# Test results
+# SQL test results — final run
 
-Run date: 2026-10-03 (second run, after the Opus hardening). Project: dorm-test (rghxelkifdrpvabyxopb) only.
-All scripts rolled back; a post-run check found no leaked fixture rows (0 test tenants, 0 test rooms, 0 test batches,
-0 test events, 0 test credits).
+- Project: `rghxelkifdrpvabyxopb` (**dorm-test**, the dummy project). Never production.
+- Run: 2026-10-05, each script executed verbatim (only pure `--` comment lines dropped) in a rollback-wrapped call that ends with `RAISE EXCEPTION 'RESULT:...'`. All ten returned the expected RESULT error. None blocked.
+- Deployed function bodies: all 12 money functions were hash-compared with the migration files (normalized body hash) after the last SQL change and matched.
+- Code state: branch `worktree-agent-a020d745d962e74cb`. Unit tests 37 files, 505 passed, 3 todo. `tsc --noEmit` clean.
 
-Functions under test: `record_payment_batch(jsonb)` and `void_payment_batch(uuid,text,text)` as now written in migrations
-20261002000500 and 20261002000000, applied to dorm-test together with the CHECK-constraint changes of 0100-0400.
-The applied function bodies were verified byte-identical to the files (md5 of `pg_proc.prosrc` equals md5 of the file body).
-
-Every former KNOWN-GAP and PROBE case is now an ordinary assertion. Totals: 01 = 37 PASS, 02 = 25 PASS, 03 = 52 PASS, 0 FAIL.
-
-## 01_record_payment_batch.sql
-```
-PASS  R1 normal multi-invoice payment, invoices given out of id order (batch=1 allocs=2 A=1000.00/paid B=1500.00/partial events=1 credits=0 A.hist=[{"x": 1}])
-PASS  R2 idempotent replay same key, checked after locks, even with a now-stale payload (replayed=true same_id=true voided=false batches=1 allocs=2 A.paid=1000.00)
-PASS  R3 unique-violation path re-raises when no idempotent winner exists (SQLSTATE 23505). Same-key two-session race needs two connections (see README).
-PASS  R4 STALE_INVOICE on changed paid_amount (STALE_INVOICE <id> (paid_amount changed from 0 to 300.00))
-PASS  R4b invoice untouched after STALE_INVOICE
-PASS  R5 allocation sum mismatch rejected (allocations (600) do not equal amount_allocated (700))
-PASS  R6 overpayment creates exactly one overpayment credit (300)
-PASS  R6b replay of overpaid receipt adds no second credit
-PASS  R7 (finding 35) batch for tenant A paying tenant B's invoice rejected (TENANT_MISMATCH trigger invoice <id> belongs to tenant <B>, not batch tenant <A>)
-PASS  R7b chain containing another tenant's invoice rejected (TENANT_MISMATCH invoice <id> belongs to tenant <B>, not <A>)
-PASS  R7c NULL batch tenant: invoices must share the trigger invoice's tenant (TENANT_MISMATCH ...)
-PASS  R7d NULL batch tenant with same-tenant invoices and no excess accepted
-PASS  R8 (finding 36) concurrent payment_history change detected (STALE_INVOICE <id> (payment_history changed from 0 to 1 entries))
-PASS  R8b concurrent history entry preserved
-PASS  R8c existing history entries never overwritten (only the new tail is appended)
-PASS  R8d missing expected_history_length rejected (INVALID_PAYLOAD invoice <id> needs a non-negative integer expected_history_length)
-PASS  R8e payment onto a fully paid invoice rejected (OVERPAID_INVOICE invoice <id> would reach paid_amount 801 above its total 800.00; ...)
-PASS  R9 received|allocated=0|0 rejected (amount_received must be greater than 0)
-PASS  R9 received|allocated=100|200 rejected (amount_allocated must be between 0 and amount_received)
-PASS  R9 received|allocated=-5|0 rejected (amount_received must be greater than 0)
-PASS  R9 unknown invoice id (INVOICE_NOT_FOUND <uuid>)
-PASS  R10 (finding 106) excess with NULL tenant_id rejected (TENANT_REQUIRED amount_received exceeds amount_allocated by 800 but batch.tenant_id is missing, ...)
-PASS  R11 negative allocation [600,-500] rejected (INVALID_PAYLOAD allocation for invoice <id> must be greater than 0 (got -500))
-PASS  R12 paid_amount not equal to old + allocation (99999) rejected (INVALID_PAYLOAD invoice <id> paid_amount 99999 must equal current 200.00 plus its allocations 50)
-PASS  R13 paid_amount above total_amount rejected (OVERPAID_INVOICE invoice <id> would reach paid_amount 600 above its total 500.00; ...)
-PASS  R14 status cancelled (not a payment status) rejected (INVALID_PAYLOAD invoice <id> status cancelled is not a valid payment status)
-PASS  R14b unknown status rejected (INVALID_PAYLOAD invoice <id> status bogus is not a valid payment status)
-PASS  R14c status paid while balance still owed rejected (INVALID_PAYLOAD invoice <id> cannot be marked paid with paid_amount 250 below total 500.00)
-PASS  R15 3-decimal amounts rejected (INVALID_PAYLOAD amounts must have at most 2 decimals (received 50.005, allocated 50.005))
-PASS  R16 allocation to an invoice missing from invoices[] rejected (INVALID_PAYLOAD allocation for invoice <id> has no matching entry in invoices[])
-PASS  R17 invoices[] entry without allocation (status-only rewrite) rejected (INVALID_PAYLOAD invoice <id> is in invoices[] but receives no allocation)
-PASS  R18 missing expected_paid_amount rejected (INVALID_PAYLOAD invoice <id> needs a numeric expected_paid_amount)
-PASS  R19 duplicate invoice in invoices[] rejected (INVALID_PAYLOAD invoices[] lists the same invoice more than once)
-PASS  R20 payment to a cancelled invoice rejected (INVOICE_NOT_PAYABLE invoice <id> is cancelled)
-PASS  R21 every recorded batch has one payment.record event with before/after invoices and allocations (3)
-PASS  R22 only service_role can execute record_payment_batch
-```
-Summary: 37 PASS, 0 FAIL. Every rejection case also asserts that no batch row was written.
-
-## 02_void_payment_batch.sql
-```
-PASS  V1 normal void, reason stored trimmed (res.voided=true reversed=2 A=0.00/pending B=0.00/pending originals_kept=2 reversals=2 net_alloc=0.00 batch=true/wrong amount entered/tester)
-PASS  V6 event rows written (1 payment.record + 2 payment.void with reason+actor)
-PASS  V1b void entry appended to payment_history on both invoices
-PASS  V2 double void rejected (Payment batch already voided; allocation rows still 4)
-PASS  V3 blank reason [] rejected
-PASS  V3 blank reason [   ] rejected
-PASS  V3 blank reason [\t\n] rejected
-PASS  V3 blank reason [\r\n \t] rejected
-PASS  V3 NULL reason rejected (A reason is required to void a payment)
-PASS  V3b batch untouched after rejected voids
-PASS  V3c payment_batches_void_reason_check blocks a blank void_reason on direct UPDATE
-PASS  V4 unknown batch rejected (Payment batch not found)
-PASS  V5a paid -> partial after voiding the 400 batch (600.00/partial)
-PASS  V5b partial -> pending after voiding the rest (0.00/pending)
-PASS  V5c paid -> overdue when the due date has passed (0.00/overdue)
-PASS  V7 (finding 44) void reverses the 300 overpayment credit with one linked reversal row + credit.reversal event (net 0)
-PASS  V7b tenant_credit_balances.unapplied_credit back to 0
-PASS  V7c second reversal of the same credit blocked (uq_tenant_credits_single_reversal)
-PASS  V7d void refused when the overpayment credit was already spent (VOID_CREDIT_ALREADY_USED this receipt left 300.00 as tenant credit but only 0.00 unapplied...; nothing written)
-PASS  V8 (finding 108) void refused, error names the invoice, nothing written (VOID_WOULD_MAKE_NEGATIVE invoice <id> ...)
-PASS  V9a verifying with a slip awaiting review stays verifying (0.00/verifying)
-PASS  V9b verifying without a pending slip downgrades (0.00/pending)
-PASS  V9c verifying on the voided receipt's own slip downgrades (0.00/pending)
-PASS  V10 cancelled invoice stays cancelled after void, flagged status_kept in the event (0.00/cancelled)
-PASS  V11 only service_role can execute void_payment_batch
-```
-Summary: 25 PASS, 0 FAIL.
-
-## 03_append_only_and_uniqueness.sql
-All 52 cases PASS: M1-M3, A1-A10, T1-T10, R1-R12, L1-L10, W1-W6.
-- W1-W5 (finding 105): tab/newline/CR-only text is now rejected by `adjustments_reason_not_blank`, `refund_payouts_void_consistent`,
-  `tenant_credits_reason_check`, `late_fee_charges_formula_check`, `late_fee_charges_posted_by_check`. W6: real text with
-  surrounding whitespace is still accepted.
-- T10: `reverses_credit_id` is only allowed on `kind = 'reversal'` rows (`tenant_credits_reverses_kind_check`).
-
-## Known gaps (stay documented for Opus; tests intentionally left failing)
-- R7 finding 35: `record_payment_batch` does not check that each invoice belongs to `batch.tenant_id`.
-- R8 finding 36: STALE_INVOICE only guards `paid_amount`; a concurrent `payment_history` change is silently overwritten.
-- V7 finding 44: `void_payment_batch` leaves the `tenant_credits` 'overpayment' row for the voided batch (orphan credit).
-
-## New defects found (not in findings 34-36, 44)
-1. Whitespace-only reason check uses `btrim()` (spaces only): tab/newline-only reasons pass in `void_payment_batch` and in the CHECKs
-   of adjustments.reason, refund_payouts.void_reason, late_fee_charges.formula/posted_by. Fix: `btrim(x, E' \t\r\n')` or `x ~ '^\s*$'`.
-2. `record_payment_batch` with NULL `tenant_id` and `amount_received > amount_allocated` drops the excess (no credit row) while the event still logs `credit`.
-3. `record_payment_batch` does not validate allocations: negative allocation amounts are accepted if they net to `amount_allocated`, and allocations are not required to match `invoices[]` or `paid_amount` deltas; caller `paid_amount` (e.g. 99999 on a 100 invoice) is stored unchecked.
-4. `void_payment_batch` can drive `invoices.paid_amount` negative when it was changed after the receipt (no floor / drift check), and leaves status `verifying` untouched.
-
-## 05_points_redemption.sql (run 2026-10-03 on dorm-test, migration 20261002000700 applied)
-Tests `redeem_points_atomic` / `reverse_points_redemption`. Fixtures: 3 tenants (A 5000 pts, B 100 pts, C 20000 pts), 8 invoices; rate 10 pts/baht, cap 300 baht.
-```
-PASS  P1  redeem 1500 pts -> 150 baht: ledger -1500 + adjustment points_redemption 150 (same key) + invoice 3500->3350, discount 150, 1 breakdown line with key, 1 money_event; paid_amount 0, no payment_batches; balance 5000->3500
-PASS  P2  same key replays (even with the monthly limit used); no new rows
-PASS  P2b same key on a different invoice -> IDEMPOTENCY_KEY_REUSED
-PASS  P2c key already used by an unrelated adjustment -> IDEMPOTENCY_KEY_REUSED (key unique across both writes)
-PASS  P3  blank/whitespace key rejected
-PASS  P4  second redemption in the same Bangkok month at limit 1 -> MONTHLY_LIMIT;  P4b allowed at limit 2
-PASS  P5  1500 pts with balance 100 -> INSUFFICIENT_POINTS, nothing written
-PASS  P6a 300 baht on rent 100 + late fee 500 + carry 1000 + common 50 -> DISCOUNT_CAP (redeemable 100)
-PASS  P6b exactly the rent (100) accepted;  P6c rent already fully discounted -> DISCOUNT_CAP
-PASS  P6d partly paid invoice whose remainder is only a late fee -> DISCOUNT_CAP (redeemable 0)
-PASS  P6e utility coupon 150 on water+electricity 100 -> DISCOUNT_CAP;  P6f 301 baht over cap 300 -> DISCOUNT_CAP
-PASS  P7a points/baht ratio mismatch -> RATIO_MISMATCH
-PASS  P7b new total != expected - discount -> INCONSISTENT_COLUMNS;  P7c redemption also changing carry_forward_amount -> INCONSISTENT_COLUMNS
-PASS  P7d invoice of another tenant rejected;  P7e paid invoice rejected
-PASS  C1a two requests computed from the same read: first applies, second STALE_INVOICE (total_amount)
-PASS  C1b paid_amount changed between read and redeem -> STALE_INVOICE;  C1c reversal from a stale row (water_bill) -> STALE_INVOICE
-PASS  R1  reversal: +1500 'redemption_reversal' (reverses_entry_id -> original, key '<k>:reversal') + adjustment 'reversal' -150 (reverses_adjustment_id -> original, same key); originals kept; invoice 3350->3500, discount 0, line removed; 1 money_event; balance 3400->4900
-PASS  R2  second reversal -> ALREADY_REVERSED
-PASS  R3  reversed redemption still counts toward the monthly limit (limit 2, 2 redemptions this month incl. the reversed one -> MONTHLY_LIMIT)
-PASS  R4a tab/newline-only reason rejected;  R4b reversing an earn row rejected;  R4c reversing a reversal rejected
-PASS  R5  reversal on a paid invoice -> INVOICE_CLOSED
-PASS  R6  legacy redemption (no key, no adjustment) reversed with a 'correction' -150 under 'redemption:<id>:reversal'; only its own breakdown line removed
-PASS  A1a redemption adjustment cannot be deleted (append-only);  A1b reversed redemption row cannot be deleted (FK RESTRICT);  A1c reverses_entry_id only allowed on redemption_reversal rows
-PASS  D1  every redemption/reversal row has an opposite-signed adjustment of equal baht under the same key
-```
-Summary: 34 PASS, 0 FAIL.
-Limits: true two-session races cannot run in one transaction; C1 simulates them with stale `expected` values. The row-lock path (invoice FOR UPDATE, then the tenant's point rows ORDER BY id FOR UPDATE) and the unique-violation replay branch are not exercised by a real concurrent session.
-Not covered by design: a redemption that has NOT been reversed can still be hard-deleted from point_ledger_entries (no append-only trigger on that table, because syncPointsForTenant still updates/deletes earn rows).
-## Not covered here
-- True two-connection races (same idempotency key in flight twice; two multi-invoice payments locking in opposite payload
-  order; record vs void on the same invoice). The functions lock in ascending invoice id and check idempotency after the
-  locks; that ordering is by construction, not exercised by a concurrent test. Needs two sessions (e.g. psql x2 or dblink).
-## 04_final_settle_move_out.sql (move-out settlement; self-contained section)
-Run date: 2026-10-03. Project: dorm-test (rghxelkifdrpvabyxopb) only. Function under test: `final_settle_move_out(jsonb)` from
-migration 20261002000600 as deployed on dorm-test (deployed body verified identical to the file, comments aside). Whole
-script rolled back; post-run check: 0 fixture tenants, 0 move_out_settlements, temporary failure trigger/function gone.
-```
-PASS  S1 success (final=0.00/2400.00/paid older=1500.00/paid batch=1/credit/credit/1500.00/credit alloc=1/1500.00 balances=100.00/0.00/0.00 credits=advance_rent_received:advance:1000.00:-,applied_to_invoice:advance:-1000.00:older,applied_to_invoice:deposit:-2400.00:final,applied_to_invoice:deposit:-500.00:older,deposit_received:deposit:3000.00:- tenant=inactive/null/2026-09-28 room=available settlements=1 log=2026-09-28 request=completed)
-PASS  S1b money_events for every change (credit.applyx3,credit.opening_balancex2,payment.allocatex1,payment.recordx1,settlement.createx1,settlement.final_invoicex1,tenant.move_out_settledx1)
-PASS  S7 deposit refund recorded as due, not paid (due/paid/outstanding=100.00/0.00/100.00, payouts=0)
-PASS  S2 replay same key returns original, writes nothing (invoices/credits/events/batches 2/5/10/1)
-PASS  S3 double settlement rejected (ERR:ALREADY_SETTLED: tenant <uuid>)
-PASS  F1 forced failure at last step left nothing written, room still occupied (invoices=1 older=0.00/overdue batches=0 credits=0 settlements=0 events=0 tenant=active/true room=occupied)
-PASS  S5 forfeiture with reason '' rejected
-PASS  S5 forfeiture with reason '   ' rejected
-PASS  S5 forfeiture with reason '\t\n' rejected
-PASS  S5b nothing written by the rejected forfeitures
-PASS  S5c forfeiture with reason recorded (forfeited=-500.00:broken window, final invoice still owes 400.00/pending)
-PASS  S6a plan with leftover advance in refund due rejected (ERR:PLAN_INVALID: advance applied + absorbed <> advance held)
-PASS  S6a2 refund due including absorbed advance rejected
-PASS  S6b advance never refund: balances deposit/advance=2000.00/0.00, refund_due=2000.00 (deposit only), 2000 advance absorbed with reason + event
-PASS  G1a open debt missing from plan rejected
-PASS  G1b invoice columns != engine rejected
-PASS  G1c stale paid_amount rejected
-PASS  G1d wrong room rejected
-PASS  G1e held deposit mismatch rejected
-PASS  G1f verifying invoice blocks settlement
-PASS  G1g rejected calls left no credits and the tenant in the room
-```
-Summary: 21 PASS, 0 FAIL. F1 forces a failure on the LAST write (room status update) via a temporary trigger, so every
-earlier write (final invoice, credit receipt, allocations, tenant_credits, settlement row, tenant update) is proven to roll back.
-Not covered single-session: two concurrent sessions racing on the same tenant (the tenant row lock + partial unique index
-`uq_move_out_settlements_live_tenant` are the guards).
-## 06_late_fee_actions.sql (late-fee approval flow, migration 20261002000800)
-Run 2026-10-03 on dorm-test (rghxelkifdrpvabyxopb) only, rolled back (post-run check: 0 fixture tenants, 0 policies,
-0 charges, 0 late-fee adjustments, 0 `late_fee_flow` events left). Functions as in 20261002000800 (applied to dorm-test as
-migrations `late_fee_actions_20261002000800` + `late_fee_actions_whitespace_reasons`; the second makes the blank checks
-strip tab/CR/LF as well as spaces, matching the file).
-```
-PASS  P1 policies are new versions (v1, v2), auto_post defaults false, old version unchanged, event logged
-PASS  P2 editing an existing policy rejected (late_fee_policies is append-only)
-PASS  L1 post: distinct linked late_fee_line, columns +150, charge row, audit event (cols=3350.00/150.00/350.00 line=1 charge=1 event=1 engine=true)
-PASS  L2 duplicate post replayed the original (charges=1, total still 3350)
-PASS  L2b same key with a different amount rejected (DUPLICATE_CHARGE_DIFFERENT)
-PASS  L3 overlapping period rejected (OVERLAPPING_CHARGE)
-PASS  L4 stale target total rejected, nothing written (STALE_INVOICE)
-PASS  L5 columns not equal to current+fee rejected (INCONSISTENT_COLUMNS)
-PASS  L6 2 days x 50 cannot post 500 (AMOUNT_EXCEEDS_RATE)
-PASS  L7 150 posted + 1000 over the 1000 cap rejected (CAP_EXCEEDED)
-PASS  L8 automation refused when policy auto_post=false (AUTO_POST_DISABLED)
-PASS  L9 cross-tenant target rejected (TENANT_MISMATCH)
-PASS  L10 charge rate must match its policy version (RATE_MISMATCH)
-PASS  L11 paid target rejected (TARGET_NOT_OPEN)
-PASS  L12 target whose total disagrees with the totals engine rejected (ENGINE_MISMATCH)
-PASS  W1 blank reason [] rejected (REASON_REQUIRED)
-PASS  W1 blank reason [   ] rejected (REASON_REQUIRED)
-PASS  W1 blank reason [\t\n] rejected (REASON_REQUIRED)
-PASS  W1b blank approver rejected (APPROVER_REQUIRED)
-PASS  W2 waiver of 151 on a 150 fee rejected (WAIVER_EXCEEDS_FEE)
-PASS  W2 waiver of 99999999 on a 150 fee rejected (WAIVER_EXCEEDS_FEE)
-PASS  W3 waiver 100 of 150: adjustments row (reason+approver), line 150/100/50, columns -100, engine ok
-PASS  W4 retried waiver replayed (1 adjustment)
-PASS  W5 second waiver of 60 with only 50 left rejected (WAIVER_EXCEEDS_FEE)
-PASS  R1 reversal with blank reason rejected (REASON_REQUIRED)
-PASS  R2 reversal: paired -100 row, original waiver kept, net waived 0, line back to 150, total 3350
-PASS  R3 second reversal replayed (1 reversal row)
-PASS  R4 waiver rows cannot be deleted (adjustments is append-only (post a reversal instead))
-PASS  T1 target total = engine identity, and late-fee lines = charges - net adjustments (150.00)
-PASS  T2 source invoice untouched (fee lives on the later invoice only)
-PASS  A1 historical invoice needs admin approval even under auto_post (AUTO_POST_HISTORICAL)
-PASS  A2 automation posts under an auto_post policy and is logged as automation:test
-```
-Summary: 32 PASS, 0 FAIL. Not exercisable single-session: two concurrent posts racing on the same key (the target-row
-lock and the unique key are the arbiters; needs two connections).
-
-## Fresh full run after findings 177 / 178 (dorm-test, project_id rghxelkifdrpvabyxopb only)
-Run on 2026-10-04 by two runners that executed each script verbatim (only pure `--` comment lines dropped),
-after the final function edits. Every script is rollback-wrapped; nothing persisted.
-
-Functions under test (deployed on dorm-test; normalized body hash and length identical to the migration files):
-record_payment_batch 03467a10..(13854), void_payment_batch f714c882..(8114), final_settle_move_out b2f2731f..(20970),
-money_derive_invoice_status_cf 2b72b097..(534), money_carried_in_settled a7db9b25..(649),
-money_downstream_ids 74a515cf..(498), money_rederive_downstream 805f3c33..(1199).
-Migration files: 20261002000000, 0100, 0200, 0300, 0400, 0500, 0600, 0700, 0800 (0900 = test-only, not used).
-
-| Script | PASS | FAIL | Other |
+| Script | PASS | FAIL | PROBE / KNOWN-GAP |
 |---|---|---|---|
-| 01_record_payment_batch.sql | 39 | 0 | 0 |
-| 02_void_payment_batch.sql | 31 | 0 | 0 (first attempt BLOCKED by a test-setup bug in V14, a second active tenant in the same room; fixed in the script and re-run) |
-| 03_append_only_and_uniqueness.sql | 51 | 0 | 0 |
-| 04_final_settle_move_out.sql | 21 | 0 | 0 |
-| 05_points_redemption.sql | 34 | 0 | 0 |
-| 06_late_fee_actions.sql | 33 | 0 | 0 |
-| 07_carry_forward_downstream.sql (new) | 13 | 0 | 0 |
+| 01_record_payment_batch | 39 | 0 | 0 |
+| 02_void_payment_batch | 31 | 0 | 0 |
+| 03_append_only_and_uniqueness | 51 | 0 | 0 |
+| 04_final_settle_move_out | 21 | 0 | 0 |
+| 05_points_redemption | 34 | 0 | 0 |
+| 06_late_fee_actions | 33 | 0 | 0 |
+| 07_carry_forward_downstream | 14 | 0 | 0 |
+| 08_settlement_downstream | 5 | 0 | 0 |
+| 09_late_fee_freeze | 5 (P1–P9 reported as one line, "9/9") | 0 | 0 |
+| 10_refund_and_settlement_correction | 22 | 0 | 0 |
 
-07 covers: K1 paying a source settles its target in the same call; K2 voiding it reopens the target and clears its frozen fee;
-K3 three-invoice chain A->B->C propagates both ways; K4 a failing downstream step (target of another tenant) rolls back a record AND a void completely;
-K5 verifying / cancelled / draft targets untouched; K6 legacy-shaped target (6,244 / 1,446 / 6,000) not flipped to paid; K7 replay writes no further events;
-G2a-c settlement with own outstanding = max(0, total - carry - paid) (7,594 / 1,400 / 6,194 owes nothing; legacy 6,244 / 1,446 / 6,000 still owes 244).
-Not covered by any script: true two-connection concurrency (lock order, same-key races) - correct by construction only.
+Counts for 01–05 and 06–10 are the tally of result lines returned by two separate runner agents.
 
-## Items 1 and 2 (legacy middle link; move-out downstream propagation) - partial run, dorm-test only
-Project: dorm-test, project_id rghxelkifdrpvabyxopb (the 8-invoice fake dataset). Functions changed in this pass, deployed and
-verified identical to the migration files (normalized body hash): `money_carried_in_settled` 4fb68c84..(742),
-`final_settle_move_out` d43ffa9f..(21323).
-Executed fresh after these edits:
-- 08_settlement_downstream.sql (new): 4 PASS, 0 FAIL (M1 credit pays an older invoice and its target settles; M2 chain A->B->C settles recursively; M3 a downstream failure rolls the whole settlement back; M4 audit event tied to the settlement batch).
-- K8 from 07_carry_forward_downstream.sql, run standalone with its helpers: 1 PASS (legacy-shaped middle invoice 6,244 / 1,446 / 6,000 still owes 244 and does not make the later invoice look settled).
-- Unit tests: 480 passed, 3 todo (34 files); `tsc --noEmit` clean.
-NOT re-run after these edits: scripts 01-06 and the rest of 07. The fresh full-run table above remains valid only for the function versions it
-lists; `money_carried_in_settled` and `final_settle_move_out` have changed since. A final full run of 01-08 is still required.
-
-## Item 3 (late-fee freeze when propagation marks an invoice paid) - partial run, dorm-test only
-Project: dorm-test, project_id rghxelkifdrpvabyxopb. Functions changed and verified identical to the migration files (normalized body hash):
-`money_late_fee_amount` 06e78862..(221, new), `money_rederive_downstream` 3952f9b5..(1456, now 8 args, last `p_paid_date text DEFAULT NULL`),
-`record_payment_batch` 8834efa1..(13883), `final_settle_move_out` d3a26d40..(21590); `void_payment_batch` unchanged f714c882..(8114).
-Executed fresh after these edits:
-- 09_late_fee_freeze.sql (new): 5 PASS lines, 0 FAIL - P1-P9 (9 parity fixtures: money_late_fee_amount returns exactly the numbers the TypeScript fixtures expect), U1 (paying April freezes May's fee: 5 days x 50 = 250 as of the payment-date string 2026-06-10, paid_amount untouched, event before NULL / after 250), U2 (an already-frozen 999 is kept), U3 (voiding April reopens May and clears the lock), U4 (move-out credit freezes the older invoice 230 and its downstream target 460 as of 28 Sep).
-- Unit tests: `lib/money/late-fee-freeze.test.ts` 10 passed (same parity fixtures against calculateLateFeeAmount).
-Because record, void and settle call the changed re-derive function, U1/U3/U4 also confirm those three call sites work with the new signature.
-NOT re-run after this change: scripts 01-08 in full (08 and 07 call the same re-derive function). A final full run of 01-09 is still required.
+## Not executed
+- No screen was run in a browser (including the refunds page).
+- No two-session concurrency test (lock ordering is inspected, not raced).
+- Migrations were not replayed in order on a clean database; the dummy project was built incrementally.
+- Nothing was run against production; production schema differences are unknown (see `docs/PRODUCTION-PRECHECKS.sql`).
+- `20261002000900` is test-only and must not be applied to production.

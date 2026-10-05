@@ -1,41 +1,29 @@
-# Reserved for Opus: atomic database functions and move-out settlement
+# Notes for the external auditor
 
-Decision (user, 2026-10-03): the atomic database functions and the move-out settlement logic are written/reviewed by Opus, not by Sonnet. Sonnet work on these has been stopped.
+(File name kept for old links.) Status: October 2026, feature branch, nothing applied to production. Check these first.
 
-## Already on `main` (written by Sonnet - Opus should review before production)
-- `supabase/migrations/20261002000000_migration-money-events-and-void-payment.sql` - `void_payment_batch()`, `money_events`
-- `supabase/migrations/20261002000500_migration-record-payment-batch.sql` - `record_payment_batch()`; wired from `applyInvoicePaymentAllocation` and `applyManualInvoicePaymentAllocation` in `lib/invoice-ledger.ts`
-- Both were tested only with rollback-wrapped scenarios on the dummy project `dorm-test`.
-- Known open items on `record_payment_batch` (see findings 34-36): verify every invoice belongs to `batch.tenant_id`; STALE_INVOICE should also guard `payment_history`; round amounts to 2 decimals in the auto path before the RPC.
-- `lib/money/settlement.ts` (planner, 16 tests) exists as pure logic and is NOT wired to the move-out routes.
+## Design decisions to check
+- Global lock order in every money function (0000-0800 and 0650): tenant row, then room row, then invoice rows in ascending id, then every other row. Look for any path that takes locks in another order (deadlock risk), especially `record_payment_batch`, `void_payment_batch`, `final_settle_move_out`, `void_move_out_settlement`.
+- Carry-forward helpers in `20261002000000`: `money_carried_in_settled`, `money_downstream_ids`, `money_rederive_downstream`, `money_derive_invoice_status_cf`, `money_late_fee_amount`. Payments, voids and settlement re-derive every downstream carry-forward invoice in the same transaction (event `invoice.status_rederive`).
+- Advance rent is never refundable (owner decision): applied as credit at move-out, the rest is absorbed. Refund due = deposit left + unapplied credit only.
+- Receipts and allocations are append-only; mistakes are voided with reversing rows. Receiving account is frozen in `payment_method_snapshot`.
+- Late-fee approval mode starts only when a `late_fee_policies` row exists; with none, the old automatic behaviour is unchanged.
+- Refund and settlement reversal (`0650`) are owner-only permissions (`refund.record`, `settlement.void`) and refuse unsafe cases (live payout, room re-let, final invoice paid, negative invoice).
 
-## Stopped, unmerged branches with partial work (reference only)
-- Atomic final move-out settlement: branch `worktree-agent-adb3a1653e91d5b38` (migration number reserved: 20261002000600)
-- Atomic points redemption/reversal: branch `worktree-agent-a92576f0b35999e80` (20261002000700)
-- Late-fee post/waive functions: branch `worktree-agent-ae1e0ba69c875d367` (20261002000800)
-Planner/spec inputs: `lib/money/settlement.ts`, `lib/money/points-redemption.ts`, `lib/money/late-fee.ts`, migrations 20261002000100-400.
+## TypeScript and SQL twins that must stay in step
+| TypeScript | SQL |
+|---|---|
+| `calculateLateFeeAmount` (`lib/invoice-ledger.ts`) | `money_late_fee_amount`; parity fixtures in `lib/money/late-fee-freeze.test.ts` and `supabase/tests/09_late_fee_freeze.sql` |
+| `lib/money/carry-in.ts` | `money_carried_in_settled` / `money_derive_invoice_status_cf` |
+| `getChainOwnOutstanding` (`lib/invoice-ledger.ts`) | own-outstanding formula inside `final_settle_move_out` |
+| payload hash `lib/money/payment-payload-hash.ts` | payload-hash replay check in `record_payment_batch` |
+| `lib/money/payment-errors.ts` regexes | the exact refusal strings the SQL raises |
 
-## Still Sonnet-safe (not reserved)
-Screens, CSV/report labels, tenant/admin displays, permission wiring, non-atomic route logging, operator guide, audit brief.
-
-## Added open item (from docs review)
-- `void_payment_batch` must also reverse the `tenant_credits` 'overpayment' row created by `record_payment_batch` for the same batch (finding 44), otherwise voiding an overpaid receipt leaves orphan credit.
-
-## Additional context for the reviewer (added after the docs sync)
-- Findings 61 and 76 (`approve_paid` settled-chain branch skips the `verifying` + `slip_url` guard; admin `update_status` -> paid still allowed) touch payment flows and should be considered with the atomic function review.
-- Finding 98: `refund_due_vs_paid` excludes advance rent from refund due; confirm the rule with the owner before changing the view.
-- SQL test scripts for the atomic functions are in `supabase/tests/` once merged (the known-gap cases are intentionally failing).
-
-## From the SQL test run (supabase/tests/RESULTS.md on dorm-test)
-Findings 105-108 are defects in the atomic functions found by the rollback-wrapped tests: whitespace-only reasons accepted, excess dropped when tenant_id is NULL, allocations/paid_amount not validated, void can drive paid_amount negative. Known-gap cases (35, 36, 44) are intentionally failing in the scripts.
-
-## Owner decision (2026-10-03)
-Advance rent is NOT refundable. At move-out it is applied as credit; it never becomes refund due. Check `lib/money/settlement.ts` (`planMoveOutSettlement`) honours this: refund due may come only from the security deposit (and unapplied overpayment credit).
-
-## Status of the SQL review fixes (stopped early by the owner to save usage, 2026-10-03)
-Merged on main (commit 906ffbd): REVOKE/GRANT + search_path on 0600/0800, payload-hash replay conflict, lock-order and void-guard changes in 0000/0500/0600/0700/0800, TS payload hash (`lib/money/payment-payload-hash.ts`).
-NOT verified: the merged SQL has not been re-applied to dorm-test and the full `supabase/tests` suite has not been re-run since these edits. The agent was mid-way through restructuring `record_payment_batch`'s lock set and pre-checks; its uncommitted edits to migrations 0000, 0500, 0600 are only in worktree `.claude/worktrees/agent-a78fa26f4f033000a` (reference only, may be half done).
-Remaining from findings 138-156 and 174: (a) re-apply 0000-0800 to dorm-test and run all test scripts incl. privilege tests as anon/authenticated; (b) 0500 paid-status rule counting carried-in amounts for carry-forward targets (finding 174); (c) the single 'paid' rule across record/void/settle; (d) void clears `locked_late_fee_amount`, refuses settlement/credit batches, accounts for refund payouts; (e) `post_late_fee_charge` lock on the source invoice and setting `late_fee_billed_at`; (f) rollback notes; (g) the README go-live list for 0000-0800 (docs/README-money.md still lists only 0000-0500).
-
-## Carry-forward status pass (findings 177 / 178), Sonnet-written, please review
-Changed: 0000 (`money_carried_in_settled`, `money_downstream_ids`, `money_rederive_downstream`, `money_derive_invoice_status_cf` legacy guard, void hook), 0500 (lock set + downstream hook), 0600 (own-outstanding formula). Verified only on dorm-test by scripts 01-07. Review the lock order (sources + downstream locked in one ordered statement), the CROSS_TENANT_CARRY raise, and findings 184, 185, 188.
+## Known limitations
+- Legacy-shaped rows (`paid_amount > total - carry`, meaning paid already includes the carried part) are special-cased in both twins; the heuristic is the weakest point. Production data shape is unverified.
+- Concurrency (idempotent replay race, simultaneous void and record) was never tested with two real sessions; tests are single-session, rollback-wrapped, on dorm-test only.
+- The browser UI (refunds page, large-payment confirmation, void dialogs) was never run in a browser; only unit tests on pure logic.
+- Production state is unverified (grants, `user_roles`, `late_fee_billed_at`, `meter_readings.billing_month` are assumed). `final-schema.sql` is stale.
+- `adjustments` table has no writer and is not in `computeInvoiceTotal`; points redemption, late-fee and settlement SQL are tested only on dorm-test.
+- `approve_paid` skips the slip guard when the chain is already settled; web-admin `update_status` to paid is still allowed (findings 61, 76).
+- No automated tests for API routes.
