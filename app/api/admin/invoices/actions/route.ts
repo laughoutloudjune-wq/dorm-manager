@@ -22,6 +22,7 @@ import {
 import { INVOICE_MONEY_COLUMNS, diffMoneyColumns, invoicesBlockedFromDelete } from "@/lib/money/money-diff";
 import { toLocalDateString, toNumber } from "@/lib/format";
 import { generateInvoicesForPeriod } from "@/lib/invoice-generation";
+import { paymentErrorStatus } from "@/lib/money/payment-errors";
 import { syncPointsForTenant } from "@/lib/points-ledger";
 import { notifyTenantPointsEarned } from "@/lib/points-notify";
 import { declinePaymentSlip } from "@/lib/slip-review";
@@ -661,6 +662,11 @@ export async function POST(req: Request) {
       const month = Number(body?.month);
       if (!year || !month) {
         return NextResponse.json({ error: "Missing year or month." }, { status: 400 });
+      }
+      // Reading the list must not rewrite totals for roles that cannot edit invoices (finding 162): without
+      // invoice.edit the list still loads, nothing is written and nothing is logged.
+      if (!auth.matrix[auth.role]?.["invoice.edit"]) {
+        return NextResponse.json({ success: true, skipped: true });
       }
 
       const periodStart = toLocalDateString(new Date(year, month - 1, 1));
@@ -1510,7 +1516,7 @@ export async function POST(req: Request) {
   } catch (error: any) {
     return NextResponse.json(
       { error: error?.message ?? "Unexpected server error." },
-      { status: 500 }
+      { status: paymentErrorStatus(error?.message) }
     );
   }
 }

@@ -259,6 +259,13 @@ export function buildFinalSettlementRpcPayload(args: BuildRpcArgs) {
       common_fee: charges.commonFee,
       ...columns,
       additional_fees_breakdown: breakdown,
+      // The credit used on the final bill is recorded as a protected discount line (source 'move_out_credit'),
+      // so a later invoice edit or recompute from the breakdown cannot erase it and make the tenant owe the
+      // already-consumed deposit again (finding 167). It is not cash.
+      discount_breakdown:
+        plan.finalBillPaidFromCredit > 0
+          ? [{ source: "move_out_credit", label: "หักจากเงินประกัน/ค่าเช่าล่วงหน้าที่ถืออยู่ (ไม่ใช่เงินสด)", amount: plan.finalBillPaidFromCredit }]
+          : [],
       electricity_reading_start: args.finalInvoice.meter.electricityStart,
       electricity_reading_end: args.finalInvoice.meter.electricityEnd,
       water_reading_start: args.finalInvoice.meter.waterStart,

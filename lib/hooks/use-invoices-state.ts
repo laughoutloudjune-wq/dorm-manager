@@ -758,6 +758,18 @@ export function useInvoicesState() {
       return;
     }
 
+    // A typo (50,000 for 5,000) would otherwise be kept as tenant credit without anyone noticing (finding 169).
+    // Any amount above what this invoice shows as still due needs an explicit yes. The server still decides what
+    // is applied to debt; whatever is left over is recorded as tenant credit, never dropped.
+    if (inputAmount > remaining + 0.005) {
+      const proceed = window.confirm(
+        `จำนวนที่กรอก ${formatMoney(inputAmount)} มากกว่ายอดคงเหลือของใบแจ้งหนี้นี้ ${formatMoney(remaining)}
+
+ส่วนที่เกินหนี้ทั้งหมดของผู้เช่าจะถูกเก็บเป็นเครดิตของผู้เช่า (ไม่ใช่รายได้) ยืนยันบันทึกหรือไม่?`,
+      );
+      if (!proceed) return;
+    }
+
     const finalPaymentMode =
       remaining > 0 && amountToPay >= remaining ? "full" : "partial";
 

@@ -402,7 +402,7 @@ BEGIN
             id, tenant_id, room_id, status, start_date, end_date, issue_date, due_date,
             rent_amount, water_bill, electricity_bill, common_fee, discount_amount,
             late_fee_amount, carry_forward_amount, additional_fees_total,
-            additional_fees_breakdown, total_amount, paid_amount,
+            additional_fees_breakdown, discount_breakdown, total_amount, paid_amount,
             electricity_reading_start, electricity_reading_end,
             water_reading_start, water_reading_end, notes
         ) VALUES (
@@ -415,7 +415,7 @@ BEGIN
             (v_inv->>'electricity_bill')::numeric, (v_inv->>'common_fee')::numeric,
             (v_inv->>'discount_amount')::numeric, (v_inv->>'late_fee_amount')::numeric,
             (v_inv->>'carry_forward_amount')::numeric, (v_inv->>'additional_fees_total')::numeric,
-            COALESCE(v_inv->'additional_fees_breakdown', '[]'::jsonb), v_engine_total, 0,
+            COALESCE(v_inv->'additional_fees_breakdown', '[]'::jsonb), COALESCE(v_inv->'discount_breakdown', '[]'::jsonb), v_engine_total, 0,
             NULLIF(v_inv->>'electricity_reading_start', '')::numeric,
             NULLIF(v_inv->>'electricity_reading_end', '')::numeric,
             NULLIF(v_inv->>'water_reading_start', '')::numeric,

@@ -154,4 +154,26 @@ describe("buildFinalSettlementRpcPayload", () => {
     expect(p.invoice).toBeNull();
     expect(p.charges).toBeNull();
   });
+
+  // finding 167: the credit used on the final bill is also stored as a protected discount line.
+  const buildWithCredit = (finalBillPaidFromCredit: number) =>
+    buildFinalSettlementRpcPayload({
+      tenantId: "t", roomId: "r", idempotencyKey: "k", moveOutDate: "2026-09-28", createdBy: "admin",
+      paidAt: "2026-09-28T00:00:00Z",
+      plan: { ...plan, finalBillPaidFromCredit } as any,
+      period, openInvoices, source: "credit",
+      finalInvoice: {
+        id: "f", issueDate: "2026-09-28", dueDate: "2026-10-05", notes: "x",
+        meter: { electricityStart: 100, electricityEnd: 130, waterStart: 10, waterEnd: 15 },
+      },
+    });
+  it("adds one move_out_credit discount line equal to the credit used, so an invoice edit cannot erase it", () => {
+    const p = buildWithCredit(plan.finalBillPaidFromCredit);
+    expect((p.invoice as any).discount_breakdown).toEqual([
+      expect.objectContaining({ source: "move_out_credit", amount: plan.finalBillPaidFromCredit }),
+    ]);
+  });
+  it("adds no discount line when no credit was used on the final bill", () => {
+    expect((buildWithCredit(0).invoice as any).discount_breakdown).toEqual([]);
+  });
 });

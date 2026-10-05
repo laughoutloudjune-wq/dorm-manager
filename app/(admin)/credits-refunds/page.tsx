@@ -11,6 +11,9 @@ import { EmptyState, Notice, PageHeader, Skeleton } from "@/components/ui/Page";
 import { Table, TableCard, TBody, TD, TH, THead, TR } from "@/components/ui/Table";
 import { tenantDeepLink } from "@/lib/deep-links";
 import { createClient } from "@/lib/supabase-client";
+import { usePermissions } from "@/lib/use-permissions";
+import { RecordPayoutModal, VoidPayoutModal } from "@/components/admin/refunds/RefundModals";
+import { SettlementsSection } from "@/components/admin/refunds/SettlementsSection";
 import {
   CREDIT_LABELS,
   PAYOUT_COLUMN_LABELS,
@@ -63,6 +66,15 @@ export default function CreditsRefundsPage() {
   const [report, setReport] = useState<Report | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const { can } = usePermissions();
+  const canRecord = can("refund.record");
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [payTarget, setPayTarget] = useState<{ tenantId: string; tenantName: string | null; outstanding: number } | null>(null);
+  const [voidTarget, setVoidTarget] = useState<NamedPayout | null>(null);
+  const refreshAll = () => {
+    setRefreshKey((k) => k + 1);
+    void load();
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -120,8 +132,8 @@ export default function CreditsRefundsPage() {
         }
       />
 
-      <Notice tone="info" icon={<ShieldCheck className="h-5 w-5" />} title="หน้านี้รายงานเท่านั้น ไม่แก้ไขข้อมูล">
-        ระบบเพียงอ่านและแสดงยอด ไม่มีการบันทึกการคืนเงิน ปรับเครดิต หรือแก้ไขรายการใด ๆ จากหน้านี้
+      <Notice tone="info" icon={<ShieldCheck className="h-5 w-5" />} title="ค่าเช่าล่วงหน้าไม่สามารถคืนเงินได้">
+        ยอดที่ต้องคืนคือเงินประกันที่เหลือหลังสรุปยอดย้ายออกเท่านั้น การบันทึกการจ่ายเงินคืนและการยกเลิกทำได้เฉพาะผู้มีสิทธิ์
       </Notice>
 
       {error ? (
@@ -238,6 +250,7 @@ export default function CreditsRefundsPage() {
                         <TH className="text-right">{CREDIT_LABELS.refundDue}</TH>
                         <TH className="text-right">{CREDIT_LABELS.refundPaid}</TH>
                         <TH className="text-right">{CREDIT_LABELS.refundOutstanding}</TH>
+                        {canRecord ? <TH /> : null}
                       </TR>
                     </THead>
                     <TBody>
@@ -259,6 +272,20 @@ export default function CreditsRefundsPage() {
                               formatBaht(0)
                             )}
                           </TD>
+                          {canRecord ? (
+                            <TD className="text-right">
+                              {r.outstanding > 0 ? (
+                                <Button
+                                  size="sm"
+                                  onClick={() =>
+                                    setPayTarget({ tenantId: r.tenantId, tenantName: r.tenantName, outstanding: r.outstanding })
+                                  }
+                                >
+                                  บันทึกการจ่ายเงินคืน
+                                </Button>
+                              ) : null}
+                            </TD>
+                          ) : null}
                         </TR>
                       ))}
                     </TBody>
@@ -287,6 +314,7 @@ export default function CreditsRefundsPage() {
                         <TH>{PAYOUT_COLUMN_LABELS.recipient}</TH>
                         <TH>{PAYOUT_COLUMN_LABELS.reference}</TH>
                         <TH>{PAYOUT_COLUMN_LABELS.status}</TH>
+                        {canRecord ? <TH /> : null}
                       </TR>
                     </THead>
                     <TBody>
@@ -308,6 +336,15 @@ export default function CreditsRefundsPage() {
                               <p className="mt-1 text-2xs text-slate-400">{p.voidReason}</p>
                             ) : null}
                           </TD>
+                          {canRecord ? (
+                            <TD className="text-right">
+                              {!p.voided ? (
+                                <Button variant="danger" size="sm" onClick={() => setVoidTarget(p)}>
+                                  ยกเลิกรายการจ่าย
+                                </Button>
+                              ) : null}
+                            </TD>
+                          ) : null}
                         </TR>
                       ))}
                     </TBody>
@@ -318,6 +355,27 @@ export default function CreditsRefundsPage() {
           ) : null}
         </>
       ) : null}
+
+      <SettlementsSection canVoid={can("settlement.void")} refreshKey={refreshKey} onChanged={refreshAll} />
+
+      <RecordPayoutModal
+        target={payTarget}
+        onClose={() => setPayTarget(null)}
+        onDone={() => {
+          setPayTarget(null);
+          toast.success("บันทึกการจ่ายเงินคืนแล้ว");
+          refreshAll();
+        }}
+      />
+      <VoidPayoutModal
+        payout={voidTarget}
+        onClose={() => setVoidTarget(null)}
+        onDone={() => {
+          setVoidTarget(null);
+          toast.success("ยกเลิกรายการจ่ายแล้ว");
+          refreshAll();
+        }}
+      />
 
       {report ? (
         <p className="text-xs text-slate-400">

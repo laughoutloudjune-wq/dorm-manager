@@ -44,6 +44,7 @@ RETURNS jsonb LANGUAGE sql AS $f$
       'issue_date', '2026-09-28', 'due_date', '2026-10-05', 'rent_amount', 0, 'water_bill', 0, 'electricity_bill', 0,
       'common_fee', 0, 'late_fee_amount', 0, 'additional_fees_total', fees, 'carry_forward_amount', 0,
       'discount_amount', discount, 'total_amount', fees - discount,
+      'discount_breakdown', CASE WHEN discount > 0 THEN jsonb_build_array(jsonb_build_object('source','move_out_credit','label','credit','amount',discount)) ELSE '[]'::jsonb END,
       'additional_fees_breakdown', jsonb_build_array(jsonb_build_object('item_type','prorate_rent','label','prorate','amount',fees)),
       'notes', 'test'),
     'charges', jsonb_build_object('rent', 0, 'water', 0, 'electricity', 0, 'commonFee', 0, 'nativeLateFee', 0,
@@ -83,6 +84,10 @@ BEGIN
       AND (v_res->'downstream_updated') @> to_jsonb(v_b::text)
     THEN 'PASS  M1 credit pays the older invoice and its target settles in the same call (A '||pg_temp.st(v_a)||', B '||pg_temp.st(v_b)||', paid_amount of B untouched)'
     ELSE 'FAIL  M1 '||left(v_r,200)||' A='||pg_temp.st(v_a)||' B='||pg_temp.st(v_b) END;
+  SELECT count(*) INTO v_n FROM invoices WHERE tenant_id = v_t AND discount_amount = 1000
+     AND discount_breakdown @> '[{"source":"move_out_credit","amount":1000}]'::jsonb;
+  v_out := v_out || E'\n' || CASE WHEN v_n = 1 THEN 'PASS  M5 the final invoice stores the applied credit as a protected move_out_credit discount line'
+    ELSE 'FAIL  M5 final invoices with the line='||v_n END;
   SELECT count(*) INTO v_n FROM money_events WHERE invoice_id = v_b AND action = 'invoice.status_rederive'
      AND payment_batch_id = v_batch AND source = 'final_settle_move_out';
   v_out := v_out || E'\n' || CASE WHEN v_n = 1 THEN 'PASS  M4 one invoice.status_rederive event, tied to the settlement payment batch'

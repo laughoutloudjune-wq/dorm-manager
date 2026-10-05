@@ -1848,6 +1848,20 @@ export async function getPaymentChainOutstanding(
   );
 }
 
+/**
+ * Follow-up bookkeeping that runs AFTER a payment has already been committed (fee billing, carry-forward
+ * re-pricing). The payment is final at that point, so a failure here must not turn a recorded payment into a
+ * 500: the admin would re-enter it with a fresh key and record it twice (finding 166). Log and carry on; the
+ * next sync or recalculation repeats the work.
+ */
+const afterCommit = async (label: string, work: () => Promise<unknown>) => {
+  try {
+    await work();
+  } catch (err) {
+    console.error(`[invoice-ledger] post-payment step "${label}" failed after the payment was committed:`, err);
+  }
+};
+
 export async function applyInvoicePaymentAllocation(
   supabase: SupabaseClient,
   options: ApplyPaymentOptions,
@@ -2170,10 +2184,12 @@ export async function applyInvoicePaymentAllocation(
   // payment just settled onto the tenant's next invoice, if one already
   // exists and is still open. See autoBillUnbilledLateFees for why this is
   // needed on top of the freeze itself.
-  await autoBillUnbilledLateFees(
-    supabase,
-    String((freshTargetInvoice as any).tenant_id ?? ""),
-    updates.map((item) => item.invoiceId),
+  await afterCommit("autoBillUnbilledLateFees", () =>
+    autoBillUnbilledLateFees(
+      supabase,
+      String((freshTargetInvoice as any).tenant_id ?? ""),
+      updates.map((item) => item.invoiceId),
+    ),
   );
 
   const updatedInvoiceIds = updates.map((item) => item.invoiceId);
@@ -2398,11 +2414,11 @@ export async function applyManualInvoicePaymentAllocation(
   // carried debt needs its own total refreshed too, or it would keep
   // showing the pre-payment figure until someone happened to open it and
   // click recalculate by hand.
-  await refreshCarryForwardTargets(supabase, tenantId, invoiceIds);
+  await afterCommit("refreshCarryForwardTargets", () => refreshCarryForwardTargets(supabase, tenantId, invoiceIds));
 
   // Same reasoning as applyInvoicePaymentAllocation: push any newly-frozen,
   // still-unbilled late fee onto the tenant's next open invoice automatically.
-  await autoBillUnbilledLateFees(supabase, tenantId, invoiceIds);
+  await afterCommit("autoBillUnbilledLateFees", () => autoBillUnbilledLateFees(supabase, tenantId, invoiceIds));
 
   const updatedInvoiceIds = updates.map((item) => item.invoiceId);
   const { data: updatedInvoices, error: updatedError } = await supabase
