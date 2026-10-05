@@ -729,8 +729,21 @@ export const parsePaymentMethodText = (method: any): string => {
 
 // ── Invoice display helpers ───────────────────────────────────────────────────
 
-export const invoiceDisplayOutstanding = (invoice: { total_amount: number; paid_amount: number }) =>
-  Math.max(0, toNumber(invoice.total_amount) - toNumber(invoice.paid_amount));
+/**
+ * Per-invoice "remaining / amount due". The status wins: a paid or cancelled invoice owes
+ * nothing, even when total - paid_amount is positive (a carried-in share is settled on its
+ * source invoice, so paid_amount alone under-reads it). Otherwise max(0, total - paid).
+ * For SUMS across invoices never add this up; use sumOwnOutstanding (lib/invoice-ledger).
+ */
+export const invoiceDisplayOutstanding = (invoice: {
+  total_amount: number | string | null | undefined;
+  paid_amount: number | string | null | undefined;
+  status?: string | null;
+}) => {
+  const status = String(invoice.status ?? "");
+  if (status === "paid" || status === "cancelled") return 0;
+  return Math.max(0, toNumber(invoice.total_amount) - toNumber(invoice.paid_amount));
+};
 
 // ── Transfer rent proration (invoice version) ─────────────────────────────────
 // NOTE: This is the InvoicesPageView version which takes periodStart/periodEnd as params.

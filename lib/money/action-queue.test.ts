@@ -48,6 +48,7 @@ describe("action queue helpers", () => {
       "2026-10-03"
     );
     expect(rows.map((r) => r.invoiceId)).toEqual(["a", "e"]);
+    expect(rows[1].outstanding).toBe(4000);
     // 2026-09-06..2026-10-03 = 28 days x 50
     expect(rows[0].estimate.amount).toBe(1400);
     expect(rows[0].locked).toBeNull();
@@ -64,5 +65,27 @@ describe("action queue helpers", () => {
         { key: "refunds", count: 9, state: "unavailable" },
       ])
     ).toBe(2);
+  });
+});
+
+describe("late-fee base uses own outstanding", () => {
+  const settings = { late_fee_start_day: 6, late_fee_per_day: 50 };
+  const row = (inv: object) =>
+    buildLateFeeRows(
+      [{ id: "m", status: "overdue", due_date: "2026-09-05", total_amount: 7594, paid_amount: 0, ...inv }],
+      settings,
+      "2026-10-03"
+    );
+
+  it("excludes the carried-in share from the base", () => {
+    expect(row({ carry_forward_amount: 1400 })[0].outstanding).toBe(6194);
+  });
+
+  it("drops the invoice when only carried debt remains", () => {
+    expect(row({ carry_forward_amount: 1400, paid_amount: 6194 })).toEqual([]);
+  });
+
+  it("keeps total - paid for a legacy row whose paid already includes the carry", () => {
+    expect(row({ carry_forward_amount: 1400, paid_amount: 7000 })[0].outstanding).toBe(594);
   });
 });

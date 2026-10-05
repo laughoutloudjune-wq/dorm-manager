@@ -33,7 +33,7 @@ export async function GET(req: Request) {
       supabase
         .from("invoices")
         .select(
-          "id,tenant_id,status,due_date,total_amount,paid_amount,slip_url,slip_uploaded_at,late_fee_start_date,late_fee_per_day,locked_late_fee_amount,tenants(full_name),rooms(room_number)"
+          "id,tenant_id,status,due_date,total_amount,paid_amount,carry_forward_amount,slip_url,slip_uploaded_at,late_fee_start_date,late_fee_per_day,locked_late_fee_amount,tenants(full_name),rooms(room_number)"
         )
         .in("status", ["verifying", "pending", "partial", "overdue"])
         .limit(5000),

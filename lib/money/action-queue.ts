@@ -2,6 +2,7 @@
  * Pure helpers for the admin action queue. READ ONLY: nothing here posts a fee,
  * moves money or changes a status. It only decides what is waiting for a person.
  */
+import { isLegacyInflatedPaid } from "@/lib/money/carry-in";
 import { estimateLateFee, type LateFeeEstimate, type LateFeePolicy } from "@/lib/money/late-fee";
 
 export type QueueSettings = {
@@ -15,6 +16,8 @@ export type QueueInvoice = {
   due_date: string | null;
   total_amount: number | null;
   paid_amount: number | null;
+  /** Carried-in share of total_amount. Without it the base falls back to raw total - paid. */
+  carry_forward_amount?: number | null;
   slip_url?: string | null;
   late_fee_start_date?: string | null;
   late_fee_per_day?: number | null;
@@ -98,7 +101,13 @@ export function buildLateFeeRows(invoices: QueueInvoice[], settings: QueueSettin
   for (const inv of invoices) {
     if (!inv.due_date || !["pending", "partial", "overdue"].includes(inv.status ?? "")) continue;
     if (inv.due_date >= today) continue;
-    const outstanding = Math.max(0, num(inv.total_amount) - num(inv.paid_amount));
+    // Own outstanding (same rule as getChainOwnOutstanding, inlined: invoice-ledger imports this
+    // file): the carried-in share is billed on its source invoice, so it is not part of the base.
+    const carry = Math.max(0, num(inv.carry_forward_amount));
+    const outstanding =
+      carry > 0 && !isLegacyInflatedPaid(inv.total_amount, inv.paid_amount, carry)
+        ? Math.max(0, num(inv.total_amount) - carry - num(inv.paid_amount))
+        : Math.max(0, num(inv.total_amount) - num(inv.paid_amount));
     if (outstanding <= 0) continue;
     const policy = buildDefaultLateFeePolicy(settings, inv);
     const estimate = estimateLateFee(policy, {

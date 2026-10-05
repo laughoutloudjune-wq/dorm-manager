@@ -369,6 +369,8 @@ export function runReconciliation(input: ReconciliationInput): ReconciliationFin
     const src = invoiceById.get(source);
     if (!src) continue;
     const carried = rows.reduce((s, c) => s + cfAmount(c), 0);
+    // A fully settled source cannot "exceed": its debt is paid, so nothing is left to double-bill.
+    if (toSatang(src.paid_amount) >= toSatang(src.total_amount)) continue;
     const outstanding = Math.max(0, toSatang(src.total_amount) - toSatang(src.paid_amount));
     if (carried <= outstanding) continue;
     findings.push({

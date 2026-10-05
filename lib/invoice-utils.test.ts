@@ -6,7 +6,9 @@ import {
   paymentSourceLabel,
   isNonCashPaymentSource,
   lateFeeLineTotal,
+  invoiceDisplayOutstanding,
 } from "./invoice-utils";
+import { getChainOwnOutstanding, sumOwnOutstanding } from "./invoice-ledger";
 
 describe("dailyRentRate", () => {
   it("splits monthly rent over a fixed 30-day cycle, rounded down to a whole baht", () => {
@@ -114,5 +116,25 @@ describe("lateFeeLineTotal", () => {
 
   it("falls back to `amount` when `total_amount` is absent", () => {
     expect(lateFeeLineTotal([{ item_type: "late_fee_line", amount: 800 }])).toBe(800);
+  });
+});
+
+describe("invoiceDisplayOutstanding (R1) and chain totals (R2)", () => {
+  it("shows 0 for a paid invoice even when total - paid is positive", () => {
+    expect(invoiceDisplayOutstanding({ total_amount: 7594, paid_amount: 6194, status: "paid" })).toBe(0);
+    expect(invoiceDisplayOutstanding({ total_amount: 100, paid_amount: 0, status: "cancelled" })).toBe(0);
+  });
+  it("shows total - paid for partial and never negative", () => {
+    expect(invoiceDisplayOutstanding({ total_amount: 5000, paid_amount: 1500, status: "partial" })).toBe(3500);
+    expect(invoiceDisplayOutstanding({ total_amount: 100, paid_amount: 150, status: "pending" })).toBe(0);
+    expect(invoiceDisplayOutstanding({ total_amount: "100", paid_amount: "40" })).toBe(60);
+  });
+  it("counts a carried April/May chain once", () => {
+    const april = { total_amount: 1400, paid_amount: 0, carry_forward_amount: 0 };
+    const may = { total_amount: 7594, paid_amount: 6194, carry_forward_amount: 1400 };
+    expect(sumOwnOutstanding([april, may])).toBe(1400);
+    expect(sumOwnOutstanding([{ ...april, paid_amount: 1400 }, may])).toBe(0);
+    expect(getChainOwnOutstanding({ id: "may", ...may })).toBe(0);
+    expect(getChainOwnOutstanding({ id: "apr", ...april })).toBeGreaterThan(0); // debtor gate
   });
 });

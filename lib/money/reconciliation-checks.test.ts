@@ -209,6 +209,19 @@ describe("runReconciliation", () => {
       expect(f[0]).toMatchObject({ severity: "medium", amount: 500 });
     });
 
+    it("does not flag exceeds when the source is fully settled", () => {
+      const f = only(
+        run((i) => {
+          const d = i.invoices.find((x) => x.id === "D")!;
+          d.status = "paid";
+          d.paid_amount = 2000;
+          i.carryForwards[0].amount = 2500;
+        }),
+        "carry_forward"
+      ).filter((x) => x.id.startsWith("carry_forward:exceeds"));
+      expect(f).toEqual([]);
+    });
+
     it("sums carry rows across multiple targets", () => {
       const f = only(run((i) => i.carryForwards.push({ source_invoice_id: "D", target_invoice_id: "B", amount: 900 })), "carry_forward");
       expect(f).toHaveLength(1);

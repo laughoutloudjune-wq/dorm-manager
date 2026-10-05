@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/admin-api-auth";
 import { toNumber, formatMoney } from "@/lib/format";
-import { sumOwnOutstanding } from "@/lib/invoice-ledger";
+import { getInvoiceOwnOutstanding, sumOwnOutstanding } from "@/lib/invoice-ledger";
 import { BASIS_LABELS, fetchReceiptLedger, summarizeByReceiptMonth } from "@/lib/money/report-definitions";
 
 const monthKey = (value: string) => String(value).slice(0, 7);
@@ -214,7 +214,7 @@ export async function GET(req: Request) {
         creditApplied: receipts.creditApplied,
         outstanding: monthInvoices
           .filter((invoice) => ["pending", "partial", "overdue", "verifying"].includes(String(invoice.status)))
-          .reduce((sum, invoice) => sum + Math.max(toNumber(invoice.total_amount) - toNumber(invoice.paid_amount), 0), 0),
+          .reduce((sum, invoice) => sum + getInvoiceOwnOutstanding(invoice as any), 0),
       };
     });
 

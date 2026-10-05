@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ArrowLeft, UploadCloud } from "lucide-react";
 import type { TenantStatement } from "@/lib/money/tenant-statement";
+import { getInvoiceOwnOutstanding } from "@/lib/invoice-ledger";
 import { appliedToLabel, balanceDiffersFromLegacy, displayBalance } from "@/lib/money/statement-display";
 
 type TenantInfo = {
@@ -19,6 +20,7 @@ type InvoiceRow = {
   due_date: string;
   total_amount: number;
   paid_amount?: number;
+  carry_forward_amount?: number;
   status?: string;
   late_fee_amount?: number;
   /** Additive; null/absent when the server could not build one. */
@@ -30,7 +32,21 @@ const NGROK_SKIP_QUERY = "ngrok-skip-browser-warning=true";
 const formatMoney = (value: number) =>
   Number(value || 0).toLocaleString("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-const outstandingAmount = (invoice: InvoiceRow) => displayBalance(invoice, invoice.statement);
+const isSettledStatus = (invoice: InvoiceRow) => invoice.status === "paid" || invoice.status === "cancelled";
+
+// Per-row figure: a paid/cancelled invoice never shows money due.
+const outstandingAmount = (invoice: InvoiceRow) =>
+  isSettledStatus(invoice) ? 0 : displayBalance(invoice, invoice.statement);
+
+// Sum across rows: own-outstanding so a debt carried into a newer invoice counts once.
+const ownOutstandingForTotal = (invoice: InvoiceRow) =>
+  isSettledStatus(invoice)
+    ? 0
+    : getInvoiceOwnOutstanding({
+        total_amount: Number(invoice.total_amount ?? 0),
+        paid_amount: Number(invoice.paid_amount ?? 0),
+        carry_forward_amount: Number(invoice.carry_forward_amount ?? 0),
+      });
 
 function StatementDetails({ invoice }: { invoice: InvoiceRow }) {
   const st = invoice.statement;
@@ -256,7 +272,7 @@ export default function PaymentLiffCurrentInvoicesPage() {
   );
 
   const grandTotal = useMemo(
-    () => selectedInvoices.reduce((sum, invoice) => sum + outstandingAmount(invoice), 0),
+    () => selectedInvoices.reduce((sum, invoice) => sum + ownOutstandingForTotal(invoice), 0),
     [selectedInvoices]
   );
 

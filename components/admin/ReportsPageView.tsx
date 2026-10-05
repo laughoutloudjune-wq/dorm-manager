@@ -975,7 +975,7 @@ export default function ReportsPageView() {
         // AMOUNT added to the tenant's running total switches to the
         // invoice's own portion, so a tenant behind on two carried invoices
         // doesn't have the same debt added twice.
-        const outstanding = invoice.total_amount - invoice.paid_amount;
+        const outstanding = getChainOwnOutstanding(invoice as any);
         if (outstanding > 0) {
           const tenantId = invoice.tenant_id || invoice.tenant_name || "unknown";
           if (!tenantDebts.has(tenantId)) {

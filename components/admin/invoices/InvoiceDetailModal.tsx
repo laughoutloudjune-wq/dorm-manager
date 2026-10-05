@@ -504,6 +504,7 @@ const loadChains = async () => {
                       invoiceDisplayOutstanding({
                         total_amount: form.total_amount,
                         paid_amount: toNumber(form.paid_amount),
+                        status: form.status,
                       })
                     )}
                   </span>

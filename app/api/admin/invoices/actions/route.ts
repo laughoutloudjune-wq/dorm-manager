@@ -1057,7 +1057,7 @@ export async function POST(req: Request) {
       if (!tenantId) return NextResponse.json({ error: "Missing tenantId." }, { status: 400 });
       const { data, error } = await auth.supabase
         .from("invoices")
-        .select("id,start_date,total_amount,paid_amount,status")
+        .select("id,start_date,total_amount,paid_amount,carry_forward_amount,status")
         .eq("tenant_id", tenantId)
         .in("status", OPEN_INVOICE_STATUSES as unknown as string[])
         .order("start_date", { ascending: true });

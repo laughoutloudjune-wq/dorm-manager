@@ -1,5 +1,6 @@
 "use client";
 
+import { getChainOwnOutstanding } from "@/lib/invoice-ledger";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/Badge";
 import { Modal } from "@/components/ui/Modal";
@@ -736,6 +737,7 @@ export function useInvoicesState() {
     const remaining = invoiceDisplayOutstanding({
       total_amount: total,
       paid_amount: currentPaid,
+      status: activeInvoice.status,
     });
 
     const inputAmount = toNumber(paymentAmountInput);
@@ -846,6 +848,7 @@ export function useInvoicesState() {
       const newRemaining = invoiceDisplayOutstanding({
         total_amount: toNumber(form.total_amount || activeInvoice.total_amount),
         paid_amount: activeNext.paid_amount,
+        status: activeNext.status,
       });
       setPaymentAmountInput(newRemaining > 0 ? String(newRemaining) : "");
 
@@ -914,10 +917,14 @@ export function useInvoicesState() {
           start_date: String(row.start_date ?? ""),
           total_amount: toNumber(row.total_amount),
           paid_amount: toNumber(row.paid_amount),
-          outstanding: Math.max(
-            0,
-            toNumber(row.total_amount) - toNumber(row.paid_amount),
-          ),
+          // What this invoice itself still owes (own share), so a carried debt that is listed on
+          // its source invoice is offered once, not on both rows.
+          outstanding: getChainOwnOutstanding({
+            id: String(row.id),
+            total_amount: row.total_amount,
+            paid_amount: row.paid_amount,
+            carry_forward_amount: row.carry_forward_amount,
+          }),
         }))
         .filter((row: any) => row.outstanding > 0);
       setSplitPaymentInvoices(rows);
@@ -1340,6 +1347,7 @@ export function useInvoicesState() {
     const remaining = invoiceDisplayOutstanding({
       total_amount: invoice.total_amount,
       paid_amount: invoice.paid_amount,
+      status: invoice.status,
     });
     setPaymentAmountInput(remaining > 0 ? String(remaining) : "");
     
