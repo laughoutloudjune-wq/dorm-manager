@@ -244,3 +244,13 @@ Executed fresh after these edits:
 - Unit tests: 480 passed, 3 todo (34 files); `tsc --noEmit` clean.
 NOT re-run after these edits: scripts 01-06 and the rest of 07. The fresh full-run table above remains valid only for the function versions it
 lists; `money_carried_in_settled` and `final_settle_move_out` have changed since. A final full run of 01-08 is still required.
+
+## Item 3 (late-fee freeze when propagation marks an invoice paid) - partial run, dorm-test only
+Project: dorm-test, project_id rghxelkifdrpvabyxopb. Functions changed and verified identical to the migration files (normalized body hash):
+`money_late_fee_amount` 06e78862..(221, new), `money_rederive_downstream` 3952f9b5..(1456, now 8 args, last `p_paid_date text DEFAULT NULL`),
+`record_payment_batch` 8834efa1..(13883), `final_settle_move_out` d3a26d40..(21590); `void_payment_batch` unchanged f714c882..(8114).
+Executed fresh after these edits:
+- 09_late_fee_freeze.sql (new): 5 PASS lines, 0 FAIL - P1-P9 (9 parity fixtures: money_late_fee_amount returns exactly the numbers the TypeScript fixtures expect), U1 (paying April freezes May's fee: 5 days x 50 = 250 as of the payment-date string 2026-06-10, paid_amount untouched, event before NULL / after 250), U2 (an already-frozen 999 is kept), U3 (voiding April reopens May and clears the lock), U4 (move-out credit freezes the older invoice 230 and its downstream target 460 as of 28 Sep).
+- Unit tests: `lib/money/late-fee-freeze.test.ts` 10 passed (same parity fixtures against calculateLateFeeAmount).
+Because record, void and settle call the changed re-derive function, U1/U3/U4 also confirm those three call sites work with the new signature.
+NOT re-run after this change: scripts 01-08 in full (08 and 07 call the same re-derive function). A final full run of 01-09 is still required.

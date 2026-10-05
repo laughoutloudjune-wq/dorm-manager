@@ -494,6 +494,9 @@ BEGIN
             UPDATE public.invoices SET
                 paid_amount = v_new_paid,
                 status = v_new_status,
+                locked_late_fee_amount = CASE WHEN v_new_status::text = 'paid' AND locked_late_fee_amount IS NULL
+                    THEN public.money_late_fee_amount(late_fee_start_date, late_fee_per_day, waived_late_fee_amount, NULL, left(p->>'paid_at', 10)::date)
+                    ELSE locked_late_fee_amount END,
                 payment_history = COALESCE(payment_history, '[]'::jsonb) || jsonb_build_array(jsonb_build_object(
                     'amount', v_amt, 'mode', 'credit', 'paid_at', v_paid_at, 'slip_url', NULL,
                     'created_at', now(), 'source', v_source, 'payment_batch_id', v_batch_id,
@@ -510,7 +513,7 @@ BEGIN
 
         SELECT array_agg((d->>'invoiceId')::uuid) INTO v_debt_ids
         FROM jsonb_array_elements(v_s->'debtPayments') d WHERE (d->>'paidFromCredit')::numeric > 0;
-        v_downstream := public.money_rederive_downstream(v_debt_ids, '{}'::jsonb, v_today, v_batch_id, v_by, v_tenant, 'final_settle_move_out');
+        v_downstream := public.money_rederive_downstream(v_debt_ids, '{}'::jsonb, v_today, v_batch_id, v_by, v_tenant, 'final_settle_move_out', left(p->>'paid_at', 10));
 
         INSERT INTO public.money_events (action, actor_user_id, tenant_id, invoice_id, payment_batch_id, room_id, after, reason, source)
         VALUES ('payment.record', v_by, v_tenant, v_trigger_inv, v_batch_id, v_room,

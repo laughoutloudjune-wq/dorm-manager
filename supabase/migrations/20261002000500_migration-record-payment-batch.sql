@@ -429,7 +429,8 @@ BEGIN
 
     ------------------------------------------------------------------ write: allocations, credit, event
     v_downstream := public.money_rederive_downstream(v_src_ids, v_overrides,
-        (v_paid_at AT TIME ZONE 'Asia/Bangkok')::date, v_batch_id, v_batch->>'created_by', v_lock_tenant, 'record_payment_batch');
+        (v_paid_at AT TIME ZONE 'Asia/Bangkok')::date, v_batch_id, v_batch->>'created_by', v_lock_tenant, 'record_payment_batch',
+        left(v_batch->>'paid_at', 10));
 
     INSERT INTO public.invoice_payment_allocations (
         payment_batch_id, trigger_invoice_id, invoice_id, amount, paid_at, slip_url,

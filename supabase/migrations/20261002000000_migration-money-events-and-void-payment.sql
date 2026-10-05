@@ -223,9 +223,28 @@ AS $$
     SELECT COALESCE(array_agg(DISTINCT id ORDER BY id), '{}'::uuid[]) FROM d
 $$;
 
+CREATE OR REPLACE FUNCTION public.money_late_fee_amount(
+    p_start DATE, p_rate NUMERIC, p_waived NUMERIC, p_locked NUMERIC, p_as_of DATE
+) RETURNS NUMERIC
+LANGUAGE sql
+IMMUTABLE
+SET search_path = public, pg_temp
+AS $$
+    SELECT CASE
+        WHEN p_locked IS NOT NULL THEN GREATEST(0, p_locked)
+        WHEN p_start IS NULL OR COALESCE(p_rate, 0) <= 0 OR p_as_of IS NULL OR p_as_of < p_start THEN 0
+        ELSE GREATEST(0, round(((p_as_of - p_start) + 1) * p_rate - GREATEST(0, COALESCE(p_waived, 0)), 2))
+    END
+$$;
+
+COMMENT ON FUNCTION public.money_late_fee_amount(DATE, NUMERIC, NUMERIC, NUMERIC, DATE) IS
+    'SQL twin of calculateLateFeeAmount (lib/invoice-ledger.ts): a frozen amount wins; else (inclusive days from late_fee_start_date to the as-of date) x late_fee_per_day minus waived, floored at 0. Keep in step with the TS function; parity fixtures in lib/money/late-fee-freeze.test.ts and supabase/tests/09_late_fee_freeze.sql.';
+
+DROP FUNCTION IF EXISTS public.money_rederive_downstream(UUID[], JSONB, DATE, UUID, TEXT, UUID, TEXT);
+
 CREATE OR REPLACE FUNCTION public.money_rederive_downstream(
     p_source_ids UUID[], p_overrides JSONB, p_today DATE, p_batch_id UUID,
-    p_actor TEXT, p_tenant UUID, p_source TEXT
+    p_actor TEXT, p_tenant UUID, p_source TEXT, p_paid_date TEXT DEFAULT NULL
 ) RETURNS UUID[]
 LANGUAGE plpgsql
 SET search_path = public, pg_temp
@@ -233,6 +252,7 @@ AS $$
 DECLARE
     t public.invoices%ROWTYPE;
     v_new public.invoice_status;
+    v_lock NUMERIC;
     v_flipped UUID[] := '{}';
 BEGIN
     FOR t IN
@@ -245,16 +265,21 @@ BEGIN
         CONTINUE WHEN t.status::text = 'verifying' AND NULLIF(btrim(COALESCE(t.slip_url, ''), E' \t\r\n'), '') IS NOT NULL;
         v_new := public.money_derive_invoice_status_cf(t.id, t.total_amount, t.paid_amount, t.due_date, p_today, p_overrides);
         IF v_new IS DISTINCT FROM t.status THEN
-            UPDATE public.invoices
-            SET status = v_new,
-                locked_late_fee_amount = CASE WHEN t.status::text = 'paid' AND v_new::text <> 'paid'
-                                              THEN NULL ELSE locked_late_fee_amount END
-            WHERE id = t.id;
+            v_lock := t.locked_late_fee_amount;
+            IF t.status::text = 'paid' AND v_new::text <> 'paid' THEN
+                v_lock := NULL;
+            ELSIF v_new::text = 'paid' AND v_lock IS NULL AND p_paid_date IS NOT NULL THEN
+                -- Same rule and effective date as the normal payment path: freeze the fee as of the
+                -- payment date, only when nothing froze it already.
+                v_lock := public.money_late_fee_amount(t.late_fee_start_date, t.late_fee_per_day,
+                                                       t.waived_late_fee_amount, NULL, p_paid_date::date);
+            END IF;
+            UPDATE public.invoices SET status = v_new, locked_late_fee_amount = v_lock WHERE id = t.id;
             INSERT INTO public.money_events (action, actor_user_id, tenant_id, invoice_id, payment_batch_id,
                                              before, after, reason, source)
             VALUES ('invoice.status_rederive', p_actor, t.tenant_id, t.id, p_batch_id,
                     jsonb_build_object('status', t.status, 'locked_late_fee_amount', t.locked_late_fee_amount),
-                    jsonb_build_object('status', v_new),
+                    jsonb_build_object('status', v_new, 'locked_late_fee_amount', v_lock),
                     'carry-forward source changed', p_source);
             v_flipped := v_flipped || t.id;
         END IF;
@@ -263,12 +288,16 @@ BEGIN
 END;
 $$;
 
+
+
 REVOKE ALL ON FUNCTION public.money_carried_in_settled(UUID, JSONB, INT) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.money_carried_in_settled(UUID, JSONB, INT) TO service_role;
 REVOKE ALL ON FUNCTION public.money_downstream_ids(UUID[]) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.money_downstream_ids(UUID[]) TO service_role;
-REVOKE ALL ON FUNCTION public.money_rederive_downstream(UUID[], JSONB, DATE, UUID, TEXT, UUID, TEXT) FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.money_rederive_downstream(UUID[], JSONB, DATE, UUID, TEXT, UUID, TEXT) TO service_role;
+REVOKE ALL ON FUNCTION public.money_late_fee_amount(DATE, NUMERIC, NUMERIC, NUMERIC, DATE) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.money_late_fee_amount(DATE, NUMERIC, NUMERIC, NUMERIC, DATE) TO service_role;
+REVOKE ALL ON FUNCTION public.money_rederive_downstream(UUID[], JSONB, DATE, UUID, TEXT, UUID, TEXT, TEXT) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.money_rederive_downstream(UUID[], JSONB, DATE, UUID, TEXT, UUID, TEXT, TEXT) TO service_role;
 
 COMMENT ON FUNCTION public.money_derive_invoice_status_cf(UUID, NUMERIC, NUMERIC, DATE, DATE, JSONB) IS
     'money_derive_invoice_status plus carried-in: paid when own paid > 0 and paid + settled carried-in >= total (finding 174). Mirrors resolveInvoiceStatusWithCarry (lib/invoice-ledger.ts).';
