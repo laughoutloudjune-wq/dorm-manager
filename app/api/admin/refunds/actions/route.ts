@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/admin-api-auth";
 import type { PermissionKey } from "@/lib/permissions";
-import { buildRefundPayoutPayload, explainRefundError } from "@/lib/money/refund-actions";
+import { buildRefundPayoutPayload, explainRefundError, tenantRefundForSettlement } from "@/lib/money/refund-actions";
 
 /**
  * Refund payouts and move-out settlement correction (migration 20261002000650).
@@ -64,9 +64,12 @@ export async function POST(req: Request) {
           createdAt: r.created_at,
           voidedAt: r.voided_at,
           voidReason: r.void_reason,
-          refundDue: due.get(String(r.tenant_id))?.due ?? 0,
-          refundPaid: due.get(String(r.tenant_id))?.paid ?? 0,
-          livePayouts: livePayouts.get(String(r.tenant_id)) ?? 0,
+          // Tenant-level figures (refund_due_vs_paid is per tenant). Only the live settlement carries them; voided rows get null.
+          tenantRefund: tenantRefundForSettlement(r, {
+            due: due.get(String(r.tenant_id))?.due ?? 0,
+            paid: due.get(String(r.tenant_id))?.paid ?? 0,
+            livePayouts: livePayouts.get(String(r.tenant_id)) ?? 0,
+          }),
         })),
       });
     }

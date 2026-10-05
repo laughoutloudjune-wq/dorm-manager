@@ -10,15 +10,15 @@
 -- 1. record_refund_payout(p)   money actually sent to a tenant, against REFUND DUE only
 --    * allowed only after a live (unvoided) move-out settlement: held deposit before settlement is not "due"
 --    * capped at refund_due_vs_paid.refund_outstanding; advance rent is not in that figure (owner decision: never refundable)
---    * requires method, recipient and a reference or evidence link; paid_at not in the future
+--    * requires method, recipient and a reference or evidence link; paid_at must not be after now() (PAID_AT_IN_FUTURE, no tolerance)
 --    * idempotent on idempotency_key; the same key with a different tenant or amount is IDEMPOTENCY_CONFLICT
 --    * payouts are the record of money sent: no 'refunded' tenant_credits row is written (the view excludes them)
 -- 2. void_refund_payout(p)     reverses a mistaken payout (append-only: sets void columns, reason required)
 -- 3. void_move_out_settlement(p)  reverses an erroneous settlement atomically:
 --    reverses the non-cash credit payments on older invoices (negative allocation rows, paid_amount lowered, statuses re-derived,
 --    downstream targets re-derived), reverses the applied/forfeited/absorbed tenant_credits rows written by that settlement
---    (the held deposit / advance returns), cancels the final invoice, restores tenant, room, room log and move-out request,
---    marks the settlement voided. Refuses when: a refund payout is still live (void it first), the room has been re-let,
+--    (the held deposit / advance returns), cancels the final invoice, restores tenant, room, room log and move-out request from the state saved with the settlement (move_out_settlements.tenant_before; refuses BEFORE_STATE_MISSING when absent),
+--    marks the settlement voided. Refuses when: a refund payout is still live (void it first), the room has been re-let, the tenant's state or any later settlement / move-out request / tenancy record / payment / credit / invoice shows activity after the settlement (LATER_ACTIVITY),
 --    the tenant is no longer in the settled state, the final invoice has had payments, or reversing would make an
 --    invoice's paid_amount negative. Settlement rows are recognised by created_at = the settlement's created_at: every row
 --    written by one settlement shares the transaction timestamp.
@@ -60,8 +60,10 @@ BEGIN
     EXCEPTION WHEN OTHERS THEN
         RAISE EXCEPTION 'INVALID_PAYLOAD paid_at is not a valid date';
     END;
-    IF v_paid_at IS NULL OR v_paid_at > now() + interval '1 day' THEN
-        RAISE EXCEPTION 'INVALID_PAYLOAD paid_at is missing or in the future';
+    IF v_paid_at IS NULL THEN RAISE EXCEPTION 'INVALID_PAYLOAD paid_at is required'; END IF;
+    -- Business rule: a payout cannot be dated after the moment it is recorded. No tolerance.
+    IF v_paid_at > now() THEN
+        RAISE EXCEPTION 'PAID_AT_IN_FUTURE paid_at % is after the current time %', v_paid_at, now();
     END IF;
 
     PERFORM 1 FROM public.tenants WHERE id = v_tenant FOR UPDATE;
@@ -157,11 +159,14 @@ DECLARE
     v_downstream UUID[] := '{}';
     v_new_paid NUMERIC;
     v_new_status public.invoice_status;
-    v_before JSONB;
     v_status_before TEXT;
     v_room_before UUID;
-    v_req_date DATE;
     v_credit_rows INT := 0;
+    v_tb JSONB;
+    v_settled_date DATE;
+    v_log JSONB;
+    v_req JSONB;
+    v_cnt INT;
 BEGIN
     IF v_id IS NULL THEN RAISE EXCEPTION 'INVALID_PAYLOAD settlement_id is required'; END IF;
     IF v_reason = '' THEN RAISE EXCEPTION 'REASON_REQUIRED a reason is required to void a settlement'; END IF;
@@ -181,11 +186,39 @@ BEGIN
     IF EXISTS (SELECT 1 FROM public.refund_payouts WHERE tenant_id = v_tid AND voided_at IS NULL) THEN
         RAISE EXCEPTION 'SETTLEMENT_HAS_PAYOUT a refund was paid out for this tenant; void the refund payout first';
     END IF;
-    IF v_tenant.status IS DISTINCT FROM 'inactive' OR v_tenant.room_id IS NOT NULL THEN
-        RAISE EXCEPTION 'TENANT_STATE_CHANGED the tenant is no longer in the settled state (status %, room %)', v_tenant.status, v_tenant.room_id;
-    END IF;
     IF EXISTS (SELECT 1 FROM public.tenants WHERE room_id = v_s.room_id AND status = 'active') THEN
         RAISE EXCEPTION 'ROOM_REOCCUPIED room % already has an active tenant', v_s.room_id;
+    END IF;
+    v_tb := v_s.tenant_before;
+    IF v_tb IS NULL THEN
+        RAISE EXCEPTION 'BEFORE_STATE_MISSING settlement % was recorded without its pre-settlement state, so it cannot be reversed automatically; correct the tenant by hand and record why', v_id;
+    END IF;
+    v_settled_date := NULLIF(v_tb->>'settled_move_out_date', '')::date;
+    -- The tenant must still be exactly as the settlement left it.
+    IF v_tenant.status IS DISTINCT FROM 'inactive' OR v_tenant.room_id IS NOT NULL
+       OR v_tenant.move_out_date IS DISTINCT FROM v_settled_date THEN
+        RAISE EXCEPTION 'TENANT_STATE_CHANGED the tenant is no longer in the settled state (status %, room %, move-out date %)',
+            v_tenant.status, v_tenant.room_id, v_tenant.move_out_date;
+    END IF;
+    -- Only the tenant's latest settlement can be reversed, and only if nothing happened after it that a reversal would overwrite.
+    IF EXISTS (SELECT 1 FROM public.move_out_settlements x WHERE x.id <> v_id AND x.created_at > v_s.created_at
+               AND (x.tenant_id = v_tid OR x.room_id = v_s.room_id)) THEN
+        RAISE EXCEPTION 'LATER_ACTIVITY a later move-out settlement exists for this tenant or room';
+    END IF;
+    IF EXISTS (SELECT 1 FROM public.move_out_requests WHERE tenant_id = v_tid AND created_at > v_s.created_at) THEN
+        RAISE EXCEPTION 'LATER_ACTIVITY a move-out request was filed after this settlement';
+    END IF;
+    IF EXISTS (SELECT 1 FROM public.room_tenant_logs WHERE room_id = v_s.room_id AND created_at > v_s.created_at) THEN
+        RAISE EXCEPTION 'LATER_ACTIVITY the room has a newer tenancy record since this settlement';
+    END IF;
+    IF EXISTS (SELECT 1 FROM public.payment_batches WHERE tenant_id = v_tid AND created_at > v_s.created_at AND voided_at IS NULL) THEN
+        RAISE EXCEPTION 'LATER_ACTIVITY a payment was recorded for this tenant after the settlement';
+    END IF;
+    IF EXISTS (SELECT 1 FROM public.tenant_credits WHERE tenant_id = v_tid AND created_at > v_s.created_at) THEN
+        RAISE EXCEPTION 'LATER_ACTIVITY the tenant''s credit balance changed after the settlement';
+    END IF;
+    IF EXISTS (SELECT 1 FROM public.invoices WHERE tenant_id = v_tid AND created_at > v_s.created_at AND status::text <> 'cancelled') THEN
+        RAISE EXCEPTION 'LATER_ACTIVITY an invoice was created for this tenant after the settlement';
     END IF;
 
     IF v_s.final_invoice_id IS NOT NULL THEN
@@ -273,22 +306,36 @@ BEGIN
     END IF;
 
     ---------------------------------------------------------------- restore tenant, room, logs, request
-    SELECT before INTO v_before FROM public.money_events
-    WHERE tenant_id = v_tid AND action = 'tenant.move_out_settled' ORDER BY created_at DESC LIMIT 1;
-    v_status_before := COALESCE(v_before->>'status', 'active');
-    v_room_before := COALESCE(NULLIF(v_before->>'room_id', '')::uuid, v_s.room_id);
-    SELECT requested_move_out_date INTO v_req_date FROM public.move_out_requests
-    WHERE tenant_id = v_tid ORDER BY created_at DESC LIMIT 1;
+    v_status_before := v_tb->'tenant'->>'status';
+    v_room_before := NULLIF(v_tb->'tenant'->>'room_id', '')::uuid;
 
     UPDATE public.tenants
-    SET status = v_status_before, room_id = v_room_before, move_out_date = v_req_date,
-        forfeit_security_deposit = false, updated_at = now()
+    SET status = v_status_before,
+        room_id = v_room_before,
+        move_out_date = NULLIF(v_tb->'tenant'->>'move_out_date', '')::date,
+        forfeit_security_deposit = COALESCE((v_tb->'tenant'->>'forfeit_security_deposit')::boolean, false),
+        updated_at = now()
     WHERE id = v_tid;
-    UPDATE public.rooms SET status = 'occupied' WHERE id = v_s.room_id;
-    UPDATE public.room_tenant_logs SET move_out_date = NULL, updated_at = now()
-    WHERE room_id = v_s.room_id AND tenant_id = v_tid AND move_out_date = v_tenant.move_out_date;
-    UPDATE public.move_out_requests SET status = 'approved', actual_move_out_date = NULL, updated_at = now()
-    WHERE tenant_id = v_tid AND status = 'completed';
+    UPDATE public.rooms SET status = COALESCE(v_tb->>'room_status', 'occupied') WHERE id = v_s.room_id;
+
+    FOR v_log IN SELECT * FROM jsonb_array_elements(COALESCE(v_tb->'room_logs', '[]'::jsonb)) LOOP
+        UPDATE public.room_tenant_logs
+        SET move_out_date = NULLIF(v_log->>'move_out_date', '')::date, updated_at = now()
+        WHERE id = (v_log->>'id')::uuid AND move_out_date IS NOT DISTINCT FROM v_settled_date;
+        GET DIAGNOSTICS v_cnt = ROW_COUNT;
+        IF v_cnt <> 1 THEN
+            RAISE EXCEPTION 'TENANT_STATE_CHANGED room log % is no longer as the settlement left it', v_log->>'id';
+        END IF;
+    END LOOP;
+    FOR v_req IN SELECT * FROM jsonb_array_elements(COALESCE(v_tb->'move_out_requests', '[]'::jsonb)) LOOP
+        UPDATE public.move_out_requests
+        SET status = v_req->>'status', actual_move_out_date = NULLIF(v_req->>'actual_move_out_date', '')::date, updated_at = now()
+        WHERE id = (v_req->>'id')::uuid AND status = 'completed';
+        GET DIAGNOSTICS v_cnt = ROW_COUNT;
+        IF v_cnt <> 1 THEN
+            RAISE EXCEPTION 'TENANT_STATE_CHANGED move-out request % is no longer as the settlement left it', v_req->>'id';
+        END IF;
+    END LOOP;
 
     UPDATE public.move_out_settlements SET voided_at = now(), voided_by = v_by, void_reason = v_reason WHERE id = v_id;
 

@@ -14,6 +14,7 @@ import { createClient } from "@/lib/supabase-client";
 import { usePermissions } from "@/lib/use-permissions";
 import { RecordPayoutModal, VoidPayoutModal } from "@/components/admin/refunds/RefundModals";
 import { SettlementsSection } from "@/components/admin/refunds/SettlementsSection";
+import { shouldLoadSettlements } from "@/components/admin/refunds/form-logic";
 import {
   CREDIT_LABELS,
   PAYOUT_COLUMN_LABELS,
@@ -66,7 +67,7 @@ export default function CreditsRefundsPage() {
   const [report, setReport] = useState<Report | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const { can } = usePermissions();
+  const { can, loading: permsLoading, failed: permsFailed } = usePermissions();
   const canRecord = can("refund.record");
   const [refreshKey, setRefreshKey] = useState(0);
   const [payTarget, setPayTarget] = useState<{ tenantId: string; tenantName: string | null; outstanding: number } | null>(null);
@@ -356,7 +357,9 @@ export default function CreditsRefundsPage() {
         </>
       ) : null}
 
-      <SettlementsSection canVoid={can("settlement.void")} refreshKey={refreshKey} onChanged={refreshAll} />
+      {shouldLoadSettlements({ loading: permsLoading, failed: permsFailed, canViewCredits: can("credits.view") }) ? (
+        <SettlementsSection canVoid={can("settlement.void")} refreshKey={refreshKey} onChanged={refreshAll} />
+      ) : null}
 
       <RecordPayoutModal
         target={payTarget}

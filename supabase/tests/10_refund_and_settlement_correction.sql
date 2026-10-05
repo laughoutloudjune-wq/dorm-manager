@@ -52,14 +52,15 @@ $f$;
 
 -- A settled tenant: deposit 3,000; older invoice A (1,000) and the 1,000 final bill paid from credit; refund due 1,000.
 -- With p_chain, A also carries into B (2,500 total, own share 1,500 paid) so settling A settles B.
-CREATE OR REPLACE FUNCTION pg_temp.mk_settled(p_key text, p_chain boolean DEFAULT false) RETURNS jsonb LANGUAGE plpgsql AS $f$
+CREATE OR REPLACE FUNCTION pg_temp.mk_settled(p_key text, p_chain boolean DEFAULT false, p_tenant_date date DEFAULT '2026-09-30',
+                                              p_req_date date DEFAULT '2026-09-30', p_forfeit boolean DEFAULT false) RETURNS jsonb LANGUAGE plpgsql AS $f$
 DECLARE v_room uuid; v_t uuid; v_a uuid; v_b uuid; v_r text; v_res jsonb;
 BEGIN
   INSERT INTO public.rooms(room_number, status) VALUES ('T-'||gen_random_uuid(), 'occupied') RETURNING id INTO v_room;
-  INSERT INTO public.tenants(full_name, move_in_date, move_out_date, room_id, status, security_deposit_amount, advance_rent_amount)
-    VALUES ('Corr ' || p_key, '2026-01-01', '2026-09-30', v_room, 'active', 3000, 0) RETURNING id INTO v_t;
+  INSERT INTO public.tenants(full_name, move_in_date, move_out_date, room_id, status, security_deposit_amount, advance_rent_amount, forfeit_security_deposit)
+    VALUES ('Corr ' || p_key, '2026-01-01', p_tenant_date, v_room, 'active', 3000, 0, p_forfeit) RETURNING id INTO v_t;
   INSERT INTO public.room_tenant_logs(room_id, tenant_id, tenant_name, move_in_date) VALUES (v_room, v_t, 'Corr', '2026-01-01');
-  INSERT INTO public.move_out_requests(tenant_id, requested_move_out_date, status) VALUES (v_t, '2026-09-30', 'approved');
+  INSERT INTO public.move_out_requests(tenant_id, requested_move_out_date, status) VALUES (v_t, p_req_date, 'approved');
   v_a := pg_temp.ni(v_t, v_room, 1000, 0, 0, 'overdue', '2026-09-05');
   IF p_chain THEN
     v_b := pg_temp.ni(v_t, v_room, 2500, 1000, 1500, 'partial', '2026-09-05');
@@ -122,7 +123,8 @@ BEGIN
   IF pg_temp.rfp(v_t, 'p3c', 10, '{"reference":"","evidence_url":null}') NOT LIKE 'ERR:INVALID_PAYLOAD%' THEN v_msg := v_msg || ' reference/evidence'; END IF;
   IF pg_temp.rfp(v_t, 'p3d', 0) NOT LIKE 'ERR:INVALID_PAYLOAD%' THEN v_msg := v_msg || ' amount0'; END IF;
   IF pg_temp.rfp(v_t, 'p3e', 10.005) NOT LIKE 'ERR:INVALID_PAYLOAD%' THEN v_msg := v_msg || ' 3dec'; END IF;
-  IF pg_temp.rfp(v_t, 'p3f', 10, jsonb_build_object('paid_at', (now() + interval '3 days')::text)) NOT LIKE 'ERR:INVALID_PAYLOAD%' THEN v_msg := v_msg || ' future'; END IF;
+  IF pg_temp.rfp(v_t, 'p3f', 10, jsonb_build_object('paid_at', (now() + interval '3 days')::text)) NOT LIKE 'ERR:PAID_AT_IN_FUTURE%' THEN v_msg := v_msg || ' future'; END IF;
+  IF pg_temp.rfp(v_t, 'p3h', 10, jsonb_build_object('paid_at', (now() + interval '1 minute')::text)) NOT LIKE 'ERR:PAID_AT_IN_FUTURE%' THEN v_msg := v_msg || ' future-1min-no-tolerance'; END IF;
   IF pg_temp.rfp(v_t, 'p3g', 10, '{"reference":"","evidence_url":"https://example.test/slip.png"}') NOT LIKE 'OK:%' THEN v_msg := v_msg || ' evidence-only-should-be-ok'; END IF;
   v_out := v_out || E'\n' || CASE WHEN v_msg = '' THEN 'PASS  R5 blank recipient / method / no reference-or-evidence / zero or 3-decimal amount / future date all rejected; evidence link alone is enough'
     ELSE 'FAIL  R5 problems:'||v_msg END;
@@ -235,6 +237,65 @@ BEGIN
       AND pg_temp.st(v_a) = '0.00/overdue' AND pg_temp.st(v_b) = '1500.00/partial'
     THEN 'PASS  S7 chain: settling A had settled B; voiding the settlement reopens A and B ('||v_msg||' -> A='||pg_temp.st(v_a)||' B='||pg_temp.st(v_b)||')'
     ELSE 'FAIL  S7 '||v_msg||' void='||left(v_r,120)||' A='||pg_temp.st(v_a)||' B='||pg_temp.st(v_b) END;
+
+  ---------------------------------------------------------------- S9 void restores the EXACT pre-settlement state (finding 2)
+  m := pg_temp.mk_settled('corr9', false, '2026-10-20', '2026-09-30', true); v_t := (m->>'tenant')::uuid; v_set := (m->>'settlement')::uuid;
+  v_room := (m->>'room')::uuid;
+  v_r := pg_temp.try('void_move_out_settlement', jsonb_build_object('settlement_id', v_set, 'reason', 'x', 'actor', 'tester'));
+  SELECT status || '/' || COALESCE(room_id::text,'null') || '/' || COALESCE(move_out_date::text,'null') || '/' || forfeit_security_deposit INTO v_msg FROM tenants WHERE id = v_t;
+  v_out := v_out || E'\n' || CASE WHEN v_r LIKE 'OK:%' AND v_msg = 'active/' || v_room || '/2026-10-20/true'
+      AND (SELECT status FROM move_out_requests WHERE tenant_id = v_t) = 'approved'
+      AND (SELECT actual_move_out_date IS NULL FROM move_out_requests WHERE tenant_id = v_t)
+      AND (SELECT move_out_date IS NULL FROM room_tenant_logs WHERE tenant_id = v_t)
+      AND (SELECT status FROM rooms WHERE id = v_room) = 'occupied'
+    THEN 'PASS  S9 void restores the exact original state: move_out_date 2026-10-20 (NOT the request date 2026-09-30), forfeit flag true, request approved, room log open, room occupied'
+    ELSE 'FAIL  S9 '||left(v_r,120)||' tenant='||COALESCE(v_msg,'null') END;
+
+  ---------------------------------------------------------------- S10 a settlement with no saved before-state is refused, nothing changes
+  m := pg_temp.mk_settled('corr10'); v_t := (m->>'tenant')::uuid; v_set := (m->>'settlement')::uuid;
+  ALTER TABLE public.move_out_settlements DISABLE TRIGGER trg_move_out_settlements_guard;
+  UPDATE public.move_out_settlements SET tenant_before = NULL WHERE id = v_set;
+  ALTER TABLE public.move_out_settlements ENABLE TRIGGER trg_move_out_settlements_guard;
+  v_r := pg_temp.try('void_move_out_settlement', jsonb_build_object('settlement_id', v_set, 'reason', 'x', 'actor', 'tester'));
+  v_out := v_out || E'\n' || CASE WHEN v_r LIKE 'ERR:BEFORE_STATE_MISSING%' AND (SELECT voided_at IS NULL FROM move_out_settlements WHERE id = v_set)
+      AND (SELECT status FROM tenants WHERE id = v_t) = 'inactive'
+    THEN 'PASS  S10 legacy settlement without a saved before-state: void refused with BEFORE_STATE_MISSING, nothing changed' ELSE 'FAIL  S10 '||left(v_r,140) END;
+
+  ---------------------------------------------------------------- S11 later activity is never overwritten (finding 4)
+  v_msg := '';
+  m := pg_temp.mk_settled('corr11a'); v_t := (m->>'tenant')::uuid; v_set := (m->>'settlement')::uuid;
+  INSERT INTO move_out_requests(tenant_id, requested_move_out_date, status, created_at) VALUES (v_t, '2026-12-01', 'requested', now() + interval '1 minute');
+  v_r := pg_temp.try('void_move_out_settlement', jsonb_build_object('settlement_id', v_set, 'reason', 'x', 'actor', 'tester'));
+  IF v_r NOT LIKE 'ERR:LATER_ACTIVITY%' THEN v_msg := v_msg || ' later-request:' || left(v_r,60); END IF;
+
+  m := pg_temp.mk_settled('corr11b'); v_t := (m->>'tenant')::uuid; v_set := (m->>'settlement')::uuid; v_room := (m->>'room')::uuid;
+  INSERT INTO tenants(full_name, move_in_date, room_id, status) VALUES ('Next tenant', '2026-10-01', NULL, 'inactive') RETURNING id INTO v_a;
+  INSERT INTO room_tenant_logs(room_id, tenant_id, tenant_name, move_in_date, move_out_date, created_at) VALUES (v_room, v_a, 'Next', '2026-10-01', '2026-10-10', now() + interval '1 minute');
+  INSERT INTO move_out_settlements(tenant_id, room_id, idempotency_key, settlement, created_at) VALUES (v_a, v_room, 'later-room-settlement', '{}'::jsonb, now() + interval '2 minutes');
+  v_r := pg_temp.try('void_move_out_settlement', jsonb_build_object('settlement_id', v_set, 'reason', 'x', 'actor', 'tester'));
+  IF v_r NOT LIKE 'ERR:LATER_ACTIVITY%' THEN v_msg := v_msg || ' later-room-settlement:' || left(v_r,60); END IF;
+  IF (SELECT voided_at IS NOT NULL FROM move_out_settlements WHERE id = v_set) OR (SELECT status FROM tenants WHERE id = v_t) <> 'inactive' THEN v_msg := v_msg || ' state-changed'; END IF;
+
+  m := pg_temp.mk_settled('corr11c'); v_t := (m->>'tenant')::uuid; v_set := (m->>'settlement')::uuid;
+  v_b := pg_temp.ni(v_t, (m->>'room')::uuid, 500, 0, 0, 'pending', '2026-11-05');
+  UPDATE invoices SET created_at = now() + interval '1 minute' WHERE id = v_b;
+  v_r := pg_temp.try('void_move_out_settlement', jsonb_build_object('settlement_id', v_set, 'reason', 'x', 'actor', 'tester'));
+  IF v_r NOT LIKE 'ERR:LATER_ACTIVITY%' THEN v_msg := v_msg || ' later-invoice:' || left(v_r,60); END IF;
+
+  m := pg_temp.mk_settled('corr11d'); v_t := (m->>'tenant')::uuid; v_set := (m->>'settlement')::uuid;
+  UPDATE tenants SET move_out_date = '2026-11-30' WHERE id = v_t;
+  v_r := pg_temp.try('void_move_out_settlement', jsonb_build_object('settlement_id', v_set, 'reason', 'x', 'actor', 'tester'));
+  IF v_r NOT LIKE 'ERR:TENANT_STATE_CHANGED%' THEN v_msg := v_msg || ' edited-move-out-date:' || left(v_r,60); END IF;
+  v_out := v_out || E'\n' || CASE WHEN v_msg = '' THEN 'PASS  S11 void refused (LATER_ACTIVITY / TENANT_STATE_CHANGED) when a newer move-out request, a later settlement or tenancy in the room, a newer invoice, or an edited move-out date exists; nothing overwritten'
+    ELSE 'FAIL  S11 problems:'||v_msg END;
+
+  ---------------------------------------------------------------- S12 an already-voided settlement cannot be voided again
+  m := pg_temp.mk_settled('corr12'); v_set := (m->>'settlement')::uuid;
+  v_r := pg_temp.try('void_move_out_settlement', jsonb_build_object('settlement_id', v_set, 'reason', 'x', 'actor', 'tester'));
+  v_msg := CASE WHEN v_r LIKE 'OK:%' THEN '' ELSE ' first-void:' || left(v_r,80) END;
+  v_r := pg_temp.try('void_move_out_settlement', jsonb_build_object('settlement_id', v_set, 'reason', 'x', 'actor', 'tester'));
+  IF v_r NOT LIKE 'ERR:ALREADY_VOIDED%' THEN v_msg := v_msg || ' second-void-of-same:' || left(v_r,60); END IF;
+  v_out := v_out || E'\n' || CASE WHEN v_msg = '' THEN 'PASS  S12 a voided settlement cannot be voided again (ALREADY_VOIDED)' ELSE 'FAIL  S12 '||v_msg END;
 
   ---------------------------------------------------------------- grants
   SELECT string_agg(f, ',') INTO v_msg FROM (VALUES ('record_refund_payout(jsonb)'), ('void_refund_payout(jsonb)'), ('void_move_out_settlement(jsonb)')) q(f)

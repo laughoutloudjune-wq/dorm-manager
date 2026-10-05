@@ -19,9 +19,8 @@ type Settlement = {
   createdAt: string;
   voidedAt: string | null;
   voidReason: string | null;
-  refundDue: number;
-  refundPaid: number;
-  livePayouts: number;
+  /** Tenant-level refund figures; null on a voided settlement (they belong to the tenant's live settlement). */
+  tenantRefund: { due: number; paid: number; livePayouts: number } | null;
 };
 
 const baht = (n: number) => n.toLocaleString("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -74,9 +73,9 @@ export function SettlementsSection({
                 <TH>ผู้เช่า</TH>
                 <TH>ห้อง</TH>
                 <TH>วันที่</TH>
-                <TH className="text-right">{CREDIT_LABELS.refundDue}</TH>
-                <TH className="text-right">{CREDIT_LABELS.refundPaid}</TH>
-                <TH className="text-right">รายการจ่ายคืนที่ยังมีผล</TH>
+                <TH className="text-right">{CREDIT_LABELS.refundDue} (รวมของผู้เช่า)</TH>
+                <TH className="text-right">{CREDIT_LABELS.refundPaid} (รวมของผู้เช่า)</TH>
+                <TH className="text-right">รายการจ่ายคืนที่ยังมีผล (ของผู้เช่า)</TH>
                 <TH>สถานะ</TH>
                 <TH />
               </TR>
@@ -87,9 +86,9 @@ export function SettlementsSection({
                   <TD>{s.tenantName ?? "-"}</TD>
                   <TD>{s.roomNumber ?? "-"}</TD>
                   <TD className="whitespace-nowrap">{new Date(s.createdAt).toLocaleDateString("th-TH")}</TD>
-                  <TD className="text-right tabular-nums">{baht(s.refundDue)}</TD>
-                  <TD className="text-right tabular-nums">{baht(s.refundPaid)}</TD>
-                  <TD className="text-right tabular-nums">{s.livePayouts}</TD>
+                  <TD className="text-right tabular-nums">{s.tenantRefund ? baht(s.tenantRefund.due) : "-"}</TD>
+                  <TD className="text-right tabular-nums">{s.tenantRefund ? baht(s.tenantRefund.paid) : "-"}</TD>
+                  <TD className="text-right tabular-nums">{s.tenantRefund ? s.tenantRefund.livePayouts : "-"}</TD>
                   <TD>
                     <Badge variant={s.voidedAt ? "neutral" : "success"} size="sm" dot>
                       {s.voidedAt ? "ยกเลิกแล้ว (voided)" : "ใช้งานอยู่ (active)"}
@@ -99,10 +98,10 @@ export function SettlementsSection({
                   <TD>
                     {!s.voidedAt && canVoid ? (
                       <div className="space-y-1">
-                        <Button variant="danger" size="sm" disabled={!canVoidSettlement(s)} onClick={() => setTarget(s)}>
+                        <Button variant="danger" size="sm" disabled={!canVoidSettlement({ voidedAt: s.voidedAt, livePayouts: s.tenantRefund?.livePayouts ?? 0 })} onClick={() => setTarget(s)}>
                           ยกเลิกการสรุปยอด
                         </Button>
-                        {s.livePayouts > 0 ? (
+                        {(s.tenantRefund?.livePayouts ?? 0) > 0 ? (
                           <p className="text-2xs text-slate-500">ต้องยกเลิกรายการจ่ายเงินคืนก่อน</p>
                         ) : null}
                       </div>

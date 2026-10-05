@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildRefundPayoutPayload, explainRefundError } from "./refund-actions";
+import { buildRefundPayoutPayload, explainRefundError, tenantRefundForSettlement } from "./refund-actions";
 
 describe("explainRefundError", () => {
   it("maps database refusals to 409 / 400 / 404, not 500", () => {
@@ -34,5 +34,30 @@ describe("buildRefundPayoutPayload", () => {
   });
   it("sends a non-numeric amount as null so the database rejects it", () => {
     expect(buildRefundPayoutPayload({ amount: "abc" }, "u").amount).toBeNull();
+  });
+});
+
+describe("new refusal codes (findings 2-4)", () => {
+  it("maps PAID_AT_IN_FUTURE to 400 and LATER_ACTIVITY / BEFORE_STATE_MISSING to 409 with the code visible", () => {
+    expect(explainRefundError("PAID_AT_IN_FUTURE paid_at x is after the current time y").status).toBe(400);
+    const later = explainRefundError("LATER_ACTIVITY a move-out request was filed after this settlement");
+    expect(later.status).toBe(409);
+    expect(later.message).toContain("LATER_ACTIVITY");
+    const missing = explainRefundError("BEFORE_STATE_MISSING settlement x");
+    expect(missing.status).toBe(409);
+    expect(missing.message).toContain("BEFORE_STATE_MISSING");
+  });
+});
+
+describe("tenantRefundForSettlement (finding 1)", () => {
+  const totals = { due: 1000, paid: 600, livePayouts: 1 };
+  it("gives the tenant's refund figures to the live settlement only", () => {
+    expect(tenantRefundForSettlement({ id: "s2", tenant_id: "t", voided_at: null }, totals)).toEqual(totals);
+  });
+  it("gives a voided settlement no refund figures, so one tenant's totals are never repeated on every row", () => {
+    expect(tenantRefundForSettlement({ id: "s1", tenant_id: "t", voided_at: "2026-09-01T00:00:00Z" }, totals)).toBeNull();
+  });
+  it("defaults a live settlement with no view row to zeros", () => {
+    expect(tenantRefundForSettlement({ id: "s", tenant_id: "t", voided_at: null }, undefined)).toEqual({ due: 0, paid: 0, livePayouts: 0 });
   });
 });

@@ -44,7 +44,7 @@ export function validatePayoutForm(form: PayoutForm, outstanding: number, now: D
   }
   const paid = new Date(form.paidAt);
   if (!form.paidAt || Number.isNaN(paid.getTime())) errors.paidAt = "ระบุวันเวลาที่จ่าย";
-  else if (paid.getTime() > now.getTime() + 60_000) errors.paidAt = "วันเวลาที่จ่ายต้องไม่เป็นอนาคต";
+  else if (paid.getTime() > now.getTime()) errors.paidAt = "วันเวลาที่จ่ายต้องไม่เกินเวลาปัจจุบัน"; // same rule as the database: nothing after now, no tolerance
   if (!form.method.trim()) errors.method = "ระบุช่องทางการจ่าย";
   if (!form.recipient.trim()) errors.recipient = "ระบุผู้รับ";
   if (!form.reference.trim() && !form.evidenceUrl.trim()) {
@@ -79,6 +79,10 @@ export function buildVoidPayoutBody(payoutId: string, reason: string) {
 export function buildVoidSettlementBody(settlementId: string, reason: string) {
   return { action: "void_settlement" as const, settlementId, reason: reason.trim() };
 }
+
+/** The settlements list is only requested for a user who is known to hold credits.view (no permission error on an accessible page). */
+export const shouldLoadSettlements = (p: { loading: boolean; failed: boolean; canViewCredits: boolean }) =>
+  !p.loading && !p.failed && p.canViewCredits;
 
 /** A settlement can only be voided while it is active and no refund payout is live. */
 export const canVoidSettlement = (s: { voidedAt: string | null; livePayouts: number }) =>

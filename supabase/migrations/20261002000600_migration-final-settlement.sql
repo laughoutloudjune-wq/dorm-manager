@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS public.move_out_settlements (
     room_id UUID,
     idempotency_key TEXT NOT NULL,
     settlement JSONB NOT NULL,
+    tenant_before JSONB,
     final_invoice_id UUID,
     created_by TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -103,6 +104,9 @@ CREATE TABLE IF NOT EXISTS public.move_out_settlements (
         OR (voided_at IS NOT NULL AND void_reason IS NOT NULL AND btrim(void_reason) <> '')
     )
 );
+
+-- Exact pre-settlement state (tenant, room, open room log, open move-out requests) so a void restores it, not a guess.
+ALTER TABLE public.move_out_settlements ADD COLUMN IF NOT EXISTS tenant_before JSONB;
 
 -- A tenant can be settled once; only voiding the settlement frees the slot.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_move_out_settlements_live_tenant
@@ -152,6 +156,7 @@ DECLARE
     v_ch jsonb := p->'charges';
     v_inv_id uuid;
     v_tenant_row public.tenants%ROWTYPE;
+    v_before JSONB;
     v_existing public.move_out_settlements%ROWTYPE;
     v_settlement_id uuid := gen_random_uuid();
     v_batch_id uuid;
@@ -606,9 +611,24 @@ BEGIN
     END IF;
 
     ---------------------------------------------------------------- settlement record
-    INSERT INTO public.move_out_settlements (id, tenant_id, room_id, idempotency_key, settlement,
+    -- Capture the exact state that this settlement is about to change, so voiding it can restore it exactly.
+    v_before := jsonb_build_object(
+        'tenant', jsonb_build_object('status', v_tenant_row.status, 'room_id', v_tenant_row.room_id,
+                                     'move_out_date', v_tenant_row.move_out_date,
+                                     'forfeit_security_deposit', v_tenant_row.forfeit_security_deposit),
+        'settled_move_out_date', v_date,
+        'room_status', (SELECT r.status FROM public.rooms r WHERE r.id = v_room),
+        'room_logs', COALESCE((SELECT jsonb_agg(jsonb_build_object('id', l.id, 'move_out_date', l.move_out_date) ORDER BY l.id)
+                               FROM public.room_tenant_logs l
+                               WHERE l.room_id = v_room AND l.tenant_id = v_tenant AND l.move_out_date IS NULL), '[]'::jsonb),
+        'move_out_requests', COALESCE((SELECT jsonb_agg(jsonb_build_object('id', q.id, 'status', q.status,
+                                                                          'actual_move_out_date', q.actual_move_out_date) ORDER BY q.id)
+                                       FROM public.move_out_requests q
+                                       WHERE q.tenant_id = v_tenant AND q.status IN ('requested', 'approved')), '[]'::jsonb));
+
+    INSERT INTO public.move_out_settlements (id, tenant_id, room_id, idempotency_key, settlement, tenant_before,
                                              final_invoice_id, created_by)
-    VALUES (v_settlement_id, v_tenant, v_room, v_key, v_s, v_inv_id, v_by);
+    VALUES (v_settlement_id, v_tenant, v_room, v_key, v_s, v_before, v_inv_id, v_by);
 
     INSERT INTO public.money_events (action, actor_user_id, tenant_id, invoice_id, payment_batch_id, room_id, after, source)
     VALUES ('settlement.create', v_by, v_tenant, v_inv_id, v_batch_id, v_room,

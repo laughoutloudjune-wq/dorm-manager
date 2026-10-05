@@ -6,6 +6,7 @@ import {
   canVoidSettlement,
   defaultPayoutForm,
   isReasonValid,
+  shouldLoadSettlements,
   validatePayoutForm,
 } from "./form-logic";
 
@@ -35,6 +36,11 @@ describe("validatePayoutForm", () => {
   it("rejects future dates", () => {
     expect(validatePayoutForm({ ...ok(), paidAt: "2026-10-06T12:00" }, 1500, now).paidAt).toBeTruthy();
   });
+  it("uses the database rule: anything after now is rejected, even by one minute; now itself is fine", () => {
+    // `now` is 2026-10-05 12:00 local (see top of file)
+    expect(validatePayoutForm({ ...ok(), paidAt: "2026-10-05T12:01" }, 1500, now).paidAt).toBeTruthy();
+    expect(validatePayoutForm({ ...ok(), paidAt: "2026-10-05T12:00" }, 1500, now).paidAt).toBeUndefined();
+  });
 });
 
 describe("request bodies", () => {
@@ -52,5 +58,16 @@ describe("request bodies", () => {
     expect(canVoidSettlement({ voidedAt: null, livePayouts: 0 })).toBe(true);
     expect(canVoidSettlement({ voidedAt: null, livePayouts: 1 })).toBe(false);
     expect(canVoidSettlement({ voidedAt: "x", livePayouts: 0 })).toBe(false);
+  });
+});
+
+describe("shouldLoadSettlements (finding 5)", () => {
+  it("never requests the list before permissions are known, when they failed to load, or without credits.view", () => {
+    expect(shouldLoadSettlements({ loading: true, failed: false, canViewCredits: true })).toBe(false);
+    expect(shouldLoadSettlements({ loading: false, failed: true, canViewCredits: true })).toBe(false);
+    expect(shouldLoadSettlements({ loading: false, failed: false, canViewCredits: false })).toBe(false);
+  });
+  it("requests it only for a user who holds credits.view", () => {
+    expect(shouldLoadSettlements({ loading: false, failed: false, canViewCredits: true })).toBe(true);
   });
 });
