@@ -95,3 +95,33 @@ Not exercised in the browser: tenant-side payment / slip upload in LINE (finding
 
 ## D. Still not executed
 - Tenant (LINE) payment and slip workflows in a browser; load or many-session concurrency; production prechecks (owner); a run of the full browser flow on a database built only from repo files plus the ten undated legacy migrations (the replay-2 database was built that way, plus 0900's two items, but the browser run used it after later manual view re-application).
+
+
+---
+
+# Addendum 2: clean replay of the FINAL files on a fresh database (2026-10-05)
+
+Project `dorm-replay-3` (`ejofevufznrohstpjgva`), created empty for this run. Built in one pass from the committed files at HEAD (final 0600, 0650 with the refund-due view, 0800 with `late_fee_billed_at`), no hand-applied statements except the two items below. Nothing was re-applied afterwards.
+
+Order and parallelism: phase 1 (one agent, sequential): `final-schema.sql`, dated 20260610 … 20260925, `migration-occupancy-proration.sql`. Phase 2 (two agents in parallel on separate objects): (A) money migrations 20261002 0000, 0100, 0200, 0300, 0400, 0500, 0600, 0650, 0700, 0800 in order; (B) the ten undated app migrations plus `user_roles` and the three storage buckets (the two items taken from the test-only 0900; 0900 itself was not applied). Phase 3 (three agents in parallel, rollback-wrapped scripts): 01–03, 04–06, 07–10.
+
+- Phase 1: all OK; the only error was 20260610 "column already exists" (benign: the base schema already has it).
+- Phase 2A: all ten money migrations OK, no retries. The agent pasted each file's executable SQL in full but **dropped the header comment blocks and trailing rollback comments**, so this is not byte-for-byte. Check performed by me afterwards: the normalized body hash (comments and whitespace removed, md5) of all 12 money functions in the database equals the hash of the function body in the committed file (12 of 12). Tables, triggers, indexes and the view were **not** hash-compared; the agent confirmed `tenant_before`, `late_fee_billed_at`, that the view mentions `move_out_settlements`, and that anon/authenticated cannot EXECUTE the six payment/settlement/refund functions.
+- Phase 2B: all OK, no errors.
+- Phase 3 results (agent-tallied result lines; every call ended with the expected RESULT exception; no deadlocks or reruns):
+
+| Script | PASS | FAIL | PROBE / KNOWN-GAP |
+|---|---|---|---|
+| 01_record_payment_batch | 40 | 0 | 0 |
+| 02_void_payment_batch | 30 | 0 | 0 |
+| 03_append_only_and_uniqueness | 52 | 0 | 0 |
+| 04_final_settle_move_out | 21 | 0 | 0 |
+| 05_points_redemption | 34 | 0 | 0 |
+| 06_late_fee_actions | 33 | 0 | 0 |
+| 07_carry_forward_downstream | 14 | 0 | 0 |
+| 08_settlement_downstream | 5 | 0 | 0 |
+| 09_late_fee_freeze | 5 (P1–P9 on one line) | 0 | 0 |
+| 10_refund_and_settlement_correction | 27 (R1–R9 incl. R8a/b, S1, S1b–d, S2–S13, G1) | 0 | 0 |
+
+Per-script counts differ by one or two from earlier runs for 01, 02, 03 (40/30/52 here vs 39/31/51): these are agent tallies of result lines and the sum is the same (121 vs 121); no line was reported as non-PASS.
+Not done on this database: the browser run (it was done on `dorm-replay-2`, built the same way except the view statement was pasted by hand) and the concurrency races (done on `dorm-replay-disposable`).
