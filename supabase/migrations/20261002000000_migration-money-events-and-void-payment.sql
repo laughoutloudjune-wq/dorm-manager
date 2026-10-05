@@ -169,6 +169,8 @@ $$;
 -- and the downstream status re-derive used by record_payment_batch / void_payment_batch.
 -- A source counts as settled when paid_amount >= total, or (recursive) own paid > 0 and
 -- own paid + ITS settled carried-in >= total, so a chain A->B->C propagates.
+-- A legacy-shaped source (paid_amount > total - carry: its paid already includes the carried part)
+-- is never settled by the recursive rule: it still owes total - paid (room 114/1: 244).
 
 CREATE OR REPLACE FUNCTION public.money_carried_in_settled(
     p_invoice_id UUID, p_overrides JSONB DEFAULT '{}'::jsonb, p_depth INT DEFAULT 0
@@ -186,7 +188,7 @@ BEGIN
     END IF;
     FOR r IN
         SELECT cf.amount AS amount, s.id AS sid, s.status::text AS status,
-               COALESCE(s.total_amount, 0) AS total,
+               COALESCE(s.total_amount, 0) AS total, COALESCE(s.carry_forward_amount, 0) AS carry,
                COALESCE(CASE WHEN p_overrides ? s.id::text THEN (p_overrides->>s.id::text)::numeric END,
                         s.paid_amount, 0) AS paid
         FROM public.invoice_carry_forwards cf
@@ -195,7 +197,8 @@ BEGIN
     LOOP
         CONTINUE WHEN r.status = 'cancelled' OR r.total <= 0;
         IF r.paid >= r.total
-           OR (r.paid > 0 AND r.paid + public.money_carried_in_settled(r.sid, p_overrides, p_depth + 1) >= r.total) THEN
+           OR (r.paid > 0 AND NOT (r.carry > 0 AND r.paid > round(r.total - r.carry, 2))
+               AND r.paid + public.money_carried_in_settled(r.sid, p_overrides, p_depth + 1) >= r.total) THEN
             v_sum := v_sum + COALESCE(r.amount, 0);
         END IF;
     END LOOP;

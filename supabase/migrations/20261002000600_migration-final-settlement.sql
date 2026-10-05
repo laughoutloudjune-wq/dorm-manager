@@ -155,6 +155,8 @@ DECLARE
     v_existing public.move_out_settlements%ROWTYPE;
     v_settlement_id uuid := gen_random_uuid();
     v_batch_id uuid;
+    v_downstream uuid[] := '{}';
+    v_debt_ids uuid[];
     v_trigger_inv uuid;
     v_snapshot jsonb := jsonb_build_object('type', 'credit', 'label', 'หักเครดิตตอนย้ายออก (เงินล่วงหน้า/เงินประกัน)');
     -- plan figures
@@ -506,6 +508,10 @@ BEGIN
                     'final_settle_move_out:' || v_source);
         END LOOP;
 
+        SELECT array_agg((d->>'invoiceId')::uuid) INTO v_debt_ids
+        FROM jsonb_array_elements(v_s->'debtPayments') d WHERE (d->>'paidFromCredit')::numeric > 0;
+        v_downstream := public.money_rederive_downstream(v_debt_ids, '{}'::jsonb, v_today, v_batch_id, v_by, v_tenant, 'final_settle_move_out');
+
         INSERT INTO public.money_events (action, actor_user_id, tenant_id, invoice_id, payment_batch_id, room_id, after, reason, source)
         VALUES ('payment.record', v_by, v_tenant, v_trigger_inv, v_batch_id, v_room,
                 jsonb_build_object('amount_received', s_debt_paid, 'amount_allocated', s_debt_paid,
@@ -644,7 +650,7 @@ BEGIN
 
     RETURN jsonb_build_object('replayed', false, 'settlement_id', v_settlement_id,
                               'final_invoice_id', v_inv_id, 'payment_batch_id', v_batch_id,
-                              'settlement', v_s);
+                              'settlement', v_s, 'downstream_updated', to_jsonb(v_downstream));
 END;
 $$;
 

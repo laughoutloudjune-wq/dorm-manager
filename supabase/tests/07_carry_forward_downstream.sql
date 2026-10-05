@@ -194,6 +194,20 @@ BEGIN
     THEN 'PASS  K7 replay returns the original and writes no further status_rederive events (still '||v_n||': 2 from the payment, 2 from its void)'
     ELSE 'FAIL  K7 replayed='||(v_res->>'replayed')||' events before='||v_n2||' after='||v_n END;
 
+  ---------------------------------------------------------------- K8 legacy-shaped MIDDLE invoice must not look settled
+  -- A (1,446, unpaid) -> M (total 6,244, carry 1,446, paid 6,000: still owes 244) -> C (total 9,000, carry 6,244, own paid 2,756)
+  v_a := pg_temp.ni(v_ta, v_room, 1446, 0, 0, 'pending', v_due);
+  v_b := pg_temp.ni(v_ta, v_room, 6244, 1446, 6000, 'partial', v_due);
+  v_c := pg_temp.ni(v_ta, v_room, 9000, 6244, 2756, 'partial', v_due);
+  INSERT INTO invoice_carry_forwards(source_invoice_id, target_invoice_id, amount) VALUES (v_a, v_b, 1446), (v_b, v_c, 6244);
+  v_res := pg_temp.pay(v_ta, v_a, 1446, 'k8');
+  v_out := v_out || E'
+' || CASE WHEN pg_temp.st(v_a) = '1446.00/paid' AND pg_temp.st(v_b) = '6000.00/partial' AND pg_temp.st(v_c) = '2756.00/partial'
+      AND public.money_carried_in_settled(v_c) = 0 AND public.money_carried_in_settled(v_b) = 1446
+      AND NOT ((v_res->'downstream_updated') @> to_jsonb(v_b::text)) AND NOT ((v_res->'downstream_updated') @> to_jsonb(v_c::text))
+    THEN 'PASS  K8 legacy middle invoice (6,244 / 1,446 / 6,000) still owes 244 and does not make the later invoice look settled (A paid; M '||pg_temp.st(v_b)||'; C '||pg_temp.st(v_c)||'; carried-in for C = 0)'
+    ELSE 'FAIL  K8 A='||pg_temp.st(v_a)||' M='||pg_temp.st(v_b)||' C='||pg_temp.st(v_c)||' cin(C)='||public.money_carried_in_settled(v_c)||' cin(M)='||public.money_carried_in_settled(v_b)||' ds='||(v_res->>'downstream_updated') END;
+
   ---------------------------------------------------------------- G2 settlement: own outstanding = max(0, total - carry - paid)
   INSERT INTO rooms(room_number, status) VALUES ('T-'||gen_random_uuid(), 'occupied') RETURNING id INTO v_rc;
   INSERT INTO tenants(full_name, move_in_date, room_id, status, security_deposit_amount, advance_rent_amount)

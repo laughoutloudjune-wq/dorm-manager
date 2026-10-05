@@ -571,7 +571,7 @@ const loadCarryInContext = async (supabase: SupabaseClient, targetIds: string[])
   if (allSourceIds.size > 0) {
     const { data: rows, error: srcError } = await supabase
       .from("invoices")
-      .select("id,total_amount,paid_amount,status")
+      .select("id,total_amount,paid_amount,status,carry_forward_amount")
       .in("id", [...allSourceIds]);
     if (srcError) throw new Error(srcError.message);
     for (const r of (rows ?? []) as any[]) sources.set(String(r.id), r);

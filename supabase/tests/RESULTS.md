@@ -233,3 +233,14 @@ K3 three-invoice chain A->B->C propagates both ways; K4 a failing downstream ste
 K5 verifying / cancelled / draft targets untouched; K6 legacy-shaped target (6,244 / 1,446 / 6,000) not flipped to paid; K7 replay writes no further events;
 G2a-c settlement with own outstanding = max(0, total - carry - paid) (7,594 / 1,400 / 6,194 owes nothing; legacy 6,244 / 1,446 / 6,000 still owes 244).
 Not covered by any script: true two-connection concurrency (lock order, same-key races) - correct by construction only.
+
+## Items 1 and 2 (legacy middle link; move-out downstream propagation) - partial run, dorm-test only
+Project: dorm-test, project_id rghxelkifdrpvabyxopb (the 8-invoice fake dataset). Functions changed in this pass, deployed and
+verified identical to the migration files (normalized body hash): `money_carried_in_settled` 4fb68c84..(742),
+`final_settle_move_out` d43ffa9f..(21323).
+Executed fresh after these edits:
+- 08_settlement_downstream.sql (new): 4 PASS, 0 FAIL (M1 credit pays an older invoice and its target settles; M2 chain A->B->C settles recursively; M3 a downstream failure rolls the whole settlement back; M4 audit event tied to the settlement batch).
+- K8 from 07_carry_forward_downstream.sql, run standalone with its helpers: 1 PASS (legacy-shaped middle invoice 6,244 / 1,446 / 6,000 still owes 244 and does not make the later invoice look settled).
+- Unit tests: 480 passed, 3 todo (34 files); `tsc --noEmit` clean.
+NOT re-run after these edits: scripts 01-06 and the rest of 07. The fresh full-run table above remains valid only for the function versions it
+lists; `money_carried_in_settled` and `final_settle_move_out` have changed since. A final full run of 01-08 is still required.

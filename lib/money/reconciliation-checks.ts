@@ -299,7 +299,7 @@ export function runReconciliation(input: ReconciliationInput): ReconciliationFin
     carryLinksByTarget.set(c.target_invoice_id, list);
   }
   const carrySources = new Map(
-    invoices.map((i) => [i.id, { id: i.id, total_amount: i.total_amount, paid_amount: i.paid_amount, status: i.status }]),
+    invoices.map((i) => [i.id, { id: i.id, total_amount: i.total_amount, paid_amount: i.paid_amount, status: i.status, carry_forward_amount: (i as any).carry_forward_amount }]),
   );
   for (const inv of invoices) {
     const status = String(inv.status ?? "").toLowerCase();

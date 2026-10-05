@@ -247,3 +247,30 @@ describe("tenant statement never contradicts itself", () => {
     expect(s.explanationTh).toBe("ชำระครบแล้ว");
   });
 });
+
+describe("legacy-shaped MIDDLE invoice does not make a later invoice look settled (item 1)", () => {
+  // A 1,446 (paid in full) -> M total 6,244 carrying 1,446, paid 6,000 (still owes 244) -> C total 9,000 carrying 6,244
+  const rows = new Map<string, any>([
+    ["A", { id: "A", total_amount: 1446, paid_amount: 1446, status: "paid", carry_forward_amount: 0 }],
+    ["M", { id: "M", total_amount: 6244, paid_amount: 6000, status: "partial", carry_forward_amount: 1446 }],
+    ["C", { id: "C", total_amount: 9000, paid_amount: 2756, status: "partial", carry_forward_amount: 6244 }],
+  ]);
+  const links = new Map([
+    ["M", [{ source_invoice_id: "A", amount: 1446 }]],
+    ["C", [{ source_invoice_id: "M", amount: 6244 }]],
+  ]);
+  it("M's own source is settled, but M itself is NOT settled for C (it still owes 244)", () => {
+    expect(settledCarriedInAmount(links.get("M")!, rows, new Map(), links)).toBe(1446);
+    expect(settledCarriedInAmount(links.get("C")!, rows, new Map(), links)).toBe(0);
+    expect(owedAfterCarriedIn(9000, 2756, 0, 6244)).toBe(6244);
+    expect(isPaidWithCarriedIn(9000, 2756, 0, 6244)).toBe(false);
+  });
+  it("a non-legacy middle invoice (paid <= own charge) with the same upstream IS settled", () => {
+    const ok = new Map(rows);
+    ok.set("M", { id: "M", total_amount: 6244, paid_amount: 4798, status: "partial", carry_forward_amount: 1446 });
+    expect(settledCarriedInAmount(links.get("C")!, ok, new Map(), links)).toBe(6244);
+  });
+  it("M still owes 244 under the shared own-outstanding rule", () => {
+    expect(getChainOwnOutstanding({ id: "M", total_amount: 6244, paid_amount: 6000, carry_forward_amount: 1446 })).toBe(244);
+  });
+});

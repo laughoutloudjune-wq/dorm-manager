@@ -22,6 +22,8 @@ export type CarryInSource = {
   total_amount: unknown;
   paid_amount: unknown;
   status?: unknown;
+  /** Needed by the recursive rule to recognise a legacy-shaped source (see isLegacyInflatedPaid). */
+  carry_forward_amount?: unknown;
 };
 
 const num = (v: unknown) => {
@@ -60,7 +62,7 @@ export const settledCarriedInAmount = (
       ? (overrides.get(String(src.id)) as number)
       : num(src.paid_amount);
     let settled = paid >= total;
-    if (!settled && linksByTarget && paid > 0) {
+    if (!settled && linksByTarget && paid > 0 && !isLegacyInflatedPaid(total, paid, src.carry_forward_amount)) {
       const upstream = settledCarriedInAmount(
         linksByTarget.get(String(src.id)) ?? [],
         sources,
