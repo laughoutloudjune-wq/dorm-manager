@@ -24,6 +24,8 @@ export const PERMISSION_KEYS = [
   "late_fee.view",
   "late_fee.approve",
   "late_fee.policy",
+  "refund.record",
+  "settlement.void",
 ] as const;
 
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
@@ -63,6 +65,8 @@ export const PERMISSION_LABELS: Record<PermissionKey, string> = {
   "late_fee.view": "View late-fee estimates and posted fees",
   "late_fee.approve": "Approve, waive and reverse late fees",
   "late_fee.policy": "Create a new late-fee policy version",
+  "refund.record": "Record or void a refund payout to a tenant",
+  "settlement.void": "Reverse an erroneous move-out settlement",
 };
 
 export const defaultRolePermissions = (): RolePermissionMap => {
@@ -76,7 +80,8 @@ export const defaultRolePermissions = (): RolePermissionMap => {
   >;
 
   // A late-fee policy decides what every tenant is charged: owner only by default.
-  const admin = { ...allTrue, "settings.permissions": false, "late_fee.policy": false };
+  // Money paid out to a tenant and reversing a whole settlement are owner-only by default as well.
+  const admin = { ...allTrue, "settings.permissions": false, "late_fee.policy": false, "refund.record": false, "settlement.void": false };
   const staff = {
     ...allFalse,
     "invoice.create": true,
