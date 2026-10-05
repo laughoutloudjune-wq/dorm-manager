@@ -22,8 +22,6 @@ const PERMISSION_BY_ACTION: Record<string, PermissionKey> = {
   void_settlement: "settlement.void",
 };
 
-const one = <T,>(v: T | T[] | null | undefined): T | undefined => (Array.isArray(v) ? v[0] : v ?? undefined);
-
 export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
@@ -39,11 +37,20 @@ export async function POST(req: Request) {
     if (action === "list_settlements") {
       const { data, error } = await supabase
         .from("move_out_settlements")
-        .select("id,tenant_id,room_id,final_invoice_id,created_at,created_by,voided_at,voided_by,void_reason,settlement,tenants(full_name),rooms(room_number)")
+        .select("id,tenant_id,room_id,final_invoice_id,created_at,created_by,voided_at,voided_by,void_reason,settlement")
         .order("created_at", { ascending: false })
         .limit(200);
       if (error) throw new Error(error.message);
       const tenantIds = [...new Set((data ?? []).map((r: any) => String(r.tenant_id)))];
+      // move_out_settlements has no foreign keys (it is an append-only record), so PostgREST cannot embed
+      // tenants/rooms; look the names up separately.
+      const roomIds = [...new Set((data ?? []).map((r: any) => r.room_id).filter(Boolean).map(String))];
+      const [{ data: tenantRows }, { data: roomRows }] = await Promise.all([
+        tenantIds.length > 0 ? supabase.from("tenants").select("id,full_name").in("id", tenantIds) : Promise.resolve({ data: [] as any[] }),
+        roomIds.length > 0 ? supabase.from("rooms").select("id,room_number").in("id", roomIds) : Promise.resolve({ data: [] as any[] }),
+      ]);
+      const tenantName = new Map((tenantRows ?? []).map((r: any) => [String(r.id), r.full_name as string]));
+      const roomNumber = new Map((roomRows ?? []).map((r: any) => [String(r.id), r.room_number as string]));
       const due = new Map<string, { due: number; paid: number }>();
       const livePayouts = new Map<string, number>();
       if (tenantIds.length > 0) {
@@ -58,8 +65,8 @@ export async function POST(req: Request) {
         settlements: (data ?? []).map((r: any) => ({
           id: r.id,
           tenantId: r.tenant_id,
-          tenantName: one<any>(r.tenants)?.full_name ?? null,
-          roomNumber: one<any>(r.rooms)?.room_number ?? null,
+          tenantName: tenantName.get(String(r.tenant_id)) ?? null,
+          roomNumber: r.room_id ? roomNumber.get(String(r.room_id)) ?? null : null,
           finalInvoiceId: r.final_invoice_id,
           createdAt: r.created_at,
           voidedAt: r.voided_at,

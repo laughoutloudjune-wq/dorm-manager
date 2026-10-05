@@ -54,3 +54,44 @@ Limit: 2 runs per race on one small database; this shows the lock order works, i
 - **Browser workflows** (admin payment, tenant payment/slip, void, move-out settlement, refund payout, settlement correction, and their refusals). The app talks to Supabase with a service-role key; the key of the dummy project cannot be read by me and the app's `.env.local` points at production, which must not be used. No screen was exercised in a browser this round or before. The unit tests cover the form logic and API error mapping, not the rendered pages.
 - Load / many-session concurrency.
 - Production: schema unknown until `docs/PRODUCTION-PRECHECKS.sql` is run by the owner.
+
+
+---
+
+# Addendum: browser run and final re-runs (2026-10-05, later)
+
+## A. Fresh replay on a second empty database, `dorm-replay-2` (`xqgeiwzetzafbzsqmock`) (executed)
+Applied in order, one file per call, verbatim: `final-schema.sql`; 20260610 … 20260925 (dated); `migration-occupancy-proration.sql`; `20261002` 0000, 0100, 0200, 0300, 0400, 0500, 0600, 0650, 0700, 0800. 0900 not applied. 0800 (with its new `late_fee_billed_at` ALTER) applied OK and the column exists.
+- Only error: 20260610 "column already exists" (benign, `final-schema.sql` already has it).
+- All 12 money functions present; none executable by anon/authenticated.
+- Scripts 01–10: 259 PASS, 0 FAIL at that point.
+- To run the app the database also needed things that are **not** in the money migrations and are production's own: `user_roles` and the storage buckets (from the test-only 0900, applied by hand) and ten older undated migrations (`migration-move-out-requests`, `-move-out-notice-date`, `-tenants-updated-at`, `-tenant-move-out-deposit`, `-policy-acceptance`, `-invoice-ledger`, `-line-meter-staff-status`, `-notify-flags`, `-room-takeover-requests`, `-tenant-room-transfers`); without them the dashboard failed with `move_out_requests.notice_date does not exist`. A database built only from the money migrations is not enough to run the app.
+- Caveat: after the browser run found finding 203, the new `refund_due_vs_paid` definition was applied to this database by pasting that one statement, not by re-running the whole 0650 file.
+
+## B. Browser workflows (executed, Chrome-based in-app browser, app on localhost:3100 connected to `dorm-replay-2`)
+The dev server was started from the worktree with the dummy database's variables only (the session cookie was named for the dummy project, confirming the target). A throwaway owner login was created on the dummy project only. Browser confirm/prompt dialogs were answered by a script stand-in in the page; no app code was altered for that.
+
+| Workflow | Result |
+|---|---|
+| Admin records a payment (invoice modal, partial 1,000 of 3,000) | OK. Batch, allocation with source `admin_webapp`, `payment.record` event, status partial. Header, ledger and per-row balances agreed. |
+| Large-payment warning (3,500 on a 3,000 invoice) | Warning shown; declining it recorded nothing. (It showed a stale remaining figure, see finding 201, fixed.) |
+| Admin voids a payment (preview "1,000 → 0", reason required) | OK. Reversal row, `payment.void` event, invoice back to pending. Found and fixed: modal header stayed stale (201). |
+| Admin pays an invoice in full (Tenant B, 3,000) | OK, status paid. |
+| Move-out wizard, 4 steps, tenant with 2 unpaid invoices and a 3,000 deposit | OK. Deposit credit paid the oldest invoice, newer invoice stayed owed, tenant inactive, room available, final invoice created, `tenant_before` saved. |
+| Move-out wizard, tenant with a paid invoice and a 3,000 deposit | OK. Refund due 3,000, nothing owed. |
+| Settlements list | Initially failed (202, fixed); then listed both settlements with tenant-level figures on the live row and dashes on the voided row. |
+| Refund payout form | Over-amount and future time blocked in the form; server refused future time (400 PAID_AT_IN_FUTURE), over-amount (409 REFUND_EXCEEDS_DUE) and an unsettled tenant (409 NOT_SETTLED). A valid payout (1,000, reference REF-001) saved: due 3,000, paid 1,000, outstanding 2,000. |
+| Settlement void while a payout is live | Button disabled with a message; the server also refused (409 SETTLEMENT_HAS_PAYOUT). |
+| Void the payout (reason required) | OK; outstanding back to 3,000. |
+| Void the settlement (reason required, both tenants) | OK. Tenants active, in their rooms, original scheduled move-out date (31 Oct) restored exactly, invoices reopened, deposit credit reversed, final invoice cancelled, no refund-due row left (finding 203, fixed). |
+| Permissions over HTTP (throwaway admin and viewer users, no token) | admin: list 200, record/void payout and void settlement 403; viewer: all 403; no token 401. |
+
+Not exercised in the browser: tenant-side payment / slip upload in LINE (finding 204); settlement void refusals LATER_ACTIVITY and TENANT_STATE_CHANGED (SQL script 10 S11 only); mobile layout.
+
+## C. Final re-runs after the last SQL change (executed)
+- `dorm-test`: scripts 01–09 all PASS (agent-counted: 39, 31, 51, 21, 37, 33, 14, 5, 5; earlier tallies for 05 were 34, the difference is counting of result lines, not a change in the script). Script 10: 27 PASS, 0 FAIL (R1–R9 incl. R8a/b, S1, S1b–d, S2–S13, G1), after S1 was updated to expect no refund-due row for a voided settlement.
+- `dorm-replay-2`: script 10: 27 PASS, 0 FAIL, line for line identical to dorm-test.
+- `npx tsc --noEmit -p .` clean; `npx vitest run`: 37 files, 509 passed, 3 todo.
+
+## D. Still not executed
+- Tenant (LINE) payment and slip workflows in a browser; load or many-session concurrency; production prechecks (owner); a run of the full browser flow on a database built only from repo files plus the ten undated legacy migrations (the replay-2 database was built that way, plus 0900's two items, but the browser run used it after later manual view re-application).

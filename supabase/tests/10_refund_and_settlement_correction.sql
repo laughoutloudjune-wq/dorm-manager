@@ -171,7 +171,7 @@ BEGIN
       AND pg_temp.st(v_a) = '0.00/overdue' AND (SELECT status FROM invoices WHERE id = v_final) = 'cancelled'
       AND (SELECT status||'/'||(room_id = v_room) FROM tenants WHERE id = v_t) = 'active/true'
       AND (SELECT status FROM rooms WHERE id = v_room) = 'occupied'
-      AND v_msg = '3000.00/0.00' AND pg_temp.due(v_t) = '3000.00/0.00/3000.00'
+      AND v_msg = '3000.00/0.00' AND pg_temp.due(v_t) IS NULL
       AND (SELECT voided_at IS NOT NULL FROM move_out_settlements WHERE id = v_set)
       AND (SELECT count(*) FROM invoice_payment_allocations WHERE invoice_id = v_a) = 2
       AND (SELECT COALESCE(sum(amount),0) FROM invoice_payment_allocations WHERE invoice_id = v_a) = 0
@@ -296,6 +296,16 @@ BEGIN
   v_r := pg_temp.try('void_move_out_settlement', jsonb_build_object('settlement_id', v_set, 'reason', 'x', 'actor', 'tester'));
   IF v_r NOT LIKE 'ERR:ALREADY_VOIDED%' THEN v_msg := v_msg || ' second-void-of-same:' || left(v_r,60); END IF;
   v_out := v_out || E'\n' || CASE WHEN v_msg = '' THEN 'PASS  S12 a voided settlement cannot be voided again (ALREADY_VOIDED)' ELSE 'FAIL  S12 '||v_msg END;
+
+  ---------------------------------------------------------------- S13 refund due exists only while the settlement is live (found in the browser run)
+  m := pg_temp.mk_settled('corr13'); v_t := (m->>'tenant')::uuid; v_set := (m->>'settlement')::uuid;
+  v_msg := pg_temp.due(v_t);
+  v_r := pg_temp.try('void_move_out_settlement', jsonb_build_object('settlement_id', v_set, 'reason', 'x', 'actor', 'tester'));
+  v_out := v_out || E'\n' || CASE WHEN v_msg = '1000.00/0.00/1000.00' AND v_r LIKE 'OK:%' AND pg_temp.due(v_t) IS NULL
+      AND pg_temp.rfp(v_t, 'p13', 10) LIKE 'ERR:NOT_SETTLED%'
+      AND (SELECT COALESCE(SUM(amount),0) FROM tenant_credits WHERE tenant_id = v_t AND bucket = 'deposit') = 3000
+    THEN 'PASS  S13 refund due 1,000 while settled; after the void the tenant has NO refund-due row although the 3,000 deposit is held again, and a payout is refused (NOT_SETTLED)'
+    ELSE 'FAIL  S13 before='||COALESCE(v_msg,'null')||' void='||left(v_r,80)||' after='||COALESCE(pg_temp.due(v_t),'null') END;
 
   ---------------------------------------------------------------- grants
   SELECT string_agg(f, ',') INTO v_msg FROM (VALUES ('record_refund_payout(jsonb)'), ('void_refund_payout(jsonb)'), ('void_move_out_settlement(jsonb)')) q(f)

@@ -410,6 +410,24 @@ const loadChains = async () => {
         reason,
       });
       setChainReloadToken((n) => n + 1);
+      // The void changed paid_amount/status on this invoice and on every other invoice the payment was split
+      // across. Refresh this invoice's summary and form (paid / remaining, and the next payment's checks) from the
+      // server, then reload the list for the others, so nothing on screen keeps the pre-void figures.
+      if (activeInvoice) {
+        const snap = await callInvoiceAdminAction("get_invoice_snapshot", { invoiceId: activeInvoice.id }).catch(() => null);
+        const fresh: any = snap?.invoice ?? null;
+        if (fresh) {
+          const patch = {
+            paid_amount: toNumber(fresh.paid_amount),
+            status: fresh.status,
+            payment_history: Array.isArray(fresh.payment_history) ? fresh.payment_history : undefined,
+          };
+          patchInvoiceInState(String(fresh.id), patch as any);
+          setActiveInvoice((prev: any) => (prev && String(prev.id) === String(fresh.id) ? { ...prev, ...patch } : prev));
+          setForm((prev: any) => ({ ...prev, paid_amount: patch.paid_amount, status: fresh.status ?? prev.status }));
+        }
+      }
+      await loadInvoices(true);
     } catch (err: any) {
       setError(err?.message ?? "ไม่สามารถยกเลิกรายการชำระเงินได้");
     } finally {

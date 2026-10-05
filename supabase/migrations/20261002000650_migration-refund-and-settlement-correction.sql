@@ -353,6 +353,31 @@ BEGIN
 END;
 $$;
 
+-- 4. refund_due_vs_paid: REFUND DUE exists only for a tenant with a live (unvoided) move-out settlement.
+--    The 0300 version counted any deposit/unapplied credit balance, so an active tenant (or one whose settlement was just
+--    voided) showed a refund "due" and a payout button that record_refund_payout would refuse with NOT_SETTLED.
+--    Same columns as before (CREATE OR REPLACE is allowed); needs move_out_settlements from 0600.
+CREATE OR REPLACE VIEW public.refund_due_vs_paid WITH (security_invoker = true) AS
+WITH due AS (
+    SELECT c.tenant_id, SUM(c.amount) AS refundable_credit
+    FROM public.tenant_credits c
+    WHERE c.bucket IN ('deposit', 'unapplied') AND c.kind <> 'refunded'
+      AND EXISTS (SELECT 1 FROM public.move_out_settlements s WHERE s.tenant_id = c.tenant_id AND s.voided_at IS NULL)
+    GROUP BY c.tenant_id
+), paid AS (
+    SELECT tenant_id, SUM(amount) AS refunded_paid
+    FROM public.refund_payouts
+    WHERE voided_at IS NULL
+    GROUP BY tenant_id
+)
+SELECT
+    COALESCE(d.tenant_id, p.tenant_id) AS tenant_id,
+    COALESCE(d.refundable_credit, 0) AS refund_due,
+    COALESCE(p.refunded_paid, 0) AS refund_paid,
+    COALESCE(d.refundable_credit, 0) - COALESCE(p.refunded_paid, 0) AS refund_outstanding
+FROM due d
+FULL OUTER JOIN paid p ON p.tenant_id = d.tenant_id;
+
 -- Server-only: never callable through PostgREST /rpc with the public key.
 REVOKE ALL ON FUNCTION public.record_refund_payout(jsonb) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.record_refund_payout(jsonb) TO service_role;
@@ -361,7 +386,7 @@ GRANT EXECUTE ON FUNCTION public.void_refund_payout(jsonb) TO service_role;
 REVOKE ALL ON FUNCTION public.void_move_out_settlement(jsonb) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.void_move_out_settlement(jsonb) TO service_role;
 
--- Rollback (restore from backup if rows already exist):
+-- Rollback (restore from backup if rows already exist; the view reverts by re-running its definition from 0300):
 --   DROP FUNCTION public.record_refund_payout(jsonb);
 --   DROP FUNCTION public.void_refund_payout(jsonb);
 --   DROP FUNCTION public.void_move_out_settlement(jsonb);
