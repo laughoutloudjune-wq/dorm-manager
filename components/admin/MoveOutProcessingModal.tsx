@@ -8,8 +8,8 @@ import { buttonClasses } from "@/components/ui/Button";
 import { ConfirmActionModal } from "@/components/ui/ConfirmActionModal";
 import { LogOut } from "lucide-react";
 import { createClient } from "@/lib/supabase-client";
-import { MoveOutWizard } from "./MoveOutWizard";
-import type { MoveOutWizardForm } from "./MoveOutWizard";
+import { MoveOutWizard, lateFeesBlockConfirm } from "./MoveOutWizard";
+import type { MoveOutWizardForm, MoveOutLateFeeItem, MoveOutLateFeeVoidState, MoveOutLateFeesUi } from "./MoveOutWizard";
 import type { MoveOutFeeLine } from "@/types";
 import { toNumber } from "@/lib/format";
 import { getInvoiceOwnOutstanding } from "@/lib/invoice-ledger";
@@ -51,6 +51,12 @@ export function MoveOutProcessingModal({
   const idempotencyKeyRef = useRef<string>("");
   const [useProrate, setUseProrate] = useState(true);
   const [moveOutFeeLines, setMoveOutFeeLines] = useState<MoveOutFeeLine[]>([]);
+  // Unbilled late fees on older invoices (loaded once per tenant). Each is billed on the final
+  // invoice unless the admin voids it with a reason.
+  const [lateFeeItems, setLateFeeItems] = useState<MoveOutLateFeeItem[]>([]);
+  const [lateFeeStatus, setLateFeeStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [lateFeeError, setLateFeeError] = useState<string | undefined>(undefined);
+  const [lateFeeVoids, setLateFeeVoids] = useState<MoveOutLateFeeVoidState>({});
   const [isMovingOut, setIsMovingOut] = useState(false);
   const [isCancellingMoveOut, setIsCancellingMoveOut] = useState(false);
   const [isQuickVacating, setIsQuickVacating] = useState(false);
@@ -156,6 +162,45 @@ export function MoveOutProcessingModal({
     }
     return res.json();
   };
+
+  useEffect(() => {
+    if (!isOpen || !tenantId) return;
+    let cancelled = false;
+    setLateFeeStatus("loading");
+    setLateFeeError(undefined);
+    setLateFeeItems([]);
+    setLateFeeVoids({});
+    callTenantsAction("get_move_out_late_fees", { tenantId })
+      .then((res) => {
+        if (cancelled) return;
+        setLateFeeItems(Array.isArray(res?.lateFees) ? res.lateFees : []);
+        setLateFeeStatus("ready");
+      })
+      .catch((e: any) => {
+        if (cancelled) return;
+        setLateFeeError(e?.message ?? "โหลดไม่สำเร็จ");
+        setLateFeeStatus("error");
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, tenantId]);
+
+  const lateFees: MoveOutLateFeesUi = {
+    status: lateFeeStatus,
+    error: lateFeeError,
+    items: lateFeeItems,
+    voids: lateFeeVoids,
+    setVoid: (invoiceId, patch) =>
+      setLateFeeVoids((prev) => ({
+        ...prev,
+        [invoiceId]: { ...(prev[invoiceId] ?? { voided: false, reason: "" }), ...patch },
+      })),
+  };
+  const billedLateFeeLines = lateFeeItems
+    .filter((i) => !lateFeeVoids[i.invoiceId]?.voided)
+    .map((i) => ({ invoiceId: i.invoiceId, label: i.label, amount: i.amount }));
 
   // ── Autosave ──────────────────────────────────────────────────────────────
   // Resets the "known persisted" snapshot whenever the modal opens/switches
@@ -282,6 +327,14 @@ export function MoveOutProcessingModal({
       toast.error("กรุณาระบุเหตุผลการริบเงินประกัน");
       return;
     }
+    if (lateFeesBlockConfirm(lateFees)) {
+      toast.error(
+        lateFeeStatus === "ready"
+          ? "กรุณาระบุเหตุผลที่ยกเลิกค่าปรับล่าช้า"
+          : "ยังโหลดค่าปรับล่าช้าจากบิลเก่าไม่สำเร็จ"
+      );
+      return;
+    }
     if (settlementPlan && settlementPlan.errors.length > 0) {
       toast.error(settlementPlan.errors.join("; "));
       return;
@@ -319,6 +372,9 @@ export function MoveOutProcessingModal({
             final_water: form.final_water_reading,
           },
           moveOutFeeLines,
+          voidedLateFees: lateFeeItems
+            .filter((i) => lateFeeVoids[i.invoiceId]?.voided)
+            .map((i) => ({ invoiceId: i.invoiceId, reason: (lateFeeVoids[i.invoiceId]?.reason ?? "").trim() })),
         },
       });
       toast.success("บันทึกการย้ายออกเรียบร้อย");
@@ -410,13 +466,15 @@ export function MoveOutProcessingModal({
         electricityRate: toNumber(data.rates?.electricity_rate),
         waterRate: toNumber(data.rates?.water_rate),
         feeLines: moveOutFeeLines.map((l) => ({ label: l.label, amount: toNumber(l.amount) })),
+        lateFeeLines: billedLateFeeLines,
         openInvoices: data.unpaidInvoices ?? [],
         held,
         forfeitAmount,
         forfeitReason: forfeit.reason,
       })
     );
-  }, [data, rentPeriod, form.final_electricity_reading, form.final_water_reading, moveOutFeeLines, held, forfeitAmount, forfeit.reason]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, rentPeriod, form.final_electricity_reading, form.final_water_reading, moveOutFeeLines, lateFeeItems, lateFeeVoids, held, forfeitAmount, forfeit.reason]);
 
   const abandonPlan = useMemo(() => {
     if (!data) return null;
@@ -497,6 +555,7 @@ export function MoveOutProcessingModal({
         )}
         {data && (
           <MoveOutWizard
+            lateFees={lateFees}
             activeTenant={data.tenant}
             activeMoveOutRequest={data.moveOutRequests?.[0] || null}
             rates={data.rates}

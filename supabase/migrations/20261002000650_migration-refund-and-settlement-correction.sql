@@ -17,7 +17,7 @@
 -- 3. void_move_out_settlement(p)  reverses an erroneous settlement atomically:
 --    reverses the non-cash credit payments on older invoices (negative allocation rows, paid_amount lowered, statuses re-derived,
 --    downstream targets re-derived), reverses the applied/forfeited/absorbed tenant_credits rows written by that settlement
---    (the held deposit / advance returns), cancels the final invoice, restores tenant, room, room log and move-out request from the state saved with the settlement (move_out_settlements.tenant_before; refuses BEFORE_STATE_MISSING when absent),
+--    (the held deposit / advance returns), cancels the final invoice, un-bills the late fees it billed or voided (restoring each source invoice exactly), restores tenant, room, room log and move-out request from the state saved with the settlement (move_out_settlements.tenant_before; refuses BEFORE_STATE_MISSING when absent),
 --    marks the settlement voided. Refuses when: a refund payout is still live (void it first), the room has been re-let, the tenant's state or any later settlement / move-out request / tenancy record / payment / credit / invoice shows activity after the settlement (LATER_ACTIVITY),
 --    the tenant is no longer in the settled state, the final invoice has had payments, or reversing would make an
 --    invoice's paid_amount negative. Settlement rows are recognised by created_at = the settlement's created_at: every row
@@ -167,6 +167,7 @@ DECLARE
     v_log JSONB;
     v_req JSONB;
     v_cnt INT;
+    v_lfe JSONB;
 BEGIN
     IF v_id IS NULL THEN RAISE EXCEPTION 'INVALID_PAYLOAD settlement_id is required'; END IF;
     IF v_reason = '' THEN RAISE EXCEPTION 'REASON_REQUIRED a reason is required to void a settlement'; END IF;
@@ -304,6 +305,21 @@ BEGIN
         VALUES ('settlement.void_final_invoice', v_by, v_tid, v_s.final_invoice_id, v_s.room_id,
                 jsonb_build_object('status', v_final.status), jsonb_build_object('status', 'cancelled'), v_reason, 'void_move_out_settlement');
     END IF;
+
+    ---------------------------------------------------------------- un-bill the late fees this settlement billed or voided
+    -- Restore each source invoice to exactly what it was before the settlement (billed flag, frozen amount, waived total).
+    -- Runs after the payment reversal above, which may have cleared a freeze, so these values are written last.
+    FOR v_lfe IN SELECT value FROM jsonb_array_elements(COALESCE(v_s.settlement->'lateFees', '[]'::jsonb)) LOOP
+        UPDATE public.invoices
+        SET late_fee_billed_at = NULL,
+            locked_late_fee_amount = NULLIF(v_lfe->>'prev_locked', '')::numeric,
+            waived_late_fee_amount = COALESCE(NULLIF(v_lfe->>'prev_waived', '')::numeric, 0)
+        WHERE id = (v_lfe->>'invoice_id')::uuid;
+        INSERT INTO public.money_events (action, actor_user_id, tenant_id, invoice_id, room_id, after, reason, source)
+        VALUES ('settlement.void_late_fee', v_by, v_tid, (v_lfe->>'invoice_id')::uuid, v_s.room_id,
+                jsonb_build_object('amount', (v_lfe->>'amount')::numeric, 'was_voided', (v_lfe->>'voided')::boolean),
+                v_reason, 'void_move_out_settlement');
+    END LOOP;
 
     ---------------------------------------------------------------- restore tenant, room, logs, request
     v_status_before := v_tb->'tenant'->>'status';

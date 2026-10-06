@@ -63,7 +63,51 @@ type InvoiceHistoryRow = {
   water_reading_end?: number | null;
 };
 
+/** One unbilled late fee on an older invoice, as returned by get_move_out_late_fees. */
+export type MoveOutLateFeeItem = {
+  invoiceId: string;
+  periodStart: string;
+  periodEnd: string | null;
+  daysOverdue: number | null;
+  dailyRate: number;
+  amount: number;
+  locked: boolean;
+  label: string;
+};
+
+export type MoveOutLateFeeVoidState = Record<string, { voided: boolean; reason: string }>;
+
+export type MoveOutLateFeesUi = {
+  status: "loading" | "ready" | "error";
+  error?: string;
+  items: MoveOutLateFeeItem[];
+  voids: MoveOutLateFeeVoidState;
+  setVoid: (invoiceId: string, patch: Partial<{ voided: boolean; reason: string }>) => void;
+};
+
+/** True when a voided late fee has no reason yet. */
+export const lateFeeVoidReasonMissing = (lf: MoveOutLateFeesUi) =>
+  lf.items.some((i) => lf.voids[i.invoiceId]?.voided && !lf.voids[i.invoiceId]?.reason.trim());
+
+/** Late fees can't be silently skipped: confirm stays blocked until they loaded and voids have reasons. */
+export const lateFeesBlockConfirm = (lf: MoveOutLateFeesUi) => lf.status !== "ready" || lateFeeVoidReasonMissing(lf);
+
+function LateFeeRowAmount({ item, voided }: { item: MoveOutLateFeeItem; voided: boolean }) {
+  return (
+    <span className={`font-mono font-semibold ${voided ? "text-slate-400 line-through" : "text-slate-800"}`}>
+      ฿{formatMoney(item.amount)}
+    </span>
+  );
+}
+
+function lateFeeDetail(item: MoveOutLateFeeItem) {
+  return item.daysOverdue == null
+    ? "ล็อกยอดแล้ว"
+    : `${item.daysOverdue} วัน × ${formatMoney(item.dailyRate)} บาท`;
+}
+
 type Props = {
+  lateFees: MoveOutLateFeesUi;
   activeTenant: any | null;
   activeMoveOutRequest: MoveOutRequestRow | null;
   rates: SettingsRates;
@@ -701,9 +745,11 @@ function Step3FinancialSummary({
   outstandingMoveOutInvoices,
   rentPeriod,
   settlementPlan,
+  lateFees,
   onBack,
   onNext,
 }: {
+  lateFees: MoveOutLateFeesUi;
   form: MoveOutWizardForm;
   forfeit: ForfeitState;
   setForfeit: (next: ForfeitState) => void;
@@ -732,6 +778,62 @@ function Step3FinancialSummary({
         <h2 className="text-xl font-bold text-slate-900">สรุปค่าใช้จ่าย</h2>
         <p className="mt-1 text-base text-slate-500">ตรวจสอบและปรับแต่งรายการค่าใช้จ่ายก่อนยืนยัน</p>
       </div>
+
+      {lateFees.status === "loading" && (
+        <Notice tone="info" title="กำลังตรวจสอบค่าปรับล่าช้าจากบิลเก่า">
+          กรุณารอสักครู่ ระบบจะยังไม่ให้ยืนยันจนกว่าจะโหลดเสร็จ
+        </Notice>
+      )}
+      {lateFees.status === "error" && (
+        <Notice tone="danger" title="โหลดค่าปรับล่าช้าจากบิลเก่าไม่สำเร็จ">
+          {lateFees.error || "ไม่ทราบสาเหตุ"} — ยังยืนยันการย้ายออกไม่ได้ กรุณาปิดแล้วเปิดหน้านี้ใหม่
+        </Notice>
+      )}
+      {lateFees.status === "ready" && lateFees.items.length > 0 && (
+        <SectionCard>
+          <p className="text-base font-semibold text-slate-700 mb-1 flex items-center gap-2">
+            <Calculator className="h-4 w-4 text-slate-400" />
+            ค่าปรับล่าช้าจากบิลเก่า
+          </p>
+          <p className="mb-4 text-sm text-slate-500">
+            ค่าปรับที่ยังไม่เคยเรียกเก็บ จะถูกเพิ่มเป็นรายการในบิลสุดท้าย หากยกเลิกจะไม่ถูกเรียกเก็บและต้องระบุเหตุผล
+          </p>
+          <div className="space-y-3">
+            {lateFees.items.map((item) => {
+              const v = lateFees.voids[item.invoiceId] ?? { voided: false, reason: "" };
+              return (
+                <div key={item.invoiceId} className="rounded-control border border-slate-200 p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className={v.voided ? "text-slate-400 line-through" : "text-slate-700"}>
+                      <p className="text-base font-medium">งวด {item.periodStart}</p>
+                      <p className="text-sm">{lateFeeDetail(item)}</p>
+                    </div>
+                    <LateFeeRowAmount item={item} voided={v.voided} />
+                  </div>
+                  <label className="mt-2 flex cursor-pointer items-center gap-2 text-sm text-slate-600">
+                    <input
+                      type="checkbox"
+                      checked={v.voided}
+                      onChange={(e) => lateFees.setVoid(item.invoiceId, { voided: e.target.checked })}
+                      className="h-4 w-4 accent-primary-600"
+                    />
+                    ยกเลิกค่าปรับนี้
+                  </label>
+                  {v.voided && (
+                    <input
+                      type="text"
+                      placeholder="เหตุผลที่ยกเลิกค่าปรับ (จำเป็น)"
+                      value={v.reason}
+                      onChange={(e) => lateFees.setVoid(item.invoiceId, { reason: e.target.value })}
+                      className={controlClasses({ className: "mt-2", invalid: !v.reason.trim() })}
+                    />
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </SectionCard>
+      )}
 
       {/* Additional fees — the label is the documented reason for the charge */}
       <SectionCard>
@@ -857,10 +959,12 @@ function Step4Confirm({
   rentPeriod,
   settlementPlan,
   existingSettlement,
+  lateFees,
   onBack,
   onConfirmMoveOut,
   onCancelMoveOut,
 }: {
+  lateFees: MoveOutLateFeesUi;
   form: MoveOutWizardForm;
   forfeit: ForfeitState;
   latestPrevElectricity: number;
@@ -890,7 +994,10 @@ function Step4Confirm({
   const plan = settlementPlan;
   const owes = (plan?.balanceStillOwed ?? 0) > 0;
   const reasonMissing = forfeitReasonMissing(forfeit);
-  const blocked = !plan || plan.errors.length > 0 || reasonMissing || Boolean(existingSettlement);
+  const lateFeeBlocked = lateFeesBlockConfirm(lateFees);
+  const billedLateFees = lateFees.items.filter((i) => !lateFees.voids[i.invoiceId]?.voided);
+  const voidedLateFees = lateFees.items.filter((i) => lateFees.voids[i.invoiceId]?.voided);
+  const blocked = !plan || plan.errors.length > 0 || reasonMissing || Boolean(existingSettlement) || lateFeeBlocked;
 
   return (
     <div className="space-y-5 animate-fade-in-up">
@@ -908,6 +1015,44 @@ function Step4Confirm({
         <Notice tone="danger" title="ต้องระบุเหตุผลการริบเงินประกัน">
           กลับไปขั้นตอน &quot;สรุปค่าใช้จ่าย&quot; เพื่อกรอกเหตุผล
         </Notice>
+      )}
+
+      {lateFees.status === "error" && (
+        <Notice tone="danger" title="โหลดค่าปรับล่าช้าจากบิลเก่าไม่สำเร็จ">
+          {lateFees.error || "ไม่ทราบสาเหตุ"} — ไม่สามารถยืนยันได้จนกว่าจะโหลดสำเร็จ
+        </Notice>
+      )}
+      {lateFees.status === "loading" && (
+        <Notice tone="info" title="กำลังตรวจสอบค่าปรับล่าช้าจากบิลเก่า">
+          กรุณารอสักครู่
+        </Notice>
+      )}
+      {lateFees.status === "ready" && lateFeeVoidReasonMissing(lateFees) && (
+        <Notice tone="danger" title="ต้องระบุเหตุผลที่ยกเลิกค่าปรับล่าช้า">
+          กลับไปขั้นตอน &quot;สรุปค่าใช้จ่าย&quot; เพื่อกรอกเหตุผล
+        </Notice>
+      )}
+
+      {(billedLateFees.length > 0 || voidedLateFees.length > 0) && (
+        <SectionCard>
+          <p className="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-3">ค่าปรับล่าช้าจากบิลเก่า</p>
+          <div className="space-y-2 text-base">
+            {billedLateFees.map((i) => (
+              <div key={i.invoiceId} className="flex justify-between gap-3">
+                <span className="text-slate-700">งวด {i.periodStart} ({lateFeeDetail(i)}) — เรียกเก็บในบิลสุดท้าย</span>
+                <LateFeeRowAmount item={i} voided={false} />
+              </div>
+            ))}
+            {voidedLateFees.map((i) => (
+              <div key={i.invoiceId} className="flex justify-between gap-3">
+                <span className="text-slate-400">
+                  <span className="line-through">งวด {i.periodStart} ({lateFeeDetail(i)})</span> — ยกเลิก: {lateFees.voids[i.invoiceId]?.reason}
+                </span>
+                <LateFeeRowAmount item={i} voided />
+              </div>
+            ))}
+          </div>
+        </SectionCard>
       )}
 
       <SectionCard>
@@ -1029,6 +1174,7 @@ function Step4Confirm({
 // ─── Main Wizard Component ─────────────────────────────────────────────────────
 
 export function MoveOutWizard({
+  lateFees,
   activeTenant,
   activeMoveOutRequest,
   rates,
@@ -1138,6 +1284,7 @@ export function MoveOutWizard({
               outstandingMoveOutInvoices={outstandingMoveOutInvoices}
               rentPeriod={rentPeriod}
               settlementPlan={settlementPlan}
+              lateFees={lateFees}
               onBack={() => goTo(2)}
               onNext={() => goTo(4)}
             />
@@ -1158,6 +1305,7 @@ export function MoveOutWizard({
               rentPeriod={rentPeriod}
               settlementPlan={settlementPlan}
               existingSettlement={existingSettlement}
+              lateFees={lateFees}
               onBack={() => goTo(3)}
               onConfirmMoveOut={onConfirmMoveOut}
               onCancelMoveOut={onCancelMoveOut}

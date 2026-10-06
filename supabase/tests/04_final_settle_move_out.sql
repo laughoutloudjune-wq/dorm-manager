@@ -41,7 +41,7 @@ RETURNS jsonb LANGUAGE sql AS $f$
     'created_by', 'tester', 'paid_at', '2026-09-28T10:00:00+07:00', 'source', 'credit',
     'settlement', settlement, 'debts', debts,
     'invoice', jsonb_build_object('id', gen_random_uuid(), 'start_date', '2026-09-25', 'end_date', '2026-09-28',
-        'issue_date', '2026-09-28', 'due_date', '2026-10-05', 'rent_amount', 0, 'water_bill', water,
+        'issue_date', '2026-09-28', 'due_date', '2099-12-31', 'rent_amount', 0, 'water_bill', water,
         'electricity_bill', elec, 'common_fee', 0, 'late_fee_amount', 0, 'additional_fees_total', fees,
         'carry_forward_amount', 0, 'discount_amount', discount,
         'total_amount', COALESCE(total_override, fees + water + elec - discount),

@@ -124,6 +124,34 @@ export type OpenInvoiceRow = {
 
 export type MoveOutFeeLineInput = { label: string; amount: number; reason?: string };
 
+/** A billed (non-voided) late fee carried from an older invoice onto the final invoice. */
+export type MoveOutLateFeeLine = { invoiceId: string; label: string; amount: number };
+
+/** Reserved `reason` prefix marking a plan otherCharge as a late-fee line (not a generic custom fee). */
+export const LATE_FEE_REASON_PREFIX = "late_fee_line:";
+
+export type MoveOutLateFeeBilled = {
+  invoiceId: string;
+  amount: number;
+  label: string;
+  periodStart?: string | null;
+  daysOverdue?: number | null;
+  dailyRate?: number | null;
+};
+export type MoveOutLateFeeVoided = { invoiceId: string; amount: number; reason: string };
+export type MoveOutLateFees = { billed: MoveOutLateFeeBilled[]; voided: MoveOutLateFeeVoided[] };
+
+/** Label for a late-fee line on the final invoice. */
+export function moveOutLateFeeLabel(c: {
+  periodStart: string;
+  daysOverdue: number | null;
+  dailyRate: number;
+}): string {
+  return c.daysOverdue == null
+    ? `ค่าปรับล่าช้า งวด ${c.periodStart} (ล็อกยอดแล้ว)`
+    : `ค่าปรับล่าช้า งวด ${c.periodStart} (${c.daysOverdue} วัน × ${c.dailyRate} บาท)`;
+}
+
 export type BuildPlanInputArgs = {
   period: MoveOutRentPeriod;
   previousElectricity: number;
@@ -133,6 +161,8 @@ export type BuildPlanInputArgs = {
   electricityRate: number;
   waterRate: number;
   feeLines: MoveOutFeeLineInput[];
+  /** Billed (non-voided) late fees from older invoices; counted in the final bill. */
+  lateFeeLines?: MoveOutLateFeeLine[];
   openInvoices: OpenInvoiceRow[];
   held: HeldCredit;
   forfeitAmount: number;
@@ -176,22 +206,33 @@ export function buildMoveOutPlanInput(args: BuildPlanInputArgs): MoveOutSettleme
       rate: num(args.waterRate),
     },
     // A fee line's label is its documented reason (what the admin typed).
-    otherCharges: args.feeLines
-      .filter((l) => num(l.amount) !== 0)
-      .map((l) => ({ label: l.label.trim(), amount: num(l.amount), reason: (l.reason ?? l.label).trim() })),
+    otherCharges: [
+      ...args.feeLines
+        .filter((l) => num(l.amount) !== 0)
+        .map((l) => ({ label: l.label.trim(), amount: num(l.amount), reason: (l.reason ?? l.label).trim() })),
+      ...(args.lateFeeLines ?? [])
+        .filter((l) => num(l.amount) > 0)
+        .map((l) => ({
+          label: l.label.trim(),
+          amount: num(l.amount),
+          reason: `${LATE_FEE_REASON_PREFIX}${l.invoiceId}`,
+        })),
+    ],
   };
 }
 
 /** The final invoice's charges, from the plan. Credit used on the final bill is its discount. */
-export function finalInvoiceCharges(plan: MoveOutSettlementPlan): InvoiceCharges {
+export function finalInvoiceCharges(plan: MoveOutSettlementPlan, lateFeeTotal = 0): InvoiceCharges {
+  const lateFees = Math.round(num(lateFeeTotal) * 100) / 100;
   return {
     rent: plan.fullMonthRent,
     water: plan.water,
     electricity: plan.electricity,
     commonFee: 0,
     nativeLateFee: 0,
-    lateFeeItems: 0,
-    fees: Math.round((plan.proratedRent + plan.otherChargesTotal) * 100) / 100,
+    lateFeeItems: lateFees,
+    // Late-fee lines are inside otherChargesTotal but belong to lateFeeItems; fees must not repeat them.
+    fees: Math.round((plan.proratedRent + plan.otherChargesTotal - lateFees) * 100) / 100,
     carryForward: 0,
     discount: plan.finalBillPaidFromCredit,
   };
@@ -208,6 +249,8 @@ export type BuildRpcArgs = {
   period: MoveOutRentPeriod;
   openInvoices: OpenInvoiceRow[];
   source: "credit" | "abandon_room";
+  /** Late fees from older invoices: billed ones are on the final invoice, voided ones are removed. */
+  lateFees?: MoveOutLateFees;
   /** null = no final invoice (abandon_room). */
   finalInvoice: null | {
     id: string;
@@ -234,7 +277,9 @@ export function buildFinalSettlementRpcPayload(args: BuildRpcArgs) {
   let invoice: Record<string, unknown> | null = null;
   let charges: InvoiceCharges | null = null;
   if (args.finalInvoice) {
-    charges = finalInvoiceCharges(plan);
+    const lateBilled = args.lateFees?.billed ?? [];
+    const lateTotal = lateBilled.reduce((sum, l) => sum + num(l.amount), 0);
+    charges = finalInvoiceCharges(plan, lateTotal);
     const columns = toInvoiceMoneyColumns(charges);
     const breakdown: Array<Record<string, unknown>> = [];
     if (plan.proratedRent > 0) {
@@ -244,7 +289,18 @@ export function buildFinalSettlementRpcPayload(args: BuildRpcArgs) {
         amount: plan.proratedRent,
       });
     }
+    for (const l of lateBilled) {
+      breakdown.push({
+        item_type: "late_fee_line",
+        source_invoice_id: l.invoiceId,
+        label: l.label,
+        amount: num(l.amount),
+        original_amount: num(l.amount),
+        waived_amount: 0,
+      });
+    }
     for (const c of plan.otherCharges) {
+      if (String(c.reason ?? "").startsWith(LATE_FEE_REASON_PREFIX)) continue;
       breakdown.push({ item_type: "custom", label: c.label, amount: c.amount, reason: c.reason });
     }
     invoice = {
@@ -286,5 +342,18 @@ export function buildFinalSettlementRpcPayload(args: BuildRpcArgs) {
     debts,
     invoice,
     charges,
+    // Only meaningful with a final invoice; abandon_room sends nothing.
+    ...(args.finalInvoice && args.lateFees
+      ? {
+          late_fees: {
+            billed: args.lateFees.billed.map((l) => ({ invoice_id: l.invoiceId, amount: num(l.amount) })),
+            voided: args.lateFees.voided.map((l) => ({
+              invoice_id: l.invoiceId,
+              amount: num(l.amount),
+              reason: l.reason,
+            })),
+          },
+        }
+      : {}),
   };
 }

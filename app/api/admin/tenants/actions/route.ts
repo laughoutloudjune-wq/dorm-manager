@@ -10,6 +10,8 @@ import {
   buildFinalSettlementRpcPayload,
   buildMoveOutPlanInput,
   computeMoveOutRentPeriod,
+  moveOutLateFeeLabel,
+  type MoveOutLateFees,
   resolveHeldCredit,
   type HeldCredit,
   type OpenInvoiceRow,
@@ -176,13 +178,59 @@ async function findSettlementReplay(supabase: SupabaseClient, tenantId: string, 
   };
 }
 
+type MoveOutLateFeeCandidate = {
+  invoiceId: string;
+  periodStart: string;
+  periodEnd: string | null;
+  daysOverdue: number | null;
+  dailyRate: number;
+  amount: number;
+  locked: boolean;
+  label: string;
+};
+
+/** Unbilled late fees on the tenant's older invoices, as of a date (read-only SQL function). */
+async function loadMoveOutLateFeeCandidates(
+  supabase: any,
+  tenantId: string,
+  asOf: string
+): Promise<{ candidates: MoveOutLateFeeCandidate[] } | { error: string }> {
+  const { data, error } = await supabase.rpc("move_out_late_fee_candidates", {
+    p_tenant: tenantId,
+    p_as_of: asOf,
+  });
+  if (error) return { error: error.message };
+  const candidates = ((data as any[]) ?? [])
+    .map((r) => {
+      const daysOverdue = r.days_overdue == null ? null : toNumber(r.days_overdue);
+      const dailyRate = toNumber(r.daily_rate);
+      const periodStart = String(r.period_start ?? "").slice(0, 10);
+      return {
+        invoiceId: String(r.invoice_id),
+        periodStart,
+        periodEnd: r.period_end ? String(r.period_end).slice(0, 10) : null,
+        daysOverdue,
+        dailyRate,
+        amount: toNumber(r.amount),
+        locked: Boolean(r.locked),
+        label: moveOutLateFeeLabel({ periodStart, daysOverdue, dailyRate }),
+      };
+    })
+    .filter((c) => c.amount > 0);
+  return { candidates };
+}
+
 function settlementRpcError(message: string) {
-  const conflict = /^(ALREADY_SETTLED|STALE_|HELD_MISMATCH|VERIFYING_INVOICE|ROOM_MISMATCH|INVOICE_NOT_OPEN|OVERPAY)/;
-  const invalid = /^(FORFEIT_REASON_REQUIRED|PLAN_|ENGINE_MISMATCH|INVOICE_TENANT_MISMATCH)/;
+  const conflict = /^(LATE_FEE_MISMATCH|ALREADY_SETTLED|STALE_|HELD_MISMATCH|VERIFYING_INVOICE|ROOM_MISMATCH|INVOICE_NOT_OPEN|OVERPAY)/;
+  const invalid = /^(LATE_FEE_VOID_REASON_REQUIRED|FORFEIT_REASON_REQUIRED|PLAN_|ENGINE_MISMATCH|INVOICE_TENANT_MISMATCH)/;
   const status = conflict.test(message) ? 409 : invalid.test(message) ? 400 : 500;
   const friendly = message.startsWith("ALREADY_SETTLED")
     ? "ผู้เช่ารายนี้สรุปยอดย้ายออกไปแล้ว"
-    : /^(STALE_|HELD_MISMATCH)/.test(message)
+    : message.startsWith("LATE_FEE_MISMATCH")
+      ? `ค่าปรับล่าช้าของผู้เช่ารายนี้เปลี่ยนไประหว่างทำรายการ กรุณาโหลดหน้าใหม่แล้วตรวจสอบอีกครั้ง (${message})`
+      : message.startsWith("LATE_FEE_VOID_REASON_REQUIRED")
+        ? "กรุณาระบุเหตุผลที่ยกเลิกค่าปรับล่าช้าทุกรายการ"
+        : /^(STALE_|HELD_MISMATCH)/.test(message)
       ? `ข้อมูลยอดเงินเปลี่ยนไประหว่างทำรายการ กรุณาโหลดหน้าใหม่ (${message})`
       : message;
   return NextResponse.json({ error: friendly }, { status });
@@ -856,6 +904,16 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: true });
     }
 
+    if (action === "get_move_out_late_fees") {
+      const auth = await requireAdminPermission(req, "tenant.edit");
+      if ("error" in auth) return auth.error;
+      const tenantId = String(body?.tenantId ?? "");
+      if (!tenantId) return NextResponse.json({ error: "Missing tenantId." }, { status: 400 });
+      const loaded = await loadMoveOutLateFeeCandidates(auth.supabase, tenantId, new Date().toISOString().slice(0, 10));
+      if ("error" in loaded) return NextResponse.json({ error: loaded.error }, { status: 500 });
+      return NextResponse.json({ lateFees: loaded.candidates });
+    }
+
     if (action === "final_move_out") {
       const auth = await requireAdminPermission(req, "tenant.edit");
       if ("error" in auth) return auth.error;
@@ -901,6 +959,43 @@ export async function POST(req: Request) {
       const forfeit = resolveForfeitInput(payload, ctx.held.deposit);
       if ("error" in forfeit) return NextResponse.json({ error: forfeit.error }, { status: 400 });
 
+      // Late fees on older invoices: every candidate is either billed on the
+      // final invoice or voided by the admin (reason required). Amounts always
+      // come from the server-side candidate, never from the client.
+      const paidAt = new Date().toISOString();
+      const lateLoaded = await loadMoveOutLateFeeCandidates(auth.supabase, tenantId, paidAt.slice(0, 10));
+      if ("error" in lateLoaded) {
+        return NextResponse.json({ error: `โหลดค่าปรับล่าช้าไม่สำเร็จ: ${lateLoaded.error}` }, { status: 500 });
+      }
+      const voidedRequests = new Map<string, string>();
+      for (const v of Array.isArray(payload?.voidedLateFees) ? payload.voidedLateFees : []) {
+        const id = String(v?.invoiceId ?? "");
+        if (id) voidedRequests.set(id, String(v?.reason ?? "").trim());
+      }
+      const lateBilled: MoveOutLateFees["billed"] = [];
+      const lateVoided: MoveOutLateFees["voided"] = [];
+      for (const c of lateLoaded.candidates) {
+        if (voidedRequests.has(c.invoiceId)) {
+          const reason = voidedRequests.get(c.invoiceId) ?? "";
+          if (!reason) {
+            return NextResponse.json(
+              { error: `กรุณาระบุเหตุผลที่ยกเลิกค่าปรับล่าช้า งวด ${c.periodStart}` },
+              { status: 400 }
+            );
+          }
+          lateVoided.push({ invoiceId: c.invoiceId, amount: c.amount, reason });
+        } else {
+          lateBilled.push({
+            invoiceId: c.invoiceId,
+            amount: c.amount,
+            label: c.label,
+            periodStart: c.periodStart,
+            daysOverdue: c.daysOverdue,
+            dailyRate: c.dailyRate,
+          });
+        }
+      }
+
       const period = computeMoveOutRentPeriod({
         lastBilledEndDate: ctx.lastBilledEndDate,
         moveOutDate,
@@ -911,6 +1006,7 @@ export async function POST(req: Request) {
       const plan = planMoveOutSettlement(
         buildMoveOutPlanInput({
           period,
+          lateFeeLines: lateBilled.map((l) => ({ invoiceId: l.invoiceId, label: l.label, amount: l.amount })),
           previousElectricity: ctx.previousElectricity,
           currentElectricity: toNumber(meterData.final_electricity),
           previousWater: ctx.previousWater,
@@ -940,11 +1036,12 @@ export async function POST(req: Request) {
         idempotencyKey,
         moveOutDate,
         createdBy: auth.user.id,
-        paidAt: new Date().toISOString(),
+        paidAt,
         plan,
         period,
         openInvoices: ctx.openInvoices,
         source: "credit",
+        lateFees: { billed: lateBilled, voided: lateVoided },
         finalInvoice: {
           id: crypto.randomUUID(),
           issueDate: today,

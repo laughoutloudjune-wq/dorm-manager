@@ -136,6 +136,34 @@ CREATE TRIGGER trg_move_out_settlements_guard
 
 ALTER TABLE public.move_out_settlements ENABLE ROW LEVEL SECURITY;  -- service role only
 
+-- Late fees still unbilled on the tenant's older invoices, as of a date. Used by the move-out wizard (preview) and by
+-- final_settle_move_out (authority). Legacy / global-setting mode only: once any late_fee_policies row exists fees go through
+-- the approval flow and this returns nothing. Same rule as the monthly generator: an invoice's late fee is billed once
+-- (late_fee_billed_at), a frozen fee (locked_late_fee_amount) wins, otherwise days * rate - waived from late_fee_start_date.
+CREATE OR REPLACE FUNCTION public.move_out_late_fee_candidates(p_tenant uuid, p_as_of date)
+RETURNS TABLE (invoice_id uuid, period_start date, period_end date, late_fee_start_date date, daily_rate numeric,
+               days_overdue int, amount numeric, locked boolean, prev_locked numeric, prev_waived numeric)
+LANGUAGE sql
+STABLE
+SET search_path = public, pg_temp
+AS $$
+    SELECT i.id, i.start_date, i.end_date, i.late_fee_start_date, COALESCE(i.late_fee_per_day, 0),
+           CASE WHEN i.locked_late_fee_amount IS NOT NULL THEN NULL
+                ELSE GREATEST(0, (p_as_of - i.late_fee_start_date) + 1) END,
+           public.money_late_fee_amount(i.late_fee_start_date, i.late_fee_per_day, i.waived_late_fee_amount, i.locked_late_fee_amount, p_as_of),
+           i.locked_late_fee_amount IS NOT NULL, i.locked_late_fee_amount, COALESCE(i.waived_late_fee_amount, 0)
+    FROM public.invoices i
+    WHERE i.tenant_id = p_tenant
+      AND i.late_fee_billed_at IS NULL
+      AND i.status::text IN ('pending', 'partial', 'overdue', 'verifying', 'paid')
+      AND NOT EXISTS (SELECT 1 FROM public.late_fee_policies)
+      AND public.money_late_fee_amount(i.late_fee_start_date, i.late_fee_per_day, i.waived_late_fee_amount, i.locked_late_fee_amount, p_as_of) > 0
+    ORDER BY i.start_date, i.id
+$$;
+
+REVOKE ALL ON FUNCTION public.move_out_late_fee_candidates(uuid, date) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.move_out_late_fee_candidates(uuid, date) TO service_role;
+
 CREATE OR REPLACE FUNCTION public.final_settle_move_out(p jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -182,6 +210,13 @@ DECLARE
     v_engine_total numeric;
     v_unaccounted int;
     v_room_freed boolean := false;
+    -- late fees on the final invoice
+    v_lf jsonb := p->'late_fees';
+    v_lf_asof date := COALESCE(NULLIF(left(p->>'paid_at', 10), '')::date, (now() AT TIME ZONE 'Asia/Bangkok')::date);
+    v_lf_rec jsonb := '[]'::jsonb;
+    v_lf_billed_sum numeric := 0;
+    v_lf_cand_n int := 0;
+    v_c record; v_b jsonb; v_vd jsonb; v_cnt2 int;
 BEGIN
     ---------------------------------------------------------------- shape
     IF v_tenant IS NULL OR v_room IS NULL THEN
@@ -403,6 +438,45 @@ BEGIN
             RAISE EXCEPTION 'final invoice total must not be negative';
         END IF;
 
+        -- Late fees still unbilled on the older invoices: each is either billed on this invoice or voided with a reason.
+        -- The database recomputes them; the caller's amounts must match (a stale screen cannot under- or over-bill).
+        FOR v_c IN SELECT * FROM public.move_out_late_fee_candidates(v_tenant, v_lf_asof) LOOP
+            v_lf_cand_n := v_lf_cand_n + 1;
+            SELECT count(*) INTO v_cnt2 FROM (
+                SELECT e.val FROM jsonb_array_elements(COALESCE(v_lf->'billed', '[]'::jsonb)) AS e(val) WHERE (e.val->>'invoice_id')::uuid = v_c.invoice_id
+                UNION ALL
+                SELECT e.val FROM jsonb_array_elements(COALESCE(v_lf->'voided', '[]'::jsonb)) AS e(val) WHERE (e.val->>'invoice_id')::uuid = v_c.invoice_id
+            ) x;
+            IF v_cnt2 <> 1 THEN
+                RAISE EXCEPTION 'LATE_FEE_MISMATCH: the late fee % on invoice % must be billed or voided exactly once (found %)', v_c.amount, v_c.invoice_id, v_cnt2;
+            END IF;
+            SELECT e.val INTO v_b FROM jsonb_array_elements(COALESCE(v_lf->'billed', '[]'::jsonb)) AS e(val) WHERE (e.val->>'invoice_id')::uuid = v_c.invoice_id;
+            IF v_b IS NOT NULL THEN
+                IF round((v_b->>'amount')::numeric, 2) <> v_c.amount THEN
+                    RAISE EXCEPTION 'LATE_FEE_MISMATCH: late fee on invoice % is % but % was billed', v_c.invoice_id, v_c.amount, v_b->>'amount';
+                END IF;
+                v_lf_billed_sum := v_lf_billed_sum + v_c.amount;
+                v_lf_rec := v_lf_rec || jsonb_build_array(jsonb_build_object(
+                    'invoice_id', v_c.invoice_id, 'amount', v_c.amount, 'voided', false,
+                    'prev_locked', v_c.prev_locked, 'prev_waived', v_c.prev_waived));
+            ELSE
+                SELECT e.val INTO v_vd FROM jsonb_array_elements(COALESCE(v_lf->'voided', '[]'::jsonb)) AS e(val) WHERE (e.val->>'invoice_id')::uuid = v_c.invoice_id;
+                IF COALESCE(v_vd->>'reason', '') ~ '^\s*$' THEN
+                    RAISE EXCEPTION 'LATE_FEE_VOID_REASON_REQUIRED: a reason is required to void the late fee on invoice %', v_c.invoice_id;
+                END IF;
+                v_lf_rec := v_lf_rec || jsonb_build_array(jsonb_build_object(
+                    'invoice_id', v_c.invoice_id, 'amount', v_c.amount, 'voided', true,
+                    'reason', btrim(v_vd->>'reason', E' \t\r\n'),
+                    'prev_locked', v_c.prev_locked, 'prev_waived', v_c.prev_waived));
+            END IF;
+        END LOOP;
+        IF jsonb_array_length(COALESCE(v_lf->'billed', '[]'::jsonb)) + jsonb_array_length(COALESCE(v_lf->'voided', '[]'::jsonb)) <> v_lf_cand_n THEN
+            RAISE EXCEPTION 'LATE_FEE_MISMATCH: the request lists a different set of late fees than the database found (% found)', v_lf_cand_n;
+        END IF;
+        IF round(v_lf_billed_sum, 2) <> round(COALESCE((v_ch->>'lateFeeItems')::numeric, 0), 2) THEN
+            RAISE EXCEPTION 'LATE_FEE_MISMATCH: late fees billed (%) <> lateFeeItems on the final invoice (%)', v_lf_billed_sum, v_ch->>'lateFeeItems';
+        END IF;
+
         INSERT INTO public.invoices (
             id, tenant_id, room_id, status, start_date, end_date, issue_date, due_date,
             rent_amount, water_bill, electricity_bill, common_fee, discount_amount,
@@ -433,6 +507,31 @@ BEGIN
                 jsonb_build_object('total_amount', v_engine_total, 'discount_amount', s_final_paid,
                                    'final_bill', s_final_bill, 'charges', v_ch),
                 'final_settle_move_out');
+
+        -- Mark every late fee as billed (or voided) so it can never be billed again, and keep the figures needed to undo it.
+        FOR v_d IN SELECT value FROM jsonb_array_elements(v_lf_rec) LOOP
+            IF (v_d->>'voided')::boolean THEN
+                UPDATE public.invoices
+                SET late_fee_billed_at = now(),
+                    waived_late_fee_amount = COALESCE(waived_late_fee_amount, 0) + (v_d->>'amount')::numeric,
+                    locked_late_fee_amount = 0
+                WHERE id = (v_d->>'invoice_id')::uuid;
+                INSERT INTO public.money_events (action, actor_user_id, tenant_id, invoice_id, room_id, after, reason, source)
+                VALUES ('settlement.late_fee_void', v_by, v_tenant, (v_d->>'invoice_id')::uuid, v_room,
+                        jsonb_build_object('amount', (v_d->>'amount')::numeric, 'final_invoice_id', v_inv_id),
+                        v_d->>'reason', 'final_settle_move_out');
+            ELSE
+                UPDATE public.invoices
+                SET late_fee_billed_at = now(),
+                    locked_late_fee_amount = COALESCE(locked_late_fee_amount, (v_d->>'amount')::numeric)
+                WHERE id = (v_d->>'invoice_id')::uuid;
+                INSERT INTO public.money_events (action, actor_user_id, tenant_id, invoice_id, room_id, after, source)
+                VALUES ('settlement.late_fee_billed', v_by, v_tenant, (v_d->>'invoice_id')::uuid, v_room,
+                        jsonb_build_object('amount', (v_d->>'amount')::numeric, 'final_invoice_id', v_inv_id),
+                        'final_settle_move_out');
+            END IF;
+        END LOOP;
+        v_s := v_s || jsonb_build_object('lateFees', v_lf_rec);
     ELSE
         IF s_final_bill <> 0 THEN
             RAISE EXCEPTION 'PLAN_INVALID: a final bill of % needs a final invoice', s_final_bill;
