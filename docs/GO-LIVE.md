@@ -1,5 +1,7 @@
 # Go-live checklist (production)
 
+> **STATUS 2026-10-10: step 0 and step 1 (database) are DONE** — see `docs/PRODUCTION-APPLIED-20261010.md`. What remains is step 2 (deploy the app) and step 3 (checks after deploy).
+
 Nothing in this branch has ever been applied to production. Do this in one quiet window (late evening), about 1–2 hours. The database changes and the app deploy go together: do them back to back, database first. Do not leave the new database running under the old app for days, and never deploy the new app before the database changes.
 
 ## 0. Before the window (30 min)
