@@ -125,3 +125,43 @@ Order and parallelism: phase 1 (one agent, sequential): `final-schema.sql`, date
 
 Per-script counts differ by one or two from earlier runs for 01, 02, 03 (40/30/52 here vs 39/31/51): these are agent tallies of result lines and the sum is the same (121 vs 121); no line was reported as non-PASS.
 Not done on this database: the browser run (it was done on `dorm-replay-2`, built the same way except the view statement was pasted by hand) and the concurrency races (done on `dorm-replay-disposable`).
+
+
+---
+
+# Addendum 3: late fees at move-out, and the clean replay of the FINAL files (2026-10-06 / 10-10)
+
+New feature (migration edits in 0600 and 0650, TS in the move-out route/wizard): unbilled late fees on the tenant's older invoices are billed as lines on the final invoice; each can be voided by an admin with a reason. Global-setting (legacy) mode only; with a `late_fee_policies` row the move-out offers none.
+
+## A. Fresh database `dorm-replay-4` (`vmkeqguyhljansjmgdgj`), built from the committed files at HEAD (executed)
+Phases: (1) `final-schema.sql`, dated 20260610 … 20260925, `migration-occupancy-proration.sql`; (2) in parallel: the ten money migrations 0000 … 0800 in order, and the ten undated app migrations + `user_roles` + three storage buckets (from the test-only 0900; 0900 not applied); (3) scripts in three parallel groups.
+- **The replay found a real ordering bug**: 0600 failed with `column i.late_fee_billed_at does not exist` (the new `move_out_late_fee_candidates` reads it, and only 0800 / the test-only 0900 added it). It had been invisible on `dorm-test`, which had the column from 0900. Fixed in the file (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS` at the top of 0600) and re-applied; the failed 0600 had rolled back whole.
+- Procedure note: 0000–0500 were applied before the failure and kept; 0600 (fixed), 0650, 0700, 0800 were applied afterwards. 0800 was cut off once by the tool and re-sent complete. Not one uninterrupted pass, but every file applied is the committed final file.
+- Normalized body hash (comments and whitespace removed) of all 13 money functions in the database equals the committed file's function body (13 of 13: the 12 earlier ones plus `move_out_late_fee_candidates`). Tables, triggers, indexes and views were not hash-compared.
+
+| Script | PASS | FAIL |
+|---|---|---|
+| 01_record_payment_batch | 39 | 0 |
+| 02_void_payment_batch | 31 | 0 |
+| 03_append_only_and_uniqueness | 51 | 0 |
+| 04_final_settle_move_out | 21 | 0 |
+| 05_points_redemption | 33 | 0 |
+| 06_late_fee_actions | 33 | 0 |
+| 07_carry_forward_downstream | 14 | 0 |
+| 08_settlement_downstream | 5 | 0 |
+| 09_late_fee_freeze | 5 (P1–P9 on one line), after the fixture fix below | 0 |
+| 10_refund_and_settlement_correction | 27 | 0 |
+| 11_late_fee_at_move_out | 10 (L1–L9, L6b) | 0 |
+
+Counts are agent tallies of result lines (small differences from earlier tallies, e.g. script 05, are counting, not changes).
+- Script 09 test U4 first failed on this database with `LATE_FEE_MISMATCH`: it settled a tenant whose older invoice carries a 230 late fee without saying what to do with it, which the database now (correctly) refuses. The fixture now bills the 230 + 460 fees on the final invoice; the freeze behaviour it checks is unchanged and passes. Script 04's S5c was likewise date-dependent (due date 2026-10-05 became overdue on 6 Oct) and its fixture date was moved to 2099.
+- Script 11 and the changed 09 also pass on `dorm-test`. On `dorm-test` scripts 01–03, 05–07 were not re-run after the final 0600/0650; the fresh database above is the evidence for them.
+
+## B. Browser (executed on `dorm-replay-2`, with the final 0600/0650 applied; that database was not rebuilt)
+Move-out wizard for a tenant with 310 + 60 of unbilled late fees: both fees shown with period, days × rate; voiding the 60 fee needs a reason (confirm disabled until given), the final bill drops 370 → 310 and the totals update; confirmed: the 310 fee is a `late_fee_line` on the final invoice, the 60 fee is marked waived with the reason in the audit log, source invoices marked billed; voiding the settlement afterwards restored both fees (billed flag cleared, offered again, final invoice cancelled). A tenant without late fees settled normally (no late-fee section).
+Not exercised in the browser: billing all fees without voiding any (SQL L1), a fee-list change between preview and confirm (SQL L4 only), tenant-side LINE pages.
+
+## C. Still not done / limits
+- Production prechecks, backup, applying to production: owner steps.
+- Browser run not repeated on the fresh `dorm-replay-4`; concurrency races were run before the late-fee change.
+- Late fee amounts are computed as of the settlement date (the date part of the payment time), the same date the existing freeze uses; if the preview was loaded the day before, the database refuses a mismatch and the admin must reload.

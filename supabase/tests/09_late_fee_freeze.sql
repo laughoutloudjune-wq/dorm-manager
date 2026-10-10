@@ -68,6 +68,24 @@ RETURNS jsonb LANGUAGE sql AS $f$
       'lateFeeItems', 0, 'fees', fees, 'carryForward', 0, 'discount', discount))
 $f$;
 
+-- Move-out payload whose final invoice bills p_lf late fees (charges.lateFeeItems) and lists them in late_fees.
+-- Since the late-fee-at-move-out feature every unbilled late fee must be billed or voided in the payload.
+CREATE OR REPLACE FUNCTION pg_temp.payload_lf(tenant uuid, room uuid, k text, settlement jsonb, debts jsonb, p_lf numeric,
+                                              discount numeric, billed jsonb)
+RETURNS jsonb LANGUAGE sql AS $f$
+  SELECT jsonb_build_object('tenant_id', tenant, 'room_id', room, 'idempotency_key', k, 'move_out_date', '2026-09-28',
+    'created_by', 'tester', 'paid_at', '2026-09-28T10:00:00+07:00', 'source', 'credit', 'settlement', settlement, 'debts', debts,
+    'late_fees', jsonb_build_object('billed', billed, 'voided', '[]'::jsonb),
+    'invoice', jsonb_build_object('id', gen_random_uuid(), 'start_date', '2026-09-25', 'end_date', '2026-09-28',
+      'issue_date', '2026-09-28', 'due_date', '2026-10-05', 'rent_amount', 0, 'water_bill', 0, 'electricity_bill', 0,
+      'common_fee', 0, 'late_fee_amount', p_lf, 'additional_fees_total', p_lf, 'carry_forward_amount', 0,
+      'discount_amount', discount, 'total_amount', p_lf - discount,
+      'additional_fees_breakdown', jsonb_build_array(jsonb_build_object('item_type','late_fee_line','label','late fees','amount',p_lf)),
+      'notes', 'test'),
+    'charges', jsonb_build_object('rent', 0, 'water', 0, 'electricity', 0, 'commonFee', 0, 'nativeLateFee', 0,
+      'lateFeeItems', p_lf, 'fees', 0, 'carryForward', 0, 'discount', discount))
+$f$;
+
 DO $t$
 DECLARE
   v_out text := '';
@@ -131,11 +149,13 @@ BEGIN
   v_a := pg_temp.ni(v_t, v_room, 1000, 0, 0, 'overdue', '2026-09-05', '2026-09-06', 10);
   v_b := pg_temp.ni(v_t, v_room, 2500, 1000, 1500, 'partial', '2026-09-05', '2026-09-06', 20);
   INSERT INTO invoice_carry_forwards(source_invoice_id, target_invoice_id, amount) VALUES (v_a, v_b, 1000);
-  v_r := pg_temp.try_settle(pg_temp.payload(v_t, v_room, 'k-u4',
-           pg_temp.plan(0,0,0, 3000,0,2000,1000, 1000,1000,1000,
+  -- The 230 + 460 late fees are billed on the final invoice (690), paid from the 3,000 deposit together with A's 1,000 debt.
+  v_r := pg_temp.try_settle(pg_temp.payload_lf(v_t, v_room, 'k-u4',
+           pg_temp.plan(0,0,0, 3000,0,1690,1310, 690,690,1310,
              jsonb_build_array(jsonb_build_object('invoiceId', v_a, 'periodStart','2026-08-25','outstandingBefore',1000,'paidFromCredit',1000,'outstandingAfter',0))),
-           jsonb_build_array(jsonb_build_object('invoice_id', v_a, 'expected_paid_amount', 0)), 1000, 1000));
-  -- 6 Sep .. 28 Sep inclusive = 23 days: A 23 x 10 = 230, B 23 x 20 = 460
+           jsonb_build_array(jsonb_build_object('invoice_id', v_a, 'expected_paid_amount', 0)), 690, 690,
+           jsonb_build_array(jsonb_build_object('invoice_id', v_a, 'amount', 230), jsonb_build_object('invoice_id', v_b, 'amount', 460))));
+  -- 6 Sep .. 28 Sep inclusive = 23 days: A 23 x 10 = 230, B 23 x 20 = 460 (billed on the final invoice, which freezes them)
   v_out := v_out || E'\n' || CASE WHEN v_r LIKE 'OK:%' AND pg_temp.st(v_a) = '1000.00/paid/230.00' AND pg_temp.st(v_b) = '1500.00/paid/460.00'
     THEN 'PASS  U4 settlement credit freezes the paid older invoice (230) and its downstream target (460) as of the settlement date 28 Sep ('||pg_temp.st(v_a)||', '||pg_temp.st(v_b)||')'
     ELSE 'FAIL  U4 '||left(v_r,160)||' A='||pg_temp.st(v_a)||' B='||pg_temp.st(v_b) END;
