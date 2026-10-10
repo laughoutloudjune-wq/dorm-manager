@@ -13,6 +13,7 @@ import {
   paymentSourceLabel,
   isNonCashPaymentSource,
 } from "@/lib/invoice-utils";
+import { creditByInvoiceId, ownBilledAmount, splitPaid } from "@/lib/money/billing-report";
 import { chargesFromInvoiceRow, computeInvoiceTotal } from "@/lib/invoice-total";
 import { getChainOwnOutstanding, getInvoiceOwnOutstanding, sumOwnOutstanding } from "@/lib/invoice-ledger";
 import {
@@ -254,6 +255,7 @@ export default function ReportsPageView() {
             electricity_bill: toNumber(row.electricity_bill),
             common_fee: toNumber(row.common_fee),
             discount_amount: toNumber(row.discount_amount),
+            discount_breakdown: Array.isArray(row.discount_breakdown) ? row.discount_breakdown : [],
             late_fee_amount: toNumber(row.late_fee_amount),
             additional_fees_total: toNumber(row.additional_fees_total),
             additional_fees_breakdown: Array.isArray(row.additional_fees_breakdown)
@@ -426,26 +428,6 @@ export default function ReportsPageView() {
     return map;
   }, [allocations]);
 
-  const incomeRows = useMemo(
-    () =>
-      invoices.map((invoice) => {
-        const meter = meterByRoomMonth.get(`${invoice.room_id}:${monthKey(invoice.start_date)}`);
-        const methods = methodsByInvoiceId.get(String(invoice.id));
-        return {
-          ...invoice,
-          month: monthKey(invoice.start_date),
-          building: invoice.building_name,
-          electricityUsage: meter ? toNumber(meter.electricity_usage) : 0,
-          waterUsage: meter ? toNumber(meter.water_usage) : 0,
-          // Nothing received yet = no account, shown as "-". Never the tenant's
-          // currently-assigned account, which is not evidence of anything.
-          paymentMethod: methods && methods.size > 0 ? [...methods].join(", ") : "-",
-          additionalFeeText: getAdditionalFees(invoice.additional_fees_breakdown) || "-",
-        };
-      }),
-    [invoices, meterByRoomMonth, methodsByInvoiceId]
-  );
-
   // ── Cash basis ────────────────────────────────────────────────────────────
   // One row per allocation, filed under the invoice's own billing period (not
   // the calendar month the money happened to arrive in) — a July invoice paid
@@ -471,6 +453,34 @@ export default function ReportsPageView() {
       };
     });
   }, [allocations, voidedBatchIds]);
+
+  // Non-cash (credit) allocations per invoice, net of reversals, from the same
+  // live rows the cash view uses (voided batches already dropped).
+  const creditMap = useMemo(() => creditByInvoiceId(cashRows), [cashRows]);
+
+  const incomeRows = useMemo(
+    () =>
+      invoices.map((invoice) => {
+        const meter = meterByRoomMonth.get(`${invoice.room_id}:${monthKey(invoice.start_date)}`);
+        const methods = methodsByInvoiceId.get(String(invoice.id));
+        const split = splitPaid(invoice, creditMap.get(String(invoice.id)) ?? 0);
+        return {
+          ...invoice,
+          billed_own: ownBilledAmount(invoice),
+          paid_cash: split.cash,
+          paid_credit: split.credit,
+          month: monthKey(invoice.start_date),
+          building: invoice.building_name,
+          electricityUsage: meter ? toNumber(meter.electricity_usage) : 0,
+          waterUsage: meter ? toNumber(meter.water_usage) : 0,
+          // Nothing received yet = no account, shown as "-". Never the tenant's
+          // currently-assigned account, which is not evidence of anything.
+          paymentMethod: methods && methods.size > 0 ? [...methods].join(", ") : "-",
+          additionalFeeText: getAdditionalFees(invoice.additional_fees_breakdown) || "-",
+        };
+      }),
+    [invoices, meterByRoomMonth, methodsByInvoiceId, creditMap]
+  );
 
   const filteredCashRows = useMemo(() => {
     let rows = cashRows.filter((row) => row.month === selectedMonth);
@@ -612,8 +622,9 @@ export default function ReportsPageView() {
   }, [incomeRows, selectedMonth, incomeSearchQuery, incomeBuildingFilter, incomeStatusFilter, incomePaymentMethodFilter]);
 
   const incomeSummary = useMemo(() => {
-    const billed = filteredIncomeRows.reduce((sum, row) => sum + row.total_amount, 0);
-    const paid = filteredIncomeRows.reduce((sum, row) => sum + row.paid_amount, 0);
+    const billed = filteredIncomeRows.reduce((sum, row) => sum + row.billed_own, 0);
+    const paidCash = filteredIncomeRows.reduce((sum, row) => sum + row.paid_cash, 0);
+    const paidCredit = filteredIncomeRows.reduce((sum, row) => sum + row.paid_credit, 0);
     // Own-outstanding: a bundled total can include an earlier period's
     // carried debt, which would otherwise inflate this month's own figure.
     const outstanding = sumOwnOutstanding(
@@ -621,7 +632,8 @@ export default function ReportsPageView() {
     );
     return {
       billed,
-      paid,
+      paidCash,
+      paidCredit,
       outstanding,
       additional: filteredIncomeRows.reduce((sum, row) => sum + row.additional_fees_total, 0),
       electricityCollected: filteredIncomeRows.reduce((sum, row) => sum + row.electricity_bill, 0),
@@ -657,8 +669,9 @@ export default function ReportsPageView() {
       Array.from({ length: 12 }, (_, index) => {
         const month = `${selectedYear}-${String(index + 1).padStart(2, "0")}`;
         const rows = incomeRows.filter((row) => row.month === month);
-        const billed = rows.reduce((sum, row) => sum + row.total_amount, 0);
-        const paid = rows.reduce((sum, row) => sum + row.paid_amount, 0);
+        const billed = rows.reduce((sum, row) => sum + row.billed_own, 0);
+        const paidCash = rows.reduce((sum, row) => sum + row.paid_cash, 0);
+        const paidCredit = rows.reduce((sum, row) => sum + row.paid_credit, 0);
         const outstanding = sumOwnOutstanding(
           rows.filter((row) => ["pending", "partial", "overdue", "verifying"].includes(String(row.status))),
         );
@@ -666,7 +679,8 @@ export default function ReportsPageView() {
           month,
           invoiceCount: rows.length,
           billed,
-          paid,
+          paidCash,
+          paidCredit,
           outstanding,
           electricity: rows.reduce((sum, row) => sum + row.electricity_bill, 0),
           water: rows.reduce((sum, row) => sum + row.water_bill, 0),
@@ -678,11 +692,13 @@ export default function ReportsPageView() {
 
   const yearlySummary = useMemo(() => {
     const billed = yearlyRows.reduce((sum, row) => sum + row.billed, 0);
-    const paid = yearlyRows.reduce((sum, row) => sum + row.paid, 0);
+    const paidCash = yearlyRows.reduce((sum, row) => sum + row.paidCash, 0);
+    const paidCredit = yearlyRows.reduce((sum, row) => sum + row.paidCredit, 0);
     const outstanding = yearlyRows.reduce((sum, row) => sum + row.outstanding, 0);
     return {
       billed,
-      paid,
+      paidCash,
+      paidCredit,
       outstanding,
       invoiceCount: yearlyRows.reduce((sum, row) => sum + row.invoiceCount, 0),
     };
@@ -1016,7 +1032,7 @@ export default function ReportsPageView() {
   const exportIncome = () =>
     downloadCsv(
       `income-report-${selectedMonth}.csv`,
-      ["เดือน", "อาคาร", "เลขห้อง", "ชื่อผู้เช่า", "หน่วยไฟ", "ค่าไฟ", "หน่วยน้ำ", "ค่าน้ำ", "ยอดเรียกเก็บ", "ยอดตัดชำระของบิลงวดนี้ (ตามงวดบิล)", "วิธีชำระ", "สถานะ", "ค่าธรรมเนียมเพิ่มเติม"],
+      ["เดือน", "อาคาร", "เลขห้อง", "ชื่อผู้เช่า", "หน่วยไฟ", "ค่าไฟ", "หน่วยน้ำ", "ค่าน้ำ", "ยอดเรียกเก็บ (ไม่รวมยอดยกมา)", "ชำระเป็นเงินสด", "หักเครดิต (ไม่ใช่เงินสด)", "วิธีชำระ", "สถานะ", "ค่าธรรมเนียมเพิ่มเติม"],
       filteredIncomeRows.map((row) => [
         row.month,
         row.building_name,
@@ -1026,8 +1042,9 @@ export default function ReportsPageView() {
         row.electricity_bill,
         row.waterUsage,
         row.water_bill,
-        row.total_amount,
-        row.paid_amount,
+        row.billed_own,
+        row.paid_cash,
+        row.paid_credit,
         row.paymentMethod,
         statusLabel(row.status),
         row.additionalFeeText,
@@ -1121,12 +1138,13 @@ export default function ReportsPageView() {
   const exportYearly = () =>
     downloadCsv(
       `year-summary-${selectedYear}.csv`,
-      ["เดือน", "จำนวนบิล", "ยอดเรียกเก็บ", "ยอดตัดชำระ (ตามงวดบิล)", "ยอดค้าง", "ค่าไฟ", "ค่าน้ำ", "ค่าธรรมเนียมเพิ่ม"],
+      ["เดือน", "จำนวนบิล", "ยอดเรียกเก็บ (ไม่รวมยอดยกมา)", "ชำระเป็นเงินสด", "หักเครดิต (ไม่ใช่เงินสด)", "ยอดค้าง", "ค่าไฟ", "ค่าน้ำ", "ค่าธรรมเนียมเพิ่ม"],
       yearlyRows.map((row) => [
         row.month,
         row.invoiceCount,
         row.billed,
-        row.paid,
+        row.paidCash,
+        row.paidCredit,
         row.outstanding,
         row.electricity,
         row.water,
@@ -1351,8 +1369,9 @@ export default function ReportsPageView() {
           ) : (
             <SummaryCards
               items={[
-                { label: "ยอดเรียกเก็บ", value: formatMoney(incomeSummary.billed) },
-                { label: "ยอดตัดชำระ (ตามงวดบิล)", value: formatMoney(incomeSummary.paid) },
+                { label: "ยอดเรียกเก็บ (ไม่รวมยอดยกมา)", value: formatMoney(incomeSummary.billed) },
+                { label: "ชำระเป็นเงินสด", value: formatMoney(incomeSummary.paidCash) },
+                { label: "หักเครดิต (ไม่ใช่เงินสด)", value: formatMoney(incomeSummary.paidCredit) },
                 { label: "ยอดค้าง", value: formatMoney(incomeSummary.outstanding) },
                 { label: "ค่าธรรมเนียมเพิ่ม", value: formatMoney(incomeSummary.additional) },
                 { label: "ค่าไฟ", value: formatMoney(incomeSummary.electricityCollected) },
@@ -1492,8 +1511,9 @@ export default function ReportsPageView() {
                       <th className="px-3 py-2">อาคาร</th>
                       <th className="px-3 py-2">เลขห้อง</th>
                       <th className="px-3 py-2">ชื่อผู้เช่า</th>
-                      <th className="px-3 py-2 text-right">ยอดเรียกเก็บ</th>
-                      <th className="px-3 py-2 text-right">ยอดตัดชำระ (ตามงวดบิล)</th>
+                      <th className="px-3 py-2 text-right">ยอดเรียกเก็บ (ไม่รวมยอดยกมา)</th>
+                      <th className="px-3 py-2 text-right">ชำระเป็นเงินสด</th>
+                      <th className="px-3 py-2 text-right">หักเครดิต (ไม่ใช่เงินสด)</th>
                       <th className="px-3 py-2 text-center">บัญชีที่รับเงิน</th>
                       <th className="px-3 py-2 text-center">สถานะ</th>
                     </tr>
@@ -1509,8 +1529,9 @@ export default function ReportsPageView() {
                           <td className="px-3 py-2">{row.building_name}</td>
                           <td className="px-3 py-2 font-medium">{row.room_number}</td>
                           <td className="px-3 py-2">{row.tenant_name}</td>
-                          <td className="px-3 py-2 text-right">{formatMoney(row.total_amount)}</td>
-                          <td className="px-3 py-2 text-right text-success-600">{formatMoney(row.paid_amount)}</td>
+                          <td className="px-3 py-2 text-right">{formatMoney(row.billed_own)}</td>
+                          <td className="px-3 py-2 text-right text-success-600">{formatMoney(row.paid_cash)}</td>
+                          <td className="px-3 py-2 text-right text-slate-600">{formatMoney(row.paid_credit)}</td>
                           <td className="px-3 py-2 text-center">{row.paymentMethod}</td>
                           <td className="px-3 py-2 text-center">
                             <span className="rounded-full bg-slate-100 px-2 py-0.5 text-2xs">{statusLabel(row.status)}</span>
@@ -1519,7 +1540,7 @@ export default function ReportsPageView() {
                       ))
                     ) : (
                       <tr>
-                        <td colSpan={7} className="px-3 py-6 text-center text-slate-500">
+                        <td colSpan={8} className="px-3 py-6 text-center text-slate-500">
                           ไม่พบข้อมูลรายได้
                         </td>
                       </tr>
@@ -1546,6 +1567,9 @@ export default function ReportsPageView() {
                   </div>
                   <div className="text-right">
                     <p className="font-semibold text-slate-900">{formatMoney(selectedIncomeInvoice.total_amount)}</p>
+                    {selectedIncomeInvoice.carry_forward_amount > 0 && (
+                      <p className="text-xs text-slate-500">รวมยอดยกมา {formatMoney(selectedIncomeInvoice.carry_forward_amount)} จากบิลก่อน</p>
+                    )}
                     <p className="text-slate-500">สถานะ: {statusLabel(selectedIncomeInvoice.status)}</p>
                   </div>
                 </div>
@@ -1758,8 +1782,9 @@ export default function ReportsPageView() {
           <SummaryCards
             items={[
               { label: "จำนวนบิลทั้งปี", value: yearlySummary.invoiceCount.toLocaleString("th-TH") },
-              { label: "ยอดเรียกเก็บทั้งปี", value: formatMoney(yearlySummary.billed) },
-              { label: "ยอดตัดชำระทั้งปี (ตามงวดบิล)", value: formatMoney(yearlySummary.paid) },
+              { label: "ยอดเรียกเก็บทั้งปี (ไม่รวมยอดยกมา)", value: formatMoney(yearlySummary.billed) },
+              { label: "ชำระเป็นเงินสดทั้งปี", value: formatMoney(yearlySummary.paidCash) },
+              { label: "หักเครดิตทั้งปี (ไม่ใช่เงินสด)", value: formatMoney(yearlySummary.paidCredit) },
               { label: "ยอดค้างทั้งปี", value: formatMoney(yearlySummary.outstanding) },
             ]}
           />
@@ -1773,12 +1798,13 @@ export default function ReportsPageView() {
                 <ExportButton onClick={exportYearly} />
               </div>
               <ReportTable
-                headers={["เดือน", "จำนวนบิล", "ยอดเรียกเก็บ", "ยอดตัดชำระ (ตามงวดบิล)", "ยอดค้าง", "ค่าไฟ", "ค่าน้ำ", "ค่าธรรมเนียมเพิ่ม"]}
+                headers={["เดือน", "จำนวนบิล", "ยอดเรียกเก็บ (ไม่รวมยอดยกมา)", "ชำระเป็นเงินสด", "หักเครดิต (ไม่ใช่เงินสด)", "ยอดค้าง", "ค่าไฟ", "ค่าน้ำ", "ค่าธรรมเนียมเพิ่ม"]}
                 rows={yearlyRows.map((row) => [
                   row.month,
                   row.invoiceCount.toLocaleString("th-TH"),
                   formatMoney(row.billed),
-                  formatMoney(row.paid),
+                  formatMoney(row.paidCash),
+                  formatMoney(row.paidCredit),
                   formatMoney(row.outstanding),
                   formatMoney(row.electricity),
                   formatMoney(row.water),

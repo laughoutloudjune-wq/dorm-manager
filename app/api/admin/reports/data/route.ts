@@ -62,7 +62,7 @@ export async function POST(req: Request) {
         supabase
           .from("invoices")
           .select(
-            "id,tenant_id,room_id,status,total_amount,paid_amount,carry_forward_amount,issue_date,due_date,start_date,end_date,rent_amount,water_bill,electricity_bill,common_fee,discount_amount,late_fee_amount,additional_fees_total,additional_fees_breakdown,payment_history,tenants(full_name,custom_payment_method),rooms(room_number,buildings(name))"
+            "id,tenant_id,room_id,status,total_amount,paid_amount,carry_forward_amount,issue_date,due_date,start_date,end_date,rent_amount,water_bill,electricity_bill,common_fee,discount_amount,discount_breakdown,late_fee_amount,additional_fees_total,additional_fees_breakdown,payment_history,tenants(full_name,custom_payment_method),rooms(room_number,buildings(name))"
           )
           .gte("start_date", start)
           .lt("start_date", end)
