@@ -53,7 +53,11 @@ The status dropdown only changes the label. It does not create a payment or free
 Editing invoice details accepts only a fixed list of fields; amounts for money already received cannot be typed over. Deleting invoices that have recorded payments is refused. Both are written to the audit log.
 
 ### Late fee (tab "ค่าปรับและอื่นๆ")
-The current month's invoice never accrues a running late fee. The fee is calculated once when the invoice is fully paid or carried forward, then appears as a line on the next invoice. Posting, waiving and reversing late fees with approval exist (owner decides the policy); until a late-fee policy row exists the old automatic behaviour applies.
+The current month's invoice never accrues a running late fee.
+
+**At move-out:** unbilled late fees from the tenant's older invoices appear in the move-out wizard (step "สรุปค่าใช้จ่าย") under "ค่าปรับล่าช้าจากบิลเก่า", one line per old invoice with the days and rate, and are added to the final bill. Tick "ยกเลิกค่าปรับนี้" on a line to void that fee; a reason is required and the final bill, the deposit credit used and the refund update immediately. A voided fee is never charged; the reason is kept in the audit log. Reversing the whole settlement later puts every fee back as it was.
+
+ The fee is calculated once when the invoice is fully paid or carried forward, then appears as a line on the next invoice. Posting, waiving and reversing late fees with approval exist (owner decides the policy); until a late-fee policy row exists the old automatic behaviour applies.
 
 ### Discounts, write-offs, corrections
 A dedicated discount/write-off/correction action with a reason is **planned**. Today only the existing discount and fee fields exist.

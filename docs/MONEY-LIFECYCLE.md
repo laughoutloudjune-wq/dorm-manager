@@ -49,7 +49,8 @@ Vacate then settle (see `CLAUDE.md`). Settlement uses `planMoveOutSettlement` (`
 - UI `app/(admin)/credits-refunds/page.tsx`, `components/admin/refunds/*`; API `app/api/admin/refunds/actions/route.ts`. Not run in a browser.
 
 ## 9. Late fees
-Legacy path: calculated once when an invoice is fully paid or carried forward, frozen in `locked_late_fee_amount`, shown on the next invoice. Approval flow (post, waive, reverse, policy; `app/api/admin/late-fees/actions`, 0800) starts only when a `late_fee_policies` row exists; with none the legacy behaviour is exactly unchanged.
+Legacy path: calculated once when an invoice is fully paid or carried forward, frozen in `locked_late_fee_amount`, shown on the next invoice. **Move-out:** with the global-setting (legacy) mode, every late fee still unbilled on the tenant's older invoices (`late_fee_billed_at` null, computed as of the settlement date by `move_out_late_fee_candidates`, or the frozen amount) is added to the **final invoice** as its own `late_fee_line`. The admin can void any one of them in the move-out wizard (reason required); a voided fee is not billed, is recorded as waived on the source invoice (`waived_late_fee_amount`) and logged (`settlement.late_fee_void`). Billed or voided, the source invoice is marked billed so the fee can never be billed again. The database recomputes the fees and refuses a request that does not match (`LATE_FEE_MISMATCH`); voiding the settlement restores every source invoice exactly. With a `late_fee_policies` row (approval mode) the move-out offers no late fees.
+ Approval flow (post, waive, reverse, policy; `app/api/admin/late-fees/actions`, 0800) starts only when a `late_fee_policies` row exists; with none the legacy behaviour is exactly unchanged.
 
 ## 10. Points
 `redeem_points_atomic` / `reverse_points_redemption` (0700), used from `lib/points-ledger.ts`.

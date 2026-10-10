@@ -284,5 +284,6 @@ browser; two-session concurrency untested. Details: `docs/MONEY-LIFECYCLE.md`.
   (`lib/money/save-details-guard.ts`); post-commit steps cannot turn a recorded payment into a 500; expected
   refusals map to 409/400 (`lib/money/payment-errors.ts`); a typed amount above the invoice's remaining asks
   for confirmation.
-- **Tests**: SQL `supabase/tests/01-10` run rollback-wrapped on dorm-test only (`supabase/tests/RESULTS.md`);
+- **Late fees at move-out** (global-setting mode): unbilled late fees on the tenant's older invoices become `late_fee_line`s on the final invoice; the admin can void each one (reason required). `move_out_late_fee_candidates(tenant, as_of)` is the single source of the amounts; `final_settle_move_out` recomputes them and refuses a mismatching request (`LATE_FEE_MISMATCH`). Billed or voided, the source invoice is marked `late_fee_billed_at`, so a fee is never billed twice; `void_move_out_settlement` restores each source exactly. Approval mode (a `late_fee_policies` row exists) offers none.
+- **Tests**: SQL `supabase/tests/01-11` run rollback-wrapped on dorm-test only (`supabase/tests/RESULTS.md`);
   unit tests `npx vitest run`; types `npx tsc --noEmit -p .`. The "no test coverage for API routes" note still holds.

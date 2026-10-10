@@ -136,6 +136,10 @@ CREATE TRIGGER trg_move_out_settlements_guard
 
 ALTER TABLE public.move_out_settlements ENABLE ROW LEVEL SECURITY;  -- service role only
 
+-- move_out_late_fee_candidates (below) reads this column and a LANGUAGE sql function is checked when it is created, so the column
+-- must exist before it. 0800 adds it too (IF NOT EXISTS); the app already reads it in production. Idempotent.
+ALTER TABLE public.invoices ADD COLUMN IF NOT EXISTS late_fee_billed_at TIMESTAMPTZ;
+
 -- Late fees still unbilled on the tenant's older invoices, as of a date. Used by the move-out wizard (preview) and by
 -- final_settle_move_out (authority). Legacy / global-setting mode only: once any late_fee_policies row exists fees go through
 -- the approval flow and this returns nothing. Same rule as the monthly generator: an invoice's late fee is billed once
