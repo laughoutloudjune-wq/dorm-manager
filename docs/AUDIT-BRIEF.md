@@ -26,7 +26,7 @@ Admin web dashboard (`app/(admin)/*`) plus tenant LINE mini-apps (`app/(public)/
 Model and status: `docs/MONEY-LIFECYCLE.md`. Design decisions and known limits: `docs/OPUS-HANDOFF.md` (titled "Notes for the external auditor").
 
 ## 3. Commit range
-Baseline `22b5c7a`. Work: `22b5c7a..HEAD` on the feature branch (107 commits as of `ef9253d`, 154 files). Commands:
+Baseline `22b5c7a`. Work: `22b5c7a..HEAD` on the feature branch (117 commits, 164 files as of the commit that updated this line; run the commands below for the current state). Commands:
 ```
 git log --oneline 22b5c7a..HEAD
 git diff 22b5c7a HEAD -- app lib supabase components scripts
@@ -41,7 +41,9 @@ Some commits merge parallel agent branches; read diffs, not messages. Migrations
 - **Points:** `supabase/migrations/20261002000700_*`; `lib/points-ledger.ts`, `lib/money/points-redemption.ts`.
 - **Screens and reports:** `app/(admin)/action-queue`, `app/api/admin/action-queue/route.ts`, `lib/money/action-queue.ts`; `lib/money/invoice-ledger-view.ts`, `receipt-payments.ts`, `tenant-statement.ts`, `statement-display.ts`, `report-definitions.ts`; `app/api/payment-liff/invoices/route.ts`, `app/api/receipt/[token]/route.ts`, `app/api/admin/dashboard-stats/route.ts`, `app/api/admin-liff/dashboard/route.ts`, `app/api/cron/daily-digest/route.ts`; `lib/permissions.ts`.
 - **Reconciliation and tooling:** `lib/money/reconciliation-*.ts`, `app/api/admin/reconciliation/route.ts`, `scripts/discrepancy-report.ts`.
-- **Tests:** `lib/money/*.test.ts` (including `scenarios.test.ts`), `lib/invoice-ledger*.test.ts`, `components/admin/refunds/form-logic.test.ts`, and SQL scripts `supabase/tests/01-10` (`README.md`, `RESULTS.md`).
+- **Late fees at move-out:** `move_out_late_fee_candidates` and its use in `final_settle_move_out` (0600), the un-billing in `void_move_out_settlement` (0650), `lib/money/move-out-settlement-input.ts`, the `get_move_out_late_fees` and `final_move_out` actions in `app/api/admin/tenants/actions/route.ts`, `components/admin/MoveOutWizard.tsx`; tests `supabase/tests/11_late_fee_at_move_out.sql`.
+- **Billing report (finding 170):** `lib/money/billing-report.ts` (+ test), `components/admin/ReportsPageView.tsx`, `app/api/admin/reports/data/route.ts`.
+- **Tests:** `lib/money/*.test.ts` (including `scenarios.test.ts`), `lib/invoice-ledger*.test.ts`, `components/admin/refunds/form-logic.test.ts`, and SQL scripts `supabase/tests/01-11` (`README.md`, `RESULTS.md`).
 
 ## 5. How to run checks
 ```
