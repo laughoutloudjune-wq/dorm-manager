@@ -25,6 +25,7 @@ import {
   X,
 } from "lucide-react";
 import { formatMoney, toLocalDateString, toNumber } from "@/lib/format";
+import { ledgerLoadKey, paymentHistorySignature, shouldLoadAssignableMethods } from "@/lib/invoice-load-policy";
 import {
   isInvoiceDetailEditable,
   formatPeriodLabel,
@@ -254,8 +255,23 @@ export function InvoiceDetailModal() {
   const [assigningBatchId, setAssigningBatchId] = React.useState<string | null>(null);
   const [assignSelection, setAssignSelection] = React.useState<Record<string, string>>({});
 
+  const assignableLoadedRef = React.useRef(false);
   React.useEffect(() => {
-    if (!detailOpen) return;
+    if (!detailOpen) {
+      // Next open refetches, so an account added meanwhile shows up.
+      assignableLoadedRef.current = false;
+      return;
+    }
+    if (
+      !shouldLoadAssignableMethods({
+        detailOpen,
+        tab: activeTab,
+        alreadyLoaded: assignableLoadedRef.current,
+      })
+    ) {
+      return;
+    }
+    assignableLoadedRef.current = true;
     let cancelled = false;
     void (async () => {
       // Moved server-side (finding C1) — see get_assignable_payment_methods
@@ -264,13 +280,14 @@ export function InvoiceDetailModal() {
         const result = await callInvoiceAdminAction("get_assignable_payment_methods", {});
         if (!cancelled) setAssignableMethods((result?.methods ?? []) as any[]);
       } catch {
+        assignableLoadedRef.current = false;
         if (!cancelled) setAssignableMethods([]);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [detailOpen, callInvoiceAdminAction]);
+  }, [detailOpen, activeTab, callInvoiceAdminAction]);
 
   const assignPaymentBatchMethod = async (paymentBatchId: string) => {
     const methodId = assignSelection[paymentBatchId];
@@ -333,8 +350,18 @@ export function InvoiceDetailModal() {
     }
   };
 
+  // Content fingerprint, so a new array with the same entries (any unrelated
+  // state update) does not look like a payment change.
+  const paymentHistoryKey = paymentHistorySignature(activeInvoice?.payment_history);
+  const ledgerKey = ledgerLoadKey({
+    invoiceId: activeInvoiceId,
+    tab: activeTab,
+    historySignature: paymentHistoryKey,
+    reloadToken: chainReloadToken,
+  });
+
   React.useEffect(() => {
-    if (!activeInvoiceId || activeTab !== "payments") {
+    if (ledgerKey === null) {
       return;
     }
     let cancelled = false;
@@ -378,17 +405,13 @@ const loadChains = async () => {
     return () => {
       cancelled = true;
     };
-    // activeInvoice.payment_history is in the deps so the chain refreshes right
-    // after a payment is recorded or cancelled. chainReloadToken is bumped
+    // ledgerKey folds in the invoice, the Payments tab, a fingerprint of
+    // payment_history (so the chain refreshes right after a payment is recorded
+    // or cancelled) and chainReloadToken. Loading flags and the action function
+    // are deliberately not dependencies. chainReloadToken is bumped
     // after a manual batch delete to force a refetch without needing
     // activeInvoice's own fields to have changed.
-  }, [
-    activeInvoiceId,
-    activeTab,
-    callInvoiceAdminAction,
-    activeInvoice?.payment_history,
-    chainReloadToken,
-  ]);
+  }, [ledgerKey]);
 
   const deletePaymentBatch = async (batchId: string) => {
     const receipt = ledgerView?.receipts.find((r) => r.batchId === batchId);

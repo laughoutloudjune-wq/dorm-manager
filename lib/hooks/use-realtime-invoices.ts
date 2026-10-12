@@ -4,6 +4,11 @@ import { useEffect, useMemo, useRef } from "react";
 import { createClient } from "@/lib/supabase-client";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
+import {
+  INVOICE_POLL_INTERVAL_MS,
+  shouldPoll,
+  shouldRefreshOnVisible,
+} from "@/lib/invoice-load-policy";
 
 type InvoiceActivityRow = {
   id: string;
@@ -11,8 +16,6 @@ type InvoiceActivityRow = {
   slip_url: string | null;
   status: string;
 };
-
-const POLL_INTERVAL_MS = 20000;
 
 /**
  * Polls for "slip just uploaded" / "just entered verifying" instead of a
@@ -72,14 +75,26 @@ export function useRealtimeInvoices(onUpdate?: () => void) {
       previousRef.current = new Map(rows.map((row) => [row.id, { slip_url: row.slip_url, status: row.status }]));
     };
 
-    void poll();
-    const interval = setInterval(() => {
+    let lastPollAt: number | null = null;
+    const tick = () => {
+      if (!shouldPoll(document.hidden)) return;
+      lastPollAt = Date.now();
       void poll();
-    }, POLL_INTERVAL_MS);
+    };
+
+    tick();
+    const interval = setInterval(tick, INVOICE_POLL_INTERVAL_MS);
+    // Polling pauses while the tab is hidden; catch up when it returns so a
+    // slip uploaded meanwhile still raises its toast promptly.
+    const onVisible = () => {
+      if (!document.hidden && shouldRefreshOnVisible({ lastPollAt, now: Date.now() })) tick();
+    };
+    document.addEventListener("visibilitychange", onVisible);
 
     return () => {
       cancelled = true;
       clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, [onUpdate, router, supabase]);
 }

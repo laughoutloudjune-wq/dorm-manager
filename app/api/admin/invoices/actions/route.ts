@@ -48,7 +48,25 @@ async function syncPointsAfterPayment(supabase: SupabaseClient, invoiceId: strin
   }
 }
 
+const SLIP_RECOVERY_BATCH = 10;
+
+// Times every action so slow ones show up in the browser's Network tab
+// (Server-Timing) and in Vercel runtime logs.
 export async function POST(req: Request) {
+  const started = Date.now();
+  const actionName = await req
+    .clone()
+    .json()
+    .then((b) => String(b?.action ?? "unknown"))
+    .catch(() => "unknown");
+  const res = (await handlePost(req)) as Response;
+  const ms = Date.now() - started;
+  res.headers.set("Server-Timing", `action;desc="${actionName}";dur=${ms}`);
+  console.log(`[invoices/actions] ${actionName} ${ms}ms status=${res.status}`);
+  return res;
+}
+
+async function handlePost(req: Request) {
   try {
     const body = await req.json();
     const action = String(body?.action ?? "");
@@ -646,7 +664,11 @@ export async function POST(req: Request) {
 
       await recordMoneyEvents(auth.supabase, statusEvents);
 
-      return NextResponse.json({ success: true });
+      // `changed` lets the client skip a second list fetch when nothing moved.
+      return NextResponse.json({
+        success: true,
+        changed: (overdueUpdated?.length ?? 0) + (verifyingUpdated?.length ?? 0),
+      });
     }
 
     if (action === "sync_period_discounts") {
@@ -953,22 +975,29 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: tenantInvoicesError.message }, { status: 500 });
       }
 
+      // Slip recovery is one storage round-trip per slip-less invoice, so the
+      // client asks for it on explicit loads only (recoverSlips !== false) and
+      // reuses the result across background refreshes. Lookups run in bounded
+      // batches rather than all at once.
       const recoveredSlipUrlById: Record<string, string> = {};
-      await Promise.all(
-        invoices
-          .filter((row: any) => !row.slip_url)
-          .map(async (row: any) => {
-            const { data: files } = await auth.supabase.storage
-              .from("payment_slips")
-              .list(String(row.id), { limit: 1, sortBy: { column: "name", order: "desc" } });
-            if (!files || files.length === 0) return;
-            const latest = files[0];
-            const { data: publicData } = auth.supabase.storage
-              .from("payment_slips")
-              .getPublicUrl(`${row.id}/${latest.name}`);
-            recoveredSlipUrlById[String(row.id)] = publicData.publicUrl;
-          })
-      );
+      if (body?.recoverSlips !== false) {
+        const slipless = invoices.filter((row: any) => !row.slip_url);
+        for (let i = 0; i < slipless.length; i += SLIP_RECOVERY_BATCH) {
+          await Promise.all(
+            slipless.slice(i, i + SLIP_RECOVERY_BATCH).map(async (row: any) => {
+              const { data: files } = await auth.supabase.storage
+                .from("payment_slips")
+                .list(String(row.id), { limit: 1, sortBy: { column: "name", order: "desc" } });
+              if (!files || files.length === 0) return;
+              const latest = files[0];
+              const { data: publicData } = auth.supabase.storage
+                .from("payment_slips")
+                .getPublicUrl(`${row.id}/${latest.name}`);
+              recoveredSlipUrlById[String(row.id)] = publicData.publicUrl;
+            })
+          );
+        }
+      }
 
       return NextResponse.json({
         invoices,

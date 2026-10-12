@@ -1,7 +1,13 @@
 "use client";
 
 import { getChainOwnOutstanding } from "@/lib/invoice-ledger";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  INVOICE_POLL_INTERVAL_MS,
+  shouldPoll,
+  shouldRefreshOnVisible,
+  shouldRunMaintenance,
+} from "@/lib/invoice-load-policy";
 import { Badge } from "@/components/ui/Badge";
 import { Modal } from "@/components/ui/Modal";
 import { Input } from "@/components/ui/Input";
@@ -295,9 +301,11 @@ export function useInvoicesState() {
     periodEnd: string,
   ) => {
     try {
-      await callInvoiceAdminAction("sync_period_statuses", { periodStart, periodEnd });
+      const result = await callInvoiceAdminAction("sync_period_statuses", { periodStart, periodEnd });
+      return Number(result?.changed ?? 0);
     } catch (err: any) {
       setError(err?.message ?? "Failed to sync invoice statuses.");
+      return 0;
     }
   };
 
@@ -312,57 +320,100 @@ export function useInvoicesState() {
 
   const syncMonthInvoicesWithSettings = async (year: number, month: number) => {
     try {
-      await callInvoiceAdminAction("sync_period_discounts", { year, month });
+      const result = await callInvoiceAdminAction("sync_period_discounts", { year, month });
+      return Number(result?.updated ?? 0);
     } catch (err: any) {
       setError(err?.message ?? "Failed to sync invoice discounts.");
+      return 0;
     }
   };
 
   // silent=true is used by the background poll that replaced the old
-  // "invoice-settings-realtime" Realtime subscription (finding C1 — that
-  // subscription connected straight to the database with the browser's own
-  // session) — it re-runs the exact same load/sync but skips the loading
-  // spinner so it doesn't flicker the page every poll while an admin is
-  // actively looking at it.
-  const loadInvoices = async (silent = false) => {
-    if (!silent) setLoading(true);
-    setError(null);
+  // "invoice-settings-realtime" Realtime subscription (finding C1) — it
+  // skips the loading spinner so the page doesn't flicker every poll.
+  //
+  // The list is fetched first so the page appears without waiting on the
+  // period maintenance writes (status/discount/ledger sync). Those run
+  // afterwards, still strictly one after another (they touch the same rows),
+  // and the list is fetched again only if one of them changed something.
+  // Background refreshes skip maintenance unless it is stale
+  // (shouldRunMaintenance) and skip the per-invoice slip-recovery storage
+  // lookups, reusing the last result.
+  const loadSeqRef = useRef(0);
+  const maintenanceRef = useRef<{ period: string; at: number } | null>(null);
+  const recoveredSlipsRef = useRef<{ period: string; urls: Record<string, string> }>({ period: "", urls: {} });
+  const lastPollAtRef = useRef<number | null>(null);
 
-    const [year, month] = selectedMonth.split("-").map(Number);
-    const periodStart = toLocalDateString(new Date(year, month - 1, 1));
-    const periodEnd = toLocalDateString(new Date(year, month, 0));
-
-    await applyPendingToOverdue(periodStart, periodEnd);
+  const runPeriodMaintenance = async (
+    year: number,
+    month: number,
+    periodStart: string,
+    periodEnd: string,
+  ) => {
+    let changed = 0;
+    changed += await applyPendingToOverdue(periodStart, periodEnd);
     await applySlipToVerifying(periodStart, periodEnd);
 
     if (can("invoice.edit")) {
       try {
-        await callInvoiceAdminAction("sync_overdue", {});
+        const ledger = await callInvoiceAdminAction("sync_overdue", {});
+        changed += Array.isArray(ledger?.updatedIds) ? ledger.updatedIds.length : 0;
       } catch {
         // Ledger sync should not block invoice viewing.
       }
     }
 
-    await syncMonthInvoicesWithSettings(year, month);
+    changed += await syncMonthInvoicesWithSettings(year, month);
+    return changed;
+  };
 
-    // Moved server-side (finding C1) — see get_invoices_for_period in
-    // app/api/admin/invoices/actions/route.ts. That action also runs the
-    // "does this tenant have an earlier invoice" check and the slip-
-    // recovery storage lookup that used to happen here; only the client-
-    // side hydration/sort below is left client-side.
-    const result = await callInvoiceAdminAction("get_invoices_for_period", {
-      periodStart,
-      periodEnd,
-    }).catch((err: any) => {
-      setError(err?.message ?? "Failed to load invoices.");
-      return null;
+  const loadInvoices = async (silent = false) => {
+    if (!silent) setLoading(true);
+    setError(null);
+
+    // Only explicit loads supersede earlier ones; a background refresh must not
+    // cancel an in-flight explicit load (its spinner would never clear).
+    const seq = silent ? loadSeqRef.current : ++loadSeqRef.current;
+    const [year, month] = selectedMonth.split("-").map(Number);
+    const periodStart = toLocalDateString(new Date(year, month - 1, 1));
+    const periodEnd = toLocalDateString(new Date(year, month, 0));
+    const period = selectedMonth;
+
+    const runMaintenance = shouldRunMaintenance({
+      silent,
+      period,
+      lastPeriod: maintenanceRef.current?.period ?? null,
+      lastRunAt: maintenanceRef.current?.at ?? null,
+      now: Date.now(),
     });
+    if (runMaintenance) maintenanceRef.current = { period, at: Date.now() };
 
+    const recoverSlips = !silent || recoveredSlipsRef.current.period !== period;
+    const fetchList = () =>
+      callInvoiceAdminAction("get_invoices_for_period", {
+        periodStart,
+        periodEnd,
+        recoverSlips,
+      }).catch((err: any) => {
+        setError(err?.message ?? "Failed to load invoices.");
+        return null;
+      });
+
+    const applyResult = (result: any) => {
+      // A newer load (month change, another refresh) owns the state now.
+      if (seq !== loadSeqRef.current) return;
     if (!result) {
       setInvoices([]);
     } else {
       const normalized = (result.invoices ?? []).map(normalizeInvoice);
-      const recoveredSlipUrls = (result.recoveredSlipUrls ?? {}) as Record<string, string>;
+      if (recoverSlips) {
+        recoveredSlipsRef.current = {
+          period,
+          urls: (result.recoveredSlipUrls ?? {}) as Record<string, string>,
+        };
+      }
+      const recoveredSlipUrls =
+        recoveredSlipsRef.current.period === period ? recoveredSlipsRef.current.urls : {};
 
       // Fetch all invoices for active tenants to accurately determine "new tenant" status
       const invoicesByTenant = new Map<string, string[]>();
@@ -430,8 +481,18 @@ export function useInvoicesState() {
       });
       setInvoices(sortedHydrated);
     }
+    };
 
-    if (!silent) setLoading(false);
+    applyResult(await fetchList());
+    if (!silent && seq === loadSeqRef.current) setLoading(false);
+
+    if (runMaintenance) {
+      const changed = await runPeriodMaintenance(year, month, periodStart, periodEnd);
+      if (changed > 0 && seq === loadSeqRef.current) {
+        // Maintenance moved rows the first fetch could not have shown.
+        applyResult(await fetchList());
+      }
+    }
   };
 
   useEffect(() => {
@@ -460,11 +521,24 @@ export function useInvoicesState() {
   // an invoice update from elsewhere needs to appear within the second —
   // a periodic silent reload keeps the list close enough to live without
   // that direct connection.
+  // Polling pauses while the tab is hidden and catches up on return.
   useEffect(() => {
-    const interval = setInterval(() => {
+    lastPollAtRef.current = Date.now();
+    const tick = () => {
+      if (!shouldPoll(document.hidden)) return;
+      lastPollAtRef.current = Date.now();
       void loadInvoices(true);
-    }, 20000);
-    return () => clearInterval(interval);
+    };
+    const interval = setInterval(tick, INVOICE_POLL_INTERVAL_MS);
+    const onVisible = () => {
+      if (document.hidden) return;
+      if (shouldRefreshOnVisible({ lastPollAt: lastPollAtRef.current, now: Date.now() })) tick();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [selectedMonth]);
 
   useEffect(() => {
@@ -520,8 +594,8 @@ export function useInvoicesState() {
     };
     void loadPendingMoveOutCount();
     const interval = setInterval(() => {
-      void loadPendingMoveOutCount();
-    }, 20000);
+      if (shouldPoll(document.hidden)) void loadPendingMoveOutCount();
+    }, INVOICE_POLL_INTERVAL_MS);
     return () => {
       mounted = false;
       clearInterval(interval);
@@ -616,7 +690,10 @@ export function useInvoicesState() {
     setSlipModalOpen(true);
   };
 
-  const callInvoiceAdminAction = async (
+  // Stable identity: effects elsewhere (InvoiceDetailModal) list this in their
+  // dependencies, and a fresh function every render made every state update
+  // re-run them and refetch.
+  const callInvoiceAdminAction = useCallback(async (
     action: string,
     payload: Record<string, unknown>,
   ) => {
@@ -638,7 +715,7 @@ export function useInvoicesState() {
       throw new Error(dataJson?.error ?? "Invoice action failed.");
     }
     return dataJson;
-  };
+  }, [supabase]);
 
   const updateInvoiceStatus = async (
     invoiceId: string,

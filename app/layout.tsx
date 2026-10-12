@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { Inter, Noto_Sans_Thai } from "next/font/google";
 import { Toaster } from "sonner";
+import { SpeedInsights } from "@vercel/speed-insights/next";
 import "./globals.css";
 
 /**
@@ -59,6 +60,7 @@ export default function RootLayout({
     >
       <body className="min-h-screen font-sans">
         {children}
+        <SpeedInsights />
         <Toaster
           richColors
           position="top-center"
