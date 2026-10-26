@@ -42,6 +42,8 @@ export function MoveOutProcessingModal({
     final_electricity_reading: 0,
     final_water_reading: 0,
     final_move_out_date: new Date().toISOString().slice(0, 10),
+    manual_prev_electricity: null,
+    manual_prev_water: null,
   });
 
   const [forfeit, setForfeit] = useState<ForfeitState>({ enabled: false, amount: 0, reason: "" });
@@ -211,6 +213,7 @@ export function MoveOutProcessingModal({
     setAutosaveStatus("idle");
     idempotencyKeyRef.current = crypto.randomUUID();
     setForfeit({ enabled: false, amount: 0, reason: "" });
+    setForm((prev) => ({ ...prev, manual_prev_electricity: null, manual_prev_water: null }));
   }, [isOpen, tenantId]);
 
   useEffect(() => {
@@ -370,6 +373,10 @@ export function MoveOutProcessingModal({
             initial_water: prevWater,
             final_electricity: form.final_electricity_reading,
             final_water: form.final_water_reading,
+            // Admin-typed previous readings override the values above for this
+            // settlement only; null means use meter_readings.
+            manual_previous_electricity: form.manual_prev_electricity ?? null,
+            manual_previous_water: form.manual_prev_water ?? null,
           },
           moveOutFeeLines,
           voidedLateFees: lateFeeItems
@@ -454,14 +461,17 @@ export function MoveOutProcessingModal({
   );
   const forfeitAmount = forfeitDeposit ? forfeit.amount : 0;
 
+  const effectivePrevElec = form.manual_prev_electricity ?? data?.prevElec ?? 0;
+  const effectivePrevWater = form.manual_prev_water ?? data?.prevWater ?? 0;
+
   const settlementPlan = useMemo(() => {
     if (!data) return null;
     return planMoveOutSettlement(
       buildMoveOutPlanInput({
         period: rentPeriod,
-        previousElectricity: data.prevElec ?? 0,
+        previousElectricity: effectivePrevElec,
         currentElectricity: toNumber(form.final_electricity_reading),
-        previousWater: data.prevWater ?? 0,
+        previousWater: effectivePrevWater,
         currentWater: toNumber(form.final_water_reading),
         electricityRate: toNumber(data.rates?.electricity_rate),
         waterRate: toNumber(data.rates?.water_rate),
@@ -474,7 +484,7 @@ export function MoveOutProcessingModal({
       })
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, rentPeriod, form.final_electricity_reading, form.final_water_reading, moveOutFeeLines, lateFeeItems, lateFeeVoids, held, forfeitAmount, forfeit.reason]);
+  }, [data, rentPeriod, effectivePrevElec, effectivePrevWater, form.final_electricity_reading, form.final_water_reading, moveOutFeeLines, lateFeeItems, lateFeeVoids, held, forfeitAmount, forfeit.reason]);
 
   const abandonPlan = useMemo(() => {
     if (!data) return null;
@@ -573,8 +583,10 @@ export function MoveOutProcessingModal({
             setUseProrate={setUseProrate}
             moveOutFeeLines={moveOutFeeLines}
             setMoveOutFeeLines={setMoveOutFeeLines}
-            latestPrevElectricity={prevElec}
-            latestPrevWater={prevWater}
+            latestPrevElectricity={effectivePrevElec}
+            latestPrevWater={effectivePrevWater}
+            autoPrevElectricity={prevElec}
+            autoPrevWater={prevWater}
             tenantInvoiceHistory={data.invoiceHistory}
             outstandingMoveOutInvoices={data.unpaidInvoices}
             unpaidInvoicesSubtotal={

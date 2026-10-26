@@ -235,6 +235,13 @@ regular monthly invoices never populate — falling through to the tenant's orig
 reading. For a long-tenured tenant this produced a massively inflated "usage" on their final
 bill. Both values must come from the same place.
 
+The one exception: in the move-out wizard's meter step the admin may type the previous reading
+(`PrevReadingField` in `MoveOutWizard.tsx`, sent as `meterData.manual_previous_electricity` /
+`manual_previous_water` to `final_move_out`). Blank means the `meter_readings` value. A typed
+value overrides it for that settlement only — usage in the preview and on the server, and the
+final invoice's meter start — skips the stale-reading 409 for that utility, and is never
+written to `meter_readings`.
+
 ## Known intentional duplication
 
 `resolveElectricityUsage`/`resolveWaterUsage` exist in both `lib/invoice-utils.ts` and

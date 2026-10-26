@@ -50,6 +50,9 @@ export type MoveOutWizardForm = {
   final_electricity_reading: number;
   final_water_reading: number;
   final_move_out_date: string;
+  /** Admin-typed previous reading for this settlement only; null/undefined means use meter_readings. */
+  manual_prev_electricity?: number | null;
+  manual_prev_water?: number | null;
 };
 
 type InvoiceHistoryRow = {
@@ -125,8 +128,12 @@ type Props = {
   setUseProrate: (v: boolean) => void;
   moveOutFeeLines: MoveOutFeeLine[];
   setMoveOutFeeLines: React.Dispatch<React.SetStateAction<MoveOutFeeLine[]>>;
+  /** Effective previous readings: the manual value when typed, else the meter_readings value. */
   latestPrevElectricity: number;
   latestPrevWater: number;
+  /** The previous readings from the latest meter_readings row. */
+  autoPrevElectricity: number;
+  autoPrevWater: number;
   tenantInvoiceHistory: InvoiceHistoryRow[];
   outstandingMoveOutInvoices: InvoiceHistoryRow[];
   unpaidInvoicesSubtotal: number;
@@ -593,11 +600,80 @@ function Step1RequestReview({
 
 // ─── Step 2: Meter Readings ─────────────────────────────────────────────────────
 
+/**
+ * Previous meter reading, optionally overridden for this settlement only.
+ * Blank means the meter_readings value; a typed value is never written back.
+ */
+function PrevReadingField({
+  autoValue,
+  manualValue,
+  onChange,
+  tone,
+}: {
+  autoValue: number;
+  manualValue: number | null | undefined;
+  onChange: (value: number | null) => void;
+  tone: "warning" | "primary";
+}) {
+  const isManual = manualValue != null;
+  const toneClasses =
+    tone === "warning"
+      ? {
+          input: "border-warning-200 focus:border-warning-400 focus:ring-warning-100",
+          badge: "bg-warning-100 text-warning-800",
+          link: "text-warning-700 hover:text-warning-600",
+        }
+      : {
+          input: "border-primary-200 focus:border-primary-400 focus:ring-primary-100",
+          badge: "bg-primary-100 text-primary-800",
+          link: "text-primary-700 hover:text-primary-600",
+        };
+
+  return (
+    <div>
+      <label className="mb-1.5 flex items-center gap-2 text-sm font-medium text-slate-500">
+        เลขมิเตอร์ครั้งก่อน
+        {isManual && (
+          <span className={`rounded-md px-1.5 py-0.5 text-2xs font-semibold ${toneClasses.badge}`}>กรอกเอง</span>
+        )}
+      </label>
+      <input
+        type="number"
+        min={0}
+        value={manualValue ?? ""}
+        onChange={(e) => {
+          const raw = e.target.value.trim();
+          const n = Number(raw);
+          onChange(raw === "" || !Number.isFinite(n) || n < 0 ? null : n);
+        }}
+        className={`w-full rounded-control border bg-white px-3 py-2.5 text-base font-mono text-slate-800 focus:outline-none focus:ring-2 ${toneClasses.input}`}
+        placeholder={String(autoValue)}
+      />
+      <p className="mt-1.5 text-sm text-slate-400">
+        อ่านล่าสุดจากระบบ: <span className="font-mono font-semibold text-slate-600">{autoValue}</span>{" "}
+        {isManual ? (
+          <button
+            type="button"
+            onClick={() => onChange(null)}
+            className={`font-medium underline ${toneClasses.link}`}
+          >
+            ใช้ค่าจากระบบ
+          </button>
+        ) : (
+          <span>(เว้นว่างไว้เพื่อใช้ค่านี้)</span>
+        )}
+      </p>
+    </div>
+  );
+}
+
 function Step2MeterReadings({
   form,
   setForm,
   latestPrevElectricity,
   latestPrevWater,
+  autoPrevElectricity,
+  autoPrevWater,
   rates,
   onBack,
   onNext,
@@ -606,6 +682,8 @@ function Step2MeterReadings({
   setForm: Props["setForm"];
   latestPrevElectricity: number;
   latestPrevWater: number;
+  autoPrevElectricity: number;
+  autoPrevWater: number;
   rates: SettingsRates;
   onBack: () => void;
   onNext: () => void;
@@ -634,13 +712,12 @@ function Step2MeterReadings({
           <p className="font-semibold text-slate-800">ไฟฟ้า</p>
         </div>
         <div className="grid gap-4 sm:grid-cols-2 mb-4">
-          <div>
-            <label className="block text-sm font-medium text-slate-500 mb-1.5">เลขมิเตอร์ครั้งก่อน</label>
-            <div className="flex h-11 items-center rounded-control border border-slate-200 bg-white/80 px-3 text-base text-slate-700 select-none">
-              <span className="text-slate-400 mr-2">อ่านล่าสุด:</span>
-              <span className="font-mono font-semibold">{latestPrevElectricity}</span>
-            </div>
-          </div>
+          <PrevReadingField
+            autoValue={autoPrevElectricity}
+            manualValue={form.manual_prev_electricity}
+            onChange={(v) => setField("manual_prev_electricity", v)}
+            tone="warning"
+          />
           <div>
             <label className="block text-sm font-medium text-slate-500 mb-1.5">เลขมิเตอร์ปัจจุบัน (ย้ายออก)</label>
             <input
@@ -670,13 +747,12 @@ function Step2MeterReadings({
           <p className="font-semibold text-slate-800">น้ำประปา</p>
         </div>
         <div className="grid gap-4 sm:grid-cols-2 mb-4">
-          <div>
-            <label className="block text-sm font-medium text-slate-500 mb-1.5">เลขมิเตอร์ครั้งก่อน</label>
-            <div className="flex h-11 items-center rounded-control border border-slate-200 bg-white/80 px-3 text-base text-slate-700 select-none">
-              <span className="text-slate-400 mr-2">อ่านล่าสุด:</span>
-              <span className="font-mono font-semibold">{latestPrevWater}</span>
-            </div>
-          </div>
+          <PrevReadingField
+            autoValue={autoPrevWater}
+            manualValue={form.manual_prev_water}
+            onChange={(v) => setField("manual_prev_water", v)}
+            tone="primary"
+          />
           <div>
             <label className="block text-sm font-medium text-slate-500 mb-1.5">เลขมิเตอร์ปัจจุบัน (ย้ายออก)</label>
             <input
@@ -1194,6 +1270,8 @@ export function MoveOutWizard({
   setMoveOutFeeLines,
   latestPrevElectricity,
   latestPrevWater,
+  autoPrevElectricity,
+  autoPrevWater,
   tenantInvoiceHistory,
   outstandingMoveOutInvoices,
   unpaidInvoicesSubtotal,
@@ -1264,6 +1342,8 @@ export function MoveOutWizard({
               setForm={setForm}
               latestPrevElectricity={latestPrevElectricity}
               latestPrevWater={latestPrevWater}
+              autoPrevElectricity={autoPrevElectricity}
+              autoPrevWater={autoPrevWater}
               rates={rates}
               onBack={() => goTo(1)}
               onNext={() => goTo(3)}

@@ -942,11 +942,29 @@ export async function POST(req: Request) {
       // screen shows the same value; if it changed since the admin looked, stop
       // rather than bill against a number they never saw.
       const meterData = payload?.meterData ?? {};
+
+      // The one exception: the admin may type a previous reading in the wizard.
+      // It overrides meter_readings for THIS settlement only (usage and the final
+      // invoice's meter start) and is never written to meter_readings.
+      const parseManualPrev = (raw: unknown): { value: number | null } | { error: true } => {
+        if (raw == null || raw === "") return { value: null };
+        const n = typeof raw === "number" ? raw : Number(raw);
+        return Number.isFinite(n) && n >= 0 ? { value: n } : { error: true };
+      };
+      const manualElec = parseManualPrev(meterData.manual_previous_electricity);
+      const manualWater = parseManualPrev(meterData.manual_previous_water);
+      if ("error" in manualElec || "error" in manualWater) {
+        return NextResponse.json({ error: "เลขมิเตอร์ครั้งก่อนที่กรอกเองไม่ถูกต้อง" }, { status: 400 });
+      }
+      const manualPrevElec = manualElec.value;
+      const manualPrevWater = manualWater.value;
+
+      // Stale-reading check only applies to a utility using the meter_readings value.
       const sentPrevElec = meterData.initial_electricity;
       const sentPrevWater = meterData.initial_water;
       if (
-        (sentPrevElec != null && toNumber(sentPrevElec) !== ctx.previousElectricity) ||
-        (sentPrevWater != null && toNumber(sentPrevWater) !== ctx.previousWater)
+        (manualPrevElec == null && sentPrevElec != null && toNumber(sentPrevElec) !== ctx.previousElectricity) ||
+        (manualPrevWater == null && sentPrevWater != null && toNumber(sentPrevWater) !== ctx.previousWater)
       ) {
         return NextResponse.json(
           {
@@ -955,6 +973,8 @@ export async function POST(req: Request) {
           { status: 409 }
         );
       }
+      const previousElectricity = manualPrevElec ?? ctx.previousElectricity;
+      const previousWater = manualPrevWater ?? ctx.previousWater;
 
       const forfeit = resolveForfeitInput(payload, ctx.held.deposit);
       if ("error" in forfeit) return NextResponse.json({ error: forfeit.error }, { status: 400 });
@@ -1007,9 +1027,9 @@ export async function POST(req: Request) {
         buildMoveOutPlanInput({
           period,
           lateFeeLines: lateBilled.map((l) => ({ invoiceId: l.invoiceId, label: l.label, amount: l.amount })),
-          previousElectricity: ctx.previousElectricity,
+          previousElectricity,
           currentElectricity: toNumber(meterData.final_electricity),
-          previousWater: ctx.previousWater,
+          previousWater,
           currentWater: toNumber(meterData.final_water),
           electricityRate: ctx.electricityRate,
           waterRate: ctx.waterRate,
@@ -1050,9 +1070,9 @@ export async function POST(req: Request) {
             ? `ย้ายออก (ริบเงินประกัน ฿${plan.depositForfeited}: ${plan.forfeitReason})`
             : "ย้ายออก (Final Statement)",
           meter: {
-            electricityStart: ctx.previousElectricity,
+            electricityStart: previousElectricity,
             electricityEnd: toNumber(meterData.final_electricity),
-            waterStart: ctx.previousWater,
+            waterStart: previousWater,
             waterEnd: toNumber(meterData.final_water),
           },
         },
