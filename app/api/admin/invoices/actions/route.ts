@@ -5,6 +5,7 @@ import {
   applyManualInvoicePaymentAllocation,
   syncInvoiceLedger,
   getCarryForwardCandidatesForTarget,
+  resyncBilledLateFees,
   snapshotFromPaymentMethodRow,
   OPEN_INVOICE_STATUSES,
 } from "@/lib/invoice-ledger";
@@ -914,7 +915,18 @@ async function handlePost(req: Request) {
           targetInvoiceId,
           valuationDate
         );
-        return NextResponse.json({ candidates });
+        // Explicit "recalculate" only (not every modal open): bring late fees
+        // that were frozen when carried, and are now paid, up to the real
+        // payment date. Never blocks the candidate list if it fails.
+        let lateFeeResync: Record<string, unknown> = {};
+        if (body?.recalculate === true) {
+          try {
+            lateFeeResync = (await resyncBilledLateFees(auth.supabase, tenantId, { beforeStartDate })).corrections;
+          } catch (resyncError) {
+            console.error("resyncBilledLateFees failed", resyncError);
+          }
+        }
+        return NextResponse.json({ candidates, lateFeeResync });
       } catch (error: any) {
         return NextResponse.json({ error: error?.message ?? "Unexpected server error." }, { status: 500 });
       }

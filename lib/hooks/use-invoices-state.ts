@@ -1909,8 +1909,16 @@ export function useInvoicesState() {
         beforeStartDate: activeInvoice.start_date,
         targetInvoiceId: activeInvoice.id,
         valuationDate,
+        recalculate: true,
       });
       const candidates = carryForwardResult?.candidates ?? [];
+      // Fees frozen when carried but paid since: the server has already moved
+      // them (and the stored bill) to the real payment date; patch the lines
+      // this modal holds in memory to match.
+      const lateFeeResync = (carryForwardResult?.lateFeeResync ?? {}) as Record<
+        string,
+        { amount: number; days: number; dailyRate: number; asOf: string | null; startDate: string }
+      >;
 
       const filteredCandidates = candidates.filter((c: any) =>
         sourceInvoiceIds.includes(String(c.id)),
@@ -1967,9 +1975,14 @@ export function useInvoicesState() {
       // already-billed carried-in late fee the instant anyone recalculated).
       const candidateIds = new Set(filteredCandidates.map((c: any) => String(c.id)));
 
-      const preservedCarryItems = carry.filter(
-        (item) => !item.source_invoice_id || !candidateIds.has(item.source_invoice_id),
-      );
+      // Principal lines are different from late-fee lines: a candidate is
+      // offered whenever its source still owes principal (or an unbilled fee),
+      // so a carried principal line whose source is NOT a candidate means that
+      // source no longer owes anything (paid, or cancelled). Keeping it
+      // would leave a stale "ยอดค้างชำระ" balance on the invoice forever (room
+      // 120/2, 2026-11-07: 9/2026 was paid but its 2,297 stayed on 10/2026
+      // through every recalculate). Only manually-typed lines (no source) stay.
+      const preservedCarryItems = carry.filter((item) => !item.source_invoice_id);
       setEditableCarryForwardItems([...nextCarryItems, ...preservedCarryItems]);
 
       // An approved late-fee line (it carries late_fee_charge_id in the stored
@@ -1983,12 +1996,30 @@ export function useInvoicesState() {
           .filter((row: any) => row?.late_fee_charge_id && row?.source_invoice_id)
           .map((row: any) => String(row.source_invoice_id)),
       );
-      const preservedLateFeeItems = late.filter(
-        (item) =>
-          !item.source_invoice_id ||
-          !candidateIds.has(item.source_invoice_id) ||
-          approvedLateFeeSources.has(item.source_invoice_id),
-      );
+      const preservedLateFeeItems = late
+        .filter(
+          (item) =>
+            !item.source_invoice_id ||
+            !candidateIds.has(item.source_invoice_id) ||
+            approvedLateFeeSources.has(item.source_invoice_id),
+        )
+        .map((item) => {
+          const fix = item.source_invoice_id ? lateFeeResync[String(item.source_invoice_id)] : undefined;
+          if (!fix || approvedLateFeeSources.has(String(item.source_invoice_id))) return item;
+          return {
+            ...item,
+            detail: fix.startDate
+              ? buildLateFeeLineDetail(fix.startDate, fix.days, fix.dailyRate, fix.asOf ?? valuationDate)
+              : item.detail,
+            unit: fix.days,
+            price_per_unit: fix.dailyRate,
+            total_amount: fix.amount,
+            days_overdue: fix.days,
+            daily_rate: fix.dailyRate,
+            snapshot_as_of: fix.asOf,
+            original_amount: fix.amount,
+          };
+        });
       setEditableLateFeeItems([...nextLateFeeItems, ...preservedLateFeeItems]);
 
       setForm((prev) => {

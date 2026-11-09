@@ -1407,6 +1407,186 @@ export async function autoBillUnbilledLateFees(
   return { billedSourceIds, updatedTargetIds };
 }
 
+export type LateFeeResync = {
+  amount: number;
+  days: number;
+  dailyRate: number;
+  asOf: string | null;
+  /** Source invoice's start_date, for the line's period label. */
+  startDate: string;
+};
+
+/**
+ * A late fee that was frozen when its invoice was carried onto a newer one is
+ * only valid until the source is actually paid: the fee runs to the REAL
+ * payment date. If the source is paid afterwards (the usual order: bill
+ * generated on the 25th, tenant pays days later), the frozen figure is short.
+ * This brings both the source's frozen amount and the late-fee line already
+ * sitting on a still-editable invoice up to that payment date (room 120/2:
+ * 9/2026 frozen at 1,500 on 10/26, paid 11/07 -> 2,800).
+ *
+ * Only legacy mode (no late_fee_policies row); approval-flow lines mirror a
+ * late_fee_charges row and are never re-priced here. Sources without a
+ * payment_history entry are skipped: with no real payment date the only
+ * "date" left is today, which would inflate an old fee. Idempotent.
+ *
+ * `corrections` is keyed by source invoice id so the invoice modal can patch
+ * the lines it holds in memory.
+ */
+export async function resyncBilledLateFees(
+  supabase: SupabaseClient,
+  tenantId: string,
+  opts: { sourceIds?: string[]; beforeStartDate?: string } = {},
+): Promise<{ corrections: Record<string, LateFeeResync>; updatedTargetIds: string[] }> {
+  const empty = { corrections: {}, updatedTargetIds: [] };
+  if (!tenantId) return empty;
+  const { mode } = await resolveLateFeeMode(supabase);
+  if (mode === "approval") return empty;
+
+  let query = supabase
+    .from("invoices")
+    .select(
+      "id,status,start_date,late_fee_per_day,late_fee_start_date,waived_late_fee_amount,locked_late_fee_amount,late_fee_billed_at,payment_history,slip_uploaded_at",
+    )
+    .eq("tenant_id", tenantId)
+    .eq("status", "paid")
+    .not("late_fee_billed_at", "is", null)
+    .not("locked_late_fee_amount", "is", null);
+  if (opts.sourceIds) query = query.in("id", opts.sourceIds);
+  if (opts.beforeStartDate) query = query.lt("start_date", opts.beforeStartDate);
+  const { data: sources, error } = await query;
+  if (error) throw new Error(error.message);
+
+  const corrections: Record<string, LateFeeResync> = {};
+  for (const source of (sources ?? []) as any[]) {
+    const history = Array.isArray(source.payment_history) ? source.payment_history : [];
+    if (history.length === 0 || !source.late_fee_start_date) continue;
+    const rate = Math.max(0, toNumber(source.late_fee_per_day));
+    if (rate <= 0) continue;
+    const paidDate = resolveFullyPaidAtDate(source, "");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(paidDate)) continue;
+    const amount = calculateLateFeeAmount(
+      { ...source, locked_late_fee_amount: null },
+      paidDate,
+    );
+    if (amount === toNumber(source.locked_late_fee_amount)) continue;
+    const days = Math.round(amount / rate);
+    const asOf =
+      days > 0
+        ? toDateOnlyText(addCalendarDays(toDateOnly(source.late_fee_start_date), days - 1))
+        : null;
+    corrections[String(source.id)] = {
+      amount,
+      days,
+      dailyRate: rate,
+      asOf,
+      startDate: String(source.start_date ?? ""),
+    };
+  }
+  const sourceIds = Object.keys(corrections);
+  if (sourceIds.length === 0) return empty;
+
+  const { data: tenantInvoices, error: targetError } = await supabase
+    .from("invoices")
+    .select(
+      "id,status,rent_amount,water_bill,electricity_bill,common_fee,late_fee_per_day,late_fee_start_date,waived_late_fee_amount,locked_late_fee_amount,issue_date,start_date,additional_fees_breakdown,discount_amount",
+    )
+    .eq("tenant_id", tenantId);
+  if (targetError) throw new Error(targetError.message);
+
+  const updatedTargetIds: string[] = [];
+  const fixedSources = new Set<string>();
+  for (const target of (tenantInvoices ?? []) as any[]) {
+    if (!isInvoiceDetailEditable(String(target.status ?? ""))) continue;
+    const breakdown: any[] = Array.isArray(target.additional_fees_breakdown)
+      ? target.additional_fees_breakdown
+      : [];
+    let changed = false;
+    const next = breakdown.map((row) => {
+      const sourceId = String(row?.source_invoice_id ?? "");
+      if (!isLateFeeBreakdownRow(row) || row.late_fee_charge_id || !corrections[sourceId]) return row;
+      const fix = corrections[sourceId];
+      changed = true;
+      const detail = buildLateFeeLineDetail(
+        fix.startDate,
+        fix.days,
+        fix.dailyRate,
+        fix.asOf ?? (target.issue_date || target.start_date),
+      );
+      return {
+        ...row,
+        detail,
+        label: detail,
+        unit: fix.days,
+        price_per_unit: fix.dailyRate,
+        total_amount: fix.amount,
+        amount: fix.amount,
+        days_overdue: fix.days,
+        daily_rate: fix.dailyRate,
+        snapshot_as_of: fix.asOf,
+        original_amount: fix.amount,
+      };
+    });
+    if (!changed) continue;
+    for (const row of next) {
+      const id = String(row?.source_invoice_id ?? "");
+      if (isLateFeeBreakdownRow(row) && !row.late_fee_charge_id && corrections[id]) fixedSources.add(id);
+    }
+
+    const lateFeeItemsTotal = toChargeFeeRows(next.filter(isLateFeeBreakdownRow)).reduce(
+      (sum: number, item: any) => sum + toNumber(item.total_amount ?? item.amount),
+      0,
+    );
+    const carryForwardAmount = toChargeFeeRows(next.filter(isCarryForwardBreakdownRow)).reduce(
+      (sum: number, item: any) => sum + toNumber(item.total_amount ?? item.amount),
+      0,
+    );
+    const otherFeesTotal = toChargeFeeRows(
+      next.filter((row) => !isCarryForwardBreakdownRow(row) && !isLateFeeBreakdownRow(row)),
+    ).reduce((sum: number, item: any) => sum + toNumber(item.total_amount ?? item.amount), 0);
+    const nativeLateFee = computeLateFeeSnapshot(
+      target,
+      target.issue_date || target.start_date,
+    ).amount;
+    const totalAmount = computeInvoiceTotal({
+      rent: toNumber(target.rent_amount),
+      water: toNumber(target.water_bill),
+      electricity: toNumber(target.electricity_bill),
+      commonFee: toNumber(target.common_fee),
+      nativeLateFee,
+      lateFeeItems: lateFeeItemsTotal,
+      fees: otherFeesTotal,
+      carryForward: carryForwardAmount,
+      discount: toNumber(target.discount_amount),
+    });
+    const { error: updateError } = await supabase
+      .from("invoices")
+      .update({
+        carry_forward_amount: carryForwardAmount,
+        late_fee_amount: nativeLateFee + lateFeeItemsTotal,
+        additional_fees_total: otherFeesTotal + lateFeeItemsTotal,
+        additional_fees_breakdown: next,
+        total_amount: totalAmount,
+      })
+      .eq("id", target.id);
+    if (updateError) throw new Error(updateError.message);
+    updatedTargetIds.push(String(target.id));
+  }
+
+  // Only re-freeze a source whose billed line was actually updated, so the
+  // frozen amount and the line on the bill can never disagree.
+  for (const id of fixedSources) {
+    const { error: lockError } = await supabase
+      .from("invoices")
+      .update({ locked_late_fee_amount: corrections[id].amount })
+      .eq("id", id);
+    if (lockError) throw new Error(lockError.message);
+  }
+  for (const id of sourceIds) if (!fixedSources.has(id)) delete corrections[id];
+
+  return { corrections, updatedTargetIds };
+}
+
 /**
  * Total still owed across an invoice and every invoice carried forward into it —
  * the same set `applyInvoicePaymentAllocation` would allocate against, and so
@@ -2191,6 +2371,15 @@ export async function applyInvoicePaymentAllocation(
       updates.map((item) => item.invoiceId),
     ),
   );
+  // A fee frozen earlier (carried onto a newer bill) must now run to the real
+  // payment date. See resyncBilledLateFees.
+  await afterCommit("resyncBilledLateFees", () =>
+    resyncBilledLateFees(
+      supabase,
+      String((freshTargetInvoice as any).tenant_id ?? ""),
+      { sourceIds: updates.map((item) => item.invoiceId) },
+    ),
+  );
 
   const updatedInvoiceIds = updates.map((item) => item.invoiceId);
   const { data: updatedInvoices, error: updatedError } = await supabase
@@ -2419,6 +2608,7 @@ export async function applyManualInvoicePaymentAllocation(
   // Same reasoning as applyInvoicePaymentAllocation: push any newly-frozen,
   // still-unbilled late fee onto the tenant's next open invoice automatically.
   await afterCommit("autoBillUnbilledLateFees", () => autoBillUnbilledLateFees(supabase, tenantId, invoiceIds));
+  await afterCommit("resyncBilledLateFees", () => resyncBilledLateFees(supabase, tenantId, { sourceIds: invoiceIds }));
 
   const updatedInvoiceIds = updates.map((item) => item.invoiceId);
   const { data: updatedInvoices, error: updatedError } = await supabase
