@@ -152,6 +152,19 @@ export function moveOutLateFeeLabel(c: {
     : `ค่าปรับล่าช้า งวด ${c.periodStart} (${c.daysOverdue} วัน × ${c.dailyRate} บาท)`;
 }
 
+/**
+ * Days a FROZEN late fee was charged for. The database returns no day count for a fee frozen at payment
+ * (days_overdue is NULL), so the invoice looked like it had no days at all. The frozen amount is
+ * days x daily rate - waived, so days = (frozen + waived) / rate when that is a whole number of days.
+ * Returns null when it cannot be recovered exactly (no rate, or a non-whole result).
+ */
+export function deriveFrozenLateFeeDays(frozenAmount: number, waivedAmount: number, dailyRate: number): number | null {
+  if (!(dailyRate > 0) || !(frozenAmount > 0)) return null;
+  const days = (frozenAmount + Math.max(0, waivedAmount || 0)) / dailyRate;
+  const rounded = Math.round(days);
+  return rounded > 0 && Math.abs(days - rounded) < 1e-6 ? rounded : null;
+}
+
 export type BuildPlanInputArgs = {
   period: MoveOutRentPeriod;
   previousElectricity: number;

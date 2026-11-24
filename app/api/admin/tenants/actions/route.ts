@@ -11,6 +11,7 @@ import {
   buildMoveOutPlanInput,
   computeMoveOutRentPeriod,
   moveOutLateFeeLabel,
+  deriveFrozenLateFeeDays,
   type MoveOutLateFees,
   resolveHeldCredit,
   type HeldCredit,
@@ -202,8 +203,13 @@ async function loadMoveOutLateFeeCandidates(
   if (error) return { error: error.message };
   const candidates = ((data as any[]) ?? [])
     .map((r) => {
-      const daysOverdue = r.days_overdue == null ? null : toNumber(r.days_overdue);
       const dailyRate = toNumber(r.daily_rate);
+      // A fee frozen at payment has no day count in the database; recover it from the frozen amount
+      // so the tenant can see how many days the fee covers.
+      const daysOverdue =
+        r.days_overdue != null
+          ? toNumber(r.days_overdue)
+          : deriveFrozenLateFeeDays(toNumber(r.prev_locked), toNumber(r.prev_waived), dailyRate);
       const periodStart = String(r.period_start ?? "").slice(0, 10);
       return {
         invoiceId: String(r.invoice_id),
