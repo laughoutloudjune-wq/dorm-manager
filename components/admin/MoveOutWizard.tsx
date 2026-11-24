@@ -825,13 +825,13 @@ function Step3FinancialSummary({
   lateFees,
   tenantName,
   roomNumber,
-  moveInDate,
+  tenantPhone,
   onBack,
   onNext,
 }: {
   tenantName: string;
   roomNumber: string;
-  moveInDate: string | null;
+  tenantPhone: string | null;
   lateFees: MoveOutLateFeesUi;
   form: MoveOutWizardForm;
   forfeit: ForfeitState;
@@ -1019,7 +1019,7 @@ function Step3FinancialSummary({
         periodLabelById={periodLabelById}
         tenantName={tenantName}
         roomNumber={roomNumber}
-        moveInDate={moveInDate}
+        tenantPhone={tenantPhone}
         moveOutDate={form.final_move_out_date || new Date().toISOString().slice(0, 10)}
       />
 
@@ -1230,7 +1230,7 @@ function Step4Confirm({
         periodLabelById={periodLabelById}
         tenantName={String(activeTenant?.full_name ?? "")}
         roomNumber={roomNumber}
-        moveInDate={activeTenant?.move_in_date ?? null}
+        tenantPhone={activeTenant?.phone_number ?? null}
         moveOutDate={moveOutDate}
       />
 
@@ -1410,7 +1410,7 @@ export function MoveOutWizard({
               lateFees={lateFees}
               tenantName={String(activeTenant?.full_name ?? "")}
               roomNumber={roomNumber}
-              moveInDate={activeTenant?.move_in_date ?? null}
+              tenantPhone={activeTenant?.phone_number ?? null}
               onBack={() => goTo(2)}
               onNext={() => goTo(4)}
             />
