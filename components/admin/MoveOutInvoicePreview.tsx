@@ -23,7 +23,26 @@ type Props = {
   tenantPhone?: string | null;
   roomNumber: string;
   moveOutDate: string;
+  /** Start of the final invoice period (end of the last billed period). */
+  rentStartDate: string;
+  /** Unbilled late fees on older invoices, with the admin's void choices. */
+  lateFeeItems: LateFeeItem[];
+  lateFeeVoids: Record<string, { voided: boolean; reason: string }>;
+  /** Older unpaid invoices, to show where each debt comes from. */
+  invoiceInfoById: Map<string, { period: string; total: number; paid: number }>;
 };
+
+type LateFeeItem = {
+  invoiceId: string;
+  periodStart: string;
+  periodEnd: string | null;
+  daysOverdue: number | null;
+  dailyRate: number;
+  amount: number;
+  locked: boolean;
+};
+
+const LATE_FEE_PREFIX = "late_fee_line:";
 
 type PrintConfig = {
   settings: { dorm_name?: string | null; dorm_address?: string | null; water_rate?: number | null; electricity_rate?: number | null } | null;
@@ -56,6 +75,10 @@ function Doc({
   tenantPhone,
   roomNumber,
   moveOutDate,
+  rentStartDate,
+  lateFeeItems,
+  lateFeeVoids,
+  invoiceInfoById,
   config,
 }: Props & { plan: MoveOutSettlementPlan; config: PrintConfig }) {
   const waterUnits = units(meter.curWater, meter.prevWater);
@@ -67,6 +90,16 @@ function Doc({
     : "-";
   const docNo = `MO-${roomNumber || "-"}-${String(moveOutDate).replaceAll("-", "").slice(2)}`;
   const monthlyRent = fullMonths > 0 ? plan.fullMonthRent / fullMonths : 0;
+  const lateById = new Map(lateFeeItems.map((i) => [i.invoiceId, i]));
+  const voidedLate = lateFeeItems.filter((i) => lateFeeVoids[i.invoiceId]?.voided);
+  const addMonths = (ymd: string, n: number) => {
+    const [y, m, d] = String(ymd).slice(0, 10).split("-").map(Number);
+    const dt = new Date(y, (m || 1) - 1 + n, d || 1);
+    return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+  };
+  const prorateStart = addMonths(rentStartDate, fullMonths);
+  const meterNote = (u: number, rate: number, amount: number) =>
+    Math.abs(u * rate - amount) > 0.01 ? " · คิดตามอัตราขั้นต่ำ" : "";
 
   const cell = "px-3 py-2";
   const rowCls = "border-t border-slate-100";
@@ -115,7 +148,12 @@ function Doc({
             {sectionRow("บิลงวดสุดท้าย")}
             {plan.fullMonthRent > 0 && (
               <tr className={rowCls}>
-                <td className={cell}>ค่าเช่าห้องพัก</td>
+                <td className={cell}>
+                  ค่าเช่าห้องพัก
+                  <div className="text-xs text-slate-500">
+                    {fullMonths} เดือนเต็ม ({formatDateThai(rentStartDate)} – {formatDateThai(prorateStart)}) × {formatMoney(monthlyRent)} บาท/เดือน
+                  </div>
+                </td>
                 <td className={`${cell} text-right`}>{fullMonths} เดือน</td>
                 <td className={`${cell} text-right`}>{formatMoney(monthlyRent)}</td>
                 <td className={`${cell} text-right`}>{formatMoney(plan.fullMonthRent)}</td>
@@ -123,7 +161,13 @@ function Doc({
             )}
             {(plan.proratedRent > 0 || plan.fullMonthRent === 0) && (
               <tr className={rowCls}>
-                <td className={cell}>ค่าเช่าห้องพัก (เฉลี่ยรายวัน)</td>
+                <td className={cell}>
+                  ค่าเช่าห้องพัก (เฉลี่ยรายวัน)
+                  <div className="text-xs text-slate-500">
+                    {formatDateThai(prorateStart)} – {formatDateThai(moveOutDate)} = {prorateDays} วัน × {formatMoney(dailyRate)} บาท/วัน
+                    (ค่าเช่าต่อเดือน ÷ 30 ปัดลงเป็นบาทเต็ม)
+                  </div>
+                </td>
                 <td className={`${cell} text-right`}>{prorateDays} วัน</td>
                 <td className={`${cell} text-right`}>{formatMoney(dailyRate)}</td>
                 <td className={`${cell} text-right`}>{formatMoney(plan.proratedRent)}</td>
@@ -132,7 +176,10 @@ function Doc({
             <tr className={rowCls}>
               <td className={cell}>
                 ค่าน้ำ
-                <div className="text-xs text-slate-500">มิเตอร์ {meter.prevWater} → {meter.curWater}</div>
+                <div className="text-xs text-slate-500">
+                  มิเตอร์ก่อน {meter.prevWater} → ล่าสุด {meter.curWater} = {waterUnits.toLocaleString("th-TH")} หน่วย × {formatMoney(waterRate)}
+                  {meterNote(waterUnits, waterRate, plan.water)}
+                </div>
               </td>
               <td className={`${cell} text-right`}>{waterUnits.toLocaleString("th-TH")} หน่วย</td>
               <td className={`${cell} text-right`}>{formatMoney(waterRate)}</td>
@@ -141,18 +188,59 @@ function Doc({
             <tr className={rowCls}>
               <td className={cell}>
                 ค่าไฟ
-                <div className="text-xs text-slate-500">มิเตอร์ {meter.prevElec} → {meter.curElec}</div>
+                <div className="text-xs text-slate-500">
+                  มิเตอร์ก่อน {meter.prevElec} → ล่าสุด {meter.curElec} = {elecUnits.toLocaleString("th-TH")} หน่วย × {formatMoney(elecRate)}
+                  {meterNote(elecUnits, elecRate, plan.electricity)}
+                </div>
               </td>
               <td className={`${cell} text-right`}>{elecUnits.toLocaleString("th-TH")} หน่วย</td>
               <td className={`${cell} text-right`}>{formatMoney(elecRate)}</td>
               <td className={`${cell} text-right`}>{formatMoney(plan.electricity)}</td>
             </tr>
-            {plan.otherCharges.map((c, i) => (
-              <tr key={`${c.label}-${i}`} className={rowCls}>
-                <td className={cell}>{c.label}</td>
-                <td className={`${cell} text-right`}>-</td>
-                <td className={`${cell} text-right`}>-</td>
-                <td className={`${cell} text-right`}>{formatMoney(c.amount)}</td>
+            {plan.otherCharges.map((c, i) => {
+              const lateId = String(c.reason ?? "").startsWith(LATE_FEE_PREFIX)
+                ? String(c.reason).slice(LATE_FEE_PREFIX.length)
+                : null;
+              const late = lateId ? lateById.get(lateId) : undefined;
+              if (late) {
+                return (
+                  <tr key={`late-${lateId}`} className="border-t border-warning-100 bg-warning-50/40">
+                    <td className={cell}>
+                      ค่าปรับล่าช้า — บิลงวด {late.periodStart}
+                      <div className="text-xs text-slate-500">
+                        {late.daysOverdue == null
+                          ? "ยอดค่าปรับที่ล็อกไว้แล้วตอนชำระ/ยกยอด"
+                          : `ชำระล่าช้า ${late.daysOverdue} วัน × ${formatMoney(late.dailyRate)} บาท/วัน`}
+                        {late.periodEnd ? ` · บิลสิ้นสุด ${formatDateThai(late.periodEnd)}` : ""}
+                      </div>
+                    </td>
+                    <td className={`${cell} text-right`}>{late.daysOverdue == null ? "-" : `${late.daysOverdue} วัน`}</td>
+                    <td className={`${cell} text-right`}>{late.daysOverdue == null ? "-" : formatMoney(late.dailyRate)}</td>
+                    <td className={`${cell} text-right font-semibold text-warning-900`}>{formatMoney(c.amount)}</td>
+                  </tr>
+                );
+              }
+              return (
+                <tr key={`${c.label}-${i}`} className={rowCls}>
+                  <td className={cell}>
+                    {c.label}
+                    {c.reason && !String(c.reason).startsWith(LATE_FEE_PREFIX) && (
+                      <div className="text-xs text-slate-500">{c.reason}</div>
+                    )}
+                  </td>
+                  <td className={`${cell} text-right`}>1</td>
+                  <td className={`${cell} text-right`}>{formatMoney(c.amount)}</td>
+                  <td className={`${cell} text-right`}>{formatMoney(c.amount)}</td>
+                </tr>
+              );
+            })}
+            {voidedLate.map((v) => (
+              <tr key={`void-${v.invoiceId}`} className={rowCls}>
+                <td className={`${cell} text-slate-500`} colSpan={3}>
+                  ยกเว้นค่าปรับล่าช้า บิลงวด {v.periodStart} ({formatMoney(v.amount)} บาท)
+                  <div className="text-xs">เหตุผล: {lateFeeVoids[v.invoiceId]?.reason || "-"}</div>
+                </td>
+                <td className={`${cell} text-right text-slate-500`}>ยกเว้น</td>
               </tr>
             ))}
             <tr className="border-t border-slate-200 bg-slate-50 font-semibold text-slate-900">
@@ -163,7 +251,14 @@ function Doc({
             {plan.debtPayments.length > 0 && sectionRow("บิลค้างชำระเดิม")}
             {plan.debtPayments.map((d) => (
               <tr key={d.invoiceId} className="border-t border-warning-100 bg-warning-50/60">
-                <td className={cell}>ยอดค้างรอบบิล {periodLabelById?.get(d.invoiceId) ?? d.periodStart.slice(0, 7)}</td>
+                <td className={cell}>
+                  ยอดค้างรอบบิล {invoiceInfoById.get(d.invoiceId)?.period ?? periodLabelById?.get(d.invoiceId) ?? d.periodStart.slice(0, 7)}
+                  {invoiceInfoById.get(d.invoiceId) && (
+                    <div className="text-xs text-slate-500">
+                      ยอดบิล {formatMoney(invoiceInfoById.get(d.invoiceId)!.total)} − ชำระแล้ว {formatMoney(invoiceInfoById.get(d.invoiceId)!.paid)} = ค้าง {formatMoney(d.outstandingBefore)}
+                    </div>
+                  )}
+                </td>
                 <td className={`${cell} text-right`}>-</td>
                 <td className={`${cell} text-right`}>-</td>
                 <td className={`${cell} text-right font-semibold text-warning-900`}>{formatMoney(d.outstandingBefore)}</td>
@@ -177,7 +272,10 @@ function Doc({
             {sectionRow("เงินที่นำมาหัก")}
             {plan.advanceRentHeld > 0 && (
               <tr className={rowCls}>
-                <td className={cell}>หักค่าเช่าล่วงหน้า (ถืออยู่ {formatMoney(plan.advanceRentHeld)})</td>
+                <td className={cell}>
+                  หักค่าเช่าล่วงหน้า
+                  <div className="text-xs text-slate-500">ถืออยู่ {formatMoney(plan.advanceRentHeld)} · ใช้หักชำระบิลก่อน</div>
+                </td>
                 <td className={`${cell} text-right`}>-</td>
                 <td className={`${cell} text-right`}>-</td>
                 <td className={`${cell} text-right`}>-{formatMoney(plan.advanceRentApplied)}</td>
@@ -185,7 +283,10 @@ function Doc({
             )}
             {plan.depositHeld > 0 && (
               <tr className={rowCls}>
-                <td className={cell}>หักเงินประกัน (ถืออยู่ {formatMoney(plan.depositHeld)})</td>
+                <td className={cell}>
+                  หักเงินประกัน
+                  <div className="text-xs text-slate-500">ถืออยู่ {formatMoney(plan.depositHeld)} · ใช้หักส่วนที่ยังไม่พอ</div>
+                </td>
                 <td className={`${cell} text-right`}>-</td>
                 <td className={`${cell} text-right`}>-</td>
                 <td className={`${cell} text-right`}>-{formatMoney(plan.depositApplied)}</td>
@@ -193,7 +294,10 @@ function Doc({
             )}
             {plan.unappliedCreditHeld > 0 && (
               <tr className={rowCls}>
-                <td className={cell}>หักเครดิตชำระเกิน (ถืออยู่ {formatMoney(plan.unappliedCreditHeld)})</td>
+                <td className={cell}>
+                  หักเครดิตชำระเกิน
+                  <div className="text-xs text-slate-500">ถืออยู่ {formatMoney(plan.unappliedCreditHeld)}</div>
+                </td>
                 <td className={`${cell} text-right`}>-</td>
                 <td className={`${cell} text-right`}>-</td>
                 <td className={`${cell} text-right`}>-{formatMoney(plan.unappliedCreditApplied)}</td>
@@ -212,7 +316,10 @@ function Doc({
             )}
             {plan.advanceRentAbsorbed > 0 && (
               <tr className={rowCls}>
-                <td className={cell}>ค่าเช่าล่วงหน้าส่วนที่เหลือ (ไม่คืน)</td>
+                <td className={cell}>
+                  ค่าเช่าล่วงหน้าส่วนที่เหลือ (ไม่คืน)
+                  <div className="text-xs text-slate-500">ค่าเช่าล่วงหน้าไม่สามารถขอคืนเป็นเงินได้</div>
+                </td>
                 <td className={`${cell} text-right`}>-</td>
                 <td className={`${cell} text-right`}>-</td>
                 <td className={`${cell} text-right`}>{formatMoney(plan.advanceRentAbsorbed)}</td>
@@ -235,6 +342,13 @@ function Doc({
         <p>
           <span className="font-semibold">ช่องทางชำระเงิน:</span> {plan.balanceStillOwed > 0 ? methodLabel : "-"}
         </p>
+        <div className="text-xs text-slate-500">
+          <p className="font-semibold text-slate-600">วิธีคำนวณ</p>
+          <p>• ค่าเช่ารายวัน = ค่าเช่าต่อเดือน ÷ 30 (ปัดลงเป็นบาทเต็ม) × จำนวนวันที่อยู่เกินรอบบิลล่าสุด</p>
+          <p>• ค่าน้ำ/ค่าไฟ = (เลขมิเตอร์ล่าสุด − เลขมิเตอร์ก่อนหน้า) × อัตราต่อหน่วย</p>
+          <p>• ค่าปรับล่าช้า = จำนวนวันที่ชำระล่าช้า × อัตราต่อวัน</p>
+          <p>• ยอดที่ต้องชำระ = บิลสุดท้าย + บิลค้างชำระ แล้วหักด้วยค่าเช่าล่วงหน้า เงินประกัน และเครดิต ตามลำดับ</p>
+        </div>
         <p>
           <span className="font-semibold">หมายเหตุ:</span>{" "}
           {plan.refundDue > 0 && plan.balanceStillOwed === 0

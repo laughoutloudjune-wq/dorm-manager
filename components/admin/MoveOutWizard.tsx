@@ -1017,6 +1017,21 @@ function Step3FinancialSummary({
         dailyRate={rentPeriod.dailyRate}
         fullMonths={rentPeriod.fullMonths}
         periodLabelById={periodLabelById}
+        rentStartDate={rentPeriod.startDate}
+        lateFeeItems={lateFees.items}
+        lateFeeVoids={lateFees.voids}
+        invoiceInfoById={
+          new Map(
+            outstandingMoveOutInvoices.map((inv: any) => [
+              String(inv.id),
+              {
+                period: String(inv.start_date ?? "").slice(0, 7),
+                total: toNumber(inv.total_amount),
+                paid: toNumber(inv.paid_amount),
+              },
+            ])
+          )
+        }
         tenantName={tenantName}
         roomNumber={roomNumber}
         tenantPhone={tenantPhone}
@@ -1228,6 +1243,21 @@ function Step4Confirm({
         dailyRate={rentPeriod.dailyRate}
         fullMonths={rentPeriod.fullMonths}
         periodLabelById={periodLabelById}
+        rentStartDate={rentPeriod.startDate}
+        lateFeeItems={lateFees.items}
+        lateFeeVoids={lateFees.voids}
+        invoiceInfoById={
+          new Map(
+            outstandingMoveOutInvoices.map((inv: any) => [
+              String(inv.id),
+              {
+                period: String(inv.start_date ?? "").slice(0, 7),
+                total: toNumber(inv.total_amount),
+                paid: toNumber(inv.paid_amount),
+              },
+            ])
+          )
+        }
         tenantName={String(activeTenant?.full_name ?? "")}
         roomNumber={roomNumber}
         tenantPhone={activeTenant?.phone_number ?? null}
