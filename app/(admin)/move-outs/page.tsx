@@ -483,7 +483,15 @@ export default function MoveOutsPage() {
                             </span>
                           )}
                         </td>
-                        <td className="px-5 py-3.5">
+                        <td className="flex items-center gap-1 px-5 py-3.5">
+                          {row.status === "completed" && (
+                            <Link
+                              href={`/move-outs/summary?tenant=${encodeURIComponent(row.tenant_id)}`}
+                              className={buttonClasses({ variant: "ghost", size: "sm" })}
+                            >
+                              พิมพ์สรุป
+                            </Link>
+                          )}
                           <button
                             onClick={() => openModal(row.tenant_id)}
                             className={buttonClasses({ variant: "subtle", size: "sm" })}
