@@ -16,6 +16,7 @@ import {
   forfeitReasonMissing,
   type ForfeitState,
 } from "./MoveOutSettlementBreakdown";
+import { MoveOutInvoicePreview } from "./MoveOutInvoicePreview";
 import { bangkokYmd, meets30DayMoveOutNotice } from "@/lib/move-out-notice";
 import { ConfirmActionModal } from "@/components/ui/ConfirmActionModal";
 import { buttonClasses } from "@/components/ui/Button";
@@ -822,9 +823,15 @@ function Step3FinancialSummary({
   rentPeriod,
   settlementPlan,
   lateFees,
+  tenantName,
+  roomNumber,
+  moveInDate,
   onBack,
   onNext,
 }: {
+  tenantName: string;
+  roomNumber: string;
+  moveInDate: string | null;
   lateFees: MoveOutLateFeesUi;
   form: MoveOutWizardForm;
   forfeit: ForfeitState;
@@ -997,6 +1004,24 @@ function Step3FinancialSummary({
           />
         )}
       </SectionCard>
+
+      <MoveOutInvoicePreview
+        plan={settlementPlan}
+        meter={{
+          prevElec: latestPrevElectricity,
+          curElec: toNumber(form.final_electricity_reading),
+          prevWater: latestPrevWater,
+          curWater: toNumber(form.final_water_reading),
+        }}
+        prorateDays={rentPeriod.prorateDays}
+        dailyRate={rentPeriod.dailyRate}
+        fullMonths={rentPeriod.fullMonths}
+        periodLabelById={periodLabelById}
+        tenantName={tenantName}
+        roomNumber={roomNumber}
+        moveInDate={moveInDate}
+        moveOutDate={form.final_move_out_date || new Date().toISOString().slice(0, 10)}
+      />
 
       <div className="flex justify-between pt-2">
         <button
@@ -1191,6 +1216,24 @@ function Step4Confirm({
         )}
       </SectionCard>
 
+      <MoveOutInvoicePreview
+        plan={plan}
+        meter={{
+          prevElec: latestPrevElectricity,
+          curElec: toNumber(form.final_electricity_reading),
+          prevWater: latestPrevWater,
+          curWater: toNumber(form.final_water_reading),
+        }}
+        prorateDays={rentPeriod.prorateDays}
+        dailyRate={rentPeriod.dailyRate}
+        fullMonths={rentPeriod.fullMonths}
+        periodLabelById={periodLabelById}
+        tenantName={String(activeTenant?.full_name ?? "")}
+        roomNumber={roomNumber}
+        moveInDate={activeTenant?.move_in_date ?? null}
+        moveOutDate={moveOutDate}
+      />
+
       <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-100">
         <button
           type="button"
@@ -1365,6 +1408,9 @@ export function MoveOutWizard({
               rentPeriod={rentPeriod}
               settlementPlan={settlementPlan}
               lateFees={lateFees}
+              tenantName={String(activeTenant?.full_name ?? "")}
+              roomNumber={roomNumber}
+              moveInDate={activeTenant?.move_in_date ?? null}
               onBack={() => goTo(2)}
               onNext={() => goTo(4)}
             />
