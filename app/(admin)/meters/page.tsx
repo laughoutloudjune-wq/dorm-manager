@@ -183,10 +183,13 @@ export default function MetersPage() {
       // first bill as proof a second invoice already existed, hiding the
       // "just moved in" banner (and its meter-reading-source choice) the
       // moment that first invoice was generated.
-      const moveInMonth = monthStartFromDateString(moveInDate);
+      //
+      // The first bill is not always in the move-in month either: someone who
+      // moves in on the 29th is first billed for the NEXT month. A tenant is
+      // past the first cycle only once invoices exist for more than one
+      // distinct month.
       const hasRegularInvoice =
-        invoices.length > 1 ||
-        invoices.some((date) => monthStartFromDateString(date) !== moveInMonth);
+        new Set(invoices.map((date) => monthStartFromDateString(date))).size > 1;
       if (hasRegularInvoice) continue;
 
       if (!moveInMap.has(item.room_id)) {
